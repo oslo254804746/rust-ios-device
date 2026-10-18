@@ -4,15 +4,15 @@ use super::*;
 const BANK: usize = 262_144;
 
 #[test]
-fn identity_arc_actual_identity_parallel_last_clones_keep_original_host_and_refund_once() {
+fn identity_full_allocation_parallel_last_clones_keep_original_host_and_refund_once() {
     let original = Route::Mobdev2("parallel-original-host".into());
     let length = super::super::candidate_input::route_length(&original);
-    let total = std::mem::size_of::<IdentityOwner>() + length;
+    let total = Identity::allocation_bytes() + length;
     let bank = Arc::new(Semaphore::new(total));
     let identity = Identity::copied(&original, Some(19), &bank).unwrap();
     assert_eq!(
         std::mem::size_of::<Identity>(),
-        std::mem::size_of::<Arc<IdentityOwner>>()
+        std::mem::size_of::<usize>()
     );
     let host = super::super::candidate_input::RouteRef::from(&identity.route)
         .host()
@@ -47,19 +47,27 @@ fn identity_arc_actual_identity_parallel_last_clones_keep_original_host_and_refu
 fn node_body_original_pointer_and_outer_grant_survive_table_removal_until_last_owner() {
     let bank = Arc::new(Semaphore::new(BANK));
     let input = Input::copied("original-body-node", super::super::RouteRef::Usbmux, &bank).unwrap();
-    let body = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let body = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = body.clone();
     let charged = bank.clone();
     let node = super::super::metadata_vec::with_allocation_hook(
         move |layout, pointer| {
-            assert_eq!(layout, std::alloc::Layout::new::<Node>());
             assert!(charged.available_permits() <= BANK - layout.size());
-            captured.store(pointer, std::sync::atomic::Ordering::SeqCst);
+            captured.lock().unwrap().push((layout.size(), pointer));
         },
         || Node::input(input, Some(7), &bank).unwrap(),
     );
-    let pointer = body.load(std::sync::atomic::Ordering::SeqCst);
+    let observed = body.lock().unwrap();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0].0, std::mem::size_of::<Node>());
+    assert_eq!(observed[1].0, Identity::allocation_bytes());
+    let original_identity = std::ptr::from_ref(&*node.row.identity.0) as usize;
+    assert!(
+        observed[1].1 <= original_identity && original_identity < observed[1].1 + observed[1].0
+    );
+    let pointer = observed[0].1;
     assert_eq!(&*node as *const Node as usize, pointer);
+    drop(observed);
     assert_eq!(node.bytes_in(&bank).unwrap(), std::mem::size_of::<Node>());
     let mut table = table(&bank);
     assert!(Table::commit(table.insert_reserved(node)).is_none());
@@ -117,7 +125,7 @@ fn node_body_empty_destination_refunds_after_identity_refusal_without_claiming_o
         &bank,
     )
     .unwrap();
-    let leave = std::mem::size_of::<Node>() + std::mem::size_of::<IdentityOwner>() - 1;
+    let leave = std::mem::size_of::<Node>() + Identity::allocation_bytes() - 1;
     let held = bank
         .clone()
         .try_acquire_many_owned((bank.available_permits() - leave) as u32)
@@ -147,7 +155,7 @@ fn node_body_empty_destination_refunds_after_identity_refusal_without_claiming_o
 fn prepaid_selector_actual_failure_identity_shares_original_buffer_through_last_clone() {
     let original = Route::Mobdev2("原-failure-host".into());
     let length = super::super::candidate_input::route_length(&original);
-    let total = std::mem::size_of::<IdentityOwner>() + length;
+    let total = Identity::allocation_bytes() + length;
     let bank = Arc::new(Semaphore::new(total));
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = seen.clone();
@@ -155,8 +163,7 @@ fn prepaid_selector_actual_failure_identity_shares_original_buffer_through_last_
     let identity = super::super::metadata_vec::with_allocation_hook(
         move |layout, pointer| {
             assert_eq!(charged.available_permits(), 0);
-            assert_eq!(layout, std::alloc::Layout::array::<u8>(length).unwrap());
-            captured.lock().unwrap().push(pointer);
+            captured.lock().unwrap().push((layout, pointer));
         },
         || Identity::copied(&original, Some(17), &bank).unwrap(),
     );
@@ -164,7 +171,18 @@ fn prepaid_selector_actual_failure_identity_shares_original_buffer_through_last_
         .host()
         .unwrap()
         .as_ptr() as usize;
-    assert_eq!(seen.lock().unwrap().as_slice(), &[pointer]);
+    let observed = seen.lock().unwrap();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(
+        observed[0],
+        (std::alloc::Layout::array::<u8>(length).unwrap(), pointer)
+    );
+    assert_eq!(observed[1].0.size(), Identity::allocation_bytes());
+    let data = std::ptr::from_ref(&*identity.0) as usize;
+    assert!(observed[1].1 <= data && data < observed[1].1 + observed[1].0.size());
+    assert_eq!(identity.0.storage().num_permits(), total);
+    assert!(Arc::ptr_eq(identity.0.storage().semaphore(), &bank));
+    drop(observed);
     assert_eq!(identity.native_id, Some(17));
     assert_eq!(route_capacity(&identity.route), length);
     let retained = identity.clone();
@@ -257,7 +275,7 @@ fn failure_row_snapshot_shares_route_and_refunds_identity_only_after_last_clone(
     let node = Node::owned("key".into(), identity("retained-route"), &bank).unwrap();
     let snapshot = node.row.clone();
     assert_eq!(host(&snapshot).as_ptr(), host(&node.row).as_ptr());
-    let identity_bytes = std::mem::size_of::<IdentityOwner>() + host(&snapshot).len();
+    let identity_bytes = Identity::allocation_bytes() + host(&snapshot).len();
     drop(node);
     assert_eq!(bank.available_permits(), BANK - identity_bytes);
     drop(snapshot);
@@ -436,4 +454,59 @@ async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() 
     drop(table);
     assert_eq!(bank.available_permits(), BANK);
     assert_eq!(slots.available_permits(), 3);
+}
+
+#[test]
+fn identity_full_layout_short_refusal_precedes_copy_and_owned_capacity_follows_original_buffer() {
+    let original = Route::Mobdev2("原-field-layout-host".into());
+    let source = match &original {
+        Route::Mobdev2(host) => host.as_ptr(),
+        _ => unreachable!(),
+    };
+    let needed =
+        Identity::allocation_bytes() + super::super::candidate_input::route_length(&original);
+    let short = Arc::new(Semaphore::new(needed - 1));
+    let error = super::super::metadata_vec::with_allocation_hook(
+        |_, _| panic!("short identity allocated a root or copied a field"),
+        || Identity::copied(&original, Some(11), &short).err().unwrap(),
+    );
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(short.available_permits(), needed - 1);
+    assert_eq!(
+        match &original {
+            Route::Mobdev2(host) => host.as_ptr(),
+            _ => unreachable!(),
+        },
+        source
+    );
+    let mut moved = String::with_capacity(4096);
+    moved.push_str("original-capacity-host");
+    let pointer = moved.as_ptr();
+    let capacity = moved.capacity();
+    let total = Identity::allocation_bytes() + capacity;
+    let bank = Arc::new(Semaphore::new(total));
+    let identity = Identity::owned(
+        AttemptIdentity {
+            route: Route::Mobdev2(moved),
+            native_id: Some(12),
+        },
+        &bank,
+    )
+    .unwrap();
+    let retained = identity.clone();
+    drop(identity);
+    bank.close();
+    let Route::Mobdev2(host) = &retained.route else {
+        unreachable!()
+    };
+    assert_eq!(host.as_ptr(), pointer);
+    assert_eq!(host.capacity(), capacity);
+    assert_eq!(retained.native_id, Some(12));
+    assert_eq!(retained.0.storage().num_permits(), total);
+    assert_eq!(bank.available_permits(), 0);
+    drop(retained);
+    assert_eq!(bank.available_permits(), total);
 }

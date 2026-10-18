@@ -43,12 +43,48 @@ impl<T: Unpin> Shared<T> {
         bank: &Arc<Semaphore>,
         storage: OwnedSemaphorePermit,
     ) -> Result<Self> {
-        // The existing exact allocator validates the original bank and WHOLE
-        // declared layout before alloc. No std Arc/Box is allocated alongside it.
+        // The zero-field API keeps its strict exact-layout validation.
+        let backing = from_grant::<Allocation<T>>(bank, 1, storage)?;
+        Ok(Self::place(value, backing))
+    }
+    /// One original grant covers this declared allocation and separately owned
+    /// known field buffers. Callers must admit those buffers before creating
+    /// them and supply their actual controlled capacities, never opaque guesses.
+    pub(super) fn from_grant_with_fields(
+        value: T,
+        bank: &Arc<Semaphore>,
+        incoming_storage: OwnedSemaphorePermit,
+        field_bytes: usize,
+    ) -> Result<Self> {
+        // Bind storage before value: every validation/allocation refusal drops
+        // original field buffers BEFORE returning their still-held byte credit.
+        let mut storage = incoming_storage;
+        let value = value;
+        let total = Self::allocation_bytes()
+            .checked_add(field_bytes)
+            .ok_or_else(|| {
+                crate::output::resource_decision("tunnel shared fields layout overflow")
+            })?;
+        anyhow::ensure!(
+            Arc::ptr_eq(storage.semaphore(), bank) && storage.num_permits() == total,
+            crate::output::resource_decision("tunnel shared fields grant mismatch")
+        );
+        let body = storage
+            .split(Self::allocation_bytes())
+            .expect("validated whole allocation grant");
+        // The existing allocator independently checks the exact body layout.
+        // The field portion remains held locally until the same grant is merged.
+        let mut backing = from_grant::<Allocation<T>>(bank, 1, body)?;
+        // Same bank and checked total <= original grant. merge cannot reject or
+        // overflow; no fallible step follows before both parts enter the root.
+        backing.storage.merge(storage);
+        Ok(Self::place(value, backing))
+    }
+    fn place(value: T, backing: AdmittedVec<Allocation<T>>) -> Self {
         let AdmittedVec {
             mut values,
             storage,
-        } = from_grant::<Allocation<T>>(bank, 1, storage)?;
+        } = backing;
         values.push(Allocation {
             strong: AtomicUsize::new(1),
             value: ManuallyDrop::new(value),
@@ -56,10 +92,10 @@ impl<T: Unpin> Shared<T> {
         });
         let pointer = NonNull::from(&mut values[0]);
         mem::forget(values);
-        Ok(Self {
+        Self {
             pointer,
             _allocation: PhantomData,
-        })
+        }
     }
     #[cfg(test)]
     pub(super) fn ptr_eq(&self, other: &Self) -> bool {
