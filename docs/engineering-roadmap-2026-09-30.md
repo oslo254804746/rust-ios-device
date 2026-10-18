@@ -8959,6 +8959,15 @@ joins费用保持，路由body独立最后owner退款经Weak已验。完整tunne
 URI/header/WS/private及完整freshness等继续；128MiB非完整heap/RSS，L02不关闭，
 23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
 
+## 2026-10-18 L02 publication two-budget body
+
+Life 全部 table/target/snapshot 根使用双预算 paired owner，原字段及时结束，
+最后 Weak 后退两池实际 body/guard 费用。新增2项、Publication7/snapshot3/
+native metadata6/完整tunnel733/上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-publication-dual-body-2026-10-18.md)。Lifecycle/private
+及完整freshness继续，128MiB非完整heap/RSS；L02不关闭，主项23/6/待全审计、
+有效30与Q04全部排除保持，仅本地提交。
+
 ## 2026-10-16 L02 observed route destination owners
 
 observed route共享已付Input原对象，无Input时按实际Layout先准入文本；保持

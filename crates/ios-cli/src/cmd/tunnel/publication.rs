@@ -5,25 +5,25 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use anyhow::Result;
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, Semaphore};
 
 #[derive(Debug)]
 pub(super) struct Life {
     closed: AtomicBool,
     changed: Notify,
-    _global: OwnedSemaphorePermit,
-    _published: OwnedSemaphorePermit,
 }
 
+pub(super) type LifeOwner = super::shared_dual_body::Strong<Life>;
+
 impl Life {
-    pub(super) fn new(global: &Arc<Semaphore>, published: &Arc<Semaphore>) -> Result<Arc<Self>> {
+    pub(super) fn new(global: &Arc<Semaphore>, published: &Arc<Semaphore>) -> Result<LifeOwner> {
         Self::admit(global, published).map_err(|error| error.context(Admission))
     }
 
-    fn admit(global: &Arc<Semaphore>, published: &Arc<Semaphore>) -> Result<Arc<Self>> {
-        let bytes = std::mem::size_of::<Self>();
-        let global = super::admission::known_metadata_charge(global, bytes)?;
-        let published = published
+    fn admit(global: &Arc<Semaphore>, published: &Arc<Semaphore>) -> Result<LifeOwner> {
+        let bytes = LifeOwner::body_bytes();
+        let global_storage = super::admission::known_metadata_charge(global, bytes)?;
+        let published_storage = published
             .clone()
             .try_acquire_many_owned(u32::try_from(bytes).map_err(|_| {
                 crate::output::resource_decision("tunnel publication lifetime size overflow")
@@ -33,23 +33,23 @@ impl Life {
             })?;
         // Locked Notify::new owns an inline atomic and intrusive waiters mutex;
         // no new waiter container is created here. Arc private storage is separate.
-        let life = Arc::new(Self {
-            closed: AtomicBool::new(false),
-            changed: Notify::new(),
-            _global: global,
-            _published: published,
-        });
+        let life = LifeOwner::new(
+            Self {
+                closed: AtomicBool::new(false),
+                changed: Notify::new(),
+            },
+            global,
+            published,
+            global_storage,
+            published_storage,
+        )?;
         #[cfg(test)]
         CREATED.with(|hook| {
             if let Some(hook) = hook.borrow_mut().as_mut() {
-                hook(Arc::as_ptr(&life) as usize);
+                hook(&*life as *const Life as usize);
             }
         });
         Ok(life)
-    }
-
-    pub(super) fn belongs_to(&self, bank: &Arc<Semaphore>) -> bool {
-        Arc::ptr_eq(self._global.semaphore(), bank)
     }
 
     pub(super) fn close(&self) {
@@ -92,7 +92,13 @@ impl Life {
 
     #[cfg(test)]
     pub(super) fn bytes() -> usize {
-        std::mem::size_of::<Self>()
+        LifeOwner::body_bytes()
+    }
+}
+
+impl LifeOwner {
+    pub(super) fn belongs_to(&self, bank: &Arc<Semaphore>) -> bool {
+        self.first_bank_matches(bank)
     }
 }
 

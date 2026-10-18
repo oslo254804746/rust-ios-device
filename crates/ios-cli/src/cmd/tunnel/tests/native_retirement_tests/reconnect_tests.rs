@@ -348,7 +348,7 @@ async fn reconnect_native_post_source_resource_limit_keeps_class_and_original_pu
         .await
         .get(DEVICE)
         .is_some_and(|row| {
-            Arc::ptr_eq(&row.publication, &publication)
+            row.publication.ptr_eq(&publication)
                 && row
                     .device
                     .native_handle()

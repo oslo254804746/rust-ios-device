@@ -8,7 +8,7 @@ use super::{metadata_vec::KnownVec, MAX_FAILURE_RECORDS};
 
 struct Row {
     udid: String,
-    publication: Arc<super::publication::Life>,
+    publication: super::publication::LifeOwner,
     _key_storage: OwnedSemaphorePermit,
 }
 
@@ -21,7 +21,7 @@ impl InitialPublications {
     /// during this synchronous capture; no network operation holds its lock.
     pub(super) fn capture<'a>(
         bank: &Arc<Semaphore>,
-        entries: impl ExactSizeIterator<Item = (&'a String, &'a Arc<super::publication::Life>)>,
+        entries: impl ExactSizeIterator<Item = (&'a String, &'a super::publication::LifeOwner)>,
     ) -> Result<Self> {
         let mut rows = KnownVec::new(Arc::clone(bank), MAX_FAILURE_RECORDS);
         rows.reserve(entries.len())?;
@@ -37,14 +37,14 @@ impl InitialPublications {
             let udid = String::from_utf8(bytes).expect("copied publication key remains UTF-8");
             rows.push_reserved(Row {
                 udid,
-                publication: Arc::clone(publication),
+                publication: publication.clone(),
                 _key_storage: key_storage,
             });
         }
         Ok(Self { rows })
     }
 
-    pub(super) fn get(&self, udid: &str) -> Option<&Arc<super::publication::Life>> {
+    pub(super) fn get(&self, udid: &str) -> Option<&super::publication::LifeOwner> {
         self.rows
             .as_slice()
             .iter()
@@ -94,7 +94,7 @@ mod tests {
         );
         let actual = snapshot.rows.capacity() * std::mem::size_of::<Row>() + row.udid.capacity();
         assert_eq!(bank.available_permits(), before - actual);
-        assert!(Arc::ptr_eq(snapshot.get("fixture").unwrap(), &publication));
+        assert!(snapshot.get("fixture").unwrap().ptr_eq(&publication));
         assert_eq!(
             entries[0].0.capacity(),
             8192,
@@ -106,7 +106,7 @@ mod tests {
         assert_eq!(bank.available_permits(), before - actual);
         drop(last);
         assert_eq!(bank.available_permits(), before);
-        assert_eq!(Arc::strong_count(&publication), 2);
+        assert_eq!(publication.strong_count(), 2);
         drop(entries);
         drop(publication);
         assert_eq!(bank.available_permits(), 4096);
@@ -125,7 +125,7 @@ mod tests {
         assert!(InitialPublications::capture(&bank, [(&key, &publication)].into_iter()).is_err());
         assert_eq!(bank.available_permits(), total);
         assert_eq!(key, "fixture");
-        assert_eq!(Arc::strong_count(&publication), 1);
+        assert_eq!(publication.strong_count(), 1);
         let empty = InitialPublications::capture(&bank, std::iter::empty()).unwrap();
         assert!(empty.get("fixture").is_none());
         assert_eq!(bank.available_permits(), total);

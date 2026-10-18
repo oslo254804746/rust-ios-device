@@ -473,7 +473,7 @@ struct ConnectionContext<'a> {
 
 struct ManagedTunnel {
     device: ManagedDevice,
-    publication: Arc<publication::Life>,
+    publication: publication::LifeOwner,
     usbmux: bool,
     native: Option<retirement::NativeLease>,
     // Actual selector established by Source, not the next caller's request.
@@ -492,7 +492,7 @@ struct ManagedTunnel {
 struct LocalTarget {
     record: PaidRecord,
     ticket: Ticket,
-    publication: Arc<publication::Life>,
+    publication: publication::LifeOwner,
 }
 
 impl Drop for ManagedTunnel {
@@ -2210,7 +2210,7 @@ impl TunnelAgentState {
                             |udid, tunnel| {
                                 !initial
                                     .get(udid)
-                                    .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
+                                    .is_some_and(|old| old.ptr_eq(&tunnel.publication))
                                     || manual.contains_key(udid)
                             },
                         )?;
@@ -2266,7 +2266,7 @@ impl TunnelAgentState {
                         || attached.contains(udid, tunnel.device.device_id())
                         || !initial
                             .get(udid)
-                            .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication)))
+                            .is_some_and(|old| old.ptr_eq(&tunnel.publication)))
             },
         )?;
         drop(tunnels);
@@ -2648,7 +2648,7 @@ impl TunnelAgentState {
                     // failed/incomplete browse never reaches this complete view.
                     !initial
                         .get(udid)
-                        .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
+                        .is_some_and(|old| old.ptr_eq(&tunnel.publication))
                         || match tunnel.observed_route.route() {
                             Route::Mobdev2(host) => observed.contains(targets, udid, host),
                             _ => true,

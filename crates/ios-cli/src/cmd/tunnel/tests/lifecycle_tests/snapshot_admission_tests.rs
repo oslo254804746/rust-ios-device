@@ -52,7 +52,7 @@ async fn reject_usb(devices: Vec<source::UsbDevice>) {
         .read()
         .await
         .get(A)
-        .is_some_and(|row| Arc::ptr_eq(&row.publication, &publication));
+        .is_some_and(|row| row.publication.ptr_eq(&publication));
     let unchanged = state
         .inner
         .failed_attempts

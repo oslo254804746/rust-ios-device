@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [Publication 双预算 body](validation/tunnel-publication-dual-body-2026-10-18.md)
+原两池费用持续到最后 Weak，关闭工作及时析构、真实 native joins/strict EOF
+及快照身份保持。完整 tunnel733/strict CLI/build/Source0通过；L02继续全审计，
+主项23/6/待核查、有效30与Q04全部排除不变。
+
 2026-10-18：L02 [Freshness Receipt 最后 owner](validation/tunnel-fresh-receipt-owners-2026-10-18.md)
 Source/两份 report/native 历史/census 共享原根，闭池与并发最后 root、原 IO/
 独立快照及退款已验。完整 tunnel731/strict CLI/build/Source0通过；L02继续全审计，

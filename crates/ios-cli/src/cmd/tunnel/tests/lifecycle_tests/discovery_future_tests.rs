@@ -113,10 +113,9 @@ async fn discovery_future_usb_scan_constructor_refusal_preserves_old_publication
         ),
         counts
     );
-    assert!(Arc::ptr_eq(
-        &state.inner.tunnels.read().await[A].publication,
-        &publication
-    ));
+    assert!(state.inner.tunnels.read().await[A]
+        .publication
+        .ptr_eq(&publication));
     assert!(Arc::ptr_eq(
         &state.inner.failed_attempts.read().await[B].version,
         &previous.version

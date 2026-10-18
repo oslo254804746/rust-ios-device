@@ -176,10 +176,7 @@ async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_wi
         "rejected paired nodes created an automatic ticket prefix"
     );
     assert!(state.get_record(A).await.unwrap().is_some());
-    assert!(Arc::ptr_eq(
-        &publication,
-        &state.inner.tunnels.read().await[B].publication
-    ));
+    assert!(publication.ptr_eq(&state.inner.tunnels.read().await[B].publication));
     {
         let failed = state.inner.failed_attempts.read().await;
         assert!(Arc::ptr_eq(&original.version, &failed[B].version));
@@ -308,10 +305,7 @@ async fn observed_last_byte_refusal_preserves_old_paired_publication_and_publish
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
     );
-    assert!(Arc::ptr_eq(
-        &old,
-        &state.inner.tunnels.read().await[B].publication
-    ));
+    assert!(old.ptr_eq(&state.inner.tunnels.read().await[B].publication));
     assert!(state.get_record(A).await.unwrap().is_some());
     assert_eq!(source.count(A), 1);
     assert_eq!(source.count(B), 1);
@@ -405,10 +399,7 @@ async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
     assert_eq!(source.count(A), 2);
     assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
-    assert!(Arc::ptr_eq(
-        &publication,
-        &state.inner.tunnels.read().await[A].publication
-    ));
+    assert!(publication.ptr_eq(&state.inner.tunnels.read().await[A].publication));
     drop(error);
     assert_eq!(bank.available_permits(), admitted);
     drop(held.lock().unwrap().take());
@@ -463,8 +454,8 @@ async fn manual_paired_plan_one_byte_refusal_is_incomplete_and_preserves_both_or
     assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
     {
         let tunnels = state.inner.tunnels.read().await;
-        assert!(Arc::ptr_eq(&a, &tunnels[A].publication));
-        assert!(Arc::ptr_eq(&b, &tunnels[B].publication));
+        assert!(a.ptr_eq(&tunnels[A].publication));
+        assert!(b.ptr_eq(&tunnels[B].publication));
     }
     drop(error);
     drop(held.lock().unwrap().take());
@@ -896,10 +887,9 @@ async fn initial_publication_snapshot_refusal_is_before_discovery_and_keeps_exac
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
     assert_eq!(source.count(A), 1, "only the original explicit connection");
-    assert!(Arc::ptr_eq(
-        &state.inner.tunnels.read().await[A].publication,
-        &publication
-    ));
+    assert!(state.inner.tunnels.read().await[A]
+        .publication
+        .ptr_eq(&publication));
     drop(error);
     drop(held);
     state.notify_shutdown();
@@ -941,10 +931,9 @@ async fn global_metadata_rejected_usb_snapshot_keeps_old_publication_and_no_extr
         crate::output::operation_error_class(result.unwrap_err().as_ref()),
         ios_core::ErrorClass::ResourceLimit
     );
-    assert!(Arc::ptr_eq(
-        &state.inner.tunnels.read().await[A].publication,
-        &publication
-    ));
+    assert!(state.inner.tunnels.read().await[A]
+        .publication
+        .ptr_eq(&publication));
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
     assert_eq!(
         source.usb_calls.load(Ordering::SeqCst),

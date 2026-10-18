@@ -34,7 +34,7 @@ async fn native_manual_selector_rejection_keeps_original_arc_then_recovers_joins
         .await
         .get(DEVICE)
         .is_some_and(|row| {
-            Arc::ptr_eq(&row.publication, &publication)
+            row.publication.ptr_eq(&publication)
                 && row
                     .device
                     .native_handle()
