@@ -64,6 +64,10 @@ pub struct ConnectedDevice {
     /// RSD service directory (only available after tunnel is up on iOS 17+)
     pub(crate) rsd: Option<RsdHandshake>,
     #[cfg(feature = "tunnel")]
+    owned_initial_rsd: Option<crate::OwnedRsdHandshake>,
+    #[cfg(feature = "tunnel")]
+    owned_initial_bank: Option<Arc<tokio::sync::Semaphore>>,
+    #[cfg(feature = "tunnel")]
     pub(crate) prepared_rsd: Option<std::sync::Arc<PreparedRsdCatalogue>>,
     initial_rsd_probe: InitialRsdProbe,
     pair_record: Option<Arc<PairRecord>>,
@@ -113,6 +117,10 @@ mod deactivation_error;
 #[cfg(feature = "mobileactivation")]
 pub use deactivation_error::DeactivationFallbackError;
 mod connected;
+#[cfg(feature = "tunnel")]
+mod owned_connection;
+#[cfg(feature = "tunnel")]
+pub use owned_connection::OwnedConnectedDevice;
 mod connection;
 #[cfg(feature = "tunnel")]
 pub(crate) mod existing_rsd;
@@ -146,6 +154,11 @@ pub use connection::{
     connect, connect_direct_usb_tunnel, connect_direct_usb_tunnel_with_owner,
     connect_remote_pairing_tunnel, connect_remote_pairing_tunnel_with_owner,
     connect_tcp_lockdown_tunnel, connect_tcp_lockdown_tunnel_with_owner, connect_with_owner,
+};
+#[cfg(feature = "tunnel")]
+pub use connection::{
+    connect_direct_usb_tunnel_owned_with_owner, connect_owned_with_owner,
+    connect_remote_pairing_tunnel_owned_with_owner, connect_tcp_lockdown_tunnel_owned_with_owner,
 };
 
 #[cfg(feature = "mdns")]

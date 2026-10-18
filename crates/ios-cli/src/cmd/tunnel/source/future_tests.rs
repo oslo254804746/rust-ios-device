@@ -49,7 +49,10 @@ fn source_future_native_actual_constructor_is_admitted_before_allocation_without
         );
         assert_eq!(seen.lock().unwrap().len(), 2);
         let body_bytes = seen.lock().unwrap()[0].0;
-        assert_eq!(body_bytes, std::mem::size_of::<ios_core::ConnectedDevice>());
+        assert_eq!(
+            body_bytes,
+            std::mem::size_of::<ios_core::OwnedConnectedDevice>()
+        );
         let (bytes, pointer) = seen.lock().unwrap()[1];
         assert!(bytes > 0);
         assert_eq!(future.data_pointer(), pointer);

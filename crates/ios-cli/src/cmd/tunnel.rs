@@ -15,7 +15,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use ios_core::TunMode;
-use ios_core::{connect_with_owner, ConnectOptions, ConnectedDevice};
+use ios_core::{connect_with_owner, ConnectOptions, OwnedConnectedDevice};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
@@ -507,7 +507,7 @@ impl Drop for ManagedTunnel {
 }
 
 enum ManagedDevice {
-    Native(owned_box::Owner<ConnectedDevice>),
+    Native(owned_box::Owner<OwnedConnectedDevice>),
     #[cfg(test)]
     Fake(Box<dyn source::FakeDevice>),
 }
@@ -515,7 +515,14 @@ enum ManagedDevice {
 impl ManagedDevice {
     fn owned_body_bytes(&self, bank: &Arc<Semaphore>) -> Result<usize> {
         match self {
-            Self::Native(device) => device.bytes_in(bank),
+            Self::Native(device) => device
+                .bytes_in(bank)?
+                .checked_add(device.initial_rsd_bytes_in(bank)?)
+                .ok_or_else(|| {
+                    crate::output::resource_decision(
+                        "tunnel independently owned directory size overflow",
+                    )
+                }),
             #[cfg(test)]
             Self::Fake(_) => Ok(0),
         }

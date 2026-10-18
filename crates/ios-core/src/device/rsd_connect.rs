@@ -118,6 +118,67 @@ pub(super) async fn attempt_rsd_via_proxy_with_bank(
     }
 }
 
+/// The owned path uses the same direct precondition and original pool.
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+pub(super) async fn attempt_owned_rsd(
+    server_addr: &str,
+    rsd_port: u16,
+    bank: &Arc<Semaphore>,
+) -> RsdProbeOutcome<crate::OwnedRsdHandshake> {
+    let address = match Ipv6Addr::from_str(server_addr) {
+        Ok(address) => address,
+        Err(error) => {
+            return RsdProbeOutcome::Completed(Err(CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                error,
+            ))))
+        }
+    };
+    let result = crate::xpc::rsd::owned_handshake_with_connector_and_bank(
+        || async {
+            tokio::net::TcpStream::connect(std::net::SocketAddr::new(address.into(), rsd_port))
+                .await
+                .map_err(crate::XpcError::from)
+        },
+        bank,
+    )
+    .await
+    .map_err(CoreError::Xpc);
+    RsdProbeOutcome::Completed(result)
+}
+#[cfg(all(feature = "tunnel", not(feature = "mdns")))]
+pub(super) async fn attempt_owned_rsd(
+    _server_addr: &str,
+    _rsd_port: u16,
+    _bank: &Arc<Semaphore>,
+) -> RsdProbeOutcome<crate::OwnedRsdHandshake> {
+    RsdProbeOutcome::Skipped(InitialRsdProbeSkipReason::DirectProbeFeatureUnavailable)
+}
+#[cfg(feature = "tunnel")]
+pub(super) async fn attempt_owned_rsd_via_proxy(
+    proxy_port: u16,
+    server_addr: &str,
+    rsd_port: u16,
+    bank: &Arc<Semaphore>,
+) -> RsdProbeOutcome<crate::OwnedRsdHandshake> {
+    let endpoint = match TunnelEndpoint::resolve(server_addr, Some(proxy_port)) {
+        Ok(endpoint) => endpoint,
+        Err(error) => return RsdProbeOutcome::Completed(Err(error)),
+    };
+    let result = crate::xpc::rsd::owned_handshake_with_connector_and_bank(
+        || async {
+            endpoint
+                .connect(rsd_port)
+                .await
+                .map_err(connection_error_to_xpc)
+        },
+        bank,
+    )
+    .await
+    .map_err(CoreError::Xpc);
+    RsdProbeOutcome::Completed(result)
+}
+
 #[cfg(all(test, feature = "tunnel"))]
 mod rsd_proxy_tests {
     use super::*;
@@ -216,7 +277,7 @@ mod rsd_proxy_tests {
         let proxy_port = listener.local_addr().unwrap().port();
         let identity = crate::xpc::rsd::default_handshake_uuid().await.unwrap();
         let server = tokio::spawn(async move {
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut destination = [0; 20];
                 stream.read_exact(&mut destination).await.unwrap();
@@ -294,8 +355,54 @@ mod rsd_proxy_tests {
             let result = directory.unwrap();
             assert_eq!(result.udid, "synthetic-proxy-device");
         }
+        let (directory, observation) = tokio::time::timeout(
+            Duration::from_secs(2),
+            attempt_owned_rsd_via_proxy(proxy_port, "fd00::42", 58783, &bank),
+        )
+        .await
+        .unwrap()
+        .into_parts();
+        assert_eq!(observation.state(), InitialRsdProbeState::Available);
+        assert!(observation.error().is_none());
+        let directory = directory.unwrap();
+        assert_eq!(directory.udid(), "synthetic-proxy-device");
+        assert!(directory.belongs_to(&bank));
+        assert_eq!(bank.available_permits(), quota - directory.known_bytes());
         server.await.unwrap();
+        let clone = directory.clone();
+        drop(directory);
+        assert_eq!(clone.udid(), "synthetic-proxy-device");
+        drop(clone);
         assert_eq!(bank.available_permits(), quota);
+    }
+
+    #[tokio::test]
+    async fn owned_initial_direct_preconditions_preserve_local_skip_or_original_parse_error() {
+        let bank = Arc::new(Semaphore::new(0));
+        bank.close();
+        let (directory, observation) = attempt_owned_rsd("fixture-invalid-endpoint", 58783, &bank)
+            .await
+            .into_parts();
+        assert!(directory.is_none());
+        #[cfg(not(feature = "mdns"))]
+        {
+            assert_eq!(observation.state(), InitialRsdProbeState::NotAttempted);
+            assert_eq!(
+                observation.skip_reason(),
+                Some(InitialRsdProbeSkipReason::DirectProbeFeatureUnavailable)
+            );
+            assert!(observation.error().is_none());
+        }
+        #[cfg(feature = "mdns")]
+        {
+            assert_eq!(observation.state(), InitialRsdProbeState::Failed);
+            assert_eq!(observation.error_class(), Some(ErrorClass::InvalidInput));
+            let CoreError::Io(error) = observation.error().unwrap() else {
+                panic!("original parse error lost")
+            };
+            assert!(error.get_ref().unwrap().is::<std::net::AddrParseError>());
+        }
+        assert_eq!(bank.available_permits(), 0);
     }
 
     #[cfg(not(feature = "mdns"))]

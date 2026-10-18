@@ -36,10 +36,10 @@ fn should_strip_service_ssl(service_name: &str) -> bool {
 }
 
 #[cfg(feature = "tunnel")]
-async fn retry_rsd<F, Fut>(mut probe: F) -> Result<RsdHandshake, CoreError>
+async fn retry_rsd<T, F, Fut>(mut probe: F) -> Result<T, CoreError>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<RsdProbeOutcome, CoreError>>,
+    Fut: std::future::Future<Output = Result<RsdProbeOutcome<T>, CoreError>>,
 {
     const MAX_ATTEMPTS: usize = 5;
     let mut last_error = None;
@@ -60,6 +60,21 @@ where
         );
     }
     Err(last_error.expect("nonzero RSD retry count"))
+}
+
+#[cfg(feature = "tunnel")]
+fn owned_service_details(
+    directory: &crate::OwnedRsdHandshake,
+    name: &str,
+) -> Result<ResolvedRsdService, CoreError> {
+    let service = directory
+        .get_resolved_service(name)
+        .ok_or_else(|| CoreError::Xpc(crate::XpcError::ServiceNotFound(name.into())))?;
+    Ok(ResolvedRsdService {
+        resolved_service_name: service.name().into(),
+        port: service.port(),
+        features: service.features().map(str::to_owned).collect(),
+    })
 }
 
 impl ConnectedDevice {
@@ -167,6 +182,10 @@ impl ConnectedDevice {
                     add(feature.capacity())?;
                 }
             }
+        }
+        #[cfg(feature = "tunnel")]
+        if let Some(directory) = &self.owned_initial_rsd {
+            add(directory.known_bytes())?;
         }
         if let Some(pair) = &self.pair_record {
             add(std::mem::size_of::<PairRecord>())?;
@@ -566,6 +585,38 @@ impl ConnectedDevice {
                 CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into()))
             });
         }
+        #[cfg(feature = "tunnel")]
+        if let Some(rsd) = self.owned_initial_rsd.as_ref() {
+            return owned_service_details(rsd, service_name);
+        }
+        #[cfg(feature = "tunnel")]
+        if let Some(bank) = self.owned_initial_bank.as_ref() {
+            let rsd = retry_rsd(|| async {
+                let server = self
+                    .server_address()
+                    .ok_or_else(|| CoreError::Unsupported("no server address".into()))?;
+                let port = self
+                    .rsd_port()
+                    .ok_or_else(|| CoreError::Unsupported("no RSD port from tunnel info".into()))?;
+                let probe = match self.userspace_port() {
+                    Some(proxy) => {
+                        super::rsd_connect::attempt_owned_rsd_via_proxy(proxy, server, port, bank)
+                            .await
+                    }
+                    None => super::rsd_connect::attempt_owned_rsd(server, port, bank).await,
+                };
+                match probe {
+                    RsdProbeOutcome::Completed(Err(error))
+                        if error.class() == crate::ErrorClass::ResourceLimit =>
+                    {
+                        Err(error)
+                    }
+                    probe => Ok(probe),
+                }
+            })
+            .await?;
+            return owned_service_details(&rsd, service_name);
+        }
         if let Some(rsd) = self.rsd.as_ref() {
             return resolve_rsd_service_details(rsd, service_name).ok_or_else(|| {
                 CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into()))
@@ -693,12 +744,12 @@ mod tests {
         let mut attempts = 0;
         let error = retry_rsd(|| {
             attempts += 1;
-            std::future::ready(Ok(RsdProbeOutcome::Completed(Err(CoreError::Xpc(
-                crate::XpcError::Io(std::io::Error::new(
+            std::future::ready(Ok(RsdProbeOutcome::<RsdHandshake>::Completed(Err(
+                CoreError::Xpc(crate::XpcError::Io(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
                     AttemptSource(attempts),
-                )),
-            )))))
+                ))),
+            ))))
         })
         .await
         .unwrap_err();
@@ -725,14 +776,16 @@ mod tests {
         let mut attempts = 0;
         let directory = retry_rsd(|| {
             attempts += 1;
-            std::future::ready(Ok(RsdProbeOutcome::Completed(if attempts == 1 {
-                Err(CoreError::Xpc(crate::XpcError::NotConnected))
-            } else {
-                Ok(RsdHandshake {
-                    udid: "synthetic-private-later-directory".into(),
-                    services: std::collections::HashMap::new(),
-                })
-            })))
+            std::future::ready(Ok(RsdProbeOutcome::<RsdHandshake>::Completed(
+                if attempts == 1 {
+                    Err(CoreError::Xpc(crate::XpcError::NotConnected))
+                } else {
+                    Ok(RsdHandshake {
+                        udid: "synthetic-private-later-directory".into(),
+                        services: std::collections::HashMap::new(),
+                    })
+                },
+            )))
         })
         .await
         .unwrap();
@@ -740,7 +793,7 @@ mod tests {
         assert_eq!(directory.udid, "synthetic-private-later-directory");
 
         attempts = 0;
-        let error = retry_rsd(|| {
+        let error = retry_rsd::<RsdHandshake, _, _>(|| {
             attempts += 1;
             std::future::ready(Err(CoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -758,7 +811,7 @@ mod tests {
         directory: Option<RsdHandshake>,
         proxy_port: u16,
     ) -> (ConnectedDevice, tokio::sync::watch::Receiver<()>) {
-        let probe = RsdProbeOutcome::Completed(directory.ok_or_else(|| {
+        let probe = RsdProbeOutcome::<RsdHandshake>::Completed(directory.ok_or_else(|| {
             CoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "synthetic-private-initial-failure",
@@ -785,6 +838,10 @@ mod tests {
                 },
                 tunnel: Some(Arc::new(handle)),
                 rsd,
+                #[cfg(feature = "tunnel")]
+                owned_initial_rsd: None,
+                #[cfg(feature = "tunnel")]
+                owned_initial_bank: None,
                 #[cfg(feature = "tunnel")]
                 prepared_rsd: None,
                 initial_rsd_probe,

@@ -464,6 +464,17 @@ async fn initial_duplex(
     target: RsdHandshakeMode,
     messages: Vec<Bytes>,
 ) -> Result<RsdHandshake, XpcError> {
+    match initial_duplex_selected(target, messages, false).await? {
+        (InitialDirectory::Legacy(directory), _) => Ok(directory),
+        _ => unreachable!("legacy fixture selected legacy output"),
+    }
+}
+
+async fn initial_duplex_selected(
+    target: RsdHandshakeMode,
+    messages: Vec<Bytes>,
+    owned: bool,
+) -> Result<(InitialDirectory, Arc<Semaphore>), XpcError> {
     let modes = [
         RsdHandshakeMode::Direct,
         RsdHandshakeMode::Queued,
@@ -494,10 +505,11 @@ async fn initial_duplex(
     let bank = Arc::new(Semaphore::new(quota));
     let result = tokio::time::timeout(
         Duration::from_secs(2),
-        handshake_attempts(
+        handshake_attempts_selected(
             || std::future::ready(Ok(clients.pop_front().expect("unexpected extra mode"))),
             uuid::Uuid::from_bytes([9; 16]),
             Some(&bank),
+            owned,
         ),
     )
     .await;
@@ -527,9 +539,13 @@ async fn initial_duplex(
     for result in joined {
         result.unwrap().unwrap();
     }
-    // This assertion covers transient storage, not the public returned directory.
-    assert_eq!(bank.available_permits(), quota);
-    result.expect("fixture must not need the normal response timeout")
+    let result = result.expect("fixture must not need the normal response timeout");
+    let retained = match &result {
+        Ok(InitialDirectory::Owned(directory)) => directory.known_bytes(),
+        _ => 0,
+    };
+    assert_eq!(bank.available_permits(), quota - retained);
+    result.map(|directory| (directory, bank))
 }
 
 #[tokio::test]
@@ -735,4 +751,90 @@ async fn initial_cancelled_body_read_releases_admitted_body_and_original_socket(
         .await
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn owned_initial_all_four_modes_export_original_storage_after_each_fresh_fallback() {
+    for mode in [
+        RsdHandshakeMode::Direct,
+        RsdHandshakeMode::Queued,
+        RsdHandshakeMode::Legacy,
+        RsdHandshakeMode::Passive,
+    ] {
+        let (directory, bank) =
+            initial_duplex_selected(mode, vec![handshake(XpcValue::Uint64(0))], true)
+                .await
+                .unwrap();
+        let InitialDirectory::Owned(directory) = directory else {
+            panic!("owned selection lost")
+        };
+        assert_eq!(directory.udid(), "fixture-only-udid");
+        let paid = directory.known_bytes();
+        let name = directory.get_service("fixture.service").unwrap();
+        let pointer = name.name().as_ptr();
+        let exported = directory.clone().into_services().next().unwrap();
+        drop((directory, name));
+        bank.close();
+        assert_eq!(exported.name().as_ptr(), pointer);
+        assert_eq!(exported.port(), 0);
+        assert_eq!(exported.features().collect::<Vec<_>>(), ["fixture-feature"]);
+        assert_eq!(bank.available_permits(), 16 * 1024 * 1024 - paid);
+        drop(exported);
+        assert_eq!(bank.available_permits(), 16 * 1024 * 1024);
+    }
+}
+#[tokio::test]
+async fn owned_initial_six_semantic_failures_keep_fresh_queued_transport_and_owned_export() {
+    let mut bad = Vec::new();
+    for _ in 0..6 {
+        bad.extend_from_slice(&initial_missing_uid());
+    }
+    bad.extend_from_slice(&handshake(XpcValue::Uint64(1)));
+    let (directory, bank) = initial_duplex_selected(
+        RsdHandshakeMode::Queued,
+        vec![Bytes::from(bad), handshake(XpcValue::Uint64(42))],
+        true,
+    )
+    .await
+    .unwrap();
+    let InitialDirectory::Owned(directory) = directory else {
+        panic!("owned selection lost")
+    };
+    assert_eq!(directory.get_port("fixture.service"), Some(42));
+    drop(directory);
+    assert_eq!(bank.available_permits(), 16 * 1024 * 1024);
+}
+#[cfg(feature = "mdns")]
+#[tokio::test]
+async fn owned_initial_direct_tcp_pre_tunnel_query_uses_original_bank_and_export() {
+    let listener = tokio::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        fixture(
+            stream,
+            RsdHandshakeMode::Direct,
+            handshake(XpcValue::Uint64(0)),
+        )
+        .await
+    });
+    let bank = Arc::new(Semaphore::new(16 * 1024 * 1024));
+    let directory = tokio::time::timeout(
+        Duration::from_secs(2),
+        initial_handshake_with_bank(Ipv6Addr::LOCALHOST, port, Some(&bank)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    peer.await.unwrap().unwrap();
+    let InitialDirectory::Owned(directory) = directory else {
+        panic!("pre-tunnel query did not select owned output")
+    };
+    assert!(directory.belongs_to(&bank));
+    assert_eq!(directory.get_port("fixture.service"), Some(0));
+    assert!(bank.available_permits() < 16 * 1024 * 1024);
+    drop(directory);
+    assert_eq!(bank.available_permits(), 16 * 1024 * 1024);
 }

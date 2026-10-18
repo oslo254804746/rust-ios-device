@@ -23,6 +23,8 @@ use crate::lockdown::pair_record::PairRecord;
 
 const TUNNEL_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[cfg(test)]
+mod owned_output_tests;
 #[cfg(all(test, feature = "tunnel-userspace"))]
 mod ownership_tests;
 
@@ -55,6 +57,7 @@ pub(super) struct TunnelConnection {
     pair_record: Option<Arc<PairRecord>>,
     lockdown_transport: LockdownTransport,
     strategy: &'static str,
+    owned_initial_bank: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[cfg(feature = "tunnel")]
@@ -70,25 +73,72 @@ impl TunnelConnection {
             pair_record,
             lockdown_transport,
             strategy,
+            owned_initial_bank: None,
         }
+    }
+
+    pub(super) fn with_initial_rsd_bank(
+        mut self,
+        bank: Option<&Arc<tokio::sync::Semaphore>>,
+    ) -> Self {
+        self.owned_initial_bank = bank.cloned();
+        self
+    }
+    fn validate_initial_bank(
+        &self,
+        bank: Option<&Arc<tokio::sync::Semaphore>>,
+    ) -> Result<(), CoreError> {
+        if self
+            .owned_initial_bank
+            .as_ref()
+            .is_some_and(|original| !bank.is_some_and(|bank| Arc::ptr_eq(original, bank)))
+        {
+            return Err(CoreError::Xpc(
+                super::existing_rsd::ExistingRsdProbeError::metadata_limit(),
+            ));
+        }
+        Ok(())
     }
 
     fn into_device(
         self,
         handle: impl Into<Arc<TunnelHandle>>,
-        probe: super::rsd_observation::RsdProbeOutcome,
+        probe: impl Into<InitialProbe>,
     ) -> ConnectedDevice {
-        let (rsd, initial_rsd_probe) = probe.into_parts();
+        let (rsd, owned_initial_rsd, initial_rsd_probe) = match probe.into() {
+            InitialProbe::Legacy(probe) => {
+                let (directory, observation) = probe.into_parts();
+                (directory, None, observation)
+            }
+            InitialProbe::Owned(probe) => {
+                let (directory, observation) = probe.into_parts();
+                (None, directory, observation)
+            }
+        };
         ConnectedDevice {
             info: self.info,
             tunnel: Some(handle.into()),
             rsd,
+            owned_initial_rsd,
+            owned_initial_bank: self.owned_initial_bank,
             #[cfg(feature = "tunnel")]
             prepared_rsd: None,
             initial_rsd_probe,
             pair_record: self.pair_record,
             lockdown_transport: self.lockdown_transport,
         }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+enum InitialProbe {
+    Legacy(super::rsd_observation::RsdProbeOutcome),
+    Owned(super::rsd_observation::RsdProbeOutcome<crate::OwnedRsdHandshake>),
+}
+#[cfg(feature = "tunnel")]
+impl From<super::rsd_observation::RsdProbeOutcome> for InitialProbe {
+    fn from(probe: super::rsd_observation::RsdProbeOutcome) -> Self {
+        Self::Legacy(probe)
     }
 }
 
@@ -142,6 +192,7 @@ where
                 // attach may consume the owner's reservation. Capture the
                 // original bank before starting or attaching native workers.
                 let byte_bank = reservation.as_ref().and_then(|owner| owner.byte_bank());
+                connection.validate_initial_bank(byte_bank.as_ref())?;
                 let tun = KernelTunDevice::create_validated(&tunnel_info.client_address, mtu)
                     .await
                     .map_err(CoreError::Tunnel)?;
@@ -172,12 +223,25 @@ where
                         return Err(error);
                     }
                 }
-                let rsd = attempt_rsd_with_bank(
-                    &tunnel_info.server_address,
-                    tunnel_info.server_rsd_port,
-                    byte_bank.as_ref(),
-                )
-                .await;
+                let rsd = if let Some(bank) = connection.owned_initial_bank.as_ref() {
+                    InitialProbe::Owned(
+                        super::rsd_connect::attempt_owned_rsd(
+                            &tunnel_info.server_address,
+                            tunnel_info.server_rsd_port,
+                            bank,
+                        )
+                        .await,
+                    )
+                } else {
+                    InitialProbe::Legacy(
+                        attempt_rsd_with_bank(
+                            &tunnel_info.server_address,
+                            tunnel_info.server_rsd_port,
+                            byte_bank.as_ref(),
+                        )
+                        .await,
+                    )
+                };
                 if let Some(owner) = reservation.as_mut() {
                     owner.complete();
                 }
@@ -195,6 +259,7 @@ where
             #[cfg(feature = "tunnel-userspace")]
             {
                 let byte_bank = reservation.as_ref().and_then(|owner| owner.byte_bank());
+                connection.validate_initial_bank(byte_bank.as_ref())?;
                 let userspace = UserspaceTunDevice::start_validated_with_bank(
                     &tunnel_info.client_address,
                     &tunnel_info.server_address,
@@ -219,13 +284,27 @@ where
                         return Err(error);
                     }
                 }
-                let rsd = attempt_rsd_via_proxy_with_bank(
-                    proxy_port,
-                    &tunnel_info.server_address,
-                    tunnel_info.server_rsd_port,
-                    byte_bank.as_ref(),
-                )
-                .await;
+                let rsd = if let Some(bank) = connection.owned_initial_bank.as_ref() {
+                    InitialProbe::Owned(
+                        super::rsd_connect::attempt_owned_rsd_via_proxy(
+                            proxy_port,
+                            &tunnel_info.server_address,
+                            tunnel_info.server_rsd_port,
+                            bank,
+                        )
+                        .await,
+                    )
+                } else {
+                    InitialProbe::Legacy(
+                        attempt_rsd_via_proxy_with_bank(
+                            proxy_port,
+                            &tunnel_info.server_address,
+                            tunnel_info.server_rsd_port,
+                            byte_bank.as_ref(),
+                        )
+                        .await,
+                    )
+                };
                 if let Some(owner) = reservation.as_mut() {
                     owner.complete();
                 }

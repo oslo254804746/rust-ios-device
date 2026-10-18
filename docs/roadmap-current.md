@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-18：L02 [initial RSD owned 生产输出](validation/tunnel-owned-initial-rsd-production-2026-10-18.md)
+NativeSource四路与Core activation/direct/proxy/四mode接通同池immutable目录，
+原reservation/探测状态/服务能力及原handle保持，published费用不重复扣除目录。
+owned14/XPC210/activation8/无mdns13+5/完整CLI1731/0FAIL/13原ignored及严格门禁通过。
+SDK副本、prepared公开root与其余全局边界仍待审计；主项23/6/L02待核查、有效30/Q04排除不变。
+
+
 2026-10-18：L02 [owned initial RSD SDK 输出](validation/tunnel-owned-initial-rsd-sdk-2026-10-18.md)
 公开 immutable 目录/服务/iterator 与原池 framer 读取，完整实际字段在首次复制前准入，
 独立导出保持原缓冲区与费用，最后 owner 退款。新增6、XPC207、Core tunnel131、

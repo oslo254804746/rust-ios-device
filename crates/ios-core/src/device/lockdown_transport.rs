@@ -4,7 +4,7 @@
 use super::tunnel_activation::{activate_tunnel, TunnelConnection};
 use super::{
     ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason, LockdownTransport,
-    ServiceStream, TunnelOwner,
+    ServiceStream,
 };
 use crate::discovery::DeviceInfo;
 use crate::error::CoreError;
@@ -95,13 +95,18 @@ pub(super) async fn connect_via_lockdown_transport(
     pair_record: Arc<PairRecord>,
     lockdown_transport: LockdownTransport,
     opts: ConnectOptions,
-    owner: Option<&dyn TunnelOwner>,
+    owner: super::tunnel_owner::InitialOwner<'_>,
 ) -> Result<ConnectedDevice, CoreError> {
+    let initial_rsd_bank = owner.bank;
     if opts.skip_tunnel {
         return Ok(ConnectedDevice {
             info,
             tunnel: None,
             rsd: None,
+            #[cfg(feature = "tunnel")]
+            owned_initial_rsd: None,
+            #[cfg(feature = "tunnel")]
+            owned_initial_bank: None,
             #[cfg(feature = "tunnel")]
             prepared_rsd: None,
             initial_rsd_probe: InitialRsdProbe::skipped(InitialRsdProbeSkipReason::TunnelSkipped),
@@ -112,7 +117,13 @@ pub(super) async fn connect_via_lockdown_transport(
 
     #[cfg(not(feature = "tunnel"))]
     {
-        let _ = (info, pair_record, lockdown_transport, owner);
+        let _ = (
+            info,
+            pair_record,
+            lockdown_transport,
+            owner,
+            initial_rsd_bank,
+        );
         Err(CoreError::Unsupported(
             "CoreDevice tunnel support requires ios-core feature 'tunnel'".into(),
         ))
@@ -120,7 +131,7 @@ pub(super) async fn connect_via_lockdown_transport(
 
     #[cfg(feature = "tunnel")]
     {
-        let reservation = owner.map(TunnelOwner::reserve).transpose()?;
+        let reservation = owner.reserve()?;
         let lockdown_stream =
             connect_lockdown_port(&info.udid, &lockdown_transport, LOCKDOWN_PORT, true).await?;
 
@@ -156,7 +167,8 @@ pub(super) async fn connect_via_lockdown_transport(
                 Some(pair_record),
                 lockdown_transport,
                 "lockdown CoreDeviceProxy",
-            ),
+            )
+            .with_initial_rsd_bank(initial_rsd_bank),
             proxy_stream,
             opts.tun_mode,
             reservation,
@@ -251,7 +263,7 @@ mod tests {
                 skip_tunnel: true,
                 ..Default::default()
             },
-            None,
+            super::super::tunnel_owner::InitialOwner::new(None, None),
         )
         .await
         .unwrap();
