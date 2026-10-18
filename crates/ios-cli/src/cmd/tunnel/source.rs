@@ -120,10 +120,7 @@ pub(super) trait Source: Send + Sync {
         deadline: tokio::time::Instant,
         bank: &'a Arc<Semaphore>,
     ) -> anyhow::Result<
-        super::future_storage::Dynamic<
-            'a,
-            anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>,
-        >,
+        super::future_storage::Dynamic<'a, anyhow::Result<ios_core::device::PreparedRsdOwner>>,
     >;
     #[cfg(test)]
     fn refresh_existing_rsd<'a>(
@@ -132,10 +129,7 @@ pub(super) trait Source: Send + Sync {
         _deadline: tokio::time::Instant,
         bank: &'a Arc<Semaphore>,
     ) -> anyhow::Result<
-        super::future_storage::Dynamic<
-            'a,
-            anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>,
-        >,
+        super::future_storage::Dynamic<'a, anyhow::Result<ios_core::device::PreparedRsdOwner>>,
     > {
         super::future_storage::Dynamic::new(
             async {
@@ -260,13 +254,12 @@ impl Source for NativeSource {
         deadline: tokio::time::Instant,
         bank: &'a Arc<Semaphore>,
     ) -> anyhow::Result<
-        super::future_storage::Dynamic<
-            'a,
-            anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>,
-        >,
+        super::future_storage::Dynamic<'a, anyhow::Result<ios_core::device::PreparedRsdOwner>>,
     > {
         super::future_storage::Dynamic::new(
-            async move { Ok(ios_core::device::prepare_existing_rsd_at(route, deadline, bank).await?) },
+            async move {
+                Ok(ios_core::device::prepare_owned_existing_rsd_at(route, deadline, bank).await?)
+            },
             bank,
         )
     }
@@ -398,14 +391,14 @@ pub(super) trait FakeDevice: Send + Sync {
     fn freshness_route(&self) -> anyhow::Result<Option<ios_core::device::ExistingRsdRoute>> {
         Ok(None)
     }
-    fn freshness_catalogue(&self) -> Option<&Arc<ios_core::device::PreparedRsdCatalogue>> {
+    fn freshness_catalogue(&self) -> Option<&ios_core::device::PreparedRsdOwner> {
         None
     }
     fn swap_freshness_catalogue(
         &mut self,
         _runtime: &Arc<TunnelHandle>,
-        _proposed: Option<Arc<ios_core::device::PreparedRsdCatalogue>>,
-    ) -> anyhow::Result<Option<Arc<ios_core::device::PreparedRsdCatalogue>>> {
+        _proposed: Option<ios_core::device::PreparedRsdOwner>,
+    ) -> anyhow::Result<Option<ios_core::device::PreparedRsdOwner>> {
         Err(super::lifecycle::cancelled())
     }
 
@@ -444,9 +437,7 @@ impl ManagedDevice {
             Self::Fake(device) => device.freshness_route(),
         }
     }
-    pub(super) fn freshness_catalogue(
-        &self,
-    ) -> Option<&Arc<ios_core::device::PreparedRsdCatalogue>> {
+    pub(super) fn freshness_catalogue(&self) -> Option<&ios_core::device::PreparedRsdOwner> {
         match self {
             Self::Native(device) => device.prepared_rsd_owner(),
             #[cfg(test)]
@@ -456,8 +447,8 @@ impl ManagedDevice {
     pub(super) fn swap_freshness_catalogue(
         &mut self,
         runtime: &Arc<TunnelHandle>,
-        proposed: Option<Arc<ios_core::device::PreparedRsdCatalogue>>,
-    ) -> anyhow::Result<Option<Arc<ios_core::device::PreparedRsdCatalogue>>> {
+        proposed: Option<ios_core::device::PreparedRsdOwner>,
+    ) -> anyhow::Result<Option<ios_core::device::PreparedRsdOwner>> {
         match self {
             Self::Native(device) => Ok(device.swap_current_rsd_catalogue(runtime, proposed)?),
             #[cfg(test)]

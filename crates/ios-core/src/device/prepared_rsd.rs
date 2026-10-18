@@ -300,11 +300,11 @@ impl PreparedRsdCatalogue {
         })
     }
 
-    pub(crate) fn finish(
+    fn with_selection(
         mut self,
         selection: RsdSelectionReceipt,
         fee: OwnedSemaphorePermit,
-    ) -> Result<Arc<Self>, CoreError> {
+    ) -> Result<Self, CoreError> {
         self.bytes = self
             .bytes
             .checked_add(
@@ -314,7 +314,68 @@ impl PreparedRsdCatalogue {
             .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
         self.selection = Some(selection);
         self._selection_fee = Some(fee);
-        Ok(Arc::new(self))
+        Ok(self)
+    }
+    pub(crate) fn finish(
+        self,
+        selection: RsdSelectionReceipt,
+        fee: OwnedSemaphorePermit,
+    ) -> Result<Arc<Self>, CoreError> {
+        Ok(Arc::new(self.with_selection(selection, fee)?))
+    }
+    pub(crate) fn finish_owned(
+        self,
+        selection: RsdSelectionReceipt,
+        fee: OwnedSemaphorePermit,
+    ) -> Result<PreparedRsdOwner, CoreError> {
+        Ok(PreparedRsdOwner::new(self.with_selection(selection, fee)?))
+    }
+}
+
+/// Immutable ownership of a prepared current catalogue. Cloning retains the
+/// original data and grants; no raw Arc, Weak or mutable/pinned owner escapes.
+/// The payload allocation ends before its original buffers and body fee drop.
+pub struct PreparedRsdOwner {
+    inner: Option<Arc<PreparedRsdCatalogue>>,
+}
+impl PreparedRsdOwner {
+    fn new(catalogue: PreparedRsdCatalogue) -> Self {
+        Self {
+            inner: Some(Arc::new(catalogue)),
+        }
+    }
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(
+            self.inner.as_ref().expect("live prepared owner"),
+            other.inner.as_ref().expect("live prepared owner"),
+        )
+    }
+}
+impl Clone for PreparedRsdOwner {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+impl std::ops::Deref for PreparedRsdOwner {
+    type Target = PreparedRsdCatalogue;
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_deref().expect("live prepared owner")
+    }
+}
+impl std::fmt::Debug for PreparedRsdOwner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, formatter)
+    }
+}
+impl Drop for PreparedRsdOwner {
+    fn drop(&mut self) {
+        // All clones use into_inner. With no explicit Weak or raw/pin escape,
+        // the last allocation is freed before the returned catalogue drops.
+        drop(Arc::into_inner(
+            self.inner.take().expect("live prepared owner"),
+        ));
     }
 }
 

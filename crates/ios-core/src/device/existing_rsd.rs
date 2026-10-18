@@ -295,7 +295,14 @@ pub async fn prepare_existing_rsd_at(
     deadline: Instant,
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<std::sync::Arc<super::PreparedRsdCatalogue>, CoreError> {
-    prepare_selected_from_source(&NativeSource, route, deadline, bank).await
+    prepare_selected_from_source(
+        &NativeSource,
+        route,
+        deadline,
+        bank,
+        super::PreparedRsdCatalogue::finish,
+    )
+    .await
 }
 
 /// Prepare through an explicit host identity, bypassing host identity lookup.
@@ -306,24 +313,72 @@ pub async fn prepare_existing_rsd_with_identity_at(
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
     identity: uuid::Uuid,
 ) -> Result<std::sync::Arc<super::PreparedRsdCatalogue>, CoreError> {
-    struct ExplicitIdentity(uuid::Uuid);
-    impl Source for ExplicitIdentity {
-        fn identity(&self) -> BoxFuture<'_, Result<uuid::Uuid, XpcError>> {
-            Box::pin(async { Ok(self.0) })
-        }
-        fn dial(&self, route: ExistingRsdRoute) -> BoxFuture<'_, Result<ServiceStream, CoreError>> {
-            NativeSource.dial(route)
-        }
-    }
-    prepare_selected_from_source(&ExplicitIdentity(identity), route, deadline, bank).await
+    prepare_selected_from_source(
+        &ExplicitIdentity(identity),
+        route,
+        deadline,
+        bank,
+        super::PreparedRsdCatalogue::finish,
+    )
+    .await
 }
 
-async fn prepare_selected_from_source(
+struct ExplicitIdentity(uuid::Uuid);
+impl Source for ExplicitIdentity {
+    fn identity(&self) -> BoxFuture<'_, Result<uuid::Uuid, XpcError>> {
+        Box::pin(async { Ok(self.0) })
+    }
+    fn dial(&self, route: ExistingRsdRoute) -> BoxFuture<'_, Result<ServiceStream, CoreError>> {
+        NativeSource.dial(route)
+    }
+}
+
+/// Prepare a current catalogue whose original allocation and grants remain
+/// inseparable through clones and exports. Uses the same checked protocol,
+/// absolute deadline, original bank and direct/proxy selection as the legacy API.
+pub async fn prepare_owned_existing_rsd_at(
+    route: ExistingRsdRoute,
+    deadline: Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<super::PreparedRsdOwner, CoreError> {
+    prepare_selected_from_source(
+        &NativeSource,
+        route,
+        deadline,
+        bank,
+        super::PreparedRsdCatalogue::finish_owned,
+    )
+    .await
+}
+
+/// Owned preparation with explicit host identity and the same original clock.
+pub async fn prepare_owned_existing_rsd_with_identity_at(
+    route: ExistingRsdRoute,
+    deadline: Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    identity: uuid::Uuid,
+) -> Result<super::PreparedRsdOwner, CoreError> {
+    prepare_selected_from_source(
+        &ExplicitIdentity(identity),
+        route,
+        deadline,
+        bank,
+        super::PreparedRsdCatalogue::finish_owned,
+    )
+    .await
+}
+
+async fn prepare_selected_from_source<T>(
     source: &dyn Source,
     route: ExistingRsdRoute,
     deadline: Instant,
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
-) -> Result<std::sync::Arc<super::PreparedRsdCatalogue>, CoreError> {
+    finish: fn(
+        super::PreparedRsdCatalogue,
+        RsdSelectionReceipt,
+        tokio::sync::OwnedSemaphorePermit,
+    ) -> Result<T, CoreError>,
+) -> Result<T, CoreError> {
     let clock = Clock {
         deadline,
         budget: deadline.saturating_duration_since(Instant::now()),
@@ -353,7 +408,11 @@ async fn prepare_selected_from_source(
                 bank,
             )
             .await?;
-            catalogue.finish(receipt, fee.expect("prepared selection admission"))
+            finish(
+                catalogue,
+                receipt,
+                fee.expect("prepared selection admission"),
+            )
         })
         .await
 }

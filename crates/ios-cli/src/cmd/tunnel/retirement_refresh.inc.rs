@@ -14,10 +14,13 @@ type RefreshSwap<T> = (
     Option<super::freshness::MetadataOwner>,
     [Option<super::freshness::ReceiptOwner>; 2],
 );
-pub(super) fn same_optional<T>(a: Option<&Arc<T>>, b: Option<&Arc<T>>) -> bool {
+pub(super) fn same_optional(
+    a: Option<&ios_core::device::PreparedRsdOwner>,
+    b: Option<&ios_core::device::PreparedRsdOwner>,
+) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (Some(a), Some(b)) => a.ptr_eq(b),
         _ => false,
     }
 }

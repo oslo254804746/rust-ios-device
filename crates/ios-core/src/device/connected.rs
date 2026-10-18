@@ -110,7 +110,9 @@ impl ConnectedDevice {
     /// legacy snapshot; service connection resolution prefers this current view.
     #[cfg(feature = "tunnel")]
     pub fn current_rsd_catalogue(&self) -> Option<&super::PreparedRsdCatalogue> {
-        self.prepared_rsd.as_deref()
+        self.owned_prepared_rsd
+            .as_deref()
+            .or(self.prepared_rsd.as_deref())
     }
 
     #[cfg(feature = "tunnel")]
@@ -580,7 +582,7 @@ impl ConnectedDevice {
         service_name: &str,
     ) -> Result<ResolvedRsdService, CoreError> {
         #[cfg(feature = "tunnel")]
-        if let Some(rsd) = self.prepared_rsd.as_ref() {
+        if let Some(rsd) = self.current_rsd_catalogue() {
             return rsd.resolved(service_name).ok_or_else(|| {
                 CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into()))
             });
@@ -844,6 +846,8 @@ mod tests {
                 owned_initial_bank: None,
                 #[cfg(feature = "tunnel")]
                 prepared_rsd: None,
+                #[cfg(feature = "tunnel")]
+                owned_prepared_rsd: None,
                 initial_rsd_probe,
                 pair_record: None,
                 lockdown_transport: super::super::LockdownTransport::Usbmux { device_id: 42 },

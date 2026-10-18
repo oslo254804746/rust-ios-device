@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-18：L02 [prepared RSD 最后 owner](validation/tunnel-prepared-rsd-final-owner-2026-10-18.md)
+刷新Source、current cache、metadata/registry proof与原位rollback改用sealed共享目录，
+原payload分配结束后再销毁字段和费用，不再向管理器导出raw Arc/Weak。
+新增3/freshness21/XPC210/activation9/完整CLI1731/0FAIL/13原ignored及严格门禁通过；
+legacy raw SDK、private header与其它原边界继续审计，主项23/6/L02待核查、有效30/Q04排除不变。
+
+
 2026-10-18：L02 [initial RSD owned 生产输出](validation/tunnel-owned-initial-rsd-production-2026-10-18.md)
 NativeSource四路与Core activation/direct/proxy/四mode接通同池immutable目录，
 原reservation/探测状态/服务能力及原handle保持，published费用不重复扣除目录。
