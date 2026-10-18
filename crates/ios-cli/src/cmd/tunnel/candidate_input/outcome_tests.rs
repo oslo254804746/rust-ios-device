@@ -85,28 +85,45 @@ fn outcome_key_node_uses_original_destination_and_duplicate_refusal_keeps_origin
         .unwrap()
         .values
         .as_ptr();
+    let allocations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = allocations.clone();
     let node = metadata_vec::with_allocation_hook(
-        |layout, _| {
-            assert_eq!(
-                layout,
-                std::alloc::Layout::new::<Node>(),
-                "Node key allocated another destination"
-            )
+        move |layout, pointer| {
+            captured.lock().unwrap().push((layout, pointer));
         },
         || Node::input(input.clone(), None, &bank).unwrap(),
     );
+    let observed = allocations.lock().unwrap();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(
+        observed[0],
+        (
+            std::alloc::Layout::new::<Node>(),
+            std::ptr::from_ref(&*node) as usize
+        )
+    );
+    let identity_bytes = Node::input_bytes(&Route::Usbmux) - std::mem::size_of::<Node>();
+    assert_eq!(observed[1].0.size(), identity_bytes);
+    let identity_pointer = std::ptr::from_ref(&*node.row.identity) as usize;
+    assert!(observed[1].1 <= identity_pointer && identity_pointer < observed[1].1 + identity_bytes);
+    drop(observed);
     assert_eq!(node.udid.as_ptr(), pointer);
     let before = bank.available_permits();
+    let second = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = second.clone();
     let error = metadata_vec::with_allocation_hook(
-        |layout, _| {
-            assert_eq!(
-                layout,
-                std::alloc::Layout::new::<Node>(),
-                "second Node key allocated"
-            )
+        move |layout, pointer| {
+            captured.lock().unwrap().push((layout, pointer));
         },
         || Node::input(input.clone(), None, &bank).err().unwrap(),
     );
+    let refused = second.lock().unwrap();
+    assert_eq!(refused.len(), 2);
+    assert_eq!(refused[0].0, std::alloc::Layout::new::<Node>());
+    assert_eq!(refused[1].0.size(), identity_bytes);
+    assert_ne!(refused[0].1, std::ptr::from_ref(&*node) as usize);
+    assert_ne!(refused[1].1, allocations.lock().unwrap()[1].1);
+    drop(refused);
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit

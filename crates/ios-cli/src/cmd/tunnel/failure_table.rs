@@ -14,12 +14,11 @@ use super::candidate_input::route_capacity;
 #[cfg(test)]
 use super::candidate_input::Input;
 use super::metadata_vec::KnownVec;
-use super::shared_value::Shared;
+use super::shared_allocation::Shared;
 use super::{AttemptIdentity, FailedTunnelAttempt, Route, MAX_FAILURE_RECORDS};
 
 struct IdentityOwner {
     value: AttemptIdentity,
-    _storage: OwnedSemaphorePermit,
 }
 
 /// Clones share the actual route buffer and its fee; they never clone String.
@@ -27,41 +26,50 @@ struct IdentityOwner {
 pub(super) struct Identity(Shared<IdentityOwner>);
 
 impl Identity {
+    fn allocation_bytes() -> usize {
+        Shared::<IdentityOwner>::allocation_bytes()
+    }
     fn copied(route: &Route, native_id: Option<u32>, bank: &Arc<Semaphore>) -> Result<Self> {
         let route_bytes = match route {
             Route::Usbmux => 0,
             Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::len),
             Route::Mobdev2(host) => host.len(),
         };
-        let bytes = std::mem::size_of::<IdentityOwner>()
+        let bytes = Self::allocation_bytes()
             .checked_add(route_bytes)
             .ok_or_else(|| {
                 crate::output::resource_decision("tunnel failure identity size overflow")
             })?;
         let mut storage = super::admission::known_metadata_charge(bank, bytes)?;
-        let mut copier =
-            super::selector_copy::Copier::new(storage, std::mem::size_of::<IdentityOwner>())?;
+        let mut copier = super::selector_copy::Copier::new(storage, Self::allocation_bytes())?;
         let route = copier.route(route)?;
         storage = copier.finish();
-        Ok(Self(Shared::new(IdentityOwner {
-            value: AttemptIdentity { route, native_id },
-            _storage: storage,
-        })))
+        Ok(Self(Shared::from_grant_with_fields(
+            IdentityOwner {
+                value: AttemptIdentity { route, native_id },
+            },
+            bank,
+            storage,
+            route_bytes,
+        )?))
     }
 
     /// External adapters move their already-owned identity instead of cloning it.
     #[cfg(test)]
     pub(super) fn owned(value: AttemptIdentity, bank: &Arc<Semaphore>) -> Result<Self> {
-        let bytes = std::mem::size_of::<IdentityOwner>()
-            .checked_add(route_capacity(&value.route))
+        let fields = route_capacity(&value.route);
+        let bytes = Self::allocation_bytes()
+            .checked_add(fields)
             .ok_or_else(|| {
                 crate::output::resource_decision("tunnel failure identity size overflow")
             })?;
         let storage = super::admission::known_metadata_charge(bank, bytes)?;
-        Ok(Self(Shared::new(IdentityOwner {
-            value,
-            _storage: storage,
-        })))
+        Ok(Self(Shared::from_grant_with_fields(
+            IdentityOwner { value },
+            bank,
+            storage,
+            fields,
+        )?))
     }
 }
 
@@ -204,7 +212,7 @@ impl Node {
             Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::len),
             Route::Mobdev2(host) => host.len(),
         };
-        std::mem::size_of::<Self>() + std::mem::size_of::<IdentityOwner>() + route_bytes
+        std::mem::size_of::<Self>() + Identity::allocation_bytes() + route_bytes
     }
 }
 
