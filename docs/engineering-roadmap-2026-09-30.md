@@ -8968,6 +8968,15 @@ native metadata6/完整tunnel733/上游10/strict CLI/build/Source0通过，见
 及完整freshness继续，128MiB非完整heap/RSS；L02不关闭，主项23/6/待全审计、
 有效30与Q04全部排除保持，仅本地提交。
 
+## 2026-10-18 L02 inline independent deadline timer
+
+原独立 Timeout inline pin，初始/前后 clamp 不再分配 Box，安全原位替换保持
+原 Elapsed、绝对最小期限、Ready IO 和 late success 收尾。新增2/native15/
+manual13/完整tunnel735/上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-inline-deadline-timer-2026-10-18.md)。其他 owner/private
+及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
+有效30与Q04全部排除保持，仅本地提交。
+
 ## 2026-10-16 L02 observed route destination owners
 
 observed route共享已付Input原对象，无Input时按实际Layout先准入文本；保持

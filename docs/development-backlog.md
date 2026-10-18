@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [独立 deadline timer inline 存储](validation/tunnel-inline-deadline-timer-2026-10-18.md)
+消除初始与 clamp 的额外 Box，原绝对时钟、Elapsed、Ready IO 优先和晚成功析构
+保持。新增2/native deadline15/manual deadline13/完整tunnel735/strict CLI/build/
+Source0通过；L02继续全审计，主项23/6/待核查、有效30与Q04全部排除不变。
+
 2026-10-18：L02 [Publication 双预算 body](validation/tunnel-publication-dual-body-2026-10-18.md)
 原两池费用持续到最后 Weak，关闭工作及时析构、真实 native joins/strict EOF
 及快照身份保持。完整 tunnel733/strict CLI/build/Source0通过；L02继续全审计，
