@@ -151,7 +151,11 @@ async fn lifecycle_tunnel_bookkeeping_late_update_restores_original_backoff_and_
         .unwrap_err();
     let after = state.inner.failed_attempts.read().await[A].clone();
     let slots = state.inner.failure_slots.available_permits();
-    let same_permit = Arc::ptr_eq(before.slot.as_ref().unwrap(), after.slot.as_ref().unwrap());
+    let same_permit = before
+        .slot
+        .as_ref()
+        .unwrap()
+        .ptr_eq(after.slot.as_ref().unwrap());
     drop(before.slot);
     drop(after.slot);
     state.clear().await;

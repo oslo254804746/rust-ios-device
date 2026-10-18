@@ -284,7 +284,9 @@ async fn lifecycle_tunnel_old_success_intent_preserves_later_same_identity_failu
         (
             row.last_attempt,
             row.fail_count,
-            row.slot.as_ref().map(Arc::as_ptr),
+            row.slot
+                .as_ref()
+                .map(|slot| &**slot as *const failure_slot::Slot),
         )
     };
     let had_intent = pending.is_some();
@@ -297,7 +299,9 @@ async fn lifecycle_tunnel_old_success_intent_preserves_later_same_identity_failu
             (
                 row.last_attempt,
                 row.fail_count,
-                row.slot.as_ref().map(Arc::as_ptr),
+                row.slot
+                    .as_ref()
+                    .map(|slot| &**slot as *const failure_slot::Slot),
             ) == before
         })
     };
@@ -363,7 +367,9 @@ async fn lifecycle_tunnel_success_cleanup_deadline_crossing_restores_original_ro
             (
                 row.last_attempt,
                 row.fail_count,
-                row.slot.as_ref().map(Arc::as_ptr),
+                row.slot
+                    .as_ref()
+                    .map(|slot| &**slot as *const failure_slot::Slot),
                 Arc::as_ptr(&row.version),
             )
         };
@@ -388,7 +394,9 @@ async fn lifecycle_tunnel_success_cleanup_deadline_crossing_restores_original_ro
                 (
                     row.last_attempt,
                     row.fail_count,
-                    row.slot.as_ref().map(Arc::as_ptr),
+                    row.slot
+                        .as_ref()
+                        .map(|slot| &**slot as *const failure_slot::Slot),
                     Arc::as_ptr(&row.version),
                 ) == before
             })
@@ -561,7 +569,9 @@ async fn lifecycle_tunnel_success_fast_cleanup_crossing_candidate_clock_defers_w
         (
             row.last_attempt,
             row.fail_count,
-            row.slot.as_ref().map(Arc::as_ptr),
+            row.slot
+                .as_ref()
+                .map(|slot| &**slot as *const failure_slot::Slot),
             Arc::as_ptr(&row.version),
         )
     };
@@ -578,7 +588,9 @@ async fn lifecycle_tunnel_success_fast_cleanup_crossing_candidate_clock_defers_w
             (
                 row.last_attempt,
                 row.fail_count,
-                row.slot.as_ref().map(Arc::as_ptr),
+                row.slot
+                    .as_ref()
+                    .map(|slot| &**slot as *const failure_slot::Slot),
                 Arc::as_ptr(&row.version),
             ) == before
         })

@@ -22,8 +22,11 @@ fn lifecycle() -> Lifecycle {
         super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
     )))
 }
-fn slot() -> Arc<OwnedSemaphorePermit> {
-    Arc::new(Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap())
+fn slot(bank: &Arc<Semaphore>) -> super::super::failure_slot::Owner {
+    super::super::failure_slot::Slot::reserve(&Arc::new(Semaphore::new(1)), bank).unwrap()
+}
+fn slot_bytes() -> usize {
+    super::super::failure_slot::Slot::body_bytes()
 }
 fn io_original(message: &'static str) -> (anyhow::Error, usize) {
     let error = anyhow::Error::new(std::io::Error::new(
@@ -59,7 +62,8 @@ async fn retry_shared_identity_exact_quota_keeps_original_buffer_and_last_report
     let original_host = host.as_ptr();
     assert_eq!(host.capacity(), 4096);
     let original_owner_bytes = 32 * 1024 - bank.available_permits();
-    let required = Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &shared);
+    let required =
+        Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &shared) + slot_bytes();
     let held = bank
         .clone()
         .try_acquire_many_owned((bank.available_permits() - required) as u32)
@@ -68,7 +72,7 @@ async fn retry_shared_identity_exact_quota_keeps_original_buffer_and_last_report
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let attempt = ticket
-        .commit(|| ledger.start(A, shared.clone(), &ticket, slot()))
+        .commit(|| ledger.start(A, shared.clone(), &ticket, slot(&bank)))
         .unwrap();
     assert_eq!(bank.available_permits(), 0);
     let Route::Mobdev2(receipt_host) = &attempt.receipt.identity.route else {
@@ -101,13 +105,14 @@ async fn retry_shared_identity_one_byte_refusal_keeps_owner_without_episode_or_r
     let shared =
         super::super::failure_table::Identity::owned(buffered_identity(), &owner_bank).unwrap();
     let owner_remaining = owner_bank.available_permits();
-    let required = Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &shared);
+    let required =
+        Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &shared) + slot_bytes();
     let bank = Arc::new(Semaphore::new(required - 1));
     let ledger = Ledger::with_metadata(RetryPolicy::default(), Arc::clone(&bank)).unwrap();
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let error = ticket
-        .commit(|| ledger.start(A, shared.clone(), &ticket, slot()))
+        .commit(|| ledger.start(A, shared.clone(), &ticket, slot(&bank)))
         .err()
         .unwrap();
     assert_eq!(
@@ -152,14 +157,15 @@ async fn retry_episode_selector_refusal_never_constructs_a_row_and_refunds_all_b
 #[tokio::test]
 async fn retry_receipt_exact_pre_source_fee_rejects_one_byte_short_without_advancing_episode() {
     let identity = identity();
-    let bytes = Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &identity) - 1;
+    let bytes =
+        Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &identity) + slot_bytes() - 1;
     let bank = Arc::new(Semaphore::new(bytes));
     let ledger = Ledger::with_metadata(RetryPolicy::default(), Arc::clone(&bank)).unwrap();
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
-    let admission = slot();
+    let admission = slot(&bank);
     let error = ticket
-        .commit(|| ledger.start(A, identity, &ticket, Arc::clone(&admission)))
+        .commit(|| ledger.start(A, identity, &ticket, admission.clone()))
         .err()
         .expect("one byte short admitted Source");
     assert_eq!(
@@ -172,22 +178,25 @@ async fn retry_receipt_exact_pre_source_fee_rejects_one_byte_short_without_advan
     // rejection; no key, episode, receipt or source object was published.
     assert_eq!(
         bank.available_permits(),
-        bytes - Ledger::structural_bytes() - 4 * std::mem::size_of::<OwnedRemoved>()
+        bytes - slot_bytes() - Ledger::structural_bytes() - 4 * std::mem::size_of::<OwnedRemoved>()
     );
     drop(ledger);
+    assert_eq!(bank.available_permits(), bytes - slot_bytes());
+    drop(admission);
     assert_eq!(bank.available_permits(), bytes);
 }
 
 #[tokio::test]
 async fn retry_receipt_stale_same_poll_original_uses_reserved_history_even_with_zero_bytes() {
     let identity = identity();
-    let bytes = Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &identity);
+    let bytes =
+        Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &identity) + slot_bytes();
     let bank = Arc::new(Semaphore::new(bytes));
     let ledger = Ledger::with_metadata(RetryPolicy::default(), Arc::clone(&bank)).unwrap();
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let attempt = ticket
-        .commit(|| ledger.start(A, identity, &ticket, slot()))
+        .commit(|| ledger.start(A, identity, &ticket, slot(&bank)))
         .unwrap();
     assert_eq!(bank.available_permits(), 0);
     let (original, original_pointer) = io_original("private-original-refusal-token");
@@ -239,16 +248,16 @@ async fn retry_receipt_first_latest_share_exact_originals_and_refund_only_after_
     let ledger = Ledger::with_metadata(RetryPolicy::default(), Arc::clone(&bank)).unwrap();
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
-    let admission = slot();
+    let admission = slot(&bank);
     let first = ticket
-        .commit(|| ledger.start(A, identity(), &ticket, Arc::clone(&admission)))
+        .commit(|| ledger.start(A, identity(), &ticket, admission.clone()))
         .unwrap();
     let (original, first_pointer) = io_original("first-private-original");
     let first_result = failed_result(first.source_failed(original));
     first.finish(&first_result);
     let first_receipt = ledger.receipt(A).unwrap();
     let second = ticket
-        .commit(|| ledger.start(A, identity(), &ticket, Arc::clone(&admission)))
+        .commit(|| ledger.start(A, identity(), &ticket, admission.clone()))
         .unwrap();
     let (original, latest_pointer) = io_original("latest-private-original");
     let second_result = failed_result(second.source_failed(original));
@@ -259,7 +268,7 @@ async fn retry_receipt_first_latest_share_exact_originals_and_refund_only_after_
     assert_eq!(pointer(latest.latest()), latest_pointer);
     assert_ne!(first_pointer, latest_pointer);
     assert_eq!(latest.failures(), 2);
-    assert!(Arc::ptr_eq(&admission, &latest.slot()));
+    assert!(admission.ptr_eq(&latest.slot()));
     drop(first_receipt);
     drop(first_result);
     let removed = ledger.remove_where(|_, _, _| true);
@@ -281,6 +290,8 @@ async fn retry_receipt_first_latest_share_exact_originals_and_refund_only_after_
     assert_eq!(pointer(final_receipt.latest()), latest_pointer);
     drop(final_receipt);
     drop(second_result);
+    assert_eq!(bank.available_permits(), bytes - slot_bytes());
+    drop(admission);
     assert_eq!(bank.available_permits(), bytes);
 }
 
@@ -303,7 +314,7 @@ async fn retry_receipt_actual_backing_removal_rollback_preserves_order_versions_
     for key in [A, B, C] {
         let ticket = lifecycle.ticket(key).await.unwrap();
         let attempt = ticket
-            .commit(|| ledger.start(key, identity(), &ticket, slot()))
+            .commit(|| ledger.start(key, identity(), &ticket, slot(&bank)))
             .unwrap();
         let (original, original_pointer) = io_original("rollback-original");
         let result = failed_result(attempt.source_failed(original));

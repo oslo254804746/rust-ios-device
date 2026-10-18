@@ -183,10 +183,11 @@ async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_wi
         assert_eq!(original.identity, failed[B].identity);
         assert_eq!(original.last_attempt, failed[B].last_attempt);
         assert_eq!(original.fail_count, failed[B].fail_count);
-        assert!(Arc::ptr_eq(
-            original.slot.as_ref().unwrap(),
-            failed[B].slot.as_ref().unwrap()
-        ));
+        assert!(original
+            .slot
+            .as_ref()
+            .unwrap()
+            .ptr_eq(failed[B].slot.as_ref().unwrap()));
     }
     assert!(
         state.is_ready().await,
@@ -721,10 +722,11 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
     assert_eq!(current.last_attempt, original.last_attempt);
     assert_eq!(current.fail_count, original.fail_count);
     assert_eq!(current.identity, original.identity);
-    assert!(Arc::ptr_eq(
-        current.slot.as_ref().unwrap(),
-        original.slot.as_ref().unwrap()
-    ));
+    assert!(current
+        .slot
+        .as_ref()
+        .unwrap()
+        .ptr_eq(original.slot.as_ref().unwrap()));
     drop(failed);
     assert!(source.calls.lock().unwrap().is_empty());
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);

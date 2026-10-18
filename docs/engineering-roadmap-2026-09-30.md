@@ -8959,6 +8959,15 @@ joins费用保持，路由body独立最后owner退款经Weak已验。完整tunne
 URI/header/WS/private及完整freshness等继续；128MiB非完整heap/RSS，L02不关闭，
 23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
 
+## 2026-10-18 L02 failure count slot body
+
+原计数slot保持许可1，自身实际payload在原global字节池创建前准入，已有原根
+闭池复用及最后退款已验。新增3/retry20/global metadata17/完整tunnel744/
+上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-failure-slot-body-2026-10-18.md)。其他 owner/private
+及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
+有效30与Q04全部排除保持，仅本地提交。
+
 ## 2026-10-18 L02 publication two-budget body
 
 Life 全部 table/target/snapshot 根使用双预算 paired owner，原字段及时结束，

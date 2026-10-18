@@ -380,7 +380,7 @@ async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() 
     let mut table = table(&bank);
     for key in ["a", "b", "c"] {
         let mut node = Node::owned(key.into(), identity(key), &bank).unwrap();
-        node.row.slot = Some(Arc::new(slots.clone().try_acquire_owned().unwrap()));
+        node.row.slot = Some(super::super::failure_slot::Slot::reserve(&slots, &bank).unwrap());
         assert!(Table::commit(table.insert_reserved(node)).is_none());
     }
     let originals = table
@@ -393,7 +393,7 @@ async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() 
                 node.udid.as_ptr(),
                 host(&node.row).as_ptr(),
                 Arc::clone(&node.row.version),
-                Arc::as_ptr(node.row.slot.as_ref().unwrap()),
+                &**node.row.slot.as_ref().unwrap() as *const super::super::failure_slot::Slot,
             )
         })
         .collect::<Vec<_>>();
@@ -423,7 +423,10 @@ async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() 
         assert_eq!(node.udid.as_ptr(), original.1);
         assert_eq!(host(&node.row).as_ptr(), original.2);
         assert!(Arc::ptr_eq(&node.row.version, &original.3));
-        assert_eq!(Arc::as_ptr(node.row.slot.as_ref().unwrap()), original.4);
+        assert_eq!(
+            &**node.row.slot.as_ref().unwrap() as *const super::super::failure_slot::Slot,
+            original.4
+        );
     }
     drop(error);
     drop(held);

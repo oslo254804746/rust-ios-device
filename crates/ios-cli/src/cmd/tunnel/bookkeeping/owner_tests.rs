@@ -18,7 +18,8 @@ async fn fixture() -> (Arc<Semaphore>, WriteBatch, Receipt, usize) {
         route: Route::Usbmux,
         native_id: Some(3),
     };
-    let slot = Arc::new(Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap());
+    let slot =
+        super::super::failure_slot::Slot::reserve(&Arc::new(Semaphore::new(1)), &bank).unwrap();
     let attempt = ticket
         .commit(|| ledger.start(UID, identity.clone(), &ticket, slot))
         .unwrap();
