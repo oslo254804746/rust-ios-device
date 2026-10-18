@@ -8995,6 +8995,15 @@ native CLI105/attribution9/完整tunnel749/上游10/strict CLI/build/Source0通�
 及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
 有效30与Q04全部排除保持，仅本地提交。
 
+## 2026-10-18 L02 terminal cleanup original inline values
+
+原阶段 native/history/HTTP/timer 直接移动到终态，去除额外 Arc/Box dyn/Cause
+转换，原 primary/source/flags/IO 和 metadata-only timeout 保持。新增2/server8/
+native CLI105/完整tunnel751/上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-terminal-inline-values-2026-10-18.md)。外层 anyhow/Core
+private及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/
+待全审计、有效30与Q04全部排除保持，仅本地提交。
+
 ## 2026-10-18 L02 publication two-budget body
 
 Life 全部 table/target/snapshot 根使用双预算 paired owner，原字段及时结束，
