@@ -182,10 +182,9 @@ pub(super) struct Ledger {
     policy: RetryPolicy,
     state: Mutex<State>,
     bank: Arc<Semaphore>,
-    _storage: OwnedSemaphorePermit,
 }
 
-pub(super) type LedgerOwner = super::shared_value::Shared<Ledger>;
+pub(super) type LedgerOwner = super::shared_allocation::Shared<Ledger>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Admission {
@@ -196,13 +195,14 @@ pub(super) enum Admission {
 
 impl Ledger {
     pub(super) fn with_metadata(policy: RetryPolicy, bank: Arc<Semaphore>) -> Result<LedgerOwner> {
-        let storage = super::admission::known_metadata_charge(&bank, std::mem::size_of::<Self>())?;
-        Ok(LedgerOwner::new(Self {
+        let storage =
+            super::admission::known_metadata_charge(&bank, LedgerOwner::allocation_bytes())?;
+        let value = Self {
             policy,
             state: Mutex::new(State::new(&bank)),
-            bank,
-            _storage: storage,
-        }))
+            bank: bank.clone(),
+        };
+        LedgerOwner::from_grant(value, &bank, storage)
     }
 
     pub(super) fn policy(&self) -> &RetryPolicy {
@@ -654,7 +654,7 @@ impl Ledger {
 
     #[cfg(test)]
     pub(super) fn structural_bytes() -> usize {
-        std::mem::size_of::<Self>()
+        LedgerOwner::allocation_bytes()
     }
 
     /// First insertion uses KnownVec's two-slot actual requested backing. The

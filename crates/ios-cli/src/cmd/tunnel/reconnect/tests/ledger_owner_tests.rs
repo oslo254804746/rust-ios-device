@@ -5,9 +5,14 @@ fn ledger_owner_exact_body_refusal_and_parallel_last_roots_refund_once() {
     let bytes = Ledger::structural_bytes();
     for available in [0, bytes - 1] {
         let bank = Arc::new(Semaphore::new(available));
-        let error = Ledger::with_metadata(RetryPolicy::default(), bank.clone())
-            .err()
-            .unwrap();
+        let error = super::super::super::metadata_vec::with_allocation_hook(
+            |_, _| panic!("refused whole Ledger allocation created backing"),
+            || {
+                Ledger::with_metadata(RetryPolicy::default(), bank.clone())
+                    .err()
+                    .unwrap()
+            },
+        );
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
             ErrorClass::ResourceLimit
@@ -15,11 +20,27 @@ fn ledger_owner_exact_body_refusal_and_parallel_last_roots_refund_once() {
         assert_eq!(bank.available_permits(), available);
     }
     let bank = Arc::new(Semaphore::new(bytes));
-    let ledger = Ledger::with_metadata(RetryPolicy::default(), bank.clone()).unwrap();
-    assert_eq!(ledger._storage.num_permits(), bytes);
-    assert!(Arc::ptr_eq(ledger._storage.semaphore(), &bank));
+    let allocations = Arc::new(Mutex::new(Vec::new()));
+    let captured = allocations.clone();
+    let charged = bank.clone();
+    let ledger = super::super::super::metadata_vec::with_allocation_hook(
+        move |layout, pointer| {
+            assert_eq!(layout.size(), bytes);
+            assert_eq!(charged.available_permits(), 0);
+            captured.lock().unwrap().push((layout, pointer));
+        },
+        || Ledger::with_metadata(RetryPolicy::default(), bank.clone()).unwrap(),
+    );
+    assert_eq!(ledger.storage().num_permits(), bytes);
+    assert!(Arc::ptr_eq(ledger.storage().semaphore(), &bank));
+    let observed = allocations.lock().unwrap();
+    assert_eq!(observed.len(), 1);
+    let data = std::ptr::from_ref(&*ledger) as usize;
+    assert!(observed[0].1 <= data && data < observed[0].1 + observed[0].0.size());
+    drop(observed);
     assert_eq!(bank.available_permits(), 0);
     let pointer = &*ledger as *const Ledger as usize;
+    bank.close();
     let barrier = Arc::new(std::sync::Barrier::new(8));
     std::thread::scope(|scope| {
         for _ in 0..7 {
