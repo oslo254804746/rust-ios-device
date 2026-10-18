@@ -6,18 +6,28 @@ pub(super) struct RefreshProof {
     handle: Arc<TunnelHandle>,
     metadata: Arc<OwnedSemaphorePermit>,
     global_metadata: Arc<OwnedSemaphorePermit>,
-    previous: Option<Arc<super::freshness::Metadata>>,
+    previous: Option<super::freshness::MetadataOwner>,
     _storage: OwnedSemaphorePermit,
 }
 type RefreshSwap<T> = (
     T,
-    Option<Arc<super::freshness::Metadata>>,
+    Option<super::freshness::MetadataOwner>,
     [Option<Arc<super::freshness::Receipt>>; 2],
 );
 pub(super) fn same_optional<T>(a: Option<&Arc<T>>, b: Option<&Arc<T>>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+pub(super) fn same_metadata(
+    a: Option<&super::freshness::MetadataOwner>,
+    b: Option<&super::freshness::MetadataOwner>,
+) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.ptr_eq(b),
         _ => false,
     }
 }
@@ -28,7 +38,7 @@ impl NativeLease {
         handle: &Arc<TunnelHandle>,
         metadata: &Arc<OwnedSemaphorePermit>,
         global_metadata: &Arc<OwnedSemaphorePermit>,
-        previous: Option<&Arc<super::freshness::Metadata>>,
+        previous: Option<&super::freshness::MetadataOwner>,
         bank: &Arc<Semaphore>,
     ) -> Result<RefreshProof> {
         let state = self.registry.lock();
@@ -55,7 +65,7 @@ impl NativeLease {
                     .global_metadata
                     .as_ref()
                     .is_some_and(|original| Arc::ptr_eq(original, global_metadata))
-                && same_optional(entry.fresh_metadata.as_ref(), previous)
+                && same_metadata(entry.fresh_metadata.as_ref(), previous)
                 && handle.is_alive(),
             super::lifecycle::cancelled()
         );
@@ -74,7 +84,7 @@ impl NativeLease {
     }
 }
 impl RefreshProof {
-    pub(super) fn previous(&self) -> Option<&Arc<super::freshness::Metadata>> {
+    pub(super) fn previous(&self) -> Option<&super::freshness::MetadataOwner> {
         self.previous.as_ref()
     }
     pub(super) fn check(&self) -> Result<()> {
@@ -102,7 +112,7 @@ impl RefreshProof {
                     .global_metadata
                     .as_ref()
                     .is_some_and(|original| Arc::ptr_eq(original, &self.global_metadata))
-                && same_optional(entry.fresh_metadata.as_ref(), self.previous.as_ref())
+                && same_metadata(entry.fresh_metadata.as_ref(), self.previous.as_ref())
                 && self.handle.is_alive(),
             super::lifecycle::cancelled()
         );
@@ -121,7 +131,7 @@ impl RefreshProof {
                     .is_some_and(|runtime| Arc::ptr_eq(runtime, &self.handle))
                     && Arc::ptr_eq(&entry.stamp.global, &self.stamp.global)
                     && Arc::ptr_eq(&entry.stamp.device, &self.stamp.device)
-                    && same_optional(entry.fresh_metadata.as_ref(), self.previous.as_ref()) =>
+                    && same_metadata(entry.fresh_metadata.as_ref(), self.previous.as_ref()) =>
             {
                 if entry.first_freshness.is_none() {
                     entry.first_freshness = Some(Arc::clone(&original));
@@ -142,7 +152,7 @@ impl RefreshProof {
     }
     pub(super) fn swap_metadata<T>(
         &self,
-        proposed: Arc<super::freshness::Metadata>,
+        proposed: super::freshness::MetadataOwner,
         action: impl FnOnce() -> Result<T>,
     ) -> Result<RefreshSwap<T>> {
         let mut state = self.registry.lock();
@@ -167,7 +177,7 @@ impl RefreshProof {
                     .global_metadata
                     .as_ref()
                     .is_some_and(|original| Arc::ptr_eq(original, &self.global_metadata))
-                && same_optional(entry.fresh_metadata.as_ref(), self.previous.as_ref())
+                && same_metadata(entry.fresh_metadata.as_ref(), self.previous.as_ref())
                 && proposed
                     .bank_matches(self.metadata.semaphore(), self.global_metadata.semaphore())
                 && self.handle.is_alive(),

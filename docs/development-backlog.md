@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [刷新 metadata 双预算 body](validation/tunnel-fresh-metadata-bodies-2026-10-18.md)
+实际 Weak 路径接入两池成对 owner，guard 自身 payload 也创建前预付；字段及时
+结束、最后 Weak 两池退款已验。完整 tunnel729/strict CLI/build/Source0通过；
+L02继续全审计，主项23/6/待核查、有效30与Q04全部排除不变。
+
 2026-10-18：L02 [native registry 最后 owner](validation/tunnel-registry-final-owners-2026-10-18.md)
 全部私有根统一，原 body/slots 费用保持；闭池零配额下原 NativeLease、实际
 joins/strict EOF 与最后 root 退款已验。完整 tunnel727/strict CLI/build/Source0通过；

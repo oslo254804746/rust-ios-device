@@ -408,10 +408,7 @@ async fn freshness_actual_late_swap_restores_old_catalogue_and_all_original_fee_
     {
         let table = state.inner.tunnels.read().await;
         let row = &table[UID];
-        assert!(Arc::ptr_eq(
-            row._fresh_metadata.as_ref().unwrap(),
-            &original
-        ));
+        assert!(row._fresh_metadata.as_ref().unwrap().ptr_eq(&original));
         assert!(Arc::ptr_eq(
             row.device.freshness_catalogue().unwrap(),
             &original.catalogue
@@ -594,10 +591,7 @@ async fn refresh_future_last_byte_constructor_refusal_keeps_original_catalogue_a
         let table = state.inner.tunnels.read().await;
         let row = &table[UID];
         assert!(Arc::ptr_eq(&row.publication, &publication));
-        assert!(Arc::ptr_eq(
-            row._fresh_metadata.as_ref().unwrap(),
-            &previous
-        ));
+        assert!(row._fresh_metadata.as_ref().unwrap().ptr_eq(&previous));
         assert!(Arc::ptr_eq(
             row.device.freshness_catalogue().unwrap(),
             &previous.catalogue
@@ -832,12 +826,11 @@ async fn freshness_current_owner_survives_either_table_removal_or_native_joins_u
         let state = fresh_state(source.clone(), OBSERVE);
         fresh_publish(&state).await;
         refresh(&state, OBSERVE).await.unwrap();
-        let owner = Arc::downgrade(
-            state.inner.tunnels.read().await[UID]
-                ._fresh_metadata
-                .as_ref()
-                .unwrap(),
-        );
+        let owner = state.inner.tunnels.read().await[UID]
+            ._fresh_metadata
+            .as_ref()
+            .unwrap()
+            .downgrade();
         tokio::time::timeout(OBSERVE, peer).await.unwrap().unwrap();
         let global = state.inner.global_metadata_bytes.clone();
         let publication = state.inner.metadata_bytes.clone();
@@ -870,6 +863,18 @@ async fn freshness_current_owner_survives_either_table_removal_or_native_joins_u
         state.notify_shutdown();
         drop(state);
         drop(source);
+        let body = freshness::MetadataOwner::body_bytes();
+        assert_eq!(
+            global.available_permits(),
+            MAX_GLOBAL_KNOWN_METADATA_BYTES - body
+        );
+        assert_eq!(
+            publication.available_permits(),
+            MAX_PUBLISHED_METADATA_BYTES - body
+        );
+        // Value fields/catalogue fees ended at last strong; BOTH body leases
+        // still cover the original allocation and paid guard through this Weak.
+        drop(owner);
         assert_eq!(global.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
         assert_eq!(
             publication.available_permits(),

@@ -9097,3 +9097,13 @@ Reservation/NativeLease/RefreshProof 全部根在 allocation 结束后退款；�
 [验证](validation/tunnel-registry-final-owners-2026-10-18.md)。其它 owner/private
 及完整freshness继续，128MiB非完整heap/RSS；L02不关闭，主项23/6/待全审计、
 有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-18 L02 refreshed metadata two-budget body
+
+实际 Weak 路径的 MetadataOwner 在两池预付真实 body 与双 permit guard
+payload；原字段最后 strong 结束，body 最后 Weak 退款，原 bank/缓存指针/
+回滚/期限/native joins 保留。新增2项、native freshness14/完整tunnel729/
+上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-fresh-metadata-bodies-2026-10-18.md)。Receipt/Publication/
+private及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/
+待全审计、有效30与Q04全部排除保持，仅本地提交。

@@ -68,6 +68,7 @@ mod scan_seen;
 mod scoped;
 mod selector_copy;
 mod shared_body;
+mod shared_dual_body;
 mod shared_value;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
@@ -485,7 +486,7 @@ struct ManagedTunnel {
     _metadata: Arc<OwnedSemaphorePermit>,
     _global_metadata: Arc<OwnedSemaphorePermit>,
     _input: Option<candidate_input::Owner>,
-    _fresh_metadata: Option<Arc<freshness::Metadata>>,
+    _fresh_metadata: Option<freshness::MetadataOwner>,
 }
 
 struct LocalTarget {
