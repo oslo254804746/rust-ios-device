@@ -9,6 +9,109 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, DuplexStream, ReadBuf};
 const OBSERVE: Duration = Duration::from_secs(2);
 
 #[tokio::test]
+async fn native_census_current_snapshot_is_inside_prepaid_backing_and_stays_frozen_through_joins() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let (stream, peer) = tokio::io::duplex(1280);
+    let native = runtime(stream).await;
+    let owner = stamp();
+    let lease = registry
+        .reserve(owner.clone())
+        .unwrap()
+        .attach(native.clone());
+    lease.publish(&owner).unwrap();
+    drop(peer);
+    assert!(inactive(&native).await);
+    let original = native.shutdown_status().unwrap_err();
+    let original_pointer = work(&original) as *const TunnelError;
+    let bank = registry.byte_bank.clone();
+    let before = bank.available_permits();
+    let layouts = Arc::new(StdMutex::new(Vec::new()));
+    let seen = layouts.clone();
+    let charged = bank.clone();
+    let (unjoined, roots) = super::super::metadata_vec::with_allocation_hook(
+        move |layout, pointer| {
+            let mut layouts = seen.lock().unwrap();
+            let prior: usize = layouts.iter().map(|(bytes, _)| bytes).sum();
+            assert_eq!(charged.available_permits(), before - prior - layout.size());
+            layouts.push((layout.size(), pointer));
+        },
+        || registry.payload_outcomes().unwrap(),
+    );
+    assert_eq!(unjoined, 1);
+    assert_eq!(roots.len(), 1);
+    assert!(matches!(roots.as_slice()[0], PayloadOutcome::Current(_)));
+    let layouts = layouts.lock().unwrap().clone();
+    assert_eq!(layouts.len(), 2);
+    let (root_bytes, root_pointer) = layouts[0];
+    assert_eq!(
+        root_bytes,
+        roots.capacity() * std::mem::size_of::<PayloadOutcome>()
+    );
+    let value_pointer = roots.as_slice()[0].as_ref() as *const TunnelError as usize;
+    assert!(value_pointer >= root_pointer && value_pointer < root_pointer + root_bytes);
+    assert_eq!(work(&roots.as_slice()[0]) as *const _, original_pointer);
+    drop(roots);
+    assert_eq!(bank.available_permits(), before);
+    let needed: usize = layouts.iter().map(|(bytes, _)| bytes).sum();
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((before - needed + 1) as u32)
+        .unwrap();
+    let refused = registry.payload_outcomes().err().unwrap();
+    assert_eq!(
+        crate::output::operation_error_class(refused.as_ref()),
+        ErrorClass::ResourceLimit
+    );
+    assert_eq!(bank.available_permits(), needed - 1);
+    assert_eq!(registry.snapshot().active, 1);
+    assert_eq!(
+        work(&native.shutdown_status().unwrap_err()) as *const _,
+        original_pointer
+    );
+    drop((held, refused));
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((before - needed) as u32)
+        .unwrap();
+    let (unjoined, frozen) = registry.payload_outcomes().unwrap();
+    assert_eq!(unjoined, 1);
+    let pending = shutdown_report(&frozen.as_slice()[0])
+        .unwrap()
+        .pending_joins();
+    assert!(pending > 0);
+    let spare = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    bank.close();
+    assert_eq!(bank.available_permits(), 0);
+    drop(lease);
+    let failure = registry
+        .drain_retired(CleanupClock::new(OBSERVE).unwrap())
+        .await
+        .unwrap_err();
+    let joined = failure.primary().downcast_ref::<TunnelError>().unwrap();
+    assert!(shutdown_joins_certified(joined));
+    assert_eq!(work(joined) as *const _, original_pointer);
+    assert!(recovered(baseline).await);
+    assert_eq!(
+        shutdown_report(&frozen.as_slice()[0])
+            .unwrap()
+            .pending_joins(),
+        pending
+    );
+    assert_eq!(work(&frozen.as_slice()[0]) as *const _, original_pointer);
+    assert_eq!(bank.available_permits(), 0);
+    drop(frozen);
+    assert_eq!(bank.available_permits(), root_bytes);
+    drop((spare, held));
+    assert_eq!(bank.available_permits(), before);
+}
+
+#[tokio::test]
 async fn registry_owner_original_native_lease_outlives_caller_and_joins_at_closed_zero_quota() {
     let baseline = tokio::runtime::Handle::current()
         .metrics()
