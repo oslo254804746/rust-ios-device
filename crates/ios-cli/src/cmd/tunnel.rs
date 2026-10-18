@@ -410,8 +410,10 @@ impl Drop for StandaloneOwner {
 
 #[derive(Clone)]
 struct TunnelAgentState {
-    inner: Arc<TunnelAgentInner>,
+    inner: TunnelAgentOwner,
 }
+
+type TunnelAgentOwner = shared_body::Strong<TunnelAgentInner>;
 
 #[cfg(test)]
 type PublicationCallback = Box<dyn FnOnce() + Send>;
@@ -806,52 +808,85 @@ impl TunnelAgentState {
         retry: reconnect::RetryPolicy,
     ) -> Result<Self> {
         let global_metadata_bytes = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+        Self::with_source_retry_metadata(
+            tun_mode,
+            access,
+            upstream_access,
+            source,
+            connect_timeout,
+            retry,
+            global_metadata_bytes,
+        )
+    }
+
+    fn with_source_retry_metadata(
+        tun_mode: TunMode,
+        access: AccessControl,
+        upstream_access: Upstreams,
+        source: Arc<dyn Source>,
+        connect_timeout: Duration,
+        retry: reconnect::RetryPolicy,
+        global_metadata_bytes: Arc<Semaphore>,
+    ) -> Result<Self> {
+        let storage = admission::known_metadata_charge(
+            &global_metadata_bytes,
+            TunnelAgentOwner::body_bytes(),
+        )?;
         let metadata_bytes = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
         let native = retirement::Registry::with_metadata(&global_metadata_bytes)?;
         let upstreams =
             upstream_registry::Registry::from_urls(&global_metadata_bytes, upstream_access.urls())?;
         Ok(Self {
-            inner: Arc::new(TunnelAgentInner {
-                access,
-                tun_mode,
-                tunnels: RwLock::new(publication_table::Table::new(
-                    &global_metadata_bytes,
-                    &metadata_bytes,
-                )),
-                upstreams: RwLock::new(upstreams),
-                upstream_access,
-                failed_attempts: RwLock::new(failure_table::Table::new(&global_metadata_bytes)),
-                retry: reconnect::Ledger::with_metadata(retry, Arc::clone(&global_metadata_bytes))?,
-                failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
-                metadata_bytes,
-                global_metadata_bytes: Arc::clone(&global_metadata_bytes),
-                ready: RwLock::new(false),
-                lifecycle: Lifecycle::with_metadata(Arc::clone(&global_metadata_bytes)),
-                scan_lock: Mutex::new(()),
-                scan_outcomes: scan::Outcomes::with_metadata(global_metadata_bytes)?,
-                scan_timeout: TUNNEL_SCAN_TIMEOUT,
-                source,
-                connect_timeout,
-                failure_write_timeout: FAILURE_WRITE_TIMEOUT,
-                shutdown: watch::channel(false).0,
-                native,
-                #[cfg(test)]
-                publication_after_insert: std::sync::Mutex::new(None),
-                #[cfg(test)]
-                paired_after_first_check: std::sync::Mutex::new(None),
-                #[cfg(test)]
-                publication_before_prepare: std::sync::Mutex::new(None),
-                #[cfg(test)]
-                publication_before_write: std::sync::Mutex::new(None),
-                #[cfg(test)]
-                usb_before_snapshot: std::sync::Mutex::new(None),
-                #[cfg(test)]
-                failure_after_insert: std::sync::Mutex::new(None),
-                #[cfg(test)]
-                success_before_remove: std::sync::Mutex::new(None),
-                #[cfg(test)]
-                success_after_remove: std::sync::Mutex::new(None),
-            }),
+            inner: TunnelAgentOwner::new(
+                TunnelAgentInner {
+                    access,
+                    tun_mode,
+                    tunnels: RwLock::new(publication_table::Table::new(
+                        &global_metadata_bytes,
+                        &metadata_bytes,
+                    )),
+                    upstreams: RwLock::new(upstreams),
+                    upstream_access,
+                    failed_attempts: RwLock::new(failure_table::Table::new(&global_metadata_bytes)),
+                    retry: reconnect::Ledger::with_metadata(
+                        retry,
+                        Arc::clone(&global_metadata_bytes),
+                    )?,
+                    failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
+                    metadata_bytes,
+                    global_metadata_bytes: Arc::clone(&global_metadata_bytes),
+                    ready: RwLock::new(false),
+                    lifecycle: Lifecycle::with_metadata(Arc::clone(&global_metadata_bytes)),
+                    scan_lock: Mutex::new(()),
+                    scan_outcomes: scan::Outcomes::with_metadata(Arc::clone(
+                        &global_metadata_bytes,
+                    ))?,
+                    scan_timeout: TUNNEL_SCAN_TIMEOUT,
+                    source,
+                    connect_timeout,
+                    failure_write_timeout: FAILURE_WRITE_TIMEOUT,
+                    shutdown: watch::channel(false).0,
+                    native,
+                    #[cfg(test)]
+                    publication_after_insert: std::sync::Mutex::new(None),
+                    #[cfg(test)]
+                    paired_after_first_check: std::sync::Mutex::new(None),
+                    #[cfg(test)]
+                    publication_before_prepare: std::sync::Mutex::new(None),
+                    #[cfg(test)]
+                    publication_before_write: std::sync::Mutex::new(None),
+                    #[cfg(test)]
+                    usb_before_snapshot: std::sync::Mutex::new(None),
+                    #[cfg(test)]
+                    failure_after_insert: std::sync::Mutex::new(None),
+                    #[cfg(test)]
+                    success_before_remove: std::sync::Mutex::new(None),
+                    #[cfg(test)]
+                    success_after_remove: std::sync::Mutex::new(None),
+                },
+                &global_metadata_bytes,
+                storage,
+            )?,
         })
     }
 
@@ -861,8 +896,12 @@ impl TunnelAgentState {
 
     #[cfg(test)]
     fn set_global_metadata_limit(&mut self, bytes: usize) {
-        let inner = Arc::get_mut(&mut self.inner).expect("configure before sharing state");
         let bank = Arc::new(Semaphore::new(bytes));
+        self.inner.rebind_body(&bank).unwrap();
+        let inner = self
+            .inner
+            .get_mut()
+            .expect("configure before sharing state");
         Arc::get_mut(&mut inner.native)
             .expect("configure before native sharing")
             .rebind_empty_metadata(&bank)

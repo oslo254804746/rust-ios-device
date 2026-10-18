@@ -5,7 +5,7 @@ const TOTAL: Duration = Duration::from_millis(60);
 
 fn bounded(source: Arc<FakeSource>, total: Duration) -> TunnelAgentState {
     let mut manager = state(source, Duration::from_secs(5));
-    Arc::get_mut(&mut manager.inner).unwrap().scan_timeout = total;
+    manager.inner.get_mut().unwrap().scan_timeout = total;
     manager
 }
 

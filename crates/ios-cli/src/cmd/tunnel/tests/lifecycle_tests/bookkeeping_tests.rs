@@ -6,9 +6,7 @@ const CROSS: Duration = Duration::from_millis(100);
 
 fn bounded_state(source: Arc<FakeSource>, budget: Duration) -> TunnelAgentState {
     let mut state = state(source, TUNNEL_CONNECT_TIMEOUT);
-    Arc::get_mut(&mut state.inner)
-        .unwrap()
-        .failure_write_timeout = budget;
+    state.inner.get_mut().unwrap().failure_write_timeout = budget;
     state
 }
 
@@ -202,7 +200,7 @@ async fn lifecycle_tunnel_bookkeeping_timely_prefix_survives_later_row_rollback(
     let state = bounded_state(source, WRITE_BUDGET);
     let a = intent(&state, A).await;
     let b = intent(&state, B).await;
-    let weak = Arc::downgrade(&state.inner);
+    let weak = state.inner.downgrade();
     *state.inner.failure_after_insert.lock().unwrap() = Some(Box::new(move || {
         *weak.upgrade().unwrap().failure_after_insert.lock().unwrap() =
             Some(Box::new(|| std::thread::sleep(CROSS)));
@@ -228,7 +226,7 @@ async fn lifecycle_tunnel_bookkeeping_two_writes_share_one_absolute_deadline() {
     let state = bounded_state(source, Duration::from_millis(80));
     let a = intent(&state, A).await;
     let b = intent(&state, B).await;
-    let weak = Arc::downgrade(&state.inner);
+    let weak = state.inner.downgrade();
     *state.inner.failure_after_insert.lock().unwrap() = Some(Box::new(move || {
         std::thread::sleep(Duration::from_millis(50));
         *weak.upgrade().unwrap().failure_after_insert.lock().unwrap() =

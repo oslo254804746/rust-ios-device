@@ -48,6 +48,24 @@ impl<T> Strong<T> {
         Arc::ptr_eq(&self.data, &other.data)
     }
     #[cfg(test)]
+    pub(super) fn get_mut(&mut self) -> Option<&mut T> {
+        Arc::get_mut(&mut self.data)
+    }
+    #[cfg(test)]
+    pub(super) fn rebind_body(&mut self, bank: &Arc<Semaphore>) -> Result<()> {
+        anyhow::ensure!(
+            self.get_mut().is_some(),
+            crate::output::resource_decision("configure shared body before sharing")
+        );
+        let storage = super::admission::known_metadata_charge(bank, Self::body_bytes())?;
+        // The existing data allocation remains paid by its old guard while the
+        // new guard is created. Install the prepaid replacement BEFORE freeing
+        // the old guard and returning its original bank credit.
+        let old = std::mem::replace(&mut self.body, Shared::new(storage));
+        drop(old);
+        Ok(())
+    }
+    #[cfg(test)]
     pub(super) fn downgrade(&self) -> Weak<T> {
         Weak {
             data: Arc::downgrade(&self.data),

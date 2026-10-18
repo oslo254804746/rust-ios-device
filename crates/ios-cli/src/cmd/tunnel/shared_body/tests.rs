@@ -3,6 +3,48 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Barrier;
 
+#[test]
+fn configured_body_refusal_preserves_old_credit_and_success_keeps_original_pointer_until_last_weak()
+{
+    let bytes = Strong::<usize>::body_bytes();
+    let old = Arc::new(Semaphore::new(bytes));
+    let storage = admission::known_metadata_charge(&old, bytes).unwrap();
+    let mut value = Strong::new(17usize, &old, storage).unwrap();
+    let pointer = &*value as *const usize;
+    let short = Arc::new(Semaphore::new(bytes - 1));
+    let error = value.rebind_body(&short).unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(old.available_permits(), 0);
+    assert_eq!(short.available_permits(), bytes - 1);
+    let bank = Arc::new(Semaphore::new(bytes));
+    let alias = value.clone();
+    assert!(value.get_mut().is_none());
+    assert!(value.rebind_body(&bank).is_err());
+    assert_eq!(bank.available_permits(), bytes);
+    drop(alias);
+    let weak = value.downgrade();
+    assert!(value.get_mut().is_none());
+    assert!(value.rebind_body(&bank).is_err());
+    assert_eq!(bank.available_permits(), bytes);
+    assert_eq!(old.available_permits(), 0);
+    drop(weak);
+    *value.get_mut().unwrap() = 19;
+    value.rebind_body(&bank).unwrap();
+    assert_eq!(&*value as *const usize, pointer);
+    assert_eq!(*value, 19);
+    assert_eq!(old.available_permits(), bytes);
+    assert_eq!(bank.available_permits(), 0);
+    let weak = value.downgrade();
+    drop(value);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(bank.available_permits(), 0);
+    drop(weak);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
 #[repr(align(128))]
 struct Payload {
     text: String,

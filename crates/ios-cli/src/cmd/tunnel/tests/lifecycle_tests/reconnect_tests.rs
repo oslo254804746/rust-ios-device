@@ -745,7 +745,7 @@ async fn reconnect_ledger_reservations_are_bounded_by_original_failure_capacity(
         source.script(udid, [Behavior::Failure(std::io::ErrorKind::BrokenPipe)]);
     }
     let mut state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
-    Arc::get_mut(&mut state.inner).unwrap().failure_slots = Arc::new(Semaphore::new(2));
+    state.inner.get_mut().unwrap().failure_slots = Arc::new(Semaphore::new(2));
     state.refresh_once().await.unwrap();
     assert_eq!(
         (

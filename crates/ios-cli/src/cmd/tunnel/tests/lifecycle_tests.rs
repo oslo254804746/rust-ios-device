@@ -26,7 +26,7 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
     drop(probe.take_all());
     let charged = std::mem::size_of::<OwnedDevice>() + destination + publication::Life::bytes();
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    let inner = Arc::get_mut(&mut state.inner).unwrap();
+    let inner = state.inner.get_mut().unwrap();
     inner.metadata_bytes = Arc::new(Semaphore::new(charged));
     *inner.tunnels.get_mut() =
         publication_table::Table::new(&inner.global_metadata_bytes, &inner.metadata_bytes);
@@ -62,6 +62,7 @@ mod global_metadata_tests;
 mod identity_tests;
 mod intent_tests;
 mod liveness_tests;
+mod manager_owner_tests;
 mod manual_admission_tests;
 mod manual_deadline_tests;
 mod parallel_tests;

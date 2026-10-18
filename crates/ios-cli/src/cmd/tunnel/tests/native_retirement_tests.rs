@@ -132,12 +132,13 @@ async fn publication_table_actual_destination_one_byte_refusal_before_any_native
         if shared {
             let original_structure = state.inner.native.structural_bytes()
                 + reconnect::Ledger::structural_bytes()
-                + scan::Outcomes::body_bytes();
+                + scan::Outcomes::body_bytes()
+                + TunnelAgentOwner::body_bytes();
             state.set_global_metadata_limit(
                 original_structure + Lifecycle::initial_metadata_bytes(DEVICE) + bytes - 1,
             );
         } else {
-            let inner = Arc::get_mut(&mut state.inner).unwrap();
+            let inner = state.inner.get_mut().unwrap();
             inner.metadata_bytes = Arc::new(Semaphore::new(bytes - 1));
             *inner.tunnels.get_mut() =
                 publication_table::Table::new(&inner.global_metadata_bytes, &inner.metadata_bytes);
