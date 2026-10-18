@@ -348,10 +348,7 @@ async fn freshness_production_alive_scan_changes_current_ports_without_new_lease
         let (same_key, row) = table.get_key_value(UID).unwrap();
         assert_eq!(same_key.as_ptr(), key);
         assert!(row.publication.ptr_eq(&publication));
-        assert!(
-            Arc::ptr_eq(&row._metadata, &first_fee)
-                && Arc::ptr_eq(&row._global_metadata, &second_fee)
-        );
+        assert!(row._metadata.ptr_eq(&first_fee) && row._global_metadata.ptr_eq(&second_fee));
         let latest = row._fresh_metadata.as_ref().unwrap();
         assert_eq!(latest.catalogue.service_port(SERVICE), Some(10002));
         assert!(Arc::ptr_eq(

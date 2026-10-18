@@ -45,6 +45,7 @@ mod future_storage;
 mod intent;
 mod lifecycle;
 mod manual_success;
+mod metadata_lease;
 mod metadata_vec;
 mod observed_route;
 mod owned_box;
@@ -483,8 +484,8 @@ struct ManagedTunnel {
     _ticket: Ticket,
     // Table metadata and the original native retirement owner share one charge.
     // Only removal of both owners releases it; either may outlive the other.
-    _metadata: Arc<OwnedSemaphorePermit>,
-    _global_metadata: Arc<OwnedSemaphorePermit>,
+    _metadata: metadata_lease::Owner,
+    _global_metadata: metadata_lease::Owner,
     _input: Option<candidate_input::Owner>,
     _fresh_metadata: Option<freshness::MetadataOwner>,
 }
@@ -536,9 +537,12 @@ fn managed_metadata_bytes(
     // ManagedTunnel), original key and Vec slot backing in both byte banks.
     // The publication ceiling still counts both route texts. Their independent
     // global owners are subtracted by the caller, leaving the native device fee.
+    // Each independent shared fee root also owns a real two-permit payload;
+    // both banks pay both payloads before either root allocation exists.
     device_bytes
         .checked_add(observed.text_bytes())
         .and_then(|bytes| bytes.checked_add(desired.text_bytes()))
+        .and_then(|bytes| bytes.checked_add(metadata_lease::Lease::pair_bytes()))
         .ok_or_else(overflow)
 }
 
@@ -1551,11 +1555,15 @@ impl TunnelAgentState {
                     }
                 }
             };
-            let metadata = Arc::new(metadata);
-            let global_metadata = Arc::new(global_metadata);
+            let (metadata, global_metadata) = metadata_lease::Lease::from_grants(
+                &self.inner.global_metadata_bytes,
+                &self.inner.metadata_bytes,
+                global_metadata,
+                metadata,
+            )?;
             if let Some(native) = &native {
-                native.retain_metadata(Arc::clone(&metadata))?;
-                native.retain_global_metadata(Arc::clone(&global_metadata))?;
+                native.retain_metadata(metadata.clone())?;
+                native.retain_global_metadata(global_metadata.clone())?;
             }
             if let Some(deadline) = deadline {
                 deadline.check()?;

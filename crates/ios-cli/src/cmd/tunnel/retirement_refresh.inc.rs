@@ -4,8 +4,8 @@ pub(super) struct RefreshProof {
     key: Key,
     stamp: OwnershipStamp,
     handle: Arc<TunnelHandle>,
-    metadata: Arc<OwnedSemaphorePermit>,
-    global_metadata: Arc<OwnedSemaphorePermit>,
+    metadata: super::metadata_lease::Owner,
+    global_metadata: super::metadata_lease::Owner,
     previous: Option<super::freshness::MetadataOwner>,
     _storage: OwnedSemaphorePermit,
 }
@@ -36,8 +36,8 @@ impl NativeLease {
         &self,
         stamp: OwnershipStamp,
         handle: &Arc<TunnelHandle>,
-        metadata: &Arc<OwnedSemaphorePermit>,
-        global_metadata: &Arc<OwnedSemaphorePermit>,
+        metadata: &super::metadata_lease::Owner,
+        global_metadata: &super::metadata_lease::Owner,
         previous: Option<&super::freshness::MetadataOwner>,
         bank: &Arc<Semaphore>,
     ) -> Result<RefreshProof> {
@@ -60,11 +60,11 @@ impl NativeLease {
                 && entry
                     .metadata
                     .as_ref()
-                    .is_some_and(|original| Arc::ptr_eq(original, metadata))
+                    .is_some_and(|original| original.ptr_eq(metadata))
                 && entry
                     .global_metadata
                     .as_ref()
-                    .is_some_and(|original| Arc::ptr_eq(original, global_metadata))
+                    .is_some_and(|original| original.ptr_eq(global_metadata))
                 && same_metadata(entry.fresh_metadata.as_ref(), previous)
                 && handle.is_alive(),
             super::lifecycle::cancelled()
@@ -76,8 +76,8 @@ impl NativeLease {
             key: self.key.clone(),
             stamp,
             handle: Arc::clone(handle),
-            metadata: Arc::clone(metadata),
-            global_metadata: Arc::clone(global_metadata),
+            metadata: metadata.clone(),
+            global_metadata: global_metadata.clone(),
             previous: previous.cloned(),
             _storage: storage,
         })
@@ -107,11 +107,11 @@ impl RefreshProof {
                 && entry
                     .metadata
                     .as_ref()
-                    .is_some_and(|original| Arc::ptr_eq(original, &self.metadata))
+                    .is_some_and(|original| original.ptr_eq(&self.metadata))
                 && entry
                     .global_metadata
                     .as_ref()
-                    .is_some_and(|original| Arc::ptr_eq(original, &self.global_metadata))
+                    .is_some_and(|original| original.ptr_eq(&self.global_metadata))
                 && same_metadata(entry.fresh_metadata.as_ref(), self.previous.as_ref())
                 && self.handle.is_alive(),
             super::lifecycle::cancelled()
@@ -172,11 +172,11 @@ impl RefreshProof {
                 && entry
                     .metadata
                     .as_ref()
-                    .is_some_and(|original| Arc::ptr_eq(original, &self.metadata))
+                    .is_some_and(|original| original.ptr_eq(&self.metadata))
                 && entry
                     .global_metadata
                     .as_ref()
-                    .is_some_and(|original| Arc::ptr_eq(original, &self.global_metadata))
+                    .is_some_and(|original| original.ptr_eq(&self.global_metadata))
                 && same_metadata(entry.fresh_metadata.as_ref(), self.previous.as_ref())
                 && proposed
                     .bank_matches(self.metadata.semaphore(), self.global_metadata.semaphore())

@@ -208,7 +208,8 @@ fn configured_with_discovery(
     let mut state = state(source);
     let charged = std::mem::size_of::<NativeDevice>()
         + actual_publication_destination_bytes()
-        + publication::Life::bytes();
+        + publication::Life::bytes()
+        + metadata_lease::Lease::pair_bytes();
     state.inner.get_mut().unwrap().metadata_bytes = Arc::new(Semaphore::new(charged));
     let native_bytes = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
@@ -225,6 +226,66 @@ fn configured_with_discovery(
     );
     let peak = SourcePeak::new(&state, temporary);
     (state, charged, peak)
+}
+
+#[tokio::test]
+async fn metadata_lease_original_roots_survive_table_removal_and_native_joins_with_independent_refunds(
+) {
+    let expected = baseline();
+    let source = LocalSource::new();
+    let (state, charged, peak) = configured(source.clone());
+    let record = publish(&state, Route::Wifi(None)).await.unwrap();
+    peak.checked();
+    let global = state.inner.global_metadata_bytes.clone();
+    let publication = state.inner.metadata_bytes.clone();
+    let (published_fee, global_fee) = {
+        let table = state.inner.tunnels.read().await;
+        (
+            table[DEVICE]._metadata.clone(),
+            table[DEVICE]._global_metadata.clone(),
+        )
+    };
+    let p_pointer = &*published_fee as *const metadata_lease::Lease;
+    let g_pointer = &*global_fee as *const metadata_lease::Lease;
+    let p_fee = published_fee.num_permits();
+    let g_fee = global_fee.num_permits();
+    assert_eq!(global.available_permits(), 0);
+    assert_eq!(publication.available_permits(), 0);
+    state.clear().await;
+    state.drain_native(OBSERVE).await.unwrap();
+    assert!(source.handle().shutdown_status().is_ok());
+    assert!(
+        recovered(&source, expected).await,
+        "original peer strict EOF/tasks did not recover"
+    );
+    assert_eq!(
+        publication.available_permits(),
+        actual_publication_destination_bytes() + publication::Life::bytes()
+    );
+    let before_g = global.available_permits();
+    let before_p = publication.available_permits();
+    assert_eq!(&*global_fee as *const metadata_lease::Lease, g_pointer);
+    assert_eq!(&*published_fee as *const metadata_lease::Lease, p_pointer);
+    drop(global_fee);
+    assert_eq!(global.available_permits(), before_g + g_fee);
+    assert_eq!(
+        publication.available_permits(),
+        before_p + metadata_lease::Lease::body_bytes()
+    );
+    assert_eq!(&*published_fee as *const metadata_lease::Lease, p_pointer);
+    drop(published_fee);
+    assert_eq!(
+        global.available_permits(),
+        before_g + g_fee + metadata_lease::Lease::body_bytes()
+    );
+    assert_eq!(
+        publication.available_permits(),
+        before_p + metadata_lease::Lease::body_bytes() + p_fee
+    );
+    assert_eq!(publication.available_permits(), charged);
+    assert_eq!(global.available_permits(), charged + route_body_bytes());
+    drop(record);
+    state.notify_shutdown();
 }
 
 #[tokio::test]
