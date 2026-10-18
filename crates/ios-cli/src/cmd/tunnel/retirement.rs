@@ -20,6 +20,28 @@ use tokio::time::{error::Elapsed, Instant};
 pub(super) const MAX_NATIVE_OWNERS: usize = 4096;
 type Cause = Arc<dyn Error + Send + Sync>;
 
+// A census owns each fresh immutable native snapshot in its already-admitted
+// array slot. Historical roots retain their existing independent shared owners.
+pub(super) enum PayloadOutcome {
+    History(Arc<TunnelError>),
+    Current(TunnelError),
+}
+
+impl std::ops::Deref for PayloadOutcome {
+    type Target = TunnelError;
+    fn deref(&self) -> &TunnelError {
+        match self {
+            Self::History(original) => original,
+            Self::Current(original) => original,
+        }
+    }
+}
+impl AsRef<TunnelError> for PayloadOutcome {
+    fn as_ref(&self) -> &TunnelError {
+        self
+    }
+}
+
 /// Only call with this original handle's directly returned shutdown error.
 /// First outer typed report wins, including false: a foreign report nested in
 /// the native primary must never certify the current runtime. No source text,
@@ -484,7 +506,7 @@ impl Registry {
 
     pub(super) fn payload_outcomes(
         &self,
-    ) -> Result<(usize, super::metadata_vec::KnownVec<Arc<TunnelError>>)> {
+    ) -> Result<(usize, super::metadata_vec::KnownVec<PayloadOutcome>)> {
         let (mut errors, handles) = {
             let state = self.lock();
             let count = state
@@ -505,7 +527,7 @@ impl Registry {
             handles.reserve(count)?;
             // Both actual backings are admitted before cloning original roots.
             for error in state.first_failure.iter().chain(state.first_expiry.iter()) {
-                errors.push_reserved(Arc::clone(error));
+                errors.push_reserved(PayloadOutcome::History(Arc::clone(error)));
             }
             for handle in state
                 .slots
@@ -525,7 +547,7 @@ impl Registry {
                     unjoined += 1;
                 }
                 if report.is_some_and(TunnelShutdownFailure::has_retained_outcomes) {
-                    errors.push_reserved(Arc::new(error));
+                    errors.push_reserved(PayloadOutcome::Current(error));
                 }
             }
         }

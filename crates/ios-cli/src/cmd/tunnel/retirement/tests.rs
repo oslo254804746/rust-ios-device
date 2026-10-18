@@ -677,7 +677,10 @@ fn native_census_backing_refusal_keeps_original_history_and_last_root_grant() {
     drop(held);
     let (unjoined, roots) = registry.payload_outcomes().unwrap();
     assert_eq!(unjoined, 0);
-    assert!(Arc::ptr_eq(&roots.as_slice()[0], &original));
+    assert!(matches!(
+        &roots.as_slice()[0],
+        PayloadOutcome::History(kept) if Arc::ptr_eq(kept, &original)
+    ));
     assert!(bank.available_permits() < before);
     drop(roots);
     assert_eq!(bank.available_permits(), before);

@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [native census 当前快照存储](validation/tunnel-native-census-inline-2026-10-18.md)
+查询前按实际数组槽准入，当前原错误 inline，历史同根与旧 joins 快照冻结保持。
+新增1/census3/retirement35/attribution9/完整tunnel746/strict CLI/build/Source0
+通过；L02继续全审计，主项23/6/待核查、有效30/Q04排除不变，required native report 另行收口。
+
 2026-10-18：L02 [server 自有 future/phase inline 存储](validation/tunnel-server-inline-owners-2026-10-18.md)
 移除两个 Box 和阶段 Arc payload，原 scanner 在 history/cleanup 前实际析构，
 阻塞清理期间的 frame/许可及原 native 收尾已验。新增1/server8/native2/scan7/

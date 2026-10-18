@@ -8977,6 +8977,15 @@ scan outcomes7/完整tunnel745/上游10/strict CLI/build/Source0通过，见
 及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
 有效30与Q04全部排除保持，仅本地提交。
 
+## 2026-10-18 L02 native census current snapshot storage
+
+当前原 TunnelError 放入已付费数组槽，状态查询后无新 CLI Arc wrapper；
+历史同根、原 IO 与旧 joins 快照冻结保持。新增1/census3/retirement35/
+attribution9/完整tunnel746/上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-native-census-inline-2026-10-18.md)。required native
+report/private及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项
+23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
 ## 2026-10-18 L02 publication two-budget body
 
 Life 全部 table/target/snapshot 根使用双预算 paired owner，原字段及时结束，
