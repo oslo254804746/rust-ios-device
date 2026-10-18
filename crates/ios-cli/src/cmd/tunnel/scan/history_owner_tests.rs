@@ -27,10 +27,10 @@ impl Drop for Probe {
 #[tokio::test]
 async fn history_owner_parallel_last_snapshots_and_census_keep_original_root_and_independent_fees()
 {
-    let total = capsule_reservation_bytes() + 128;
+    let total = Outcomes::body_bytes() + capsule_reservation_bytes() + 128;
     let bank = Arc::new(Semaphore::new(total));
     let drops = Arc::new(AtomicUsize::new(0));
-    let outcomes = Outcomes::with_metadata(bank.clone());
+    let outcomes = Outcomes::with_metadata(bank.clone()).unwrap();
     let lock = tokio::sync::Mutex::new(());
     let session = outcomes.begin(lock.lock().await).unwrap();
     let original = anyhow::Error::new(std::io::Error::new(
@@ -94,9 +94,9 @@ async fn history_owner_parallel_last_snapshots_and_census_keep_original_root_and
 #[tokio::test]
 async fn history_owner_zero_quota_closed_bank_snapshots_keep_frozen_order_and_original_error_pointer(
 ) {
-    let total = 2 * capsule_reservation_bytes();
+    let total = Outcomes::body_bytes() + 2 * capsule_reservation_bytes();
     let bank = Arc::new(Semaphore::new(total));
-    let outcomes = Outcomes::with_metadata(bank.clone());
+    let outcomes = Outcomes::with_metadata(bank.clone()).unwrap();
     let first_lock = tokio::sync::Mutex::new(());
     let second_lock = tokio::sync::Mutex::new(());
     let first = outcomes.begin(first_lock.lock().await).unwrap();

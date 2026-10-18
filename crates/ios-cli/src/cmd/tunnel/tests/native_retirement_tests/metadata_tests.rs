@@ -193,8 +193,9 @@ fn configured_with_discovery(
         + actual_publication_destination_bytes()
         + publication::Life::bytes();
     Arc::get_mut(&mut state.inner).unwrap().metadata_bytes = Arc::new(Semaphore::new(charged));
-    let native_bytes =
-        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
+    let native_bytes = state.inner.native.structural_bytes()
+        + reconnect::Ledger::structural_bytes()
+        + scan::Outcomes::body_bytes();
     state.set_global_metadata_limit(
         native_bytes
             + charged
@@ -339,8 +340,9 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
     let snapshot_size =
         devices.capacity() * std::mem::size_of::<source::UsbDevice>() + devices[0].udid.capacity();
     let total = charged + snapshot_size + route_body_bytes() - 1;
-    let native_bytes =
-        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
+    let native_bytes = state.inner.native.structural_bytes()
+        + reconnect::Ledger::structural_bytes()
+        + scan::Outcomes::body_bytes();
     state.set_global_metadata_limit(
         native_bytes + (total + Lifecycle::initial_metadata_bytes(DEVICE)) + temporary,
     );

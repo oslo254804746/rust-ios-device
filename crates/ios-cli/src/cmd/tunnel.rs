@@ -430,7 +430,7 @@ struct TunnelAgentInner {
     ready: RwLock<bool>,
     lifecycle: Lifecycle,
     scan_lock: Mutex<()>,
-    scan_outcomes: Arc<scan::Outcomes>,
+    scan_outcomes: scan::OutcomesOwner,
     scan_timeout: Duration,
     source: Arc<dyn Source>,
     connect_timeout: Duration,
@@ -828,7 +828,7 @@ impl TunnelAgentState {
                 ready: RwLock::new(false),
                 lifecycle: Lifecycle::with_metadata(Arc::clone(&global_metadata_bytes)),
                 scan_lock: Mutex::new(()),
-                scan_outcomes: scan::Outcomes::with_metadata(global_metadata_bytes),
+                scan_outcomes: scan::Outcomes::with_metadata(global_metadata_bytes)?,
                 scan_timeout: TUNNEL_SCAN_TIMEOUT,
                 source,
                 connect_timeout,
@@ -871,7 +871,7 @@ impl TunnelAgentState {
         inner.retry =
             reconnect::Ledger::with_metadata(inner.retry.policy().clone(), Arc::clone(&bank))
                 .unwrap();
-        inner.scan_outcomes = scan::Outcomes::with_metadata(Arc::clone(&bank));
+        inner.scan_outcomes = scan::Outcomes::with_metadata(Arc::clone(&bank)).unwrap();
         assert!(inner.failed_attempts.get_mut().is_empty());
         *inner.failed_attempts.get_mut() = failure_table::Table::new(&bank);
         assert!(inner.tunnels.get_mut().is_empty());

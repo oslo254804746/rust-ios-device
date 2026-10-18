@@ -1,6 +1,14 @@
 use super::*;
 use tokio::sync::Mutex;
 
+fn fixture(child_bytes: usize) -> (Arc<Semaphore>, OutcomesOwner) {
+    // Fund the real coordinator in addition to the original exact child quota.
+    let bank = Arc::new(Semaphore::new(Outcomes::body_bytes() + child_bytes));
+    let outcomes = Outcomes::with_metadata(bank.clone()).unwrap();
+    assert_eq!(bank.available_permits(), child_bytes);
+    (bank, outcomes)
+}
+
 struct Original(Arc<()>, Vec<u8>);
 
 impl std::fmt::Debug for Original {
@@ -35,8 +43,7 @@ fn same(error: &anyhow::Error, id: &Arc<()>, pointer: *const Original) {
 async fn scan_capsule_exact_preflight_and_one_byte_rejection_leave_slots_empty() {
     let bytes = capsule_reservation_bytes();
     let lock = Mutex::new(());
-    let bank = Arc::new(Semaphore::new(bytes - 1));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes - 1);
     let error = outcomes.begin(lock.lock().await).err().unwrap();
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
@@ -51,13 +58,14 @@ async fn scan_capsule_exact_preflight_and_one_byte_rejection_leave_slots_empty()
     session.finish(Ok(Some(()))).unwrap();
     assert_eq!(bank.available_permits(), bytes);
     assert_eq!(outcomes.payload_history().0, 0);
+    drop(outcomes);
+    assert_eq!(bank.available_permits(), (bytes) + Outcomes::body_bytes());
 }
 
 #[tokio::test]
 async fn scan_capsule_plain_original_adds_no_context_and_refunds_unused_reservations() {
     let bytes = capsule_reservation_bytes();
-    let bank = Arc::new(Semaphore::new(bytes));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes);
     let lock = Mutex::new(());
     let session = outcomes.begin(lock.lock().await).unwrap();
     let (primary, id, pointer) = original();
@@ -68,13 +76,14 @@ async fn scan_capsule_plain_original_adds_no_context_and_refunds_unused_reservat
     assert_eq!(error.chain().count(), depth);
     assert_eq!(bank.available_permits(), bytes);
     assert!(outcomes.history().is_none());
+    drop(outcomes);
+    assert_eq!(bank.available_permits(), (bytes) + Outcomes::body_bytes());
 }
 
 #[tokio::test]
 async fn scan_capsule_compound_originals_and_payload_charge_follow_caller_until_drop() {
     let bytes = capsule_reservation_bytes();
-    let bank = Arc::new(Semaphore::new(bytes));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes);
     let lock = Mutex::new(());
     let session = outcomes.begin(lock.lock().await).unwrap();
     let (primary, id, pointer) = original();
@@ -104,17 +113,16 @@ async fn scan_capsule_compound_originals_and_payload_charge_follow_caller_until_
     drop(outcomes);
     assert_eq!(
         bank.available_permits(),
-        bytes - std::mem::size_of::<SourceContext>()
+        bytes + Outcomes::body_bytes() - std::mem::size_of::<SourceContext>()
     );
     drop(error);
-    assert_eq!(bank.available_permits(), bytes);
+    assert_eq!(bank.available_permits(), bytes + Outcomes::body_bytes());
 }
 
 #[tokio::test]
 async fn scan_capsule_single_source_completion_trims_max_and_keeps_typed_secondary() {
     let bytes = capsule_reservation_bytes();
-    let bank = Arc::new(Semaphore::new(bytes));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes);
     let lock = Mutex::new(());
     let session = outcomes.begin(lock.lock().await).unwrap();
     let (primary, id, pointer) = original();
@@ -134,13 +142,14 @@ async fn scan_capsule_single_source_completion_trims_max_and_keeps_typed_seconda
     );
     drop(error);
     assert_eq!(bank.available_permits(), bytes);
+    drop(outcomes);
+    assert_eq!(bank.available_permits(), (bytes) + Outcomes::body_bytes());
 }
 
 #[tokio::test]
 async fn scan_capsule_terminal_take_cleanup_finish_keeps_exact_chain_without_second_allocation() {
     let bytes = capsule_reservation_bytes();
-    let bank = Arc::new(Semaphore::new(bytes));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes);
     let lock = Mutex::new(());
     let session = outcomes.begin(lock.lock().await).unwrap();
     let (primary, id, pointer) = original();
@@ -165,13 +174,14 @@ async fn scan_capsule_terminal_take_cleanup_finish_keeps_exact_chain_without_sec
     assert!(outcomes.history().is_none());
     drop(error);
     assert_eq!(bank.available_permits(), bytes);
+    drop(outcomes);
+    assert_eq!(bank.available_permits(), (bytes) + Outcomes::body_bytes());
 }
 
 #[tokio::test]
 async fn scan_capsule_abandoned_context_and_history_refund_only_after_last_shared_root() {
     let bytes = capsule_reservation_bytes();
-    let bank = Arc::new(Semaphore::new(bytes));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes);
     let lock = Mutex::new(());
     let session = outcomes.begin(lock.lock().await).unwrap();
     let (primary, id, pointer) = original();
@@ -188,16 +198,18 @@ async fn scan_capsule_abandoned_context_and_history_refund_only_after_last_share
     drop(outcomes);
     drop(roots);
     // A bare original does not retain the independent snapshot body fee.
-    assert_eq!(bank.available_permits(), bytes - originals);
+    assert_eq!(
+        bank.available_permits(),
+        bytes + Outcomes::body_bytes() - originals
+    );
     drop(copy);
-    assert_eq!(bank.available_permits(), bytes);
+    assert_eq!(bank.available_permits(), bytes + Outcomes::body_bytes());
 }
 
 #[tokio::test]
 async fn scan_capsule_consumed_context_keeps_conservative_reservation_until_value_drops() {
     let bytes = capsule_reservation_bytes();
-    let bank = Arc::new(Semaphore::new(bytes));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes);
     let lock = Mutex::new(());
     let session = outcomes.begin(lock.lock().await).unwrap();
     session.retain(Source::Usb, original().0);
@@ -215,13 +227,14 @@ async fn scan_capsule_consumed_context_keeps_conservative_reservation_until_valu
     );
     drop(context);
     assert_eq!(bank.available_permits(), bytes);
+    drop(outcomes);
+    assert_eq!(bank.available_permits(), (bytes) + Outcomes::body_bytes());
 }
 
 #[tokio::test]
 async fn scan_capsule_foreign_context_does_not_waive_new_scan_payload_or_duplicate_layers() {
     let bytes = capsule_reservation_bytes();
-    let bank = Arc::new(Semaphore::new(bytes * 2));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes * 2);
     let lock = Mutex::new(());
     let first = outcomes.begin(lock.lock().await).unwrap();
     first.retain(Source::Usb, original().0);
@@ -239,13 +252,17 @@ async fn scan_capsule_foreign_context_does_not_waive_new_scan_payload_or_duplica
     );
     drop(error);
     assert_eq!(bank.available_permits(), 2 * bytes);
+    drop(outcomes);
+    assert_eq!(
+        bank.available_permits(),
+        (bytes * 2) + Outcomes::body_bytes()
+    );
 }
 
 #[tokio::test]
 async fn scan_history_prepaid_snapshot_survives_zero_quota_repeated_reads_and_last_owner() {
     let bytes = capsule_reservation_bytes();
-    let bank = Arc::new(Semaphore::new(bytes));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes);
     let lock = Mutex::new(());
     let session = outcomes.begin(lock.lock().await).unwrap();
     let (primary, id, pointer) = original();
@@ -274,22 +291,23 @@ async fn scan_history_prepaid_snapshot_survives_zero_quota_repeated_reads_and_la
     drop(unchanged);
     drop(outcomes);
     drop(first);
-    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(bank.available_permits(), Outcomes::body_bytes());
     same(second[0].original(), &id, pointer);
     drop(second);
     assert_eq!(
         bank.available_permits(),
-        std::mem::size_of::<AbandonedScan>() + std::mem::size_of::<HistorySnapshot>()
+        std::mem::size_of::<AbandonedScan>()
+            + std::mem::size_of::<HistorySnapshot>()
+            + Outcomes::body_bytes()
     );
     drop(held);
-    assert_eq!(bank.available_permits(), bytes);
+    assert_eq!(bank.available_permits(), bytes + Outcomes::body_bytes());
 }
 
 #[tokio::test]
 async fn scan_history_late_closed_bank_drop_keeps_slot_order_and_frozen_earlier_snapshot() {
     let bytes = capsule_reservation_bytes() * 2;
-    let bank = Arc::new(Semaphore::new(bytes));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes);
     // Independent guards exercise order even though production scans serialize.
     let first_lock = Mutex::new(());
     let second_lock = Mutex::new(());
@@ -321,14 +339,13 @@ async fn scan_history_late_closed_bank_drop_keeps_slot_order_and_frozen_earlier_
     drop(newer);
     same(older[0].original(), &second_id, second_pointer);
     drop(older);
-    assert_eq!(bank.available_permits(), bytes);
+    assert_eq!(bank.available_permits(), bytes + Outcomes::body_bytes());
 }
 
 #[tokio::test]
 async fn scan_history_census_exact_backing_refund_preserves_prepaid_snapshot() {
     let bytes = capsule_reservation_bytes() + 64;
-    let bank = Arc::new(Semaphore::new(bytes));
-    let outcomes = Outcomes::with_metadata(Arc::clone(&bank));
+    let (bank, outcomes) = fixture(bytes);
     let lock = Mutex::new(());
     let session = outcomes.begin(lock.lock().await).unwrap();
     session.retain(Source::Usb, original().0);
@@ -348,5 +365,5 @@ async fn scan_history_census_exact_backing_refund_preserves_prepaid_snapshot() {
     assert_eq!(bank.available_permits(), before);
     drop(outcomes);
     drop(history);
-    assert_eq!(bank.available_permits(), bytes);
+    assert_eq!(bank.available_permits(), bytes + Outcomes::body_bytes());
 }

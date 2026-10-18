@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [Outcomes 初始化自身存储](validation/tunnel-outcomes-initialization-2026-10-18.md)
+在原池先准入，manager/Session 使用封闭 owner，独立 snapshot 与最后退款已验；
+完整 tunnel 718/0 FAIL/2 原 ignored、strict CLI/build/Source0 通过。L02 继续全审计，
+主项 23 交付/6 缺开发/L02 待核查、有效 30 和 Q04 全部排除不变。
+
 更新：2026-10-18。用户口径允许完整实现、仅等待运行验证的任务计开发完成；
 代码、协议、生产接线、工具或收尾尚缺不能计完成。实际 NOT_RUN 不改成 PASS。
 Q04及全部子项排除，有效任务分母保持30。
