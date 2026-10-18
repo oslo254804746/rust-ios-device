@@ -254,12 +254,15 @@ impl ConnectionDeadline {
     pub(super) async fn run<T>(&self, work: impl Future<Output = Result<T>>) -> Result<T> {
         tokio::pin!(work);
         let mut at = self.effective();
-        let mut expiry = Box::pin(tokio::time::timeout_at(at, std::future::pending::<T>()));
+        let expiry = tokio::time::timeout_at(at, std::future::pending::<T>());
+        tokio::pin!(expiry);
         std::future::poll_fn(|cx| {
             let before = self.effective();
             if before != at {
                 at = before;
-                expiry = Box::pin(tokio::time::timeout_at(at, std::future::pending::<T>()));
+                // Pin::set drops the old timer in place before replacing it;
+                // neither initial admission nor a clamp allocates a timer Box.
+                expiry.set(tokio::time::timeout_at(at, std::future::pending::<T>()));
             }
             // Poll only an independent pending timer, never a late work future.
             if let std::task::Poll::Ready(expired) = expiry.as_mut().poll(cx) {
@@ -279,7 +282,7 @@ impl ConnectionDeadline {
             let after = self.effective();
             if after != at {
                 at = after;
-                expiry = Box::pin(tokio::time::timeout_at(at, std::future::pending::<T>()));
+                expiry.set(tokio::time::timeout_at(at, std::future::pending::<T>()));
             }
             // Register a newly clamped timer before returning Pending. A Source
             // may have begun the episode while this very poll was in progress.
@@ -943,6 +946,10 @@ mod desired_tests;
 #[cfg(test)]
 #[path = "lifecycle/global_epoch_tests.rs"]
 mod global_epoch_tests;
+
+#[cfg(test)]
+#[path = "lifecycle/deadline_timer_tests.rs"]
+mod deadline_timer_tests;
 
 #[cfg(test)]
 mod tests {
