@@ -8,7 +8,7 @@ use std::future::{pending, poll_fn, Future};
 use std::num::NonZeroU64;
 #[cfg(test)]
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock};
 use std::task::Poll;
 use std::time::Duration;
 
@@ -18,12 +18,42 @@ use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{error::Elapsed, Instant};
 
 pub(super) const MAX_NATIVE_OWNERS: usize = 4096;
-type Cause = Arc<dyn Error + Send + Sync>;
+pub(super) struct NativeReport {
+    original: OnceLock<TunnelError>,
+    _storage: OwnedSemaphorePermit,
+}
+
+type NativeReportOwner = super::shared_value::Shared<NativeReport>;
+
+impl NativeReport {
+    pub(super) fn body_bytes() -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn empty(storage: OwnedSemaphorePermit) -> NativeReportOwner {
+        assert_eq!(storage.num_permits(), Self::body_bytes());
+        NativeReportOwner::new(Self {
+            original: OnceLock::new(),
+            _storage: storage,
+        })
+    }
+
+    fn capture(&self, original: TunnelError) {
+        assert!(
+            self.original.set(original).is_ok(),
+            "native history root captured once"
+        );
+    }
+
+    fn error(&self) -> &TunnelError {
+        self.original.get().expect("captured native history")
+    }
+}
 
 // A census owns each fresh immutable native snapshot in its already-admitted
 // array slot. Historical roots retain their existing independent shared owners.
 pub(super) enum PayloadOutcome {
-    History(Arc<TunnelError>),
+    History(NativeReportOwner),
     Current(TunnelError),
 }
 
@@ -31,7 +61,7 @@ impl std::ops::Deref for PayloadOutcome {
     type Target = TunnelError;
     fn deref(&self) -> &TunnelError {
         match self {
-            Self::History(original) => original,
+            Self::History(original) => original.error(),
             Self::Current(original) => original,
         }
     }
@@ -124,8 +154,8 @@ struct State {
     retired: u64,
     // Fixed length after construction. Never push, evict or resize.
     slots: Vec<Option<Entry>>,
-    first_failure: Option<Arc<TunnelError>>,
-    first_expiry: Option<Arc<TunnelError>>,
+    first_failure: Option<NativeReportOwner>,
+    first_expiry: Option<NativeReportOwner>,
     first_orphan_freshness: Option<super::freshness::ReceiptOwner>,
     additional_failed_owners: u64,
 }
@@ -256,6 +286,10 @@ pub(super) struct Registry {
     drains: Mutex<()>,
     changed: Notify,
     byte_bank: Arc<Semaphore>,
+    // The only two immutable historical snapshots are paid before ownership.
+    // Current per-attempt snapshots live inline and never reuse these values.
+    error_stock: NativeReportOwner,
+    expiry_stock: NativeReportOwner,
     // Backing and application-owned payload fees outlive the fields they own.
     _slots_storage: OwnedSemaphorePermit,
     _body_storage: OwnedSemaphorePermit,
@@ -277,10 +311,17 @@ impl Registry {
     fn allocate(bank: &Arc<Semaphore>, capacity: usize) -> Result<RegistryOwner> {
         let body_storage =
             super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
+        let mut reports_storage =
+            super::admission::known_metadata_charge(bank, 2 * NativeReport::body_bytes())?;
         let allocation = super::metadata_vec::exact_backing(bank, capacity)?;
         let slots_storage = allocation.storage;
         let mut slots = allocation.values;
         slots.resize_with(capacity, || None);
+        let error_storage = reports_storage
+            .split(NativeReport::body_bytes())
+            .expect("prepaid native error root");
+        let error_stock = NativeReport::empty(error_storage);
+        let expiry_stock = NativeReport::empty(reports_storage);
         Ok(RegistryOwner::new(Self {
             state: StdMutex::new(State {
                 sealed: false,
@@ -295,6 +336,8 @@ impl Registry {
             drains: Mutex::new(()),
             changed: Notify::new(),
             byte_bank: Arc::clone(bank),
+            error_stock,
+            expiry_stock,
             _slots_storage: slots_storage,
             _body_storage: body_storage,
         }))
@@ -314,6 +357,7 @@ impl Registry {
     pub(super) fn structural_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.lock().slots.capacity() * std::mem::size_of::<Option<Entry>>()
+            + 2 * NativeReport::body_bytes()
     }
 
     #[cfg(test)]
@@ -324,17 +368,45 @@ impl Registry {
                 && state.slots.iter().all(Option::is_none)
                 && state.first_failure.is_none()
                 && state.first_expiry.is_none()
-                && state.first_orphan_freshness.is_none(),
+                && state.first_orphan_freshness.is_none()
+                && self.error_stock.original.get().is_none()
+                && self.expiry_stock.original.get().is_none()
+                && self.error_stock.strong_count() == 1
+                && self.expiry_stock.strong_count() == 1,
             "native registry bank can only change before ownership/history"
         );
         let mut replacement = super::admission::known_metadata_charge(
             bank,
             std::mem::size_of::<Self>()
-                + state.slots.capacity() * std::mem::size_of::<Option<Entry>>(),
+                + state.slots.capacity() * std::mem::size_of::<Option<Entry>>()
+                + 2 * NativeReport::body_bytes(),
         )?;
         let body = replacement
             .split(std::mem::size_of::<Self>())
             .expect("reserved registry body");
+        let error_body = replacement
+            .split(NativeReport::body_bytes())
+            .expect("reserved native error root");
+        let expiry_body = replacement
+            .split(NativeReport::body_bytes())
+            .expect("reserved native expiry root");
+        let old_error = std::mem::replace(
+            &mut self
+                .error_stock
+                .get_mut()
+                .expect("unique unused native error root")
+                ._storage,
+            error_body,
+        );
+        let old_expiry = std::mem::replace(
+            &mut self
+                .expiry_stock
+                .get_mut()
+                .expect("unique unused native expiry root")
+                ._storage,
+            expiry_body,
+        );
+        drop((old_error, old_expiry));
         self._slots_storage = replacement;
         self._body_storage = body;
         self.byte_bank = Arc::clone(bank);
@@ -499,7 +571,7 @@ impl Registry {
             historical_failure_class: state
                 .first_failure
                 .as_ref()
-                .map(|error| ios_core::classify_error(error.as_ref())),
+                .map(|error| ios_core::classify_error(error.error())),
             additional_failed_owners: state.additional_failed_owners,
         }
     }
@@ -527,7 +599,7 @@ impl Registry {
             handles.reserve(count)?;
             // Both actual backings are admitted before cloning original roots.
             for error in state.first_failure.iter().chain(state.first_expiry.iter()) {
-                errors.push_reserved(PayloadOutcome::History(Arc::clone(error)));
+                errors.push_reserved(PayloadOutcome::History(error.clone()));
             }
             for handle in state
                 .slots
@@ -582,8 +654,7 @@ impl Registry {
             if let Err(error) = handle.shutdown_status() {
                 if shutdown_report(&error).is_some_and(TunnelShutdownFailure::has_retained_outcomes)
                 {
-                    let error = Arc::new(error);
-                    self.record_failure(&key, Arc::clone(&error));
+                    let error = self.record_failure(&key, error);
                     if let Some(attempt) = attempt {
                         attempt
                             .lock()
@@ -633,7 +704,7 @@ impl Registry {
         self.changed.notify_waiters();
     }
 
-    fn record_failure(&self, key: &Key, error: Arc<TunnelError>) {
+    fn record_failure(&self, key: &Key, error: TunnelError) -> PayloadOutcome {
         let mut state = self.lock();
         let first_for_owner = Self::entry_mut(&mut state, key).is_some_and(|entry| {
             if entry.failure_observed {
@@ -651,20 +722,32 @@ impl Registry {
         // at most the first expiry and first non-expiry native report. This is
         // separate from the distinct failed-owner observation count.
         let expiry = shutdown_primary_is_elapsed(&error);
-        if expiry && state.first_expiry.is_none() {
-            state.first_expiry = Some(Arc::clone(&error));
-        }
-        if state.first_failure.is_none()
-            || (!expiry
-                && state
-                    .first_failure
-                    .as_ref()
-                    .is_some_and(|old| shutdown_primary_is_elapsed(old)))
+        let retained = if expiry && state.first_expiry.is_none() {
+            self.expiry_stock.capture(error);
+            let original = self.expiry_stock.clone();
+            state.first_expiry = Some(original.clone());
+            if state.first_failure.is_none() {
+                state.first_failure = Some(original.clone());
+            }
+            PayloadOutcome::History(original)
+        } else if !expiry
+            && state
+                .first_failure
+                .as_ref()
+                .map_or(true, |old| shutdown_primary_is_elapsed(old.error()))
         {
-            state.first_failure = Some(error);
-        }
+            self.error_stock.capture(error);
+            let original = self.error_stock.clone();
+            state.first_failure = Some(original.clone());
+            PayloadOutcome::History(original)
+        } else {
+            // Preserve this newly obtained immutable snapshot in the caller's
+            // original frame, without rewriting history or allocating a root.
+            PayloadOutcome::Current(error)
+        };
         // This method only records evidence. Its caller may release an Err
         // owner solely with the first outer report's joins_complete() result.
+        retained
     }
 
     /// Original bounded history remains available after a monitor releases a
@@ -672,11 +755,11 @@ impl Registry {
     pub(super) fn historical_failure(&self) -> Option<HistoryFailure> {
         let state = self.lock();
         state.first_failure.as_ref().map(|primary| HistoryFailure {
-            primary: Arc::clone(primary),
+            primary: primary.clone(),
             expiry: state
                 .first_expiry
                 .as_ref()
-                .filter(|expiry| !Arc::ptr_eq(expiry, primary))
+                .filter(|expiry| !expiry.ptr_eq(primary))
                 .cloned(),
         })
     }
@@ -736,8 +819,7 @@ impl Registry {
                             }
                             Err(error) => {
                                 let complete = shutdown_joins_certified(&error);
-                                let error = Arc::new(error);
-                                self.record_failure(&key, Arc::clone(&error));
+                                let error = self.record_failure(&key, error);
                                 evidence
                                     .lock()
                                     .unwrap_or_else(|p| p.into_inner())
@@ -794,18 +876,14 @@ impl Registry {
         elapsed: Option<Elapsed>,
         selected: usize,
     ) -> DrainFailure {
-        let elapsed = elapsed.map(Arc::new);
-        let (primary, additional_failures): (Cause, u64) = {
-            let current = attempt.lock().unwrap_or_else(|p| p.into_inner());
-            let primary = match &current.first {
-                Some(native) => Arc::clone(native) as Cause,
-                None => elapsed
-                    .as_ref()
-                    .expect("failure requires native error or actual timer")
-                    .clone() as Cause,
-            };
-            (primary, current.additional)
+        let (primary, additional_failures) = {
+            let mut current = attempt.lock().unwrap_or_else(|p| p.into_inner());
+            (current.first.take(), current.additional)
         };
+        assert!(
+            primary.is_some() || elapsed.is_some(),
+            "failure requires native error or actual timer"
+        );
         DrainFailure {
             primary,
             elapsed,
@@ -974,12 +1052,12 @@ enum SelectedOwner {
 
 #[derive(Default)]
 struct AttemptEvidence {
-    first: Option<Arc<TunnelError>>,
+    first: Option<PayloadOutcome>,
     additional: u64,
 }
 
 impl AttemptEvidence {
-    fn record(&mut self, error: Arc<TunnelError>) {
+    fn record(&mut self, error: PayloadOutcome) {
         if self.first.is_none() {
             self.first = Some(error);
         } else {
@@ -1006,8 +1084,8 @@ pub(super) struct DrainReport {
 /// Immutable result for this drain attempt. Historical registry evidence is
 /// separate; an earlier attempt Elapsed never becomes this attempt's clock.
 pub(super) struct DrainFailure {
-    primary: Cause,
-    elapsed: Option<Arc<Elapsed>>,
+    primary: Option<PayloadOutcome>,
+    elapsed: Option<Elapsed>,
     selected: usize,
     additional_failures: u64,
     snapshot: Snapshot,
@@ -1015,11 +1093,17 @@ pub(super) struct DrainFailure {
 
 impl DrainFailure {
     pub(super) fn primary(&self) -> &(dyn Error + 'static) {
-        self.primary.as_ref()
+        match &self.primary {
+            Some(native) => native.as_ref(),
+            None => self
+                .elapsed
+                .as_ref()
+                .expect("actual independent retirement timer"),
+        }
     }
     #[cfg(test)]
     pub(super) fn elapsed(&self) -> Option<&Elapsed> {
-        self.elapsed.as_deref()
+        self.elapsed.as_ref()
     }
     #[cfg(test)]
     pub(super) fn snapshot(&self) -> Snapshot {
@@ -1060,16 +1144,16 @@ impl Error for DrainFailure {
 }
 
 pub(super) struct HistoryFailure {
-    primary: Arc<TunnelError>,
-    expiry: Option<Arc<TunnelError>>,
+    primary: NativeReportOwner,
+    expiry: Option<NativeReportOwner>,
 }
 
 impl HistoryFailure {
     pub(super) fn primary(&self) -> &TunnelError {
-        self.primary.as_ref()
+        self.primary.error()
     }
     pub(super) fn expiry(&self) -> Option<&TunnelError> {
-        self.expiry.as_deref()
+        self.expiry.as_ref().map(|original| original.error())
     }
 }
 
@@ -1099,6 +1183,9 @@ impl Error for HistoryFailure {
 mod metadata_tests;
 #[cfg(test)]
 mod native_tests;
+#[cfg(test)]
+#[path = "retirement/report_body_tests.rs"]
+mod report_body_tests;
 
 #[cfg(test)]
 mod tests;

@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [required native report 预付存储](validation/tunnel-native-report-preflight-2026-10-18.md)
+原两类历史根创建前准入，当前 attempt/Elapsed 内联；闭池原 IO、不可变 joins
+快照及最后退款已验。新增3/retirement38/native CLI105/完整tunnel749/strict CLI/
+build/Source0通过；L02继续全审计，主项23/6/待核查、有效30与Q04全部排除不变。
+
 2026-10-18：L02 [native census 当前快照存储](validation/tunnel-native-census-inline-2026-10-18.md)
 查询前按实际数组槽准入，当前原错误 inline，历史同根与旧 joins 快照冻结保持。
 新增1/census3/retirement35/attribution9/完整tunnel746/strict CLI/build/Source0

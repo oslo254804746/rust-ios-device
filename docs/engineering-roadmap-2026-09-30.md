@@ -8986,6 +8986,15 @@ attribution9/完整tunnel746/上游10/strict CLI/build/Source0通过，见
 report/private及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项
 23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
 
+## 2026-10-18 L02 native report preflight and inline attempt values
+
+原两类历史根在 native ownership 前实际准入，当前报告和原 Elapsed 内联，
+不改原 IO/每次 joins 快照/历史优先级或在错误取得后申请额度。新增3/retirement38/
+native CLI105/attribution9/完整tunnel749/上游10/strict CLI/build/Source0通过，
+见[验证](validation/tunnel-native-report-preflight-2026-10-18.md)。terminal/private
+及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
+有效30与Q04全部排除保持，仅本地提交。
+
 ## 2026-10-18 L02 publication two-budget body
 
 Life 全部 table/target/snapshot 根使用双预算 paired owner，原字段及时结束，
