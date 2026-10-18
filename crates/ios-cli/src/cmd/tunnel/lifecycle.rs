@@ -45,7 +45,7 @@ struct DeviceGate {
     _metadata: OwnedSemaphorePermit,
 }
 
-type DeviceRow = Arc<DeviceGate>;
+type DeviceRow = super::shared_value::Shared<DeviceGate>;
 
 pub(super) struct DesiredRow {
     pub(super) udid: String,
@@ -65,7 +65,7 @@ struct DeviceTable {
 }
 
 impl DeviceTable {
-    fn get(&self, udid: &str) -> Option<&Arc<DeviceGate>> {
+    fn get(&self, udid: &str) -> Option<&DeviceRow> {
         self.rows.iter().find(|gate| gate.udid == udid)
     }
 
@@ -93,7 +93,7 @@ impl DeviceTable {
 
 #[derive(Clone)]
 pub(super) struct Ticket {
-    gate: Arc<DeviceGate>,
+    gate: DeviceRow,
     generation: Arc<()>,
     shutdown: watch::Receiver<Option<Arc<()>>>,
     shutdown_generation: Arc<()>,
@@ -370,7 +370,7 @@ impl Lifecycle {
                 if devices.rows.len() >= MAX_DEVICE_GATES {
                     devices
                         .rows
-                        .retain(|gate| Arc::strong_count(gate) > 1 || gate.intent.persistent());
+                        .retain(|gate| gate.strong_count() > 1 || gate.intent.persistent());
                     anyhow::ensure!(
                         devices.rows.len() < MAX_DEVICE_GATES,
                         crate::output::resource_decision("tunnel device coordinator limit")
@@ -387,7 +387,7 @@ impl Lifecycle {
                 key_bytes.extend_from_slice(udid.as_bytes());
                 let key = String::from_utf8(key_bytes).expect("copied UDID str is valid UTF-8");
                 devices.reserve_row(&self.metadata_bytes)?;
-                let gate = Arc::new(DeviceGate {
+                let gate = DeviceRow::new(DeviceGate {
                     udid: key,
                     serial: Mutex::new(()),
                     generation: watch::channel(Arc::new(())).0,
@@ -468,7 +468,7 @@ impl Lifecycle {
             }
             prepared.record(
                 Ticket {
-                    gate: Arc::clone(gate),
+                    gate: gate.clone(),
                     generation: gate.generation.borrow().clone(),
                     shutdown: shutdown.clone(),
                     shutdown_generation: Arc::clone(&epoch),
@@ -840,7 +840,7 @@ impl Ticket {
     /// Compare immutable identities without borrowing either watch again from
     /// inside a commit. A ledger row holds this coordinator across scan windows.
     pub(super) fn same_incarnation(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.gate, &other.gate)
+        self.gate.ptr_eq(&other.gate)
             && Arc::ptr_eq(&self.generation, &other.generation)
             && Arc::ptr_eq(&self.shutdown_generation, &other.shutdown_generation)
     }
@@ -950,6 +950,10 @@ mod global_epoch_tests;
 #[cfg(test)]
 #[path = "lifecycle/deadline_timer_tests.rs"]
 mod deadline_timer_tests;
+
+#[cfg(test)]
+#[path = "lifecycle/gate_owner_tests.rs"]
+mod gate_owner_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1144,7 +1148,7 @@ mod tests {
         ));
         assert!(!Arc::ptr_eq(&before.epoch, &after.epoch));
         assert!(!Arc::ptr_eq(&before.version, &after.version));
-        assert!(Arc::ptr_eq(&old.gate, &fresh.gate));
+        assert!(old.gate.ptr_eq(&fresh.gate));
         lifecycle.close();
         assert!(lifecycle.ticket("synthetic-stopped").await.is_err());
     }

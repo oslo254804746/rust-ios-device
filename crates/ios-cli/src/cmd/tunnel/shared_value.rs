@@ -18,12 +18,15 @@ impl<T: Unpin> Shared<T> {
     pub(super) fn get_mut(&mut self) -> Option<&mut T> {
         Arc::get_mut(self.inner.as_mut().expect("live shared value"))
     }
-    #[cfg(test)]
     pub(super) fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(
             self.inner.as_ref().expect("live shared value"),
             other.inner.as_ref().expect("live shared value"),
         )
+    }
+
+    pub(super) fn strong_count(&self) -> usize {
+        Arc::strong_count(self.inner.as_ref().expect("live shared value"))
     }
 }
 impl<T: Unpin> AsRef<T> for Shared<T> {

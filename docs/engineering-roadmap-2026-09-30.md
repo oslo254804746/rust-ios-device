@@ -8977,6 +8977,15 @@ manual13/完整tunnel735/上游10/strict CLI/build/Source0通过，见
 及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
 有效30与Q04全部排除保持，仅本地提交。
 
+## 2026-10-18 L02 coordinator DeviceGate final owners
+
+协调表/Ticket 原 gate 根统一，原 body/key 费用在 allocation 结束后退款；
+原引用计数剪枝与4096上限、持久停止状态、clear 后同 gate 复用保持。新增2/
+lifecycle21/完整tunnel737/上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-coordinator-gate-owners-2026-10-18.md)。其他 owner/private
+及完整freshness继续，128MiB非完整heap/RSS；L02不关闭，主项23/6/待全审计、
+有效30与Q04全部排除保持，仅本地提交。
+
 ## 2026-10-16 L02 observed route destination owners
 
 observed route共享已付Input原对象，无Input时按实际Layout先准入文本；保持
