@@ -16,6 +16,103 @@ async fn listener() -> (TcpListener, u16) {
     (listener, port)
 }
 
+struct ScannerFrameSource {
+    base: Arc<FakeSource>,
+    frame_drops: AtomicUsize,
+}
+
+impl Source for ScannerFrameSource {
+    fn connect<'a>(
+        &'a self,
+        udid: &'a str,
+        route: Route,
+        mode: TunMode,
+    ) -> BoxFuture<'a, Result<ManagedDevice>> {
+        Box::pin(async move {
+            struct Frame<'a>(&'a AtomicUsize);
+            impl Drop for Frame<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            let _original_frame = Frame(&self.frame_drops);
+            self.base.connect(udid, route, mode).await
+        })
+    }
+
+    fn usb_devices(&self) -> BoxFuture<'_, source::UsbSnapshot> {
+        self.base.usb_devices()
+    }
+
+    fn paired_devices(&self) -> BoxFuture<'_, Result<Vec<PairedMobdev2Device>>> {
+        self.base.paired_devices()
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_tunnel_server_inline_scanner_drops_original_frame_before_blocked_cleanup_finishes(
+) {
+    let base = FakeSource::new();
+    base.usb.lock().unwrap().push(A.into());
+    base.script(A, [Behavior::Pending]);
+    let source = Arc::new(ScannerFrameSource {
+        base: base.clone(),
+        frame_drops: AtomicUsize::new(0),
+    });
+    let state = TunnelAgentState::with_source(
+        TunMode::Userspace,
+        AccessControl::trusted_test_local(),
+        Upstreams::default(),
+        source.clone(),
+        TUNNEL_CONNECT_TIMEOUT,
+    );
+    let (listener, port) = listener().await;
+    let signal = Arc::new(Semaphore::new(0));
+    let entered_signal = signal.clone();
+    let mut owner = Box::pin(server::serve(
+        listener,
+        agent_router(state.clone()),
+        state.clone(),
+        Duration::from_millis(5),
+        server::CLEANUP_TIMEOUT,
+        async move {
+            entered_signal.acquire().await.unwrap().forget();
+            Ok(())
+        },
+    ));
+    tokio::time::timeout(LOCAL_BUDGET, async {
+        while base.count(A) == 0 {
+            assert!(futures_util::poll!(&mut owner).is_pending());
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(source.frame_drops.load(Ordering::SeqCst), 0);
+    let table = state.inner.tunnels.write().await;
+    signal.add_permits(1);
+    // The parent is still alive and cleanup cannot pass this table lock.
+    // Only explicit destruction of its original scanner can drop this frame.
+    assert!(futures_util::poll!(&mut owner).is_pending());
+    assert_eq!(source.frame_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state.inner.lifecycle.connects.available_permits(),
+        lifecycle::MAX_CONNECTS
+    );
+    assert_eq!(
+        state.inner.failure_slots.available_permits(),
+        MAX_FAILURE_RECORDS
+    );
+    assert_eq!(state.inner.native.snapshot().occupied(), 0);
+    drop(table);
+    tokio::time::timeout(LOCAL_BUDGET, owner)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(source.frame_drops.load(Ordering::SeqCst), 1);
+    assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err());
+}
+
 #[tokio::test]
 async fn lifecycle_tunnel_server_shutdown_before_start_does_not_poll_source() {
     let source = FakeSource::new();

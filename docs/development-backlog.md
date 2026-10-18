@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [server 自有 future/phase inline 存储](validation/tunnel-server-inline-owners-2026-10-18.md)
+移除两个 Box 和阶段 Arc payload，原 scanner 在 history/cleanup 前实际析构，
+阻塞清理期间的 frame/许可及原 native 收尾已验。新增1/server8/native2/scan7/
+完整tunnel745/strict CLI/build/Source0通过；L02继续全审计，主项23/6/待核查、有效30/Q04排除不变。
+
 2026-10-18：L02 [failure count slot 实际 body](validation/tunnel-failure-slot-body-2026-10-18.md)
 计数1与同池字节费用分离，创建前准入、闭池原根复用及最后退款已验；原receipt/
 slot身份和零余量边界保留。新增3/retry20/global metadata17/完整tunnel744/

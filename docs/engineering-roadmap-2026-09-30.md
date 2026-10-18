@@ -8968,6 +8968,15 @@ URI/header/WS/private及完整freshness等继续；128MiB非完整heap/RSS，L02
 及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
 有效30与Q04全部排除保持，仅本地提交。
 
+## 2026-10-18 L02 server inline future and phase storage
+
+原 scanner/HTTP inline pin，Option 原位销毁实际 scanner 先于 history/cleanup；
+阶段 mutex 在原 parent 内借用，无额外任务。新增1/server8/native server2/
+scan outcomes7/完整tunnel745/上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-server-inline-owners-2026-10-18.md)。native report/private
+及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
+有效30与Q04全部排除保持，仅本地提交。
+
 ## 2026-10-18 L02 publication two-budget body
 
 Life 全部 table/target/snapshot 根使用双预算 paired owner，原字段及时结束，
