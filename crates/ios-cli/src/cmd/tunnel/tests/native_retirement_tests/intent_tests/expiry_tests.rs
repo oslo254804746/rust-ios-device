@@ -276,7 +276,7 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
         !changes.has_changed().unwrap() && Arc::ptr_eq(&watched, &changes.borrow());
     let table = state.inner.tunnels.read().await;
     let owner_preserved = table.get(AUTH_DEVICE).is_some_and(|row| {
-        Arc::ptr_eq(&row.publication, &old_publication)
+        row.publication.ptr_eq(&old_publication)
             && row.route_intent.ptr_eq(&old_route)
             && row._ticket.same_incarnation(&old_owner)
             && row

@@ -89,10 +89,7 @@ async fn publication_lifetime_late_replacement_rollback_keeps_original_open_and_
         "late rollback boundary was not reached"
     );
     assert!(deadline.check().is_err());
-    assert!(Arc::ptr_eq(
-        &original,
-        &state.inner.tunnels.read().await[A].publication
-    ));
+    assert!(original.ptr_eq(&state.inner.tunnels.read().await[A].publication));
     assert!(original.check().is_ok());
     echo(&mut websocket, b"same-original-after-rollback").await;
     assert_eq!(source.count(A), 2);
@@ -158,7 +155,7 @@ async fn publication_lifetime_replacement_and_complete_prune_close_original_same
                     .unwrap(),
             );
             let table = state.inner.tunnels.read().await;
-            assert!(!Arc::ptr_eq(&original, &table[A].publication));
+            assert!(!original.ptr_eq(&table[A].publication));
             assert!(ticket.same_incarnation(&table[A]._ticket));
         } else {
             source.usb.lock().unwrap().clear();

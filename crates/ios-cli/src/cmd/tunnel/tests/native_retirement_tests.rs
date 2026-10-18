@@ -38,7 +38,7 @@ async fn publication_retain_native_late_clock_restores_original_key_publication_
     let (key, publication) = {
         let tunnels = state.inner.tunnels.read().await;
         let (key, row) = tunnels.get_key_value(DEVICE).unwrap();
-        (key.as_ptr(), Arc::clone(&row.publication))
+        (key.as_ptr(), row.publication.clone())
     };
     let control = state.inner.lifecycle.scan_control(OBSERVE).unwrap();
     let clock = scan::Deadline::new(Duration::from_millis(20)).unwrap();
@@ -56,7 +56,7 @@ async fn publication_retain_native_late_clock_restores_original_key_publication_
         .unwrap();
     let (same_key, same_row) = tunnels.get_key_value(DEVICE).unwrap();
     assert_eq!(same_key.as_ptr(), key);
-    assert!(Arc::ptr_eq(&same_row.publication, &publication));
+    assert!(same_row.publication.ptr_eq(&publication));
     assert!(native.is_alive());
     assert!(error.is::<scan::DeadlineReached>());
     drop(tunnels);

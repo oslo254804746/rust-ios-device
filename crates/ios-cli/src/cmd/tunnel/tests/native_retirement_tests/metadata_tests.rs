@@ -23,8 +23,10 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     };
     let publication = {
         let table = state.inner.tunnels.read().await;
-        Arc::downgrade(&table[DEVICE].publication)
+        table[DEVICE].publication.downgrade()
     };
+    let published = state.inner.metadata_bytes.clone();
+    let published_before = published.available_permits();
     let before = bank.available_permits();
     state.clear().await;
     assert_eq!(state.inner.native.snapshot().retired, 1);
@@ -39,6 +41,21 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     assert!(
         publication.upgrade().is_none(),
         "removed publication payload is still alive"
+    );
+    assert_eq!(
+        bank.available_permits(),
+        before + actual_publication_destination_bytes(),
+        "publication Weak still owns the original body in the global pool"
+    );
+    assert_eq!(
+        published.available_permits(),
+        published_before + actual_publication_destination_bytes(),
+        "publication Weak still owns the original body in the publication pool"
+    );
+    drop(publication);
+    assert_eq!(
+        published.available_permits(),
+        published_before + actual_publication_destination_bytes() + publication::Life::bytes()
     );
     assert_eq!(
         bank.available_permits(),

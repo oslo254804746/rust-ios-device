@@ -573,7 +573,7 @@ async fn intent_live_http_start_reauthorizes_only_the_actual_published_selector(
     cleanup(&state, &source).await;
     assert_eq!((started, repeated), (StatusCode::OK, StatusCode::OK));
     assert_eq!(count, 1);
-    assert!(Arc::ptr_eq(&publication, &retained));
+    assert!(publication.ptr_eq(&retained));
     assert!(actual == Some(intent::RouteIntent::Wifi(Some("192.0.2.10".into()))));
 }
 

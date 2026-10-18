@@ -101,7 +101,7 @@ async fn check_usb_publication(capacity_overflow: bool) {
         .read()
         .await
         .get(DEVICE)
-        .is_some_and(|row| Arc::ptr_eq(&row.publication, &publication));
+        .is_some_and(|row| row.publication.ptr_eq(&publication));
     let recovery = finish(&state, &base, expected).await;
     assert!(recovery && old.shutdown_status().is_ok() && new.shutdown_status().is_ok());
     let error = result.unwrap_err();

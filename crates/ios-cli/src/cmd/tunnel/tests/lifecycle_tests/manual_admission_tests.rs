@@ -71,10 +71,7 @@ async fn native_source_admission_full_registry_default_start_never_browses_paire
         ticket.desired().desired,
         intent::Desired::Automatic
     ));
-    assert!(Arc::ptr_eq(
-        &original,
-        &state.inner.tunnels.read().await[B].publication
-    ));
+    assert!(original.ptr_eq(&state.inner.tunnels.read().await[B].publication));
     assert!(state.get_record(B).await.unwrap().is_some());
     drop(reserved);
     drop(original);
@@ -246,7 +243,7 @@ async fn admission_manual_oversized_selectors_preserve_old_rows_before_any_sourc
         .read()
         .await
         .get(A)
-        .is_some_and(|row| Arc::ptr_eq(&row.publication, &publication));
+        .is_some_and(|row| row.publication.ptr_eq(&publication));
     let unchanged = state
         .inner
         .failed_attempts

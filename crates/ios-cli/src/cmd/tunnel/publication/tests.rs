@@ -9,6 +9,96 @@ fn poll<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     ))
 }
 
+#[tokio::test]
+async fn publication_dual_body_closure_drops_original_pending_work_while_weak_retains_both_fees() {
+    struct PendingOwner(Arc<AtomicUsize>);
+    impl Drop for PendingOwner {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let bytes = Life::bytes();
+    let global = Arc::new(Semaphore::new(bytes));
+    let published = Arc::new(Semaphore::new(bytes));
+    let life = Life::new(&global, &published).unwrap();
+    assert!(life.belongs_to(&global));
+    assert!(life.banks_match(&global, &published));
+    assert!(!life.belongs_to(&published));
+    let pointer = &*life as *const Life as usize;
+    let weak = life.downgrade();
+    let last = weak.clone();
+    global.close();
+    published.close();
+    let drops = Arc::new(AtomicUsize::new(0));
+    {
+        let original = PendingOwner(drops.clone());
+        let mut work = std::pin::pin!(life.run(async move {
+            let _original = original;
+            std::future::pending::<Result<()>>().await
+        }));
+        assert!(poll(work.as_mut()).is_pending());
+        let closer = weak.upgrade().unwrap();
+        assert_eq!(&*closer as *const Life as usize, pointer);
+        assert!(closer.ptr_eq(&life));
+        closer.close();
+        assert!(work.await.unwrap_err().is::<ios_core::OperationCancelled>());
+        drop(closer);
+    }
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(global.available_permits(), 0);
+    assert_eq!(published.available_permits(), 0);
+    drop(life);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(global.available_permits(), 0);
+    assert_eq!(published.available_permits(), 0);
+    drop(weak);
+    assert_eq!(global.available_permits(), 0);
+    assert_eq!(published.available_permits(), 0);
+    drop(last);
+    assert_eq!(global.available_permits(), bytes);
+    assert_eq!(published.available_permits(), bytes);
+}
+
+#[test]
+fn publication_dual_body_parallel_weak_upgrades_keep_original_closed_identity_and_last_refunds() {
+    let bytes = Life::bytes();
+    let global = Arc::new(Semaphore::new(bytes));
+    let published = Arc::new(Semaphore::new(bytes));
+    let life = Life::new(&global, &published).unwrap();
+    let pointer = &*life as *const Life as usize;
+    life.close();
+    let weak = life.downgrade();
+    global.close();
+    published.close();
+    let barrier = Arc::new(std::sync::Barrier::new(9));
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            let weak = weak.clone();
+            let barrier = barrier.clone();
+            scope.spawn(move || {
+                barrier.wait();
+                for _ in 0..128 {
+                    if let Some(root) = weak.upgrade() {
+                        assert_eq!(&*root as *const Life as usize, pointer);
+                        assert!(root
+                            .check()
+                            .unwrap_err()
+                            .is::<ios_core::OperationCancelled>());
+                    }
+                }
+            });
+        }
+        barrier.wait();
+        drop(life);
+    });
+    assert!(weak.upgrade().is_none());
+    assert_eq!(global.available_permits(), 0);
+    assert_eq!(published.available_permits(), 0);
+    drop(weak);
+    assert_eq!(global.available_permits(), bytes);
+    assert_eq!(published.available_permits(), bytes);
+}
+
 #[test]
 fn publication_lifetime_closed_flag_prevents_another_work_poll_before_notifier_runs() {
     let global = Arc::new(Semaphore::new(4096));
@@ -47,7 +137,10 @@ fn publication_lifetime_body_is_paid_in_both_banks_before_creation_until_last_cl
         captured.store(created, Ordering::SeqCst);
     });
     let life = Life::new(&global, &published).unwrap();
-    assert_eq!(Arc::as_ptr(&life) as usize, pointer.load(Ordering::SeqCst));
+    assert_eq!(
+        (&*life as *const Life) as usize,
+        pointer.load(Ordering::SeqCst)
+    );
     let last = life.clone();
     life.close();
     life.close();

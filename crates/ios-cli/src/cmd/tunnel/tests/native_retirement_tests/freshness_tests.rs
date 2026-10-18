@@ -347,7 +347,7 @@ async fn freshness_production_alive_scan_changes_current_ports_without_new_lease
         let table = state.inner.tunnels.read().await;
         let (same_key, row) = table.get_key_value(UID).unwrap();
         assert_eq!(same_key.as_ptr(), key);
-        assert!(Arc::ptr_eq(&row.publication, &publication));
+        assert!(row.publication.ptr_eq(&publication));
         assert!(
             Arc::ptr_eq(&row._metadata, &first_fee)
                 && Arc::ptr_eq(&row._global_metadata, &second_fee)
@@ -590,7 +590,7 @@ async fn refresh_future_last_byte_constructor_refusal_keeps_original_catalogue_a
     {
         let table = state.inner.tunnels.read().await;
         let row = &table[UID];
-        assert!(Arc::ptr_eq(&row.publication, &publication));
+        assert!(row.publication.ptr_eq(&publication));
         assert!(row._fresh_metadata.as_ref().unwrap().ptr_eq(&previous));
         assert!(Arc::ptr_eq(
             row.device.freshness_catalogue().unwrap(),
@@ -684,7 +684,7 @@ async fn freshness_new_publication_during_source_refuses_old_proof_without_stopp
     {
         let table = state.inner.tunnels.read().await;
         let row = &table[UID];
-        assert!(!Arc::ptr_eq(&row.publication, &old_publication));
+        assert!(!row.publication.ptr_eq(&old_publication));
         assert!(row._fresh_metadata.is_none() && row.device.freshness_catalogue().is_none());
         assert!(row.is_alive());
     }

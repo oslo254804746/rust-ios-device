@@ -134,10 +134,7 @@ async fn freshness_alive_paired_address_change_rebuilds_and_complete_detach_rele
     paired(&source, Some("192.0.2.71"));
     state.refresh_once().await.unwrap();
     assert!(observed(&state).await == Some(Route::Mobdev2("192.0.2.71".into())));
-    assert!(!Arc::ptr_eq(
-        &old,
-        &state.inner.tunnels.read().await.get(A).unwrap().publication
-    ));
+    assert!(!old.ptr_eq(&state.inner.tunnels.read().await.get(A).unwrap().publication));
     assert_eq!(source.count(A), 2);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     assert!(
@@ -193,10 +190,7 @@ async fn freshness_failed_paired_browse_keeps_original_alive_publication_and_typ
         error.downcast_ref::<std::io::Error>().unwrap().kind(),
         std::io::ErrorKind::PermissionDenied
     );
-    assert!(Arc::ptr_eq(
-        &old,
-        &state.inner.tunnels.read().await.get(A).unwrap().publication
-    ));
+    assert!(old.ptr_eq(&state.inner.tunnels.read().await.get(A).unwrap().publication));
     assert_eq!(source.count(A), 1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
     state.clear().await;
@@ -232,10 +226,7 @@ async fn freshness_old_paired_browse_cannot_retire_concurrent_replacement_public
         .clone();
     gate.add_permits(1);
     scan.await.unwrap();
-    assert!(Arc::ptr_eq(
-        &replacement,
-        &state.inner.tunnels.read().await.get(A).unwrap().publication
-    ));
+    assert!(replacement.ptr_eq(&state.inner.tunnels.read().await.get(A).unwrap().publication));
     assert!(observed(&state).await == Some(Route::Mobdev2("192.0.2.71".into())));
     assert_eq!(source.count(A), 2);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);

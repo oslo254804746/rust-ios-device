@@ -248,12 +248,7 @@ impl TunnelAgentState {
                 Some(authority) => authority.commit(udid, capture)?,
                 None => capture()?,
             };
-            (
-                key.as_ptr() as usize,
-                Arc::clone(&row.publication),
-                proof,
-                route,
-            )
+            (key.as_ptr() as usize, row.publication.clone(), proof, route)
         };
         // Allocate the cause capsule and two output owners before any Source poll.
         let receipt = Receipt::prepare(&self.inner.global_metadata_bytes)?;
@@ -310,12 +305,12 @@ impl TunnelAgentState {
             .get_key_value(udid)
             .ok_or_else(lifecycle::cancelled)?;
         anyhow::ensure!(
-            key.as_ptr() as usize == key_buffer && Arc::ptr_eq(&publication, &current.publication),
+            key.as_ptr() as usize == key_buffer && publication.ptr_eq(&current.publication),
             lifecycle::cancelled()
         );
         let row = tunnels.get_mut(udid).ok_or_else(lifecycle::cancelled)?;
         anyhow::ensure!(
-            Arc::ptr_eq(&publication, &row.publication) && row._ticket.same_incarnation(ticket),
+            publication.ptr_eq(&row.publication) && row._ticket.same_incarnation(ticket),
             lifecycle::cancelled()
         );
         anyhow::ensure!(

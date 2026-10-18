@@ -454,10 +454,9 @@ async fn reconnect_exhausted_a_does_not_delay_b_or_remove_published_b() {
         .unwrap()
         .unwrap();
     assert_eq!(record, before);
-    assert!(Arc::ptr_eq(
-        &state.inner.tunnels.read().await[B].publication,
-        &publication
-    ));
+    assert!(state.inner.tunnels.read().await[B]
+        .publication
+        .ptr_eq(&publication));
     assert_eq!((source.count(A), source.count(B)), (1, 1));
     assert!(tokio::time::timeout(LOCAL_BUDGET, state.remove_tunnel(B))
         .await

@@ -56,8 +56,11 @@ impl<T> Strong<T> {
     }
 
     pub(super) fn banks_match(&self, first: &Arc<Semaphore>, second: &Arc<Semaphore>) -> bool {
+        self.first_bank_matches(first) && Arc::ptr_eq(self.body.second.semaphore(), second)
+    }
+
+    pub(super) fn first_bank_matches(&self, first: &Arc<Semaphore>) -> bool {
         Arc::ptr_eq(self.body.first.semaphore(), first)
-            && Arc::ptr_eq(self.body.second.semaphore(), second)
     }
 
     pub(super) fn ptr_eq(&self, other: &Self) -> bool {
@@ -70,6 +73,11 @@ impl<T> Strong<T> {
             data: Arc::downgrade(&self.data),
             body: self.body.clone(),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn strong_count(&self) -> usize {
+        Arc::strong_count(&self.data)
     }
 }
 
@@ -85,6 +93,11 @@ impl<T> Deref for Strong<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.data
+    }
+}
+impl<T: std::fmt::Debug> std::fmt::Debug for Strong<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.data.fmt(formatter)
     }
 }
 

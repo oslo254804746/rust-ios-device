@@ -463,7 +463,7 @@ async fn intent_native_manual_success_discards_old_deferred_failure_without_reti
     cleanup(&state, &source, expected).await;
     assert_eq!(started.unwrap(), StatusCode::OK);
     assert!(!old_ticket.is_current());
-    assert!(failed_empty && Arc::ptr_eq(&published, &retained));
+    assert!(failed_empty && published.ptr_eq(&retained));
     assert!(
         matches!(selector.desired, intent::Desired::Manual { route, .. } if matches!(&route.route, intent::RouteIntent::Wifi(Some(host)) if host == "192.0.2.99"))
     );
