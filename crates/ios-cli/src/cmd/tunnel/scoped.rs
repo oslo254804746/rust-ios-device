@@ -1,7 +1,7 @@
 //! Finite foreground owners reuse the manager's original native retirement registry.
 use super::{
     ownership::Ownership,
-    retirement::{CleanupClock, NativeLease, Registry},
+    retirement::{CleanupClock, NativeLease, Registry, RegistryOwner},
 };
 use anyhow::{Context, Result};
 use ios_core::{ConnectOptions, ConnectedDevice, TunMode};
@@ -11,7 +11,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 #[derive(Clone)]
 pub(crate) struct NativeScope(Arc<Inner>);
 struct Inner {
-    registry: Arc<Registry>,
+    registry: RegistryOwner,
     connections: Arc<Semaphore>,
 }
 impl Drop for Inner {

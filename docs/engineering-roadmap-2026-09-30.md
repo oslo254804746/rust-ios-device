@@ -9087,3 +9087,13 @@ Ledger 原预算保持，全部 manager/Attempt 根接入封闭 owner；实际 a
 [验证](validation/tunnel-ledger-final-owners-2026-10-18.md)。Registry/private
 及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
 有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-18 L02 native registry final owners
+
+Registry 原 body/slots grant 保持，manager/standalone/scoped/Ownership/
+Reservation/NativeLease/RefreshProof 全部根在 allocation 结束后退款；闭池
+零配额下原 worker 实际 joins/strict EOF 和最后 root 边界已验。新增2项、
+专项3/完整tunnel727/上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-registry-final-owners-2026-10-18.md)。其它 owner/private
+及完整freshness继续，128MiB非完整heap/RSS；L02不关闭，主项23/6/待全审计、
+有效30与Q04全部排除保持，仅本地提交。

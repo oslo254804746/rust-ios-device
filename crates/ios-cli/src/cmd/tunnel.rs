@@ -340,8 +340,8 @@ pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) 
     }
 
     let native = retirement::Registry::new()?;
-    let _owner = StandaloneOwner(Arc::clone(&native));
-    let ownership = ownership::Ownership::standalone(Arc::clone(&native))?;
+    let _owner = StandaloneOwner(native.clone());
+    let ownership = ownership::Ownership::standalone(native.clone())?;
     let primary = async {
         let connect_timeout = Duration::from_secs(30);
         let device =
@@ -400,7 +400,7 @@ pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) 
     }
 }
 
-struct StandaloneOwner(Arc<retirement::Registry>);
+struct StandaloneOwner(retirement::RegistryOwner);
 
 impl Drop for StandaloneOwner {
     fn drop(&mut self) {
@@ -438,7 +438,7 @@ struct TunnelAgentInner {
     connect_timeout: Duration,
     failure_write_timeout: Duration,
     shutdown: watch::Sender<bool>,
-    native: Arc<retirement::Registry>,
+    native: retirement::RegistryOwner,
     #[cfg(test)]
     publication_after_insert: std::sync::Mutex<Option<PublicationCallback>>,
     #[cfg(test)]
@@ -902,7 +902,9 @@ impl TunnelAgentState {
             .inner
             .get_mut()
             .expect("configure before sharing state");
-        Arc::get_mut(&mut inner.native)
+        inner
+            .native
+            .get_mut()
             .expect("configure before native sharing")
             .rebind_empty_metadata(&bank)
             .unwrap();
@@ -1424,7 +1426,7 @@ impl TunnelAgentState {
                 .map_err(ownership::before_source)?
         });
         let ownership = ownership::Ownership::admitted_with_input(
-            Arc::clone(&self.inner.native),
+            self.inner.native.clone(),
             ticket,
             input.clone(),
         )?;

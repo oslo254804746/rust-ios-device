@@ -6,7 +6,9 @@ use anyhow::Result;
 use ios_core::{CoreError, TunnelHandle, TunnelOwner, TunnelReservation};
 
 use super::lifecycle::Ticket;
-use super::retirement::{NativeLease, OwnershipStamp, Registry, Reservation};
+#[cfg(test)]
+use super::retirement::Registry;
+use super::retirement::{NativeLease, OwnershipStamp, RegistryOwner, Reservation};
 
 /// Applied only before the original Source future is created. Keep the original
 /// anyhow allocation/downcast/source when reservation admission is refused.
@@ -23,7 +25,7 @@ pub(super) fn before_source(error: anyhow::Error) -> anyhow::Error {
 }
 
 pub(super) struct Ownership<'a> {
-    registry: Arc<Registry>,
+    registry: RegistryOwner,
     ticket: Option<&'a Ticket>,
     stamp: OwnershipStamp,
     initial: StdMutex<Option<Reservation>>,
@@ -33,12 +35,12 @@ pub(super) struct Ownership<'a> {
 
 impl<'a> Ownership<'a> {
     #[cfg(test)]
-    pub(super) fn admitted(registry: Arc<Registry>, ticket: &'a Ticket) -> Result<Self> {
+    pub(super) fn admitted(registry: RegistryOwner, ticket: &'a Ticket) -> Result<Self> {
         Self::admitted_with_input(registry, ticket, None)
     }
 
     pub(super) fn admitted_with_input(
-        registry: Arc<Registry>,
+        registry: RegistryOwner,
         ticket: &'a Ticket,
         input: Option<super::candidate_input::Owner>,
     ) -> Result<Self> {
@@ -56,7 +58,7 @@ impl<'a> Ownership<'a> {
         })
     }
 
-    pub(super) fn standalone(registry: Arc<Registry>) -> Result<Self> {
+    pub(super) fn standalone(registry: RegistryOwner) -> Result<Self> {
         let stamp = OwnershipStamp::new(Arc::new(()), Arc::new(()));
         let reservation = registry.reserve(stamp.clone())?;
         Ok(Self {
@@ -214,7 +216,7 @@ mod buffer_bank_tests {
         ));
         let registry = Registry::with_metadata(&bank).unwrap();
         let baseline = bank.available_permits();
-        let owner = Ownership::standalone(Arc::clone(&registry)).unwrap();
+        let owner = Ownership::standalone(registry.clone()).unwrap();
         let reservation = owner.reserve().unwrap();
         let supplied = reservation
             .byte_bank()
