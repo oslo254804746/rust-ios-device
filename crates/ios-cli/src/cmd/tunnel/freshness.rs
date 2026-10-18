@@ -65,8 +65,15 @@ pub(super) struct Receipt {
     reports: Mutex<[Option<OwnedSemaphorePermit>; 2]>,
     _storage: OwnedSemaphorePermit,
 }
+
+pub(super) type ReceiptOwner = super::shared_value::Shared<Receipt>;
+
+#[cfg(test)]
+#[path = "freshness/receipt_owner_tests.rs"]
+mod receipt_owner_tests;
+
 impl Receipt {
-    pub(super) fn prepare(bank: &Arc<Semaphore>) -> Result<Arc<Self>> {
+    pub(super) fn prepare(bank: &Arc<Semaphore>) -> Result<ReceiptOwner> {
         let mut storage = admission::known_metadata_charge(
             bank,
             std::mem::size_of::<Self>() + 2 * std::mem::size_of::<Failure>(),
@@ -77,7 +84,7 @@ impl Receipt {
         let second = storage
             .split(std::mem::size_of::<Failure>())
             .expect("reserved second refresh report");
-        Ok(Arc::new(Self {
+        Ok(ReceiptOwner::new(Self {
             original: OnceLock::new(),
             reports: Mutex::new([Some(first), Some(second)]),
             _storage: storage,
@@ -92,7 +99,10 @@ impl Receipt {
             "one Source original per capsule"
         );
     }
-    pub(super) fn report(self: &Arc<Self>) -> anyhow::Error {
+}
+
+impl ReceiptOwner {
+    pub(super) fn report(&self) -> anyhow::Error {
         let mut reports = self
             .reports
             .lock()
@@ -102,13 +112,13 @@ impl Receipt {
             .find_map(Option::take)
             .expect("two admitted refresh reports maximum");
         anyhow::Error::new(Failure {
-            receipt: Arc::clone(self),
+            receipt: self.clone(),
             _storage: storage,
         })
     }
 }
 pub(super) struct Failure {
-    receipt: Arc<Receipt>,
+    receipt: ReceiptOwner,
     _storage: OwnedSemaphorePermit,
 }
 impl std::fmt::Display for Failure {
@@ -270,7 +280,7 @@ impl TunnelAgentState {
                     receipt.capture(original);
                     // Persist the original in this very Ready poll; no later
                     // await/cancellation/clock or bookkeeping can discard it.
-                    proof.retain_failure(Arc::clone(&receipt));
+                    proof.retain_failure(receipt.clone());
                     if let Some(session) = session {
                         session.retain(super::scan::Source::Freshness, receipt.report());
                     }

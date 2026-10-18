@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [Freshness Receipt 最后 owner](validation/tunnel-fresh-receipt-owners-2026-10-18.md)
+Source/两份 report/native 历史/census 共享原根，闭池与并发最后 root、原 IO/
+独立快照及退款已验。完整 tunnel731/strict CLI/build/Source0通过；L02继续全审计，
+主项23/6/待核查、有效30与Q04全部排除不变，外层 anyhow 边界不据此完成。
+
 2026-10-18：L02 [刷新 metadata 双预算 body](validation/tunnel-fresh-metadata-bodies-2026-10-18.md)
 实际 Weak 路径接入两池成对 owner，guard 自身 payload 也创建前预付；字段及时
 结束、最后 Weak 两池退款已验。完整 tunnel729/strict CLI/build/Source0通过；

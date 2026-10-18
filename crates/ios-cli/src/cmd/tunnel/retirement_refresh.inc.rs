@@ -12,7 +12,7 @@ pub(super) struct RefreshProof {
 type RefreshSwap<T> = (
     T,
     Option<super::freshness::MetadataOwner>,
-    [Option<Arc<super::freshness::Receipt>>; 2],
+    [Option<super::freshness::ReceiptOwner>; 2],
 );
 pub(super) fn same_optional<T>(a: Option<&Arc<T>>, b: Option<&Arc<T>>) -> bool {
     match (a, b) {
@@ -121,7 +121,7 @@ impl RefreshProof {
     pub(super) fn runtime(&self) -> &Arc<TunnelHandle> {
         &self.handle
     }
-    pub(super) fn retain_failure(&self, original: Arc<super::freshness::Receipt>) {
+    pub(super) fn retain_failure(&self, original: super::freshness::ReceiptOwner) {
         let mut state = self.registry.lock();
         let displaced = match Registry::entry_mut(&mut state, &self.key) {
             Some(entry)
@@ -134,7 +134,7 @@ impl RefreshProof {
                     && same_metadata(entry.fresh_metadata.as_ref(), self.previous.as_ref()) =>
             {
                 if entry.first_freshness.is_none() {
-                    entry.first_freshness = Some(Arc::clone(&original));
+                    entry.first_freshness = Some(original.clone());
                 }
                 entry.latest_freshness.replace(original)
             }
@@ -197,7 +197,7 @@ impl RefreshProof {
 impl Registry {
     pub(super) fn payload_freshness(
         &self,
-    ) -> Result<super::metadata_vec::KnownVec<Arc<super::freshness::Receipt>>> {
+    ) -> Result<super::metadata_vec::KnownVec<super::freshness::ReceiptOwner>> {
         let state = self.lock();
         let count = usize::from(state.first_orphan_freshness.is_some())
             + state
@@ -217,7 +217,7 @@ impl Registry {
         // A refusal leaves registry roots untouched and attribution incomplete.
         roots.reserve(count)?;
         if let Some(original) = &state.first_orphan_freshness {
-            roots.push_reserved(Arc::clone(original));
+            roots.push_reserved(original.clone());
         }
         for entry in state.slots.iter().flatten() {
             for original in entry
@@ -225,7 +225,7 @@ impl Registry {
                 .iter()
                 .chain(entry.latest_freshness.iter())
             {
-                roots.push_reserved(Arc::clone(original));
+                roots.push_reserved(original.clone());
             }
         }
         Ok(roots)

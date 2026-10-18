@@ -90,8 +90,8 @@ struct Entry {
     global_metadata: Option<Arc<OwnedSemaphorePermit>>,
     _input: Option<super::candidate_input::Owner>,
     fresh_metadata: Option<super::freshness::MetadataOwner>,
-    first_freshness: Option<Arc<super::freshness::Receipt>>,
-    latest_freshness: Option<Arc<super::freshness::Receipt>>,
+    first_freshness: Option<super::freshness::ReceiptOwner>,
+    latest_freshness: Option<super::freshness::ReceiptOwner>,
     failure_observed: bool,
 }
 
@@ -104,7 +104,7 @@ struct State {
     slots: Vec<Option<Entry>>,
     first_failure: Option<Arc<TunnelError>>,
     first_expiry: Option<Arc<TunnelError>>,
-    first_orphan_freshness: Option<Arc<super::freshness::Receipt>>,
+    first_orphan_freshness: Option<super::freshness::ReceiptOwner>,
     additional_failed_owners: u64,
 }
 
