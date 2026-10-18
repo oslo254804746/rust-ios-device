@@ -9107,3 +9107,12 @@ payload；原字段最后 strong 结束，body 最后 Weak 退款，原 bank/缓
 [验证](validation/tunnel-fresh-metadata-bodies-2026-10-18.md)。Receipt/Publication/
 private及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/
 待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-18 L02 freshness Receipt final owners
+
+原 Source 前 body/两份 report 准入保持，全部 Receipt 根统一，原 IO 与
+独立快照寿命、闭池并发最后退款已验。新增2项、native freshness14/完整
+tunnel731/上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-fresh-receipt-owners-2026-10-18.md)。Publication/外层
+anyhow/private及完整freshness继续，128MiB非完整heap/RSS；L02不关闭，主项
+23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
