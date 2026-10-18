@@ -33,6 +33,19 @@ pub(crate) fn exact_vec<T>(
     let layout =
         Layout::array::<T>(capacity).map_err(|_| ExistingRsdProbeError::metadata_limit())?;
     let fee = charge(bank, layout.size())?;
+    exact_vec_from_grant(bank, capacity, fee)
+}
+
+pub(crate) fn exact_vec_from_grant<T>(
+    bank: &Arc<Semaphore>,
+    capacity: usize,
+    fee: OwnedSemaphorePermit,
+) -> Result<(OwnedSemaphorePermit, Vec<T>), XpcError> {
+    let layout =
+        Layout::array::<T>(capacity).map_err(|_| ExistingRsdProbeError::metadata_limit())?;
+    if !Arc::ptr_eq(fee.semaphore(), bank) || fee.num_permits() != layout.size() {
+        return Err(ExistingRsdProbeError::metadata_limit());
+    }
     if layout.size() == 0 {
         return Ok((fee, Vec::with_capacity(capacity)));
     }

@@ -33,6 +33,10 @@ use crate::xpc::XpcError;
 #[cfg(feature = "tunnel")]
 mod initial;
 #[cfg(feature = "tunnel")]
+mod owned_initial;
+#[cfg(feature = "tunnel")]
+pub use owned_initial::{OwnedRsdHandshake, OwnedRsdService, OwnedRsdServices};
+#[cfg(feature = "tunnel")]
 mod sending;
 
 pub const RSD_PORT: u16 = 58783;
@@ -865,6 +869,62 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     read_rsd_handshake(framer).await
+}
+
+/// Read an immutable initial directory whose original storage and byte grants
+/// survive clones and owned service exports. Requires the framer's original
+/// raw byte bank; no new bank, transport, bootstrap or deadline is introduced.
+#[cfg(feature = "tunnel")]
+pub async fn owned_handshake_on_framer<S>(
+    framer: &mut H2Framer<S>,
+) -> Result<OwnedRsdHandshake, XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut operation = RsdOperation::begin(framer)?;
+    let bank = operation
+        .framer
+        .raw_bank()
+        .ok_or_else(crate::device::existing_rsd::ExistingRsdProbeError::metadata_limit)?;
+    let mut directory = OwnedRsdHandshake::prepare(&bank)?;
+    let result = await_rsd_operation(
+        Some(&bank),
+        read_owned_handshake_inner(operation.framer, &mut operation.progressed, &mut directory),
+    )?
+    .await;
+    operation.finish(result)?;
+    Ok(directory)
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_owned_handshake_inner<S>(
+    framer: &mut H2Framer<S>,
+    progressed: &mut bool,
+    directory: &mut OwnedRsdHandshake,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let bank = framer
+        .raw_bank()
+        .ok_or_else(crate::device::existing_rsd::ExistingRsdProbeError::metadata_limit)?;
+    let mut last_err = None;
+    for _ in 0..6 {
+        let (header, body) = read_raw_xpc_on_client_server(framer).await?;
+        *progressed = true;
+        let tree = crate::xpc::message::borrowed::decode(&header, &body, &bank)?;
+        match directory.fill(tree.as_ref()) {
+            Ok(()) => return Ok(()),
+            Err(error) if crate::classify_error(&error) == crate::ErrorClass::ResourceLimit => {
+                return Err(error)
+            }
+            Err(error) => {
+                tracing::debug!(error = %crate::redaction::diagnostic_error(&error), "RSD: skipping non-handshake stream-1 message");
+                last_err = Some(error);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| XpcError::Tls("RSD: no handshake message received".into())))
 }
 
 /// Initialize the XPC connection using go-ios's 3-message bootstrap.

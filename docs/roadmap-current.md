@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-18：L02 [owned initial RSD SDK 输出](validation/tunnel-owned-initial-rsd-sdk-2026-10-18.md)
+公开 immutable 目录/服务/iterator 与原池 framer 读取，完整实际字段在首次复制前准入，
+独立导出保持原缓冲区与费用，最后 owner 退款。新增6、XPC207、Core tunnel131、
+无 mdns6/proxy4、完整CLI1731/0FAIL/13原ignored及严格Core/CLI门禁通过。
+经理层 initial RSD 生产接入仍 PENDING；L02全审计、23/6/待核查、有效30与Q04排除不变。
+
+
 更新：2026-10-18。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
 开发计数与真实验收分开，Q04及全部子项继续排除。
 

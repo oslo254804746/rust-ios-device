@@ -244,10 +244,16 @@ pub use tunnel::TunnelShutdownFailure;
 pub use tunnel::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
 #[cfg(feature = "tunnel")]
 pub use xpc::client::XpcClient;
+#[cfg(feature = "tunnel")]
+pub use xpc::h2_raw::{H2Error, H2Framer};
 pub use xpc::message::flags as xpc_message_flags;
 pub use xpc::message::{
     decode_message as decode_xpc_message, encode_message as encode_xpc_message, XpcMessage,
     XpcValue,
+};
+#[cfg(feature = "tunnel")]
+pub use xpc::rsd::{
+    owned_handshake_on_framer, OwnedRsdHandshake, OwnedRsdService, OwnedRsdServices,
 };
 pub use xpc::rsd::{RsdFeatureEvidence, RsdHandshake, ServiceDescriptor, RSD_PORT};
 pub use xpc::XpcError;

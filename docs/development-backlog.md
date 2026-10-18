@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-18：L02 [owned initial RSD SDK 输出](validation/tunnel-owned-initial-rsd-sdk-2026-10-18.md)
+公开 immutable 目录/服务/iterator 与原池 framer 读取，完整实际字段在首次复制前准入，
+独立导出保持原缓冲区与费用，最后 owner 退款。新增6、XPC207、Core tunnel131、
+无 mdns6/proxy4、完整CLI1731/0FAIL/13原ignored及严格Core/CLI门禁通过。
+经理层 initial RSD 生产接入仍 PENDING；L02全审计、23/6/待核查、有效30与Q04排除不变。
+
+
 2026-10-18：L02 [终态清理原值存储](validation/tunnel-terminal-inline-values-2026-10-18.md)
 阶段 native/history/HTTP/Elapsed 保留原值并移动到终态，去除额外共享 wrapper；
 原 primary 顺序、IO 指针、类别和原 timer 保持。新增2/server8/native CLI105/
