@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-18：L02 [failure slot 完整实际分配](validation/tunnel-failure-slot-full-allocation-2026-10-18.md)
+真实slot改用单个应用自有共享分配，counter/value/原grant/padding完整layout同池准入，
+最后原分配释放后再退款，原count优先级/typed cause/closed0复用保持。
+新增5/reconnect20/attribution9/完整CLI1736/0FAIL/13原ignored及strict CLI/build/Source0通过；
+其它控制块与原全审计继续，主项23/6/L02待核查、有效30与Q04全部排除不变。
+
+
 2026-10-18：L02 [prepared RSD 最后 owner](validation/tunnel-prepared-rsd-final-owner-2026-10-18.md)
 刷新Source、current cache、metadata/registry proof与原位rollback改用sealed共享目录，
 原payload分配结束后再销毁字段和费用，不再向管理器导出raw Arc/Weak。

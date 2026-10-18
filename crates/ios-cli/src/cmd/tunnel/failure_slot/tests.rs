@@ -31,8 +31,8 @@ fn failure_slot_body_exact_closed_pools_parallel_last_roots_return_one_count_and
     let slot = Slot::reserve(&counts, &bytes).unwrap();
     assert_eq!(slot.num_permits(), 1);
     assert!(Arc::ptr_eq(slot.semaphore(), &counts));
-    assert_eq!(slot._body.num_permits(), body);
-    assert!(Arc::ptr_eq(slot._body.semaphore(), &bytes));
+    assert_eq!(slot.storage().num_permits(), body);
+    assert!(Arc::ptr_eq(slot.storage().semaphore(), &bytes));
     assert_eq!(counts.available_permits(), 0);
     assert_eq!(bytes.available_permits(), 0);
     let pointer = &*slot as *const Slot as usize;
@@ -130,4 +130,37 @@ async fn failure_slot_body_actual_manager_reuses_original_receipt_slot_at_closed
         bytes.available_permits(),
         super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
     );
+}
+
+#[test]
+fn failure_slot_exact_control_block_uses_actual_layout_before_backing_and_closed_pool_final_release(
+) {
+    let bytes = Slot::body_bytes();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let counts = Arc::new(Semaphore::new(1));
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let capture = seen.clone();
+    let charged = bank.clone();
+    let original_counts = counts.clone();
+    let root = super::super::metadata_vec::with_allocation_hook(
+        move |layout, _| {
+            assert_eq!(layout.size(), bytes);
+            assert_eq!(charged.available_permits(), 0);
+            assert_eq!(original_counts.available_permits(), 0);
+            capture.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        },
+        || Slot::reserve(&counts, &bank).unwrap(),
+    );
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let last = root.clone();
+    let pointer = std::ptr::from_ref(&*root);
+    drop(root);
+    bank.close();
+    counts.close();
+    assert_eq!(std::ptr::from_ref(&*last), pointer);
+    assert_eq!(counts.available_permits(), 0);
+    assert_eq!(bank.available_permits(), 0);
+    drop(last);
+    assert_eq!(counts.available_permits(), 1);
+    assert_eq!(bank.available_permits(), bytes);
 }
