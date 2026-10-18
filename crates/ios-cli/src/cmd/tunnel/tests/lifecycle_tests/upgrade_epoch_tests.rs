@@ -6,7 +6,7 @@ async fn publication_lifetime_pre_source_refusal_from_either_pool_never_browses_
         let source = FakeSource::new();
         let mut state = state(source.clone(), LOCAL_BUDGET);
         if !global_short {
-            Arc::get_mut(&mut state.inner).unwrap().metadata_bytes =
+            state.inner.get_mut().unwrap().metadata_bytes =
                 Arc::new(Semaphore::new(publication::Life::bytes() - 1));
         }
         drop(state.inner.lifecycle.ticket(A).await.unwrap());

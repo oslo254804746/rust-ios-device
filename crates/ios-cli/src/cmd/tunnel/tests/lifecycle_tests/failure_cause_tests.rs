@@ -188,9 +188,7 @@ async fn failure_writer_late_after_adopt_refunds_empty_actual_backing_and_preser
     let gate = Arc::new(Semaphore::new(0));
     *source.return_gate.lock().unwrap() = Some(Arc::clone(&gate));
     let mut state = manager(source.clone());
-    Arc::get_mut(&mut state.inner)
-        .unwrap()
-        .failure_write_timeout = Duration::from_millis(40);
+    state.inner.get_mut().unwrap().failure_write_timeout = Duration::from_millis(40);
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let held = Arc::new(StdMutex::new(None));
     let retained = Arc::clone(&held);
@@ -428,9 +426,7 @@ async fn write_batch_bytes_manual_cleanup_timeout_preserves_original_source_and_
     let gate = Arc::new(Semaphore::new(0));
     *source.return_gate.lock().unwrap() = Some(gate.clone());
     let mut state = manager(source.clone());
-    Arc::get_mut(&mut state.inner)
-        .unwrap()
-        .failure_write_timeout = Duration::from_millis(40);
+    state.inner.get_mut().unwrap().failure_write_timeout = Duration::from_millis(40);
     pending_manual_cleanup(&state).await;
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let mut scan = Box::pin(state.refresh_once());
@@ -471,7 +467,7 @@ async fn write_batch_bytes_manual_cleanup_timeout_preserves_original_source_and_
 async fn write_batch_bytes_whole_deadline_keeps_original_source_after_manual_marker_conversion() {
     let source = RefusedSource::new().await;
     let mut state = manager(source.clone());
-    Arc::get_mut(&mut state.inner).unwrap().scan_timeout = Duration::from_secs(3);
+    state.inner.get_mut().unwrap().scan_timeout = Duration::from_secs(3);
     pending_manual_cleanup(&state).await;
     *state.inner.success_before_remove.lock().unwrap() =
         Some(Box::new(|| std::thread::sleep(Duration::from_millis(3500))));
@@ -507,7 +503,7 @@ async fn write_batch_bytes_whole_deadline_keeps_original_source_after_manual_mar
 async fn write_batch_bytes_ready_timeout_keeps_recorded_source_after_successful_writer() {
     let source = RefusedSource::new().await;
     let mut state = manager(source.clone());
-    Arc::get_mut(&mut state.inner).unwrap().scan_timeout = Duration::from_secs(3);
+    state.inner.get_mut().unwrap().scan_timeout = Duration::from_secs(3);
     let ready = state.inner.ready.write().await;
     let error = state.refresh_once().await.unwrap_err();
     assert!(error.is::<tokio::time::error::Elapsed>());
@@ -655,9 +651,7 @@ async fn failure_cause_source_receipt_survives_actual_write_elapsed_with_both_or
     let gate = Arc::new(Semaphore::new(0));
     *source.return_gate.lock().unwrap() = Some(gate.clone());
     let mut state = manager(source.clone());
-    Arc::get_mut(&mut state.inner)
-        .unwrap()
-        .failure_write_timeout = Duration::from_millis(40);
+    state.inner.get_mut().unwrap().failure_write_timeout = Duration::from_millis(40);
     let mut scan = Box::pin(state.refresh_once());
     source.until_error(&mut scan).await;
     let writer = state.inner.failed_attempts.write().await;
@@ -740,7 +734,7 @@ async fn failure_cause_slot_exhaustion_rejects_fresh_source_and_stop_releases_or
     let source = RefusedSource::new().await;
     source.devices.lock().unwrap().push(B.into());
     let mut state = manager(source.clone());
-    Arc::get_mut(&mut state.inner).unwrap().failure_slots = Arc::new(Semaphore::new(1));
+    state.inner.get_mut().unwrap().failure_slots = Arc::new(Semaphore::new(1));
     state.refresh_once().await.unwrap();
     assert_eq!((source.count(A), source.count(B)), (1, 0));
     assert_eq!(state.inner.retry.receipt_count(), 1);
@@ -761,7 +755,7 @@ async fn failure_cause_slot_exhaustion_rejects_fresh_source_and_stop_releases_or
 async fn failure_cause_same_poll_clear_keeps_acquired_original_without_current_row_or_backoff() {
     let source = RefusedSource::new().await;
     let state = manager(source.clone());
-    let weak = Arc::downgrade(&state.inner);
+    let weak = state.inner.downgrade();
     *source.on_return.lock().unwrap() = Some(Box::new(move || {
         weak.upgrade().unwrap().lifecycle.clear();
     }));

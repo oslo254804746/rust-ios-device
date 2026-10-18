@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [manager 根初始化](validation/tunnel-manager-initialization-2026-10-18.md)
+实际 body/guard 在原池先准入，原 Source 字段与最后 Weak 两阶段退款已验；
+完整 tunnel723、最终 strict CLI/build/Source0通过，权限测试首次502记录保留。
+L02继续全审计，主项23/6/待核查、有效30与Q04全部排除不变。
+
 2026-10-18：L02 [Outcomes 初始化自身存储](validation/tunnel-outcomes-initialization-2026-10-18.md)
 在原池先准入，manager/Session 使用封闭 owner，独立 snapshot 与最后退款已验；
 完整 tunnel 718/0 FAIL/2 原 ignored、strict CLI/build/Source0 通过。L02 继续全审计，

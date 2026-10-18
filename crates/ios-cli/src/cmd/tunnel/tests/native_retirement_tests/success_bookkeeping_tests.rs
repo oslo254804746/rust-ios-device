@@ -131,9 +131,7 @@ async fn fixture() -> (Arc<SuccessSource>, TunnelAgentState) {
         source.clone(),
         OBSERVE,
     );
-    Arc::get_mut(&mut state.inner)
-        .unwrap()
-        .failure_write_timeout = WRITE_BUDGET;
+    state.inner.get_mut().unwrap().failure_write_timeout = WRITE_BUDGET;
     for udid in &source.ids {
         let ticket = state.inner.lifecycle.ticket(udid).await.unwrap();
         let slot = state.reserve_failure_slot(udid).await.unwrap();

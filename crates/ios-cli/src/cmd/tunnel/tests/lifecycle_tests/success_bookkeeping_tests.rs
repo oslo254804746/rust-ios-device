@@ -9,7 +9,7 @@ const FIFTH: &str = "synthetic-success-bookkeeping-4";
 
 fn bounded(source: Arc<FakeSource>, write: Duration, total: Duration) -> TunnelAgentState {
     let mut manager = state(source, Duration::from_secs(5));
-    let inner = Arc::get_mut(&mut manager.inner).unwrap();
+    let inner = manager.inner.get_mut().unwrap();
     inner.failure_write_timeout = write;
     inner.scan_timeout = total;
     manager
@@ -416,7 +416,7 @@ async fn lifecycle_tunnel_success_cleanup_timely_prefix_survives_shared_total_ex
     let a = deferred_success(&state, A).await;
     let b = deferred_success(&state, B).await;
     let had_intents = a.is_some() && b.is_some();
-    let weak = Arc::downgrade(&state.inner);
+    let weak = state.inner.downgrade();
     *state.inner.success_after_remove.lock().unwrap() = Some(Box::new(move || {
         std::thread::sleep(Duration::from_millis(50));
         *weak.upgrade().unwrap().success_after_remove.lock().unwrap() = Some(Box::new(|| {
@@ -457,7 +457,7 @@ async fn lifecycle_tunnel_success_cleanup_stop_a_preserves_a_and_still_removes_b
     let a = deferred_success(&state, A).await;
     let b = deferred_success(&state, B).await;
     let had_intents = a.is_some() && b.is_some();
-    let weak = Arc::downgrade(&state.inner);
+    let weak = state.inner.downgrade();
     *state.inner.success_before_remove.lock().unwrap() = Some(Box::new(move || {
         weak.upgrade()
             .unwrap()
@@ -553,7 +553,7 @@ async fn lifecycle_tunnel_success_fast_cleanup_crossing_candidate_clock_defers_w
         Duration::from_secs(1),
         Duration::from_secs(5),
     );
-    Arc::get_mut(&mut state.inner).unwrap().connect_timeout = WRITE_BUDGET;
+    state.inner.get_mut().unwrap().connect_timeout = WRITE_BUDGET;
     seed(&state, A).await;
     let before = {
         let failed = state.inner.failed_attempts.read().await;

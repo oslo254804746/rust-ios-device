@@ -370,7 +370,7 @@ async fn native_scan_outcome_whole_expiry_returns_original_io_and_secondary_elap
     let expected = baseline();
     let source = OutcomeSource::new(Stage::Paired, 1).await;
     let mut state = manager(source.clone());
-    Arc::get_mut(&mut state.inner).unwrap().scan_timeout = Duration::from_millis(40);
+    state.inner.get_mut().unwrap().scan_timeout = Duration::from_millis(40);
     let error = state.refresh_once().await.unwrap_err();
     recover(&state, &source, expected).await;
     assert_eq!(

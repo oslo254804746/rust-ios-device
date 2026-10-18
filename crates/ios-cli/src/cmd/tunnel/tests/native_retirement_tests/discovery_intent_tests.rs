@@ -307,7 +307,7 @@ async fn intent_discovery_two_tcp_causes_and_actual_completion_elapsed_keep_all_
     let expected = baseline();
     let source = DiscoverySource::new(2).await;
     let mut state = manager(source.clone());
-    Arc::get_mut(&mut state.inner).unwrap().scan_timeout = Duration::from_millis(250);
+    state.inner.get_mut().unwrap().scan_timeout = Duration::from_millis(250);
     let started = start_manual(&state).await;
     let old_join = source.base.handle().shutdown(OBSERVE).await;
     source.mode.store(1, Ordering::SeqCst);

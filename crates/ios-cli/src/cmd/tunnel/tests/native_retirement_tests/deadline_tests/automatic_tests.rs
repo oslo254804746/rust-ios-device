@@ -186,7 +186,7 @@ async fn whole_scan_deadline_crossing_real_native_source_metadata_and_publicatio
             source.clone(),
             OBSERVE,
         );
-        Arc::get_mut(&mut state.inner).unwrap().scan_timeout = BUDGET;
+        state.inner.get_mut().unwrap().scan_timeout = BUDGET;
         if matches!(delay, Delay::Publication) {
             *state.inner.publication_after_insert.lock().unwrap() =
                 Some(Box::new(|| std::thread::sleep(CROSS)));

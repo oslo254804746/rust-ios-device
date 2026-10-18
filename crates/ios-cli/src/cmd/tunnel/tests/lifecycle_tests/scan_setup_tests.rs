@@ -569,7 +569,7 @@ async fn lifecycle_tunnel_scan_setup_list_error_cancel_keeps_primary_without_old
 
 struct EpochErrorSource {
     source: Arc<FakeSource>,
-    state: StdMutex<std::sync::Weak<TunnelAgentInner>>,
+    state: StdMutex<Option<shared_body::Weak<TunnelAgentInner>>>,
     connect_error: bool,
     terminal: bool,
 }
@@ -588,7 +588,14 @@ impl Source for EpochErrorSource {
         Box::pin(async {
             let snapshot = self.source.usb_devices().await;
             let state = TunnelAgentState {
-                inner: self.state.lock().unwrap().upgrade().unwrap(),
+                inner: self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .upgrade()
+                    .unwrap(),
             };
             if self.terminal {
                 state.notify_shutdown();
@@ -619,7 +626,7 @@ async fn lifecycle_tunnel_scan_setup_returned_usb_errors_survive_same_poll_epoch
             source.list_failure.store(true, Ordering::SeqCst);
             let wrapper = Arc::new(EpochErrorSource {
                 source: source.clone(),
-                state: StdMutex::new(std::sync::Weak::new()),
+                state: StdMutex::new(None),
                 connect_error,
                 terminal,
             });
@@ -630,7 +637,7 @@ async fn lifecycle_tunnel_scan_setup_returned_usb_errors_survive_same_poll_epoch
                 wrapper.clone(),
                 TUNNEL_CONNECT_TIMEOUT,
             );
-            *wrapper.state.lock().unwrap() = Arc::downgrade(&state.inner);
+            *wrapper.state.lock().unwrap() = Some(state.inner.downgrade());
             let error = state.refresh_once().await.unwrap_err();
             assert_eq!(
                 error.downcast_ref::<std::io::Error>().unwrap().kind(),

@@ -9068,3 +9068,13 @@ tunnel 718/0 FAIL/2 原 ignored、上游10/strict CLI/build/Source0 通过，见
 [验证](validation/tunnel-outcomes-initialization-2026-10-18.md)。其它 owner/private
 与完整 freshness 继续；128MiB 非完整 heap/RSS，L02 不关闭，主项23/6/待全审计、
 有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-18 L02 manager initialization body
+
+原池先取得实际 manager body/guard grant，再创建根及原子对象；paired
+Strong/Weak 保持原字段最后 strong 销毁、body 最后 Weak 退款，精确配置
+不出现未收费间隙。新增5项及完整tunnel723通过，最终strict CLI/build/Source0
+通过，首次权限502及格式失败如实保留，见
+[验证](validation/tunnel-manager-initialization-2026-10-18.md)。其它共享 owner/
+private及完整freshness继续，128MiB非完整heap/RSS；L02不关闭，主项23/6/
+待全审计、有效30与Q04全部排除保持，仅本地提交。

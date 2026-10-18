@@ -352,12 +352,15 @@ async fn reload_cancels_an_admitted_listing_instead_of_returning_empty_success()
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(response
-        .text()
-        .await
-        .unwrap()
-        .contains("manager scope denied"));
+    let status = response.status();
+    let class = response.headers().get("x-ios-error-class").cloned();
+    let body = response.text().await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "class={class:?}; body={body}"
+    );
+    assert!(body.contains("manager scope denied"));
     release.notify_one();
     server.abort();
     upstream_task.abort();
