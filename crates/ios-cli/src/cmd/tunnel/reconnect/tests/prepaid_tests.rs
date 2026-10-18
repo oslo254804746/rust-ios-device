@@ -40,13 +40,27 @@ async fn prepaid_selector_actual_receipt_all_capsules_precede_copy_and_last_owne
         let host = super::super::super::candidate_input::RouteRef::from(&receipt.identity.route)
             .host()
             .unwrap();
+        let allocations = seen.lock().unwrap();
+        assert_eq!(allocations.len(), 3);
         assert_eq!(
-            seen.lock().unwrap().as_slice(),
+            &allocations[..2],
             &[
                 (A.len(), receipt.udid.as_ptr() as usize),
                 (host_length, host.as_ptr() as usize)
             ]
         );
+        // The exact shared original capsule is now visible to this allocator
+        // observer too. Its whole allocation follows the same complete grant.
+        let original_root = bytes
+            - FailureReceipt::body_bytes()
+            - A.len()
+            - host_length
+            - std::mem::size_of::<SourceFailure>();
+        assert_eq!(allocations[2].0, original_root);
+        assert_ne!(allocations[2].1, 0);
+        assert_ne!(allocations[2].1, receipt.udid.as_ptr() as usize);
+        assert_ne!(allocations[2].1, host.as_ptr() as usize);
+        drop(allocations);
         assert_eq!(receipt.udid.capacity(), A.len());
         assert_eq!(
             super::super::super::candidate_input::route_capacity(&receipt.identity.route),
