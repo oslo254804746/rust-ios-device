@@ -123,6 +123,8 @@ impl TunnelConnection {
             owned_initial_bank: self.owned_initial_bank,
             #[cfg(feature = "tunnel")]
             prepared_rsd: None,
+            #[cfg(feature = "tunnel")]
+            owned_prepared_rsd: None,
             initial_rsd_probe,
             pair_record: self.pair_record,
             lockdown_transport: self.lockdown_transport,

@@ -253,6 +253,8 @@ async fn prepared_rsd_same_address_changed_port_uses_new_real_service_socket_and
         owned_initial_rsd: None,
         owned_initial_bank: None,
         prepared_rsd: None,
+        #[cfg(feature = "tunnel")]
+        owned_prepared_rsd: None,
         initial_rsd_probe,
         pair_record: None,
         lockdown_transport: super::super::LockdownTransport::Usbmux { device_id: 42 },
@@ -294,4 +296,87 @@ async fn prepared_rsd_same_address_changed_port_uses_new_real_service_socket_and
     assert_eq!(bank.available_permits(), 1024 * 1024);
     // Legacy control constructor owns no native tasks; this checks original
     // directory/service sockets only. Userspace native joins need separate CLI gate.
+}
+
+fn owned_prepared(bank: &Arc<Semaphore>) -> PreparedRsdOwner {
+    let catalogue = PreparedRsdCatalogue::decode(&directory(12345), bank).unwrap();
+    let (fee, mut modes) = exact_vec(bank, 1).unwrap();
+    modes.push(super::super::existing_rsd::RsdHandshakeMode::Direct);
+    catalogue
+        .finish_owned(
+            RsdSelectionReceipt {
+                handshake_mode: super::super::existing_rsd::RsdHandshakeMode::Direct,
+                attempted_modes: modes,
+            },
+            fee,
+        )
+        .unwrap()
+}
+#[test]
+fn prepared_owned_root_exports_keep_original_body_rows_features_and_selection_until_last_owner() {
+    let bank = Arc::new(Semaphore::new(65536));
+    let root = owned_prepared(&bank);
+    let paid = root.known_bytes();
+    let body = std::ptr::from_ref(&*root) as usize;
+    let row = root.rows.as_ptr() as usize;
+    let uid = root.udid().as_ptr() as usize;
+    let feature = root
+        .service_features(SERVICE)
+        .unwrap()
+        .next()
+        .unwrap()
+        .as_ptr() as usize;
+    let modes = root.selection().unwrap().attempted_modes.as_ptr() as usize;
+    let last = root.clone();
+    assert!(last.ptr_eq(&root));
+    drop(root);
+    bank.close();
+    assert_eq!(std::ptr::from_ref(&*last) as usize, body);
+    assert_eq!(last.rows.as_ptr() as usize, row);
+    assert_eq!(last.udid().as_ptr() as usize, uid);
+    assert_eq!(
+        last.service_features(SERVICE)
+            .unwrap()
+            .next()
+            .unwrap()
+            .as_ptr() as usize,
+        feature
+    );
+    assert_eq!(
+        last.selection().unwrap().attempted_modes.as_ptr() as usize,
+        modes
+    );
+    assert_eq!(bank.available_permits(), 65536 - paid);
+    assert_eq!(last.service_port(SERVICE), Some(12345));
+    drop(last);
+    assert_eq!(bank.available_permits(), 65536);
+}
+#[test]
+fn prepared_owned_parallel_last_roots_share_original_payload_and_refund_exactly_once() {
+    let bank = Arc::new(Semaphore::new(65536));
+    let root = owned_prepared(&bank);
+    let paid = root.known_bytes();
+    let pointer = std::ptr::from_ref(&*root) as usize;
+    let barrier = Arc::new(std::sync::Barrier::new(9));
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            let original = root.clone();
+            let barrier = barrier.clone();
+            let bank = bank.clone();
+            scope.spawn(move || {
+                barrier.wait();
+                assert_eq!(std::ptr::from_ref(&*original) as usize, pointer);
+                assert_eq!(original.service_port(SERVICE), Some(12345));
+                assert_eq!(bank.available_permits(), 65536 - paid);
+                barrier.wait();
+                drop(original);
+            });
+        }
+        bank.close();
+        drop(root);
+        barrier.wait();
+        assert_eq!(bank.available_permits(), 65536 - paid);
+        barrier.wait();
+    });
+    assert_eq!(bank.available_permits(), 65536);
 }

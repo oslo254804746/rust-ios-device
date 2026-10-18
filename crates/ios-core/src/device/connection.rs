@@ -116,6 +116,8 @@ async fn connect_direct_usb_tunnel_inner(
             owned_initial_bank: None,
             #[cfg(feature = "tunnel")]
             prepared_rsd: None,
+            #[cfg(feature = "tunnel")]
+            owned_prepared_rsd: None,
             initial_rsd_probe: InitialRsdProbe::skipped(InitialRsdProbeSkipReason::TunnelSkipped),
             pair_record: Some(pair_record),
             lockdown_transport,
@@ -218,6 +220,8 @@ async fn connect_remote_pairing_tunnel_inner(
             owned_initial_bank: None,
             #[cfg(feature = "tunnel")]
             prepared_rsd: None,
+            #[cfg(feature = "tunnel")]
+            owned_prepared_rsd: None,
             initial_rsd_probe: InitialRsdProbe::skipped(InitialRsdProbeSkipReason::TunnelSkipped),
             pair_record: Some(pair_record),
             lockdown_transport: LockdownTransport::Tcp {

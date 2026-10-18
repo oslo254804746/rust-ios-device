@@ -1,12 +1,12 @@
 //! Refresh an exact active row in place, without acquiring or retiring a lease.
 use super::{admission, lifecycle, Ticket, TunnelAgentState};
 use anyhow::Result;
-use ios_core::device::PreparedRsdCatalogue;
+use ios_core::device::PreparedRsdOwner;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(super) struct Metadata {
-    pub(super) catalogue: Arc<PreparedRsdCatalogue>,
+    pub(super) catalogue: PreparedRsdOwner,
     _publication_fields: OwnedSemaphorePermit,
 }
 
@@ -14,7 +14,7 @@ pub(super) type MetadataOwner = super::shared_dual_body::Strong<Metadata>;
 
 impl Metadata {
     pub(super) fn prepare(
-        catalogue: Arc<PreparedRsdCatalogue>,
+        catalogue: PreparedRsdOwner,
         global: &Arc<Semaphore>,
         publication: &Arc<Semaphore>,
     ) -> Result<MetadataOwner> {
@@ -333,7 +333,7 @@ impl TunnelAgentState {
                     );
                     let old_cache = row.device.swap_freshness_catalogue(
                         proof.runtime(),
-                        Some(Arc::clone(&proposed.catalogue)),
+                        Some(proposed.catalogue.clone()),
                     )?;
                     let old_metadata = row._fresh_metadata.replace(proposed.clone());
                     #[cfg(test)]

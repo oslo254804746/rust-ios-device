@@ -47,15 +47,36 @@ impl OwnedConnectedDevice {
     pub fn current_rsd_catalogue(&self) -> Option<&super::PreparedRsdCatalogue> {
         self.inner.current_rsd_catalogue()
     }
-    pub fn prepared_rsd_owner(&self) -> Option<&Arc<super::PreparedRsdCatalogue>> {
-        self.inner.prepared_rsd_owner()
+    pub fn prepared_rsd_owner(&self) -> Option<&super::PreparedRsdOwner> {
+        self.inner.owned_prepared_rsd.as_ref()
     }
     pub fn swap_current_rsd_catalogue(
         &mut self,
         runtime: &Arc<TunnelHandle>,
-        proposed: Option<Arc<super::PreparedRsdCatalogue>>,
-    ) -> Result<Option<Arc<super::PreparedRsdCatalogue>>, CoreError> {
-        self.inner.swap_current_rsd_catalogue(runtime, proposed)
+        proposed: Option<super::PreparedRsdOwner>,
+    ) -> Result<Option<super::PreparedRsdOwner>, CoreError> {
+        if !self
+            .inner
+            .tunnel
+            .as_ref()
+            .is_some_and(|original| Arc::ptr_eq(original, runtime))
+        {
+            return Err(CoreError::Protocol(
+                "RSD refresh runtime identity changed".into(),
+            ));
+        }
+        if proposed
+            .as_ref()
+            .is_some_and(|catalogue| catalogue.udid() != self.inner.info.udid)
+        {
+            return Err(CoreError::Protocol(
+                "RSD refresh device identity changed".into(),
+            ));
+        }
+        Ok(std::mem::replace(
+            &mut self.inner.owned_prepared_rsd,
+            proposed,
+        ))
     }
     pub fn retained_metadata_bytes(&self) -> Option<usize> {
         self.inner.retained_metadata_bytes()

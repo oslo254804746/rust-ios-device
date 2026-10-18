@@ -2,7 +2,7 @@
 //! Only metadata/routing uses the cfgtest seam; every catalogue reads real H2/XPC.
 use super::*;
 use indexmap::IndexMap;
-use ios_core::device::{ExistingRsdRoute, PreparedRsdCatalogue};
+use ios_core::device::{ExistingRsdRoute, PreparedRsdOwner};
 use ios_core::test_support::{decode_message, encode_message, flags, XpcMessage, H2_PREFACE};
 use ios_core::XpcValue;
 use std::collections::VecDeque;
@@ -116,7 +116,7 @@ async fn directories(ports: Vec<u16>) -> (ExistingRsdRoute, tokio::task::JoinHan
 struct FreshDevice {
     native: Arc<TunnelHandle>,
     route: ExistingRsdRoute,
-    catalogue: Option<Arc<PreparedRsdCatalogue>>,
+    catalogue: Option<PreparedRsdOwner>,
 }
 impl source::FakeDevice for FreshDevice {
     fn record(&self) -> TunnelRecord {
@@ -136,14 +136,14 @@ impl source::FakeDevice for FreshDevice {
     fn freshness_route(&self) -> Result<Option<ExistingRsdRoute>> {
         Ok(Some(self.route))
     }
-    fn freshness_catalogue(&self) -> Option<&Arc<PreparedRsdCatalogue>> {
+    fn freshness_catalogue(&self) -> Option<&PreparedRsdOwner> {
         self.catalogue.as_ref()
     }
     fn swap_freshness_catalogue(
         &mut self,
         runtime: &Arc<TunnelHandle>,
-        proposed: Option<Arc<PreparedRsdCatalogue>>,
-    ) -> Result<Option<Arc<PreparedRsdCatalogue>>> {
+        proposed: Option<PreparedRsdOwner>,
+    ) -> Result<Option<PreparedRsdOwner>> {
         anyhow::ensure!(Arc::ptr_eq(runtime, &self.native), lifecycle::cancelled());
         Ok(std::mem::replace(&mut self.catalogue, proposed))
     }
@@ -233,8 +233,7 @@ impl Source for FreshSource {
         route: ExistingRsdRoute,
         deadline: Instant,
         bank: &'a Arc<tokio::sync::Semaphore>,
-    ) -> Result<crate::cmd::tunnel::future_storage::Dynamic<'a, Result<Arc<PreparedRsdCatalogue>>>>
-    {
+    ) -> Result<crate::cmd::tunnel::future_storage::Dynamic<'a, Result<PreparedRsdOwner>>> {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
                 assert_eq!(route, self.route);
@@ -248,15 +247,15 @@ impl Source for FreshSource {
                     .pop_front()
                     .unwrap_or(Refresh::Directory);
                 let result = match fate {
-                    Refresh::Directory => {
-                        Ok(ios_core::device::prepare_existing_rsd_with_identity_at(
+                    Refresh::Directory => Ok(
+                        ios_core::device::prepare_owned_existing_rsd_with_identity_at(
                             route,
                             deadline,
                             bank,
                             uuid::Uuid::nil(),
                         )
-                        .await?)
-                    }
+                        .await?,
+                    ),
                     Refresh::Failure {
                         marker,
                         delay,
@@ -351,10 +350,11 @@ async fn freshness_production_alive_scan_changes_current_ports_without_new_lease
         assert!(row._metadata.ptr_eq(&first_fee) && row._global_metadata.ptr_eq(&second_fee));
         let latest = row._fresh_metadata.as_ref().unwrap();
         assert_eq!(latest.catalogue.service_port(SERVICE), Some(10002));
-        assert!(Arc::ptr_eq(
-            row.device.freshness_catalogue().unwrap(),
-            &latest.catalogue
-        ));
+        assert!(row
+            .device
+            .freshness_catalogue()
+            .unwrap()
+            .ptr_eq(&latest.catalogue));
         assert!(Arc::ptr_eq(row.device.native_handle().unwrap(), &native));
     }
     assert_eq!(source.base.connect_calls.load(Ordering::SeqCst), 1);
@@ -406,10 +406,11 @@ async fn freshness_actual_late_swap_restores_old_catalogue_and_all_original_fee_
         let table = state.inner.tunnels.read().await;
         let row = &table[UID];
         assert!(row._fresh_metadata.as_ref().unwrap().ptr_eq(&original));
-        assert!(Arc::ptr_eq(
-            row.device.freshness_catalogue().unwrap(),
-            &original.catalogue
-        ));
+        assert!(row
+            .device
+            .freshness_catalogue()
+            .unwrap()
+            .ptr_eq(&original.catalogue));
         assert!(row.is_alive());
     }
     assert_eq!(bank.available_permits(), before);
@@ -589,10 +590,11 @@ async fn refresh_future_last_byte_constructor_refusal_keeps_original_catalogue_a
         let row = &table[UID];
         assert!(row.publication.ptr_eq(&publication));
         assert!(row._fresh_metadata.as_ref().unwrap().ptr_eq(&previous));
-        assert!(Arc::ptr_eq(
-            row.device.freshness_catalogue().unwrap(),
-            &previous.catalogue
-        ));
+        assert!(row
+            .device
+            .freshness_catalogue()
+            .unwrap()
+            .ptr_eq(&previous.catalogue));
         assert!(Arc::ptr_eq(row.device.native_handle().unwrap(), &native));
         assert_eq!(previous.catalogue.service_port(SERVICE), Some(10203));
         assert!(row.is_alive());

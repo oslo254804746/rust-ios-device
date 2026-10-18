@@ -68,6 +68,8 @@ pub struct ConnectedDevice {
     #[cfg(feature = "tunnel")]
     owned_initial_bank: Option<Arc<tokio::sync::Semaphore>>,
     #[cfg(feature = "tunnel")]
+    owned_prepared_rsd: Option<PreparedRsdOwner>,
+    #[cfg(feature = "tunnel")]
     pub(crate) prepared_rsd: Option<std::sync::Arc<PreparedRsdCatalogue>>,
     initial_rsd_probe: InitialRsdProbe,
     pair_record: Option<Arc<PairRecord>>,
@@ -135,9 +137,12 @@ pub use existing_rsd::{
     RsdSelectionReceipt,
 };
 #[cfg(feature = "tunnel")]
-pub use existing_rsd::{prepare_existing_rsd_at, prepare_existing_rsd_with_identity_at};
+pub use existing_rsd::{
+    prepare_existing_rsd_at, prepare_existing_rsd_with_identity_at, prepare_owned_existing_rsd_at,
+    prepare_owned_existing_rsd_with_identity_at,
+};
 #[cfg(feature = "tunnel")]
-pub use prepared_rsd::PreparedRsdCatalogue;
+pub use prepared_rsd::{PreparedRsdCatalogue, PreparedRsdOwner};
 #[cfg(any(feature = "mdns", feature = "tunnel"))]
 pub(crate) mod error_context;
 mod lockdown_transport;

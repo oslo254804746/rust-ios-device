@@ -221,3 +221,75 @@ fn owned_initial_failed_observation_keeps_original_io_source_and_bank_validation
     drop((device, native, receiver));
     assert_eq!(bank.available_permits(), QUOTA);
 }
+
+#[tokio::test]
+async fn prepared_owned_connection_swap_prefers_current_catalogue_and_keeps_export_after_device_drop(
+) {
+    use super::super::existing_rsd::{RsdHandshakeMode, RsdSelectionReceipt};
+    use super::super::prepared_rsd::{exact_vec, PreparedRsdCatalogue};
+    let bank = Arc::new(Semaphore::new(QUOTA));
+    let initial = directory(&bank).await;
+    let initial_paid = initial.known_bytes();
+    let (native, receiver) = native();
+    let mut device = OwnedConnectedDevice::new(connection(&bank).into_device(
+        native.clone(),
+        InitialProbe::Owned(super::super::rsd_observation::RsdProbeOutcome::Completed(
+            Ok(initial),
+        )),
+    ));
+    let XpcValue::Dictionary(input) = dict([
+        ("MessageType", XpcValue::String("Handshake".into())),
+        (
+            "Properties",
+            dict([(
+                "UniqueDeviceID",
+                XpcValue::String("owned-output-fixture".into()),
+            )]),
+        ),
+        // Removing the original service proves current refresh is preferred
+        // without opening a socket or retrying initial discovery.
+        ("Services", dict([])),
+    ]) else {
+        unreachable!()
+    };
+    let prepared = PreparedRsdCatalogue::decode(&input, &bank).unwrap();
+    let (fee, mut modes) = exact_vec(&bank, 1).unwrap();
+    modes.push(RsdHandshakeMode::Direct);
+    let current = prepared
+        .finish_owned(
+            RsdSelectionReceipt {
+                handshake_mode: RsdHandshakeMode::Direct,
+                attempted_modes: modes,
+            },
+            fee,
+        )
+        .unwrap();
+    let paid = current.known_bytes();
+    let address = std::ptr::from_ref(&*current);
+    let (other, other_receiver) = self::native();
+    assert!(device
+        .swap_current_rsd_catalogue(&other, Some(current.clone()))
+        .is_err());
+    assert!(device.current_rsd_catalogue().is_none());
+    assert!(device
+        .swap_current_rsd_catalogue(&native, Some(current.clone()))
+        .unwrap()
+        .is_none());
+    assert!(device.prepared_rsd_owner().unwrap().ptr_eq(&current));
+    assert_eq!(
+        std::ptr::from_ref(device.current_rsd_catalogue().unwrap()),
+        address
+    );
+    bank.close();
+    let error = device.connect_rsd_service("svc").await.err().unwrap();
+    assert!(matches!(
+        error,
+        CoreError::Xpc(XpcError::ServiceNotFound(_))
+    ));
+    assert_eq!(bank.available_permits(), QUOTA - initial_paid - paid);
+    drop((device, native, receiver, other, other_receiver));
+    assert_eq!(bank.available_permits(), QUOTA - paid);
+    assert_eq!(current.udid(), "owned-output-fixture");
+    drop(current);
+    assert_eq!(bank.available_permits(), QUOTA);
+}
