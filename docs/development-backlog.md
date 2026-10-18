@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [failure count slot 实际 body](validation/tunnel-failure-slot-body-2026-10-18.md)
+计数1与同池字节费用分离，创建前准入、闭池原根复用及最后退款已验；原receipt/
+slot身份和零余量边界保留。新增3/retry20/global metadata17/完整tunnel744/
+strict CLI/build/Source0通过；L02继续全审计，主项23/6/待核查、有效30与Q04排除不变。
+
 2026-10-18：L02 [metadata fee 原 payload](validation/tunnel-metadata-lease-bodies-2026-10-18.md)
 两个独立原费用根均在两池预付自身实际 body，原 table/native/proof 及逐根退款
 边界已验。新增4/native metadata7/freshness14/完整tunnel741/strict CLI/build/

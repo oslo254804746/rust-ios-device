@@ -1,11 +1,15 @@
 use super::*;
 use crate::cmd::tunnel::metadata_vec;
 
-fn row(identity: AttemptIdentity, ticket: Ticket) -> Episode {
+fn row(
+    identity: AttemptIdentity,
+    ticket: Ticket,
+    admitted: super::super::super::failure_slot::Owner,
+) -> Episode {
     Episode {
         identity,
         ticket,
-        slot: slot(),
+        slot: admitted,
         version: Arc::new(()),
         snapshot: Snapshot {
             schedule: ScheduleProvenance::Episode,
@@ -27,10 +31,17 @@ async fn removed_body_episode_into_inner_refunds_only_original_body_while_select
     let identity = buffered_identity();
     let body = std::mem::size_of::<Removed>();
     let fields = A.len() + super::super::super::candidate_input::route_length(&identity.route);
-    let bank = Arc::new(Semaphore::new(body + fields));
+    let bank = Arc::new(Semaphore::new(body + fields + slot_bytes()));
+    let admitted = slot(&bank);
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
-    let node = Removed::episode(A, &identity, |identity| row(identity, ticket), &bank).unwrap();
+    let node = Removed::episode(
+        A,
+        &identity,
+        |identity| row(identity, ticket, admitted),
+        &bank,
+    )
+    .unwrap();
     let key = node.udid.as_ptr();
     let host = super::super::super::candidate_input::RouteRef::from(
         &node.row.as_ref().unwrap().identity.route,
@@ -60,7 +71,7 @@ async fn removed_body_episode_into_inner_refunds_only_original_body_while_select
         identity.native_id
     );
     drop(value);
-    assert_eq!(bank.available_permits(), body + fields);
+    assert_eq!(bank.available_permits(), body + fields + slot_bytes());
 }
 
 #[tokio::test]
@@ -70,7 +81,7 @@ async fn removed_body_cause_last_byte_refusal_and_original_receipt_handoff_are_e
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let receipt =
-        FailureReceipt::reserve(A, &identity(), &ticket, slot(), Arc::new(()), &bank).unwrap();
+        FailureReceipt::reserve(A, &identity(), &ticket, slot(&bank), Arc::new(()), &bank).unwrap();
     let body = std::mem::size_of::<Removed>();
     let leave = body - 1;
     let held = bank
@@ -165,7 +176,7 @@ async fn removed_body_actual_ledger_rollback_and_last_batch_keep_original_boxes_
     for key in [A, B] {
         let ticket = lifecycle.ticket(key).await.unwrap();
         let attempt = ticket
-            .commit(|| ledger.start(key, &identity, &ticket, slot()))
+            .commit(|| ledger.start(key, &identity, &ticket, slot(&bank)))
             .unwrap();
         let (original, pointer) = io_original("original-body-owner-io");
         if key == A {
@@ -227,8 +238,9 @@ async fn removed_body_actual_ledger_rollback_and_last_batch_keep_original_boxes_
     );
     drop(removed);
     assert_eq!(pointer(receipt.primary()), first_pointer);
-    let receipt_bytes =
-        FailureReceipt::initial_bytes(A, &identity) - std::mem::size_of::<SourceFailure>();
+    let receipt_bytes = FailureReceipt::initial_bytes(A, &identity)
+        - std::mem::size_of::<SourceFailure>()
+        + slot_bytes();
     assert_eq!(
         bank.available_permits(),
         total - held.num_permits() - receipt_bytes

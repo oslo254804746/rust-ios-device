@@ -36,7 +36,7 @@ pub(in super::super) struct FailureReceipt {
     pub(super) udid: String,
     pub(super) identity: AttemptIdentity,
     pub(super) ticket: Ticket,
-    pub(super) slot: Arc<OwnedSemaphorePermit>,
+    pub(super) slot: super::super::failure_slot::Owner,
     pub(super) version: Arc<()>,
     original: Shared<Original>,
     history: OnceLock<History>,
@@ -54,7 +54,7 @@ impl FailureReceipt {
         udid: &str,
         identity: &AttemptIdentity,
         ticket: &Ticket,
-        slot: Arc<OwnedSemaphorePermit>,
+        slot: super::super::failure_slot::Owner,
         version: Arc<()>,
         bank: &Arc<Semaphore>,
     ) -> Result<Receipt> {
@@ -111,8 +111,8 @@ impl FailureReceipt {
     pub(in super::super) fn latest(&self) -> &anyhow::Error {
         self.original.error()
     }
-    pub(in super::super) fn slot(&self) -> Arc<OwnedSemaphorePermit> {
-        Arc::clone(&self.slot)
+    pub(in super::super) fn slot(&self) -> super::super::failure_slot::Owner {
+        self.slot.clone()
     }
     pub(in super::super) fn version(&self) -> Arc<()> {
         Arc::clone(&self.version)

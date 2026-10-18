@@ -47,7 +47,7 @@ async fn ledger_owner_actual_attempt_retains_body_at_closed_quota_while_snapshot
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let attempt = ticket
-        .commit(|| ledger.start(A, identity(), &ticket, slot()))
+        .commit(|| ledger.start(A, identity(), &ticket, slot(&bank)))
         .unwrap();
     assert!(attempt.ledger.ptr_eq(&ledger));
     let (original, original_pointer) = io_original("original-ledger-last-owner");

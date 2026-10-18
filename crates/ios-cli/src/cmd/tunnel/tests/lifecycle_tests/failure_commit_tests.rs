@@ -42,7 +42,9 @@ async fn lifecycle_tunnel_clear_preserves_failure_committed_in_replacement_epoch
         let row = &failed[A];
         *captured.lock().unwrap() = Some((
             Arc::clone(&row.version),
-            row.slot.as_ref().map(|slot| Arc::as_ptr(slot) as usize),
+            row.slot
+                .as_ref()
+                .map(|slot| &**slot as *const failure_slot::Slot as usize),
         ));
         drop(failed);
         // A device-only stop must not make old global cleanup erase this row.
@@ -58,7 +60,9 @@ async fn lifecycle_tunnel_clear_preserves_failure_committed_in_replacement_epoch
         let (version, slot) = expected.as_ref().unwrap();
         assert!(Arc::ptr_eq(&row.version, version));
         assert_eq!(
-            row.slot.as_ref().map(|slot| Arc::as_ptr(slot) as usize),
+            row.slot
+                .as_ref()
+                .map(|slot| &**slot as *const failure_slot::Slot as usize),
             *slot
         );
         assert_eq!(row.fail_count, 1);

@@ -38,6 +38,7 @@ mod bookkeeping;
 mod candidate_index;
 mod candidate_input;
 mod error_payload;
+mod failure_slot;
 mod failure_table;
 mod federation_output;
 mod freshness;
@@ -467,7 +468,7 @@ struct RefreshContext<'a, 's> {
 struct ConnectionContext<'a> {
     expected_id: Option<u32>,
     deadline: Option<&'a lifecycle::ConnectionDeadline>,
-    retry: Option<(failure_table::Identity, Arc<OwnedSemaphorePermit>)>,
+    retry: Option<(failure_table::Identity, failure_slot::Owner)>,
     manual: Option<&'a intent::ManualRequest<'a>>,
     input: Option<candidate_input::Owner>,
 }
@@ -557,7 +558,7 @@ struct FailedTunnelAttempt {
     last_attempt: Instant,
     fail_count: u32,
     identity: failure_table::Identity,
-    slot: Option<Arc<OwnedSemaphorePermit>>,
+    slot: Option<failure_slot::Owner>,
 }
 
 struct ScanCleanupFailure {
@@ -1341,7 +1342,7 @@ impl TunnelAgentState {
         ticket: &Ticket,
         expected_id: Option<u32>,
         deadline: Option<&lifecycle::ConnectionDeadline>,
-        retry: Option<(AttemptIdentity, Arc<OwnedSemaphorePermit>)>,
+        retry: Option<(AttemptIdentity, failure_slot::Owner)>,
     ) -> Result<PaidRecord> {
         let retry = retry
             .map(|(identity, slot)| {
@@ -1970,9 +1971,9 @@ impl TunnelAgentState {
                         return Ok(());
                     }
                     let slot = self.reserve_failure_slot(udid).await?;
-                    failure_slot = Some(Arc::clone(&slot));
+                    failure_slot = Some(slot.clone());
                     prepared.as_mut().expect("pre-Source failure node").row.slot =
-                        Some(Arc::clone(&slot));
+                        Some(slot.clone());
                     let _permit = self.inner.lifecycle.connects.acquire().await?;
                     deadline.check()?;
                     self.connect_and_store_with_context(
@@ -2866,7 +2867,7 @@ impl TunnelAgentState {
         Ok(())
     }
 
-    async fn reserve_failure_slot(&self, udid: &str) -> Result<Arc<OwnedSemaphorePermit>> {
+    async fn reserve_failure_slot(&self, udid: &str) -> Result<failure_slot::Owner> {
         if let Some(slot) = self.inner.retry.slot(udid) {
             return Ok(slot);
         }
@@ -2880,12 +2881,7 @@ impl TunnelAgentState {
         {
             return Ok(slot);
         }
-        self.inner
-            .failure_slots
-            .clone()
-            .try_acquire_owned()
-            .map(Arc::new)
-            .map_err(|_| crate::output::resource_decision("tunnel failure record capacity"))
+        failure_slot::Slot::reserve(&self.inner.failure_slots, &self.inner.global_metadata_bytes)
     }
 
     #[cfg(test)]
@@ -2893,7 +2889,7 @@ impl TunnelAgentState {
         &self,
         udid: &str,
         identity: AttemptIdentity,
-        slot: Arc<OwnedSemaphorePermit>,
+        slot: failure_slot::Owner,
         ticket: &Ticket,
     ) {
         let destination = failure_table::Destination::new(&self.inner.global_metadata_bytes)

@@ -9,11 +9,12 @@ async fn receipt_body_preflight_and_last_weak_keep_exact_body_and_paid_guard_aft
     let ticket = lifecycle.ticket(A).await.unwrap();
     let bytes = FailureReceipt::initial_bytes(A, &identity);
     for available in [0, FailureReceipt::body_bytes() - 1, bytes - 1] {
-        let bank = Arc::new(Semaphore::new(available));
+        let bank = Arc::new(Semaphore::new(available + slot_bytes()));
+        let admitted = slot(&bank);
         let error = metadata_vec::with_allocation_hook(
             |_, _| panic!("receipt selectors allocated before all capsules were admitted"),
             || {
-                FailureReceipt::reserve(A, &identity, &ticket, slot(), Arc::new(()), &bank)
+                FailureReceipt::reserve(A, &identity, &ticket, admitted, Arc::new(()), &bank)
                     .err()
                     .unwrap()
             },
@@ -22,11 +23,12 @@ async fn receipt_body_preflight_and_last_weak_keep_exact_body_and_paid_guard_aft
             crate::output::operation_error_class(error.as_ref()),
             ErrorClass::ResourceLimit
         );
-        assert_eq!(bank.available_permits(), available);
+        assert_eq!(bank.available_permits(), available + slot_bytes());
     }
+    let bytes = bytes + slot_bytes();
     let bank = Arc::new(Semaphore::new(bytes));
     let receipt =
-        FailureReceipt::reserve(A, &identity, &ticket, slot(), Arc::new(()), &bank).unwrap();
+        FailureReceipt::reserve(A, &identity, &ticket, slot(&bank), Arc::new(()), &bank).unwrap();
     let weak = receipt.downgrade();
     let retained_weak = weak.clone();
     let same = weak.upgrade().unwrap();
@@ -58,7 +60,7 @@ async fn receipt_body_actual_ledger_snapshot_and_report_share_original_until_las
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let attempt = ticket
-        .commit(|| ledger.start(A, buffered_identity(), &ticket, slot()))
+        .commit(|| ledger.start(A, buffered_identity(), &ticket, slot(&bank)))
         .unwrap();
     let (original, original_pointer) = io_original("original-receipt-body-snapshot");
     let result = failed_result(attempt.source_failed(original));
@@ -98,7 +100,7 @@ async fn receipt_body_pending_source_clear_and_parallel_report_drops_keep_origin
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let attempt = ticket
-        .commit(|| ledger.start(A, buffered_identity(), &ticket, slot()))
+        .commit(|| ledger.start(A, buffered_identity(), &ticket, slot(&bank)))
         .unwrap();
     let weak = attempt.receipt.downgrade();
     // The original pending capsule remains owned across cutover, and captures

@@ -258,7 +258,7 @@ async fn admission_manual_oversized_selectors_preserve_old_rows_before_any_sourc
                     .slot
                     .as_ref()
                     .zip(previous.slot.as_ref())
-                    .is_some_and(|(actual, old)| Arc::ptr_eq(actual, old))
+                    .is_some_and(|(actual, old)| actual.ptr_eq(old))
         });
     let after_counts = source_counts(&source);
     let after_gates = state.inner.lifecycle.coordinator_count().await;

@@ -307,7 +307,7 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
                 .slot
                 .as_ref()
                 .zip(old_failure.slot.as_ref())
-                .is_some_and(|(current, old)| Arc::ptr_eq(current, old))
+                .is_some_and(|(current, old)| current.ptr_eq(old))
     });
     let no_retained_injection = source.displaced.lock().unwrap().is_none();
     let abandoned_injection = source.displaced.lock().unwrap().take();

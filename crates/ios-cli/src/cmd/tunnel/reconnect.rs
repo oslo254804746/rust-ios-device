@@ -172,7 +172,7 @@ pub(super) enum ScheduleProvenance {
 struct Episode {
     identity: AttemptIdentity,
     ticket: Ticket,
-    slot: Arc<OwnedSemaphorePermit>,
+    slot: super::failure_slot::Owner,
     version: Arc<()>,
     snapshot: Snapshot,
     pending_event: Option<Reason>,
@@ -269,11 +269,11 @@ impl Ledger {
 
     /// Reuse the same bounded failure permit even when the failure writer never
     /// committed. It cannot be freed/reacquired to evade an episode's budget.
-    pub(super) fn slot(&self, udid: &str) -> Option<Arc<OwnedSemaphorePermit>> {
+    pub(super) fn slot(&self, udid: &str) -> Option<super::failure_slot::Owner> {
         let state = self.lock();
         state
             .row(udid)
-            .map(|row| Arc::clone(&row.slot))
+            .map(|row| row.slot.clone())
             .or_else(|| state.cause(udid).map(|receipt| receipt.slot()))
     }
 
@@ -363,7 +363,7 @@ impl LedgerOwner {
         udid: &str,
         identity: I,
         ticket: &Ticket,
-        slot: Arc<OwnedSemaphorePermit>,
+        slot: super::failure_slot::Owner,
     ) -> Result<Attempt> {
         // Production supplies the already-admitted shared node identity. Keep
         // that owner alive until every independent copy has its own fee.
@@ -404,12 +404,12 @@ impl LedgerOwner {
         let slot = state
             .row(udid)
             .filter(|_| same)
-            .map_or_else(|| slot, |row| Arc::clone(&row.slot));
+            .map_or_else(|| slot, |row| row.slot.clone());
         let receipt = FailureReceipt::reserve(
             udid,
             identity,
             ticket,
-            Arc::clone(&slot),
+            slot.clone(),
             Arc::clone(&version),
             &self.bank,
         )?;

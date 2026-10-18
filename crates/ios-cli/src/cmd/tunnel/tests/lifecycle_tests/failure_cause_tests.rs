@@ -620,7 +620,7 @@ async fn failure_cause_real_refusal_keeps_first_latest_and_reconciles_changed_id
     );
     assert_ne!(original(second.latest()), original(second.primary()));
     assert_eq!(second.failures(), 2);
-    assert!(Arc::ptr_eq(&slot, &second.slot()));
+    assert!(slot.ptr_eq(&second.slot()));
     drop(first);
     drop(second);
     drop(slot);
