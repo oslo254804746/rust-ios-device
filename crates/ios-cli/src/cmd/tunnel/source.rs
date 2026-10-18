@@ -281,7 +281,8 @@ impl Source for NativeSource {
     ) -> anyhow::Result<
         crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
     > {
-        let destination = super::owned_box::Destination::<ios_core::ConnectedDevice>::new(bank)?;
+        let destination =
+            super::owned_box::Destination::<ios_core::OwnedConnectedDevice>::new(bank)?;
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
                 let options = ConnectOptions {
@@ -290,20 +291,26 @@ impl Source for NativeSource {
                     skip_tunnel: false,
                 };
                 let device = match route {
-                    RouteRef::Usbmux => ios_core::connect_with_owner(udid, options, owner).await?,
+                    RouteRef::Usbmux => {
+                        ios_core::connect_owned_with_owner(udid, options, owner, bank).await?
+                    }
                     RouteRef::Usb(host) => {
-                        ios_core::connect_direct_usb_tunnel_with_owner(udid, host, options, owner)
-                            .await?
+                        ios_core::connect_direct_usb_tunnel_owned_with_owner(
+                            udid, host, options, owner, bank,
+                        )
+                        .await?
                     }
                     RouteRef::Wifi(host) => {
-                        ios_core::connect_remote_pairing_tunnel_with_owner(
-                            udid, host, options, owner,
+                        ios_core::connect_remote_pairing_tunnel_owned_with_owner(
+                            udid, host, options, owner, bank,
                         )
                         .await?
                     }
                     RouteRef::Mobdev2(host) => {
-                        ios_core::connect_tcp_lockdown_tunnel_with_owner(udid, host, options, owner)
-                            .await?
+                        ios_core::connect_tcp_lockdown_tunnel_owned_with_owner(
+                            udid, host, options, owner, bank,
+                        )
+                        .await?
                     }
                 };
                 Ok(ManagedDevice::Native(destination.place(device)))
@@ -494,7 +501,7 @@ impl ManagedDevice {
 
     pub(super) fn device_id(&self) -> u32 {
         match self {
-            Self::Native(device) => device.info.device_id,
+            Self::Native(device) => device.info().device_id,
             #[cfg(test)]
             Self::Fake(device) => device.device_id(),
         }

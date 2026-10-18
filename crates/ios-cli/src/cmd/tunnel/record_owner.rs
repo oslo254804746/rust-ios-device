@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 use anyhow::Result;
-use ios_core::{ConnectedDevice, TunMode};
+use ios_core::{OwnedConnectedDevice, TunMode};
 use serde::{Serialize, Serializer};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -62,7 +62,7 @@ struct Fields<'a> {
 
 impl PaidRecord {
     pub(super) fn from_device(
-        device: &ConnectedDevice,
+        device: &OwnedConnectedDevice,
         mode: TunMode,
         bank: &Arc<Semaphore>,
     ) -> Result<Self> {
@@ -76,16 +76,16 @@ impl PaidRecord {
         let userspace = device.userspace_port();
         Self::copy(
             Fields {
-                udid: &device.info.udid,
+                udid: &device.info().udid,
                 interface: [
-                    if device.info.device_id == 0 {
+                    if device.info().device_id == 0 {
                         "mobdev2-"
                     } else {
                         "usbmux-"
                     },
-                    &device.info.udid,
+                    &device.info().udid,
                 ],
-                connection_type: &device.info.connection_type,
+                connection_type: &device.info().connection_type,
                 mode: match mode {
                     TunMode::Userspace => "userspace",
                     TunMode::Kernel => "kernel",

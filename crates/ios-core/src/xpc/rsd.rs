@@ -247,10 +247,90 @@ where
 
 #[cfg(feature = "tunnel")]
 async fn handshake_attempts<F, Fut, S>(
-    mut connector: F,
+    connector: F,
     identity: uuid::Uuid,
     bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
 ) -> Result<RsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match handshake_attempts_selected(connector, identity, bank, false).await? {
+        InitialDirectory::Legacy(directory) => Ok(directory),
+        InitialDirectory::Owned(_) => unreachable!("legacy reader selection is fixed"),
+    }
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) enum InitialDirectory {
+    Legacy(RsdHandshake),
+    Owned(OwnedRsdHandshake),
+}
+#[cfg(feature = "tunnel")]
+impl InitialDirectory {
+    pub(crate) fn udid(&self) -> &str {
+        match self {
+            Self::Legacy(directory) => &directory.udid,
+            Self::Owned(directory) => directory.udid(),
+        }
+    }
+    pub(crate) fn get_port(&self, service: &str) -> Option<u16> {
+        match self {
+            Self::Legacy(directory) => directory.get_port(service),
+            Self::Owned(directory) => directory.get_port(service),
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) async fn owned_handshake_with_connector_and_bank<F, Fut, S>(
+    connector: F,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<OwnedRsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let identity = default_handshake_uuid().await?;
+    match rsd_timeout(
+        crate::tunnel::TUNNEL_CONNECT_TIMEOUT * 2,
+        "RSD discovery timed out",
+        handshake_attempts_selected(connector, identity, Some(bank), true),
+    )
+    .await?
+    {
+        InitialDirectory::Owned(directory) => Ok(directory),
+        InitialDirectory::Legacy(_) => unreachable!("owned reader selection is fixed"),
+    }
+}
+
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+pub(crate) async fn initial_handshake_with_bank(
+    addr: Ipv6Addr,
+    port: u16,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Result<InitialDirectory, XpcError> {
+    let address = SocketAddr::new(addr.into(), port);
+    match bank {
+        Some(bank) => owned_handshake_with_connector_and_bank(
+            || async { TcpStream::connect(address).await.map_err(XpcError::from) },
+            bank,
+        )
+        .await
+        .map(InitialDirectory::Owned),
+        None => handshake(addr, port).await.map(InitialDirectory::Legacy),
+    }
+}
+
+#[cfg(feature = "tunnel")]
+async fn handshake_attempts_selected<F, Fut, S>(
+    mut connector: F,
+    identity: uuid::Uuid,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+    owned: bool,
+) -> Result<InitialDirectory, XpcError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<S, XpcError>>,
@@ -283,11 +363,17 @@ where
                 HandshakeMode::Legacy => Duration::from_secs(3),
                 HandshakeMode::Passive => Duration::from_secs(2),
             };
-            rsd_timeout(
-                response_timeout,
-                "RSD response timed out",
-                handshake_on_framer(&mut framer),
-            )
+            rsd_timeout(response_timeout, "RSD response timed out", async {
+                if owned {
+                    owned_handshake_on_framer(&mut framer)
+                        .await
+                        .map(InitialDirectory::Owned)
+                } else {
+                    handshake_on_framer(&mut framer)
+                        .await
+                        .map(InitialDirectory::Legacy)
+                }
+            })
             .await
         }
         .await;

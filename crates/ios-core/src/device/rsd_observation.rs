@@ -73,15 +73,15 @@ impl std::fmt::Debug for InitialRsdProbe {
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) enum RsdProbeOutcome {
+pub(super) enum RsdProbeOutcome<T = crate::RsdHandshake> {
     #[cfg(any(not(feature = "mdns"), test))]
     Skipped(InitialRsdProbeSkipReason),
-    Completed(Result<crate::RsdHandshake, CoreError>),
+    Completed(Result<T, CoreError>),
 }
 
 #[cfg(feature = "tunnel")]
-impl RsdProbeOutcome {
-    pub(super) fn into_parts(self) -> (Option<crate::RsdHandshake>, InitialRsdProbe) {
+impl<T> RsdProbeOutcome<T> {
+    pub(super) fn into_parts(self) -> (Option<T>, InitialRsdProbe) {
         match self {
             #[cfg(any(not(feature = "mdns"), test))]
             Self::Skipped(reason) => (None, InitialRsdProbe::skipped(reason)),
@@ -106,7 +106,7 @@ impl RsdProbeOutcome {
 
     /// Later retries preserve their original failure without changing the
     /// connection's historical initial observation or cached directory.
-    pub(super) fn into_result(self) -> Result<crate::RsdHandshake, CoreError> {
+    pub(super) fn into_result(self) -> Result<T, CoreError> {
         match self {
             Self::Completed(result) => result,
             #[cfg(any(not(feature = "mdns"), test))]
@@ -133,7 +133,9 @@ mod tests {
             InitialRsdProbeSkipReason::TunnelSkipped,
             InitialRsdProbeSkipReason::DirectProbeFeatureUnavailable,
         ] {
-            let error = RsdProbeOutcome::Skipped(reason).into_result().unwrap_err();
+            let error = RsdProbeOutcome::<crate::RsdHandshake>::Skipped(reason)
+                .into_result()
+                .unwrap_err();
             assert_eq!(error.class(), ErrorClass::Unsupported);
             assert!(matches!(error, CoreError::Unsupported(_)));
         }
@@ -152,19 +154,21 @@ mod tests {
             InitialRsdProbeSkipReason::TunnelSkipped,
             InitialRsdProbeSkipReason::DirectProbeFeatureUnavailable,
         ] {
-            let (directory, observation) = RsdProbeOutcome::Skipped(reason).into_parts();
+            let (directory, observation) =
+                RsdProbeOutcome::<crate::RsdHandshake>::Skipped(reason).into_parts();
             assert!(directory.is_none());
             assert_eq!(observation.state(), InitialRsdProbeState::NotAttempted);
             assert_eq!(observation.skip_reason(), Some(reason));
             assert!(observation.error().is_none());
             assert!(observation.error_class().is_none());
         }
-        let (directory, observation) =
-            RsdProbeOutcome::Completed(Err(CoreError::Io(std::io::Error::new(
+        let (directory, observation) = RsdProbeOutcome::<crate::RsdHandshake>::Completed(Err(
+            CoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "synthetic-private-initial-probe-source",
-            ))))
-            .into_parts();
+            )),
+        ))
+        .into_parts();
         assert!(directory.is_none());
         assert_eq!(observation.state(), InitialRsdProbeState::Failed);
         assert!(observation.skip_reason().is_none());
@@ -179,14 +183,15 @@ mod tests {
         assert_eq!(source.to_string(), "synthetic-private-initial-probe-source");
         assert!(!format!("{observation:?} {observation:#?}").contains("synthetic-private"));
 
-        let (directory, observation) = RsdProbeOutcome::Completed(Ok(crate::RsdHandshake {
-            udid: "synthetic-private-probe-device".into(),
-            services: std::collections::HashMap::from([(
-                "owned.service".into(),
-                crate::ServiceDescriptor::new(12345),
-            )]),
-        }))
-        .into_parts();
+        let (directory, observation) =
+            RsdProbeOutcome::<crate::RsdHandshake>::Completed(Ok(crate::RsdHandshake {
+                udid: "synthetic-private-probe-device".into(),
+                services: std::collections::HashMap::from([(
+                    "owned.service".into(),
+                    crate::ServiceDescriptor::new(12345),
+                )]),
+            }))
+            .into_parts();
         assert_eq!(observation.state(), InitialRsdProbeState::Available);
         assert!(observation.error().is_none());
         assert!(observation.skip_reason().is_none());

@@ -237,9 +237,10 @@ async fn prepared_rsd_same_address_changed_port_uses_new_real_service_socket_and
         std::io::ErrorKind::ConnectionRefused,
         "original-initial-observation",
     ));
-    let (legacy, initial_rsd_probe) =
-        super::super::rsd_observation::RsdProbeOutcome::Completed(Err(initial_failure))
-            .into_parts();
+    let (legacy, initial_rsd_probe) = super::super::rsd_observation::RsdProbeOutcome::<
+        crate::RsdHandshake,
+    >::Completed(Err(initial_failure))
+    .into_parts();
     let mut device = super::super::ConnectedDevice {
         info: crate::DeviceInfo {
             udid: UID.into(),
@@ -249,6 +250,8 @@ async fn prepared_rsd_same_address_changed_port_uses_new_real_service_socket_and
         },
         tunnel: Some(runtime.clone()),
         rsd: legacy,
+        owned_initial_rsd: None,
+        owned_initial_bank: None,
         prepared_rsd: None,
         initial_rsd_probe,
         pair_record: None,

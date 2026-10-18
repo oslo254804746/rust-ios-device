@@ -13,7 +13,7 @@ use crate::error::CoreError;
 #[cfg(feature = "mdns")]
 use crate::lockdown::pair_record::PairRecord;
 #[cfg(feature = "mdns")]
-use crate::xpc::rsd::handshake as rsd_handshake;
+use crate::xpc::rsd::initial_handshake_with_bank as rsd_handshake;
 #[cfg(feature = "mdns")]
 use std::{
     sync::Arc,
@@ -212,14 +212,16 @@ pub(super) async fn connect_via_direct_rsd_target(
     lockdown_transport: LockdownTransport,
     opts: ConnectOptions,
     target: MdnsDevice,
-    owner: Option<&dyn super::TunnelOwner>,
+    owner: super::tunnel_owner::InitialOwner<'_>,
 ) -> Result<ConnectedDevice, CoreError> {
-    let reservation = owner.map(super::TunnelOwner::reserve).transpose()?;
-    let rsd = rsd_handshake(target.ipv6, target.rsd_port).await?;
-    if rsd.udid != info.udid {
+    let initial_rsd_bank = owner.bank;
+    let reservation = owner.reserve()?;
+    let rsd = rsd_handshake(target.ipv6, target.rsd_port, initial_rsd_bank).await?;
+    if rsd.udid() != info.udid {
         return Err(CoreError::Protocol(format!(
             "direct RSD target {} resolved to unexpected udid {}",
-            target.ipv6, rsd.udid
+            target.ipv6,
+            rsd.udid()
         )));
     }
 
@@ -235,7 +237,8 @@ pub(super) async fn connect_via_direct_rsd_target(
     let direct_stream = establish_direct_tunnel_stream(target.ipv6, service_port).await?;
 
     activate_tunnel(
-        TunnelConnection::new(info, pair_record, lockdown_transport, "direct RSD"),
+        TunnelConnection::new(info, pair_record, lockdown_transport, "direct RSD")
+            .with_initial_rsd_bank(initial_rsd_bank),
         direct_stream,
         opts.tun_mode,
         reservation,
@@ -251,9 +254,10 @@ pub(super) async fn connect_via_remote_pairing_target(
     remote_identifier: &str,
     host: &str,
     port: u16,
-    owner: Option<&dyn super::TunnelOwner>,
+    owner: super::tunnel_owner::InitialOwner<'_>,
 ) -> Result<ConnectedDevice, CoreError> {
-    let reservation = owner.map(super::TunnelOwner::reserve).transpose()?;
+    let initial_rsd_bank = owner.bank;
+    let reservation = owner.reserve()?;
     let remote_stream =
         establish_remote_pairing_tunnel_stream(remote_identifier, host, port).await?;
 
@@ -265,7 +269,8 @@ pub(super) async fn connect_via_remote_pairing_target(
                 host: host.to_string(),
             },
             "remote pairing",
-        ),
+        )
+        .with_initial_rsd_bank(initial_rsd_bank),
         remote_stream,
         opts.tun_mode,
         reservation,

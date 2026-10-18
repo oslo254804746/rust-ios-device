@@ -109,8 +109,10 @@ pub use device::{
 };
 #[cfg(feature = "tunnel")]
 pub use device::{
+    connect_direct_usb_tunnel_owned_with_owner, connect_owned_with_owner,
+    connect_remote_pairing_tunnel_owned_with_owner, connect_tcp_lockdown_tunnel_owned_with_owner,
     observe_existing_rsd, ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdRoute,
-    ExistingRsdService, ExistingRsdServiceEvidence,
+    ExistingRsdService, ExistingRsdServiceEvidence, OwnedConnectedDevice,
 };
 #[cfg(feature = "mdns")]
 pub use discovery::{browse_mobdev2, browse_remotepairing, BonjourService, MdnsDevice};

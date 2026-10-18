@@ -292,3 +292,49 @@ async fn native_activation_passes_the_original_reservation_bank_before_any_users
         crate::ErrorClass::ResourceLimit
     );
 }
+
+#[tokio::test]
+async fn owned_initial_native_activation_keeps_original_bank_attach_owner_and_actual_joins() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let quota = 32 * 1024 * 1024;
+    let bank = Arc::new(tokio::sync::Semaphore::new(quota));
+    let mut owner = Owner::new(false);
+    owner.byte_bank = Some(bank.clone());
+    let (stream, peer_task) = peer("fixture-invalid-rsd-endpoint");
+    let result = activate_tunnel(
+        connection().with_initial_rsd_bank(Some(&bank)),
+        stream,
+        TunMode::Userspace,
+        super::super::tunnel_owner::InitialOwner::new(Some(&owner), Some(&bank))
+            .reserve()
+            .unwrap(),
+    )
+    .await;
+    let retained = owner.handle();
+    let same = result
+        .as_ref()
+        .ok()
+        .and_then(ConnectedDevice::tunnel_handle)
+        .zip(retained.as_ref())
+        .is_some_and(|(actual, original)| Arc::ptr_eq(actual, original));
+    let device = result.map(crate::OwnedConnectedDevice::new);
+    let failed = device.as_ref().is_ok_and(|device| {
+        device.rsd().is_none()
+            && device.initial_rsd_probe().state() == crate::InitialRsdProbeState::Failed
+    });
+    let cleanup = match &retained {
+        Some(native) => native.shutdown(OBSERVE).await,
+        None => Ok(()),
+    };
+    let peer = peer_task.await.unwrap();
+    let recovered = recover(peer, baseline).await;
+    cleanup.unwrap();
+    assert!(same && failed && recovered);
+    assert!(retained.as_ref().unwrap().shutdown_status().is_ok());
+    assert_eq!(owner.completed.load(Ordering::SeqCst), 1);
+    assert_eq!(owner.retired.load(Ordering::SeqCst), 0);
+    drop((device, retained, owner));
+    assert_eq!(bank.available_permits(), quota);
+}
