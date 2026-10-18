@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [DeviceGate 最后 owner](validation/tunnel-coordinator-gate-owners-2026-10-18.md)
+原 body/key 费用保持，最后 ticket 在原 allocation 结束后退款；4096满表剪枝、
+持久停止状态和 clear 后原 gate 复用已验。新增2/lifecycle21/完整tunnel737/
+strict CLI/build/Source0通过；L02继续全审计，主项23/6/待核查、有效30与Q04排除不变。
+
 2026-10-18：L02 [独立 deadline timer inline 存储](validation/tunnel-inline-deadline-timer-2026-10-18.md)
 消除初始与 clamp 的额外 Box，原绝对时钟、Elapsed、Ready IO 优先和晚成功析构
 保持。新增2/native deadline15/manual deadline13/完整tunnel735/strict CLI/build/

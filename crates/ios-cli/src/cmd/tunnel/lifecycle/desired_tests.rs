@@ -16,7 +16,7 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
         copied.snapshot.desired,
         super::super::intent::Desired::Stopped
     ));
-    assert!(Arc::ptr_eq(&copied.ticket.gate, &ticket.gate));
+    assert!(copied.ticket.gate.ptr_eq(&ticket.gate));
     let key_bytes = copied.udid.capacity();
     let row_bytes = 2 * std::mem::size_of::<DesiredRow>();
     assert_eq!(bank.available_permits(), before - key_bytes - row_bytes);
