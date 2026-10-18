@@ -493,7 +493,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     }
 
     #[cfg(feature = "tunnel")]
-    pub(crate) async fn connect_with_bank(
+    /// Connect the raw H2 transport using the caller's original byte bank for
+    /// admitted buffers and parser storage. `None` preserves the legacy path.
+    pub async fn connect_with_bank(
         stream: S,
         bank: Option<&Arc<Semaphore>>,
     ) -> Result<Self, H2Error> {
