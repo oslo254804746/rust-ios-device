@@ -199,7 +199,7 @@ pub(super) struct TerminalCleanupFailure {
     history: Option<Cause>,
     // The prepaid root owns the array. The separate terminal wrapper/anyhow
     // private body remains outside exact snapshot-body accounting.
-    scan_history: Option<Arc<super::scan::HistorySnapshot>>,
+    scan_history: Option<super::scan::HistoryOwner>,
     metadata_http: Option<Cause>,
     elapsed: Option<Arc<tokio::time::error::Elapsed>>,
     snapshot: Snapshot,
@@ -255,7 +255,7 @@ impl TerminalCleanupFailure {
         self.snapshot
     }
 
-    pub(super) fn abandoned_scans(&self) -> Option<&Arc<super::scan::HistorySnapshot>> {
+    pub(super) fn abandoned_scans(&self) -> Option<&super::scan::HistoryOwner> {
         self.scan_history.as_ref()
     }
 }

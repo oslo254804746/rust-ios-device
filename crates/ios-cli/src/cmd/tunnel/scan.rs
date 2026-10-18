@@ -10,24 +10,30 @@ use tokio::time::Instant;
 
 pub(super) const MAX_ABANDONED_SCANS: usize = 8;
 
+pub(super) type AbandonedOwner = super::shared_value::Shared<AbandonedScan>;
+pub(super) type HistoryOwner = super::shared_value::Shared<HistorySnapshot>;
+
 #[cfg(test)]
 #[path = "scan/capsule_tests.rs"]
 mod capsule_tests;
+#[cfg(test)]
+#[path = "scan/history_owner_tests.rs"]
+mod history_owner_tests;
 
 enum Slot {
     Empty,
     Active,
-    Abandoned(Arc<AbandonedScan>),
+    Abandoned(AbandonedOwner),
 }
 
 struct Slots {
     closed: bool,
     entries: [Slot; MAX_ABANDONED_SCANS],
-    history_root: Option<Arc<HistorySnapshot>>,
+    history_root: Option<HistoryOwner>,
 }
 
 struct HistoryRoots {
-    entries: [Option<Arc<AbandonedScan>>; MAX_ABANDONED_SCANS],
+    entries: [Option<AbandonedOwner>; MAX_ABANDONED_SCANS],
     len: usize,
 }
 
@@ -48,7 +54,7 @@ impl HistorySnapshot {
         };
         for slot in slots {
             if let Slot::Abandoned(original) = slot {
-                roots.entries[roots.len] = Some(Arc::clone(original));
+                roots.entries[roots.len] = Some(original.clone());
                 roots.len += 1;
             }
         }
@@ -64,11 +70,11 @@ impl HistorySnapshot {
         self.roots().len
     }
 
-    pub(super) fn first(&self) -> Option<&Arc<AbandonedScan>> {
+    pub(super) fn first(&self) -> Option<&AbandonedOwner> {
         self.iter().next()
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = &Arc<AbandonedScan>> {
+    pub(super) fn iter(&self) -> impl Iterator<Item = &AbandonedOwner> {
         let roots = self.roots();
         roots.entries[..roots.len]
             .iter()
@@ -78,7 +84,7 @@ impl HistorySnapshot {
 
 #[cfg(test)]
 impl std::ops::Index<usize> for HistorySnapshot {
-    type Output = Arc<AbandonedScan>;
+    type Output = AbandonedOwner;
 
     fn index(&self, index: usize) -> &Self::Output {
         let roots = self.roots();
@@ -149,7 +155,7 @@ impl Outcomes {
         let snapshot_storage = storage
             .split(std::mem::size_of::<HistorySnapshot>())
             .expect("reserved immutable history snapshot body");
-        let history_snapshot = Arc::new(HistorySnapshot {
+        let history_snapshot = HistoryOwner::new(HistorySnapshot {
             roots: OnceLock::new(),
             _storage: snapshot_storage,
         });
@@ -172,21 +178,18 @@ impl Outcomes {
         self.slots.lock().unwrap_or_else(|p| p.into_inner()).closed = true;
     }
 
-    pub(super) fn history(&self) -> Option<Arc<HistorySnapshot>> {
+    pub(super) fn history(&self) -> Option<HistoryOwner> {
         self.slots
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .history_root
             .as_ref()
-            .map(Arc::clone)
+            .cloned()
     }
 
     pub(super) fn payload_history(
         &self,
-    ) -> (
-        usize,
-        Result<super::metadata_vec::KnownVec<Arc<AbandonedScan>>>,
-    ) {
+    ) -> (usize, Result<super::metadata_vec::KnownVec<AbandonedOwner>>) {
         let slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
         let active = slots
             .entries
@@ -201,7 +204,7 @@ impl Outcomes {
             roots.reserve(count)?;
             if let Some(snapshot) = &slots.history_root {
                 for original in snapshot.iter() {
-                    roots.push_reserved(Arc::clone(original));
+                    roots.push_reserved(original.clone());
                 }
             }
             Ok(roots)
@@ -220,7 +223,7 @@ pub(super) struct Session<'a> {
     compound: StdMutex<Option<OwnedSemaphorePermit>>,
     cleanup: StdMutex<Option<OwnedSemaphorePermit>>,
     abandoned: Option<OwnedSemaphorePermit>,
-    history_snapshot: Option<Arc<HistorySnapshot>>,
+    history_snapshot: Option<HistoryOwner>,
     // Drop records the original error before this guard admits another scanner.
     _lock: MutexGuard<'a, ()>,
 }
@@ -434,7 +437,7 @@ impl Drop for Session<'_> {
             .unwrap_or_else(|p| p.into_inner());
         let displaced = match primary {
             Some(primary) => {
-                slots.entries[self.index] = Slot::Abandoned(Arc::new(AbandonedScan {
+                slots.entries[self.index] = Slot::Abandoned(AbandonedOwner::new(AbandonedScan {
                     original: primary,
                     _storage: self
                         .abandoned

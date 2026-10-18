@@ -352,7 +352,7 @@ async fn native_scan_outcome_caller_drop_retains_history_after_clear_and_termina
         .history()
         .expect("abandoned scan history");
     assert_eq!(after.len(), 1);
-    assert!(Arc::ptr_eq(&before[0], &after[0]));
+    assert!(before[0].ptr_eq(&after[0]));
     assert_eq!(
         original_address(after[0].as_ref()),
         Some(source.originals.lock().unwrap()[0])
@@ -421,9 +421,9 @@ async fn native_scan_outcome_repeated_terminal_reports_share_original_history() 
             .downcast_ref::<server::TerminalCleanupFailure>()
             .unwrap();
         let terminal_history = terminal.abandoned_scans().expect("shared prepaid history");
-        assert!(Arc::ptr_eq(&history, terminal_history));
+        assert!(history.ptr_eq(terminal_history));
         assert_eq!(terminal_history.len(), 1);
-        assert!(Arc::ptr_eq(&history[0], &terminal_history[0]));
+        assert!(history[0].ptr_eq(&terminal_history[0]));
         assert_eq!(bank.available_permits(), 0);
         assert_eq!(
             original_address(terminal.primary()),
