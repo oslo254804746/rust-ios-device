@@ -69,6 +69,7 @@ mod scan_publications;
 mod scan_seen;
 mod scoped;
 mod selector_copy;
+mod shared_allocation;
 mod shared_body;
 mod shared_dual_body;
 mod shared_value;

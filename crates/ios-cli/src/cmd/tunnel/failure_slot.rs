@@ -7,13 +7,12 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(super) struct Slot {
     permit: OwnedSemaphorePermit,
-    _body: OwnedSemaphorePermit,
 }
-pub(super) type Owner = super::shared_value::Shared<Slot>;
+pub(super) type Owner = super::shared_allocation::Shared<Slot>;
 
 impl Slot {
     pub(super) fn body_bytes() -> usize {
-        std::mem::size_of::<Self>()
+        Owner::allocation_bytes()
     }
 
     pub(super) fn reserve(counts: &Arc<Semaphore>, bytes: &Arc<Semaphore>) -> Result<Owner> {
@@ -24,10 +23,7 @@ impl Slot {
             .try_acquire_owned()
             .map_err(|_| crate::output::resource_decision("tunnel failure record capacity"))?;
         let body = super::admission::known_metadata_charge(bytes, Self::body_bytes())?;
-        Ok(Owner::new(Self {
-            permit,
-            _body: body,
-        }))
+        Owner::from_grant(Self { permit }, bytes, body)
     }
 }
 impl Deref for Slot {
