@@ -184,7 +184,7 @@ async fn scan_capsule_abandoned_context_and_history_refund_only_after_last_share
     let originals = std::mem::size_of::<SourceContext>() + std::mem::size_of::<AbandonedScan>();
     let kept = originals + std::mem::size_of::<HistorySnapshot>();
     assert_eq!(bank.available_permits(), bytes - kept);
-    let copy = Arc::clone(&roots[0]);
+    let copy = roots[0].clone();
     drop(outcomes);
     drop(roots);
     // A bare original does not retain the independent snapshot body fee.
@@ -256,7 +256,7 @@ async fn scan_history_prepaid_snapshot_survives_zero_quota_repeated_reads_and_la
         .unwrap();
     let first = outcomes.history().expect("prepaid abandoned snapshot");
     let second = outcomes.history().expect("same prepaid snapshot");
-    assert!(Arc::ptr_eq(&first, &second));
+    assert!(first.ptr_eq(&second));
     assert_eq!(first.len(), 1);
     same(first[0].original(), &id, pointer);
     assert_eq!(bank.available_permits(), 0);
@@ -270,7 +270,7 @@ async fn scan_history_prepaid_snapshot_survives_zero_quota_repeated_reads_and_la
         ios_core::ErrorClass::ResourceLimit
     );
     let unchanged = outcomes.history().unwrap();
-    assert!(Arc::ptr_eq(&first, &unchanged));
+    assert!(first.ptr_eq(&unchanged));
     drop(unchanged);
     drop(outcomes);
     drop(first);
@@ -310,12 +310,12 @@ async fn scan_history_late_closed_bank_drop_keeps_slot_order_and_frozen_earlier_
     bank.close();
     drop(first);
     let newer = outcomes.history().unwrap();
-    assert!(!Arc::ptr_eq(&older, &newer));
+    assert!(!older.ptr_eq(&newer));
     assert_eq!(older.len(), 1);
     assert_eq!(newer.len(), 2);
     same(newer[0].original(), &first_id, first_pointer);
     same(newer[1].original(), &second_id, second_pointer);
-    assert!(Arc::ptr_eq(&older[0], &newer[1]));
+    assert!(older[0].ptr_eq(&newer[1]));
     drop(held);
     drop(outcomes);
     drop(newer);
@@ -339,10 +339,10 @@ async fn scan_history_census_exact_backing_refund_preserves_prepaid_snapshot() {
     let roots = roots.unwrap();
     assert_eq!(active, 0);
     assert_eq!(roots.len(), 1);
-    assert!(Arc::ptr_eq(&roots.as_slice()[0], &history[0]));
+    assert!(roots.as_slice()[0].ptr_eq(&history[0]));
     assert_eq!(
         bank.available_permits(),
-        before - 2 * std::mem::size_of::<Arc<AbandonedScan>>()
+        before - 2 * std::mem::size_of::<AbandonedOwner>()
     );
     drop(roots);
     assert_eq!(bank.available_permits(), before);

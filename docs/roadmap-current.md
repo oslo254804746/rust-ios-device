@@ -1,6 +1,6 @@
 # 当前工程调度
 
-更新：2026-10-17。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
+更新：2026-10-18。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
 开发计数与真实验收分开，Q04及全部子项继续排除。
 
 当前批次修复独立review确认的R01–R15。起点af20f6a，修复分支
@@ -138,3 +138,9 @@ epoch/expiry 回滚和 native join/EOF 保持，其他 owner/分配及完整审�
 Drop/退款；零配额和并发最后根不丢原 IO、不改已完成状态。专项3、完整
 tunnel713、upstream10、严格 CLI/build/只读 Source0 门禁通过，原 Source 前
 准入与 native join/EOF 保持。scan/history 等其他 owner 与完整审计继续。
+
+随后[scan history 最后 owners](validation/tunnel-scan-history-owners-2026-10-18.md)
+统一 snapshot/abandoned 根、census 和服务器终态报告；八槽/冻结顺序和原 IO
+不变，实际 array body 创建前预付，原 allocation 结束后退款。专项2、完整
+tunnel715、upstream10、严格 CLI/build/只读 Source0 门禁通过。Outcomes/其他
+共享 owner、私有分配及完整规则审计继续，L02 主项状态保持。

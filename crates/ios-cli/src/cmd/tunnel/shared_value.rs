@@ -14,6 +14,28 @@ impl<T: Unpin> Shared<T> {
             inner: Some(Arc::new(value)),
         }
     }
+    #[cfg(test)]
+    pub(super) fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(
+            self.inner.as_ref().expect("live shared value"),
+            other.inner.as_ref().expect("live shared value"),
+        )
+    }
+}
+impl<T: Unpin> AsRef<T> for Shared<T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+impl<T: Unpin + std::fmt::Debug> std::fmt::Debug for Shared<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, formatter)
+    }
+}
+impl<T: Unpin + std::fmt::Display> std::fmt::Display for Shared<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&**self, formatter)
+    }
 }
 impl<T: Unpin> Clone for Shared<T> {
     fn clone(&self) -> Self {
