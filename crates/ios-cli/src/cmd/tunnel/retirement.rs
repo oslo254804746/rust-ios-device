@@ -89,7 +89,7 @@ struct Entry {
     metadata: Option<Arc<OwnedSemaphorePermit>>,
     global_metadata: Option<Arc<OwnedSemaphorePermit>>,
     _input: Option<super::candidate_input::Owner>,
-    fresh_metadata: Option<Arc<super::freshness::Metadata>>,
+    fresh_metadata: Option<super::freshness::MetadataOwner>,
     first_freshness: Option<Arc<super::freshness::Receipt>>,
     latest_freshness: Option<Arc<super::freshness::Receipt>>,
     failure_observed: bool,

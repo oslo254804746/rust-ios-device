@@ -7,41 +7,54 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(super) struct Metadata {
     pub(super) catalogue: Arc<PreparedRsdCatalogue>,
-    _publication: OwnedSemaphorePermit,
-    _body: OwnedSemaphorePermit,
+    _publication_fields: OwnedSemaphorePermit,
 }
+
+pub(super) type MetadataOwner = super::shared_dual_body::Strong<Metadata>;
+
 impl Metadata {
     pub(super) fn prepare(
         catalogue: Arc<PreparedRsdCatalogue>,
         global: &Arc<Semaphore>,
         publication: &Arc<Semaphore>,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<MetadataOwner> {
         anyhow::ensure!(
             catalogue.belongs_to(global),
             crate::output::input_decision("RSD catalogue belongs to another metadata pool")
         );
-        let body = admission::known_metadata_charge(global, std::mem::size_of::<Self>())?;
-        let fee = admission::known_metadata_charge(
+        let body = admission::known_metadata_charge(global, MetadataOwner::body_bytes())?;
+        let mut fee = admission::known_metadata_charge(
             publication,
             catalogue
                 .known_bytes()
-                .checked_add(std::mem::size_of::<Self>())
+                .checked_add(MetadataOwner::body_bytes())
                 .ok_or_else(|| crate::output::resource_decision("RSD refresh size overflow"))?,
         )?;
-        Ok(Arc::new(Self {
-            catalogue,
-            _publication: fee,
-            _body: body,
-        }))
+        let publication_body = fee
+            .split(MetadataOwner::body_bytes())
+            .expect("preadmitted refresh publication body");
+        MetadataOwner::new(
+            Self {
+                catalogue,
+                _publication_fields: fee,
+            },
+            global,
+            publication,
+            body,
+            publication_body,
+        )
     }
+}
+
+impl MetadataOwner {
     pub(super) fn bank_matches(
         &self,
         publication: &Arc<Semaphore>,
         global: &Arc<Semaphore>,
     ) -> bool {
         self.catalogue.belongs_to(global)
-            && Arc::ptr_eq(self._body.semaphore(), global)
-            && Arc::ptr_eq(self._publication.semaphore(), publication)
+            && self.banks_match(global, publication)
+            && Arc::ptr_eq(self._publication_fields.semaphore(), publication)
     }
 }
 
@@ -296,7 +309,7 @@ impl TunnelAgentState {
             lifecycle::cancelled()
         );
         anyhow::ensure!(
-            super::retirement::same_optional(row._fresh_metadata.as_ref(), proof.previous())
+            super::retirement::same_metadata(row._fresh_metadata.as_ref(), proof.previous())
                 && super::retirement::same_optional(
                     row.device.freshness_catalogue(),
                     row._fresh_metadata
@@ -307,7 +320,7 @@ impl TunnelAgentState {
         );
         let swap = || {
             ticket.commit(|| {
-                proof.swap_metadata(Arc::clone(&proposed), || {
+                proof.swap_metadata(proposed.clone(), || {
                     deadline.check()?;
                     anyhow::ensure!(
                         self.inner.access.permits_device(udid),
@@ -317,7 +330,7 @@ impl TunnelAgentState {
                         proof.runtime(),
                         Some(Arc::clone(&proposed.catalogue)),
                     )?;
-                    let old_metadata = row._fresh_metadata.replace(Arc::clone(&proposed));
+                    let old_metadata = row._fresh_metadata.replace(proposed.clone());
                     #[cfg(test)]
                     AFTER_SWAP.with(|hook| {
                         if let Some(hook) = hook.borrow_mut().take() {
