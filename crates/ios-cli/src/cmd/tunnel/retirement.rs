@@ -86,8 +86,8 @@ struct Entry {
     handle: Option<Arc<TunnelHandle>>,
     // An admitted device's known metadata charge remains with the original
     // runtime until its joins are certified, even after its table row drops.
-    metadata: Option<Arc<OwnedSemaphorePermit>>,
-    global_metadata: Option<Arc<OwnedSemaphorePermit>>,
+    metadata: Option<super::metadata_lease::Owner>,
+    global_metadata: Option<super::metadata_lease::Owner>,
     _input: Option<super::candidate_input::Owner>,
     fresh_metadata: Option<super::freshness::MetadataOwner>,
     first_freshness: Option<super::freshness::ReceiptOwner>,
@@ -876,7 +876,10 @@ pub(super) struct NativeLease {
 }
 
 impl NativeLease {
-    pub(super) fn retain_global_metadata(&self, metadata: Arc<OwnedSemaphorePermit>) -> Result<()> {
+    pub(super) fn retain_global_metadata(
+        &self,
+        metadata: super::metadata_lease::Owner,
+    ) -> Result<()> {
         let mut state = self.registry.lock();
         let entry =
             Registry::entry_mut(&mut state, &self.key).ok_or_else(super::lifecycle::cancelled)?;
@@ -888,7 +891,7 @@ impl NativeLease {
         Ok(())
     }
 
-    pub(super) fn retain_metadata(&self, metadata: Arc<OwnedSemaphorePermit>) -> Result<()> {
+    pub(super) fn retain_metadata(&self, metadata: super::metadata_lease::Owner) -> Result<()> {
         let mut state = self.registry.lock();
         let entry =
             Registry::entry_mut(&mut state, &self.key).ok_or_else(super::lifecycle::cancelled)?;
