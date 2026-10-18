@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-18：L02 [retry Ledger 完整分配](validation/tunnel-ledger-full-allocation-2026-10-18.md)
+原policy/Mutex/State/bank进入同一完整实际共享layout，counter/value/原grant创建前准入，
+实际Attempt/独立snapshot原IO与关闭配额后的最后退款保持；旧两项测试扩展真实backing检查。
+Ledger2/reconnect21/attribution9/完整CLI1740/0FAIL/13原ignored及严格门禁通过；
+其它owner及原全审计继续，主项23/6/L02待核查、有效30与Q04全部排除不变。
+
+
 2026-10-18：L02 [failure route identity 完整分配](validation/tunnel-failure-identity-full-allocation-2026-10-18.md)
 原route字符串与应用声明控制块合并为同池一份grant，创建前完整准入，最后owner退款；
 旧Node/key/host指针、native_id、零配额rollback及重复拒绝行为保持。
