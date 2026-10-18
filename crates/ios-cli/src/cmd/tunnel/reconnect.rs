@@ -185,6 +185,8 @@ pub(super) struct Ledger {
     _storage: OwnedSemaphorePermit,
 }
 
+pub(super) type LedgerOwner = super::shared_value::Shared<Ledger>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Admission {
     Ready,
@@ -193,9 +195,9 @@ pub(super) enum Admission {
 }
 
 impl Ledger {
-    pub(super) fn with_metadata(policy: RetryPolicy, bank: Arc<Semaphore>) -> Result<Arc<Self>> {
+    pub(super) fn with_metadata(policy: RetryPolicy, bank: Arc<Semaphore>) -> Result<LedgerOwner> {
         let storage = super::admission::known_metadata_charge(&bank, std::mem::size_of::<Self>())?;
-        Ok(Arc::new(Self {
+        Ok(LedgerOwner::new(Self {
             policy,
             state: Mutex::new(State::new(&bank)),
             bank,
@@ -350,12 +352,14 @@ impl Ledger {
         }
         drop(cause);
     }
+}
 
+impl LedgerOwner {
     /// Admission is synchronous immediately before the Source future is polled.
     /// Owner reservation and connection semaphore admission already succeeded.
     /// Caller holds the ticket's commit guard, never the asynchronous tables.
     pub(super) fn start<I: std::borrow::Borrow<AttemptIdentity>>(
-        self: &Arc<Self>,
+        &self,
         udid: &str,
         identity: I,
         ticket: &Ticket,
@@ -384,7 +388,7 @@ impl Ledger {
         }
         let same = state
             .row(udid)
-            .is_some_and(|row| Self::same(row, identity, ticket));
+            .is_some_and(|row| Ledger::same(row, identity, ticket));
         if !same && state.row(udid).is_none() && state.rows.len() >= MAX_FAILURE_RECORDS {
             return Err(crate::output::resource_decision(
                 "tunnel retry episode capacity",
@@ -463,14 +467,16 @@ impl Ledger {
         let snapshot = row.snapshot;
         drop(state);
         Ok(Attempt {
-            ledger: Arc::clone(self),
+            ledger: self.clone(),
             receipt,
             started: snapshot,
             displaced,
             complete: false,
         })
     }
+}
 
+impl Ledger {
     #[cfg(test)]
     pub(super) fn snapshot(&self, udid: &str) -> Option<Snapshot> {
         self.lock().row(udid).map(|row| row.snapshot)
@@ -668,7 +674,7 @@ impl Ledger {
 }
 
 pub(super) struct Attempt {
-    ledger: Arc<Ledger>,
+    ledger: LedgerOwner,
     receipt: Receipt,
     started: Snapshot,
     displaced: Option<OwnedRemoved>,
