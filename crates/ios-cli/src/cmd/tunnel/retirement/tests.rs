@@ -662,24 +662,27 @@ async fn ordinal_namespace_stop_does_not_repeat_stop_on_unrelated_retired_owner(
 #[test]
 fn native_census_backing_refusal_keeps_original_history_and_last_root_grant() {
     let registry = registry(1);
-    let original = Arc::new(TunnelError::Protocol("synthetic-native-census".into()));
-    registry.lock().first_failure = Some(Arc::clone(&original));
+    let original = registry.error_stock.clone();
+    original.capture(TunnelError::Protocol("synthetic-native-census".into()));
+    registry.lock().first_failure = Some(original.clone());
     let bank = Arc::clone(&registry.byte_bank);
     let before = bank.available_permits();
     let held = Arc::clone(&bank)
         .try_acquire_many_owned(before.try_into().unwrap())
         .unwrap();
     assert!(registry.payload_outcomes().is_err());
-    assert!(Arc::ptr_eq(
-        registry.lock().first_failure.as_ref().unwrap(),
-        &original
-    ));
+    assert!(registry
+        .lock()
+        .first_failure
+        .as_ref()
+        .unwrap()
+        .ptr_eq(&original));
     drop(held);
     let (unjoined, roots) = registry.payload_outcomes().unwrap();
     assert_eq!(unjoined, 0);
     assert!(matches!(
         &roots.as_slice()[0],
-        PayloadOutcome::History(kept) if Arc::ptr_eq(kept, &original)
+        PayloadOutcome::History(kept) if kept.ptr_eq(&original)
     ));
     assert!(bank.available_permits() < before);
     drop(roots);

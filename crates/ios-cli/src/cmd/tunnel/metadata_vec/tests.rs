@@ -201,7 +201,7 @@ fn metadata_vector_zero_size_elements_keep_logical_ceiling_without_allocation() 
 
 #[test]
 fn native_registry_backing_refusal_precedes_slot_allocation_and_refunds_body() {
-    use super::super::retirement::Registry;
+    use super::super::retirement::{NativeReport, Registry};
     let full = Arc::new(Semaphore::new(128 * 1024 * 1024));
     let slot_bytes = Arc::new(AtomicUsize::new(0));
     let captured = Arc::clone(&slot_bytes);
@@ -212,7 +212,10 @@ fn native_registry_backing_refusal_precedes_slot_allocation_and_refunds_body() {
         || Registry::with_metadata(&full).unwrap(),
     );
     drop(native);
-    let bytes = std::mem::size_of::<Registry>() + slot_bytes.load(Ordering::SeqCst) - 1;
+    let bytes = std::mem::size_of::<Registry>()
+        + 2 * NativeReport::body_bytes()
+        + slot_bytes.load(Ordering::SeqCst)
+        - 1;
     let bank = Arc::new(Semaphore::new(bytes));
     let allocated = Arc::new(AtomicUsize::new(0));
     let captured = Arc::clone(&allocated);

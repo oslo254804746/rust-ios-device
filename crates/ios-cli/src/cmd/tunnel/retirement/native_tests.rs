@@ -9,6 +9,90 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, DuplexStream, ReadBuf};
 const OBSERVE: Duration = Duration::from_secs(2);
 
 #[tokio::test]
+async fn native_report_prepaid_history_and_current_join_snapshots_survive_closed_zero_pool() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let structural = registry.structural_bytes();
+    let bank = registry.byte_bank.clone();
+    let (stream, peer) = tokio::io::duplex(1280);
+    let native = runtime(stream).await;
+    let lease = registry.reserve(stamp()).unwrap().attach(native.clone());
+    drop(peer);
+    assert!(inactive(&native).await);
+    let original = native.shutdown_status().unwrap_err();
+    let pointer = work(&original) as *const TunnelError;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    bank.close();
+    drop(lease);
+    let first = registry
+        .drain_retired(CleanupClock::new(Duration::ZERO).unwrap())
+        .await
+        .unwrap_err();
+    let first_error = first.primary().downcast_ref::<TunnelError>().unwrap();
+    let pending = shutdown_report(first_error).unwrap().pending_joins();
+    assert!(pending > 0);
+    assert_eq!(work(first_error) as *const _, pointer);
+    assert!(matches!(&first.primary, Some(PayloadOutcome::History(_))));
+    assert!(first.elapsed().is_some());
+    let history = registry.historical_failure().unwrap();
+    assert!(std::ptr::eq(history.primary(), first_error));
+    assert_eq!(bank.available_permits(), 0);
+    let second = registry
+        .drain_retired(CleanupClock::new(OBSERVE).unwrap())
+        .await
+        .unwrap_err();
+    assert!(matches!(&second.primary, Some(PayloadOutcome::Current(_))));
+    let second_error = second.primary().downcast_ref::<TunnelError>().unwrap();
+    assert!(shutdown_joins_certified(second_error));
+    assert_eq!(work(second_error) as *const _, pointer);
+    let report_pointer = second_error as *const TunnelError as usize;
+    let frame_pointer = &second as *const DrainFailure as usize;
+    assert!(
+        report_pointer >= frame_pointer
+            && report_pointer < frame_pointer + std::mem::size_of::<DrainFailure>()
+    );
+    assert_eq!(
+        shutdown_report(first.primary().downcast_ref::<TunnelError>().unwrap())
+            .unwrap()
+            .pending_joins(),
+        pending
+    );
+    assert_eq!(
+        shutdown_report(history.primary()).unwrap().pending_joins(),
+        pending
+    );
+    assert_eq!(registry.snapshot().occupied(), 0);
+    assert!(recovered(baseline).await);
+    assert_eq!(bank.available_permits(), 0);
+    drop(registry);
+    assert_eq!(
+        bank.available_permits(),
+        structural - NativeReport::body_bytes()
+    );
+    drop(history);
+    assert_eq!(
+        bank.available_permits(),
+        structural - NativeReport::body_bytes()
+    );
+    drop(first);
+    assert_eq!(bank.available_permits(), structural);
+    assert_eq!(
+        work(second.primary().downcast_ref::<TunnelError>().unwrap()) as *const _,
+        pointer
+    );
+    drop((second, held));
+    assert_eq!(
+        bank.available_permits(),
+        super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
+    );
+}
+
+#[tokio::test]
 async fn native_census_current_snapshot_is_inside_prepaid_backing_and_stays_frozen_through_joins() {
     let baseline = tokio::runtime::Handle::current()
         .metrics()
@@ -478,10 +562,7 @@ async fn native_retirement_later_join_panic_replaces_same_owner_pure_expiry_with
         .shutdown(Duration::from_millis(30))
         .await
         .err()
-        .map(Arc::new);
-    if let Some(first) = &first {
-        registry.record_failure(&key, first.clone());
-    }
+        .map(|error| registry.record_failure(&key, error));
     let before = registry.historical_failure();
     gate.release();
     let retried = registry
@@ -515,7 +596,9 @@ async fn native_retirement_later_join_panic_replaces_same_owner_pure_expiry_with
     assert!(std::ptr::eq(history.expiry().unwrap(), first.as_ref()));
     let mut attempt = AttemptEvidence::default();
     attempt.record(first);
-    attempt.record(Arc::new(native.shutdown_status().unwrap_err()));
+    attempt.record(PayloadOutcome::Current(
+        native.shutdown_status().unwrap_err(),
+    ));
     assert!(!shutdown_primary_is_elapsed(
         attempt.first.as_ref().unwrap()
     ));

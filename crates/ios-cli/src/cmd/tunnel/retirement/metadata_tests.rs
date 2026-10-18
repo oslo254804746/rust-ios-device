@@ -50,7 +50,8 @@ fn registry_metadata_exact_body_capacity_and_final_registry_owner_release() {
     let registry = Registry::allocate(&bank, 3).unwrap();
     let state = registry.lock();
     let actual = std::mem::size_of::<Registry>()
-        + state.slots.capacity() * std::mem::size_of::<Option<Entry>>();
+        + state.slots.capacity() * std::mem::size_of::<Option<Entry>>()
+        + 2 * NativeReport::body_bytes();
     assert_eq!(state.slots.len(), 3);
     assert!(state.slots.iter().all(Option::is_none));
     drop(state);
