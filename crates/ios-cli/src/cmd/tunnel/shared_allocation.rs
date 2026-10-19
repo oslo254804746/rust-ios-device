@@ -97,7 +97,6 @@ impl<T: Unpin> Shared<T> {
             _allocation: PhantomData,
         }
     }
-    #[cfg(test)]
     pub(super) fn ptr_eq(&self, other: &Self) -> bool {
         self.pointer == other.pointer
     }
@@ -105,6 +104,44 @@ impl<T: Unpin> Shared<T> {
         // SAFETY: every live Shared owns one positive count. Its allocation
         // stays initialized at the original address until the final Drop.
         unsafe { self.pointer.as_ref() }
+    }
+    #[cfg(test)]
+    pub(super) fn strong_count(&self) -> usize {
+        self.allocation().strong.load(Ordering::Acquire)
+    }
+    #[cfg(test)]
+    pub(super) fn get_mut(&mut self) -> Option<&mut T> {
+        if self.strong_count() != 1 {
+            return None;
+        }
+        // SAFETY: self is exclusively borrowed, there is only one strong root,
+        // and this sealed allocation has no Weak/raw/pin escape. Other owners'
+        // releases have been acquired, and no borrowed T can outlive its root.
+        Some(unsafe { &mut (*self.pointer.as_ptr()).value })
+    }
+    #[cfg(test)]
+    pub(super) fn replace_storage(
+        &mut self,
+        bank: &Arc<Semaphore>,
+        incoming: OwnedSemaphorePermit,
+    ) -> Result<OwnedSemaphorePermit> {
+        anyhow::ensure!(
+            self.strong_count() == 1
+                && Arc::ptr_eq(incoming.semaphore(), bank)
+                && incoming.num_permits() == self.storage().num_permits(),
+            crate::output::resource_decision(
+                "configure unique shared allocation with its whole grant"
+            )
+        );
+        // SAFETY: same uniqueness proof as get_mut. The new whole grant already
+        // exists. Move out the OLD grant so callers can retain it until every
+        // related fixture field has acquired its original-bank replacement.
+        Ok(ManuallyDrop::into_inner(unsafe {
+            std::mem::replace(
+                &mut (*self.pointer.as_ptr()).storage,
+                ManuallyDrop::new(incoming),
+            )
+        }))
     }
     #[cfg(test)]
     pub(super) fn storage(&self) -> &OwnedSemaphorePermit {

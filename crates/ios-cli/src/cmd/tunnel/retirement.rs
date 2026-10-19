@@ -20,22 +20,24 @@ use tokio::time::{error::Elapsed, Instant};
 pub(super) const MAX_NATIVE_OWNERS: usize = 4096;
 pub(super) struct NativeReport {
     original: OnceLock<TunnelError>,
-    _storage: OwnedSemaphorePermit,
 }
 
-type NativeReportOwner = super::shared_value::Shared<NativeReport>;
+type NativeReportOwner = super::shared_allocation::Shared<NativeReport>;
 
 impl NativeReport {
     pub(super) fn body_bytes() -> usize {
-        std::mem::size_of::<Self>()
+        NativeReportOwner::allocation_bytes()
     }
 
-    fn empty(storage: OwnedSemaphorePermit) -> NativeReportOwner {
-        assert_eq!(storage.num_permits(), Self::body_bytes());
-        NativeReportOwner::new(Self {
-            original: OnceLock::new(),
-            _storage: storage,
-        })
+    fn empty(storage: OwnedSemaphorePermit) -> Result<NativeReportOwner> {
+        let bank = storage.semaphore().clone();
+        NativeReportOwner::from_grant(
+            Self {
+                original: OnceLock::new(),
+            },
+            &bank,
+            storage,
+        )
     }
 
     fn capture(&self, original: TunnelError) {
@@ -292,12 +294,14 @@ pub(super) struct Registry {
     expiry_stock: NativeReportOwner,
     // Backing and application-owned payload fees outlive the fields they own.
     _slots_storage: OwnedSemaphorePermit,
-    _body_storage: OwnedSemaphorePermit,
 }
 
-pub(super) type RegistryOwner = super::shared_value::Shared<Registry>;
+pub(super) type RegistryOwner = super::shared_allocation::Shared<Registry>;
 
 impl Registry {
+    pub(super) fn body_bytes() -> usize {
+        RegistryOwner::allocation_bytes()
+    }
     pub(super) fn new() -> Result<RegistryOwner> {
         Self::with_metadata(&Arc::new(Semaphore::new(
             super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
@@ -309,8 +313,7 @@ impl Registry {
     }
 
     fn allocate(bank: &Arc<Semaphore>, capacity: usize) -> Result<RegistryOwner> {
-        let body_storage =
-            super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
+        let body_storage = super::admission::known_metadata_charge(bank, Self::body_bytes())?;
         let mut reports_storage =
             super::admission::known_metadata_charge(bank, 2 * NativeReport::body_bytes())?;
         let allocation = super::metadata_vec::exact_backing(bank, capacity)?;
@@ -320,27 +323,30 @@ impl Registry {
         let error_storage = reports_storage
             .split(NativeReport::body_bytes())
             .expect("prepaid native error root");
-        let error_stock = NativeReport::empty(error_storage);
-        let expiry_stock = NativeReport::empty(reports_storage);
-        Ok(RegistryOwner::new(Self {
-            state: StdMutex::new(State {
-                sealed: false,
-                issued: 0,
-                retired: 0,
-                slots,
-                first_failure: None,
-                first_expiry: None,
-                first_orphan_freshness: None,
-                additional_failed_owners: 0,
-            }),
-            drains: Mutex::new(()),
-            changed: Notify::new(),
-            byte_bank: Arc::clone(bank),
-            error_stock,
-            expiry_stock,
-            _slots_storage: slots_storage,
-            _body_storage: body_storage,
-        }))
+        let error_stock = NativeReport::empty(error_storage)?;
+        let expiry_stock = NativeReport::empty(reports_storage)?;
+        RegistryOwner::from_grant(
+            Self {
+                state: StdMutex::new(State {
+                    sealed: false,
+                    issued: 0,
+                    retired: 0,
+                    slots,
+                    first_failure: None,
+                    first_expiry: None,
+                    first_orphan_freshness: None,
+                    additional_failed_owners: 0,
+                }),
+                drains: Mutex::new(()),
+                changed: Notify::new(),
+                byte_bank: Arc::clone(bank),
+                error_stock,
+                expiry_stock,
+                _slots_storage: slots_storage,
+            },
+            bank,
+            body_storage,
+        )
     }
 
     #[cfg(test)]
@@ -355,62 +361,9 @@ impl Registry {
 
     #[cfg(test)]
     pub(super) fn structural_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
+        Self::body_bytes()
             + self.lock().slots.capacity() * std::mem::size_of::<Option<Entry>>()
             + 2 * NativeReport::body_bytes()
-    }
-
-    #[cfg(test)]
-    pub(super) fn rebind_empty_metadata(&mut self, bank: &Arc<Semaphore>) -> Result<()> {
-        let state = self.state.get_mut().unwrap_or_else(|p| p.into_inner());
-        anyhow::ensure!(
-            !state.sealed
-                && state.slots.iter().all(Option::is_none)
-                && state.first_failure.is_none()
-                && state.first_expiry.is_none()
-                && state.first_orphan_freshness.is_none()
-                && self.error_stock.original.get().is_none()
-                && self.expiry_stock.original.get().is_none()
-                && self.error_stock.strong_count() == 1
-                && self.expiry_stock.strong_count() == 1,
-            "native registry bank can only change before ownership/history"
-        );
-        let mut replacement = super::admission::known_metadata_charge(
-            bank,
-            std::mem::size_of::<Self>()
-                + state.slots.capacity() * std::mem::size_of::<Option<Entry>>()
-                + 2 * NativeReport::body_bytes(),
-        )?;
-        let body = replacement
-            .split(std::mem::size_of::<Self>())
-            .expect("reserved registry body");
-        let error_body = replacement
-            .split(NativeReport::body_bytes())
-            .expect("reserved native error root");
-        let expiry_body = replacement
-            .split(NativeReport::body_bytes())
-            .expect("reserved native expiry root");
-        let old_error = std::mem::replace(
-            &mut self
-                .error_stock
-                .get_mut()
-                .expect("unique unused native error root")
-                ._storage,
-            error_body,
-        );
-        let old_expiry = std::mem::replace(
-            &mut self
-                .expiry_stock
-                .get_mut()
-                .expect("unique unused native expiry root")
-                ._storage,
-            expiry_body,
-        );
-        drop((old_error, old_expiry));
-        self._slots_storage = replacement;
-        self._body_storage = body;
-        self.byte_bank = Arc::clone(bank);
-        Ok(())
     }
 
     fn lock(&self) -> StdMutexGuard<'_, State> {
@@ -421,6 +374,57 @@ impl Registry {
 }
 
 impl RegistryOwner {
+    #[cfg(test)]
+    pub(super) fn rebind_empty_metadata(&mut self, bank: &Arc<Semaphore>) -> Result<()> {
+        let current = self
+            .get_mut()
+            .ok_or_else(|| crate::output::resource_decision("configure registry before sharing"))?;
+        let state = current.state.get_mut().unwrap_or_else(|p| p.into_inner());
+        anyhow::ensure!(
+            !state.sealed
+                && state.slots.iter().all(Option::is_none)
+                && state.first_failure.is_none()
+                && state.first_expiry.is_none()
+                && state.first_orphan_freshness.is_none()
+                && current.error_stock.original.get().is_none()
+                && current.expiry_stock.original.get().is_none()
+                && current.error_stock.strong_count() == 1
+                && current.expiry_stock.strong_count() == 1,
+            "native registry bank can only change before ownership/history"
+        );
+        let mut replacement = super::admission::known_metadata_charge(
+            bank,
+            Registry::body_bytes()
+                + state.slots.capacity() * std::mem::size_of::<Option<Entry>>()
+                + 2 * NativeReport::body_bytes(),
+        )?;
+        let body = replacement
+            .split(Registry::body_bytes())
+            .expect("whole registry body prepaid");
+        let error_body = replacement
+            .split(NativeReport::body_bytes())
+            .expect("whole native error root prepaid");
+        let expiry_body = replacement
+            .split(NativeReport::body_bytes())
+            .expect("whole native expiry root prepaid");
+        // All roots were checked unique/empty before the single whole admission.
+        // No step below can reject. Keep OLD original grants through ALL swaps.
+        let old_error = current
+            .error_stock
+            .replace_storage(bank, error_body)
+            .expect("prevalidated native error root");
+        let old_expiry = current
+            .expiry_stock
+            .replace_storage(bank, expiry_body)
+            .expect("prevalidated native expiry root");
+        let old_slots = std::mem::replace(&mut current._slots_storage, replacement);
+        current.byte_bank = bank.clone();
+        let old_body = self
+            .replace_storage(bank, body)
+            .expect("prevalidated registry root");
+        drop((old_error, old_expiry, old_slots, old_body));
+        Ok(())
+    }
     pub(super) fn reserve(&self, stamp: OwnershipStamp) -> Result<Reservation> {
         self.reserve_with_input(stamp, None)
     }

@@ -346,3 +346,49 @@ fn exact_shared_fields_mismatched_bank_size_and_overflow_drop_input_before_refun
         assert_eq!(other.available_permits(), total);
     }
 }
+
+#[test]
+fn exact_shared_fixture_rebind_requires_unique_root_and_new_whole_grant_before_old_credit() {
+    let size = Shared::<u64>::allocation_bytes();
+    let original = Arc::new(Semaphore::new(size));
+    let next = Arc::new(Semaphore::new(size));
+    let grant = original
+        .clone()
+        .try_acquire_many_owned(size as u32)
+        .unwrap();
+    let mut root = Shared::from_grant(7_u64, &original, grant).unwrap();
+    let pointer = std::ptr::from_ref(&*root);
+    let alias = root.clone();
+    assert_eq!(root.strong_count(), 2);
+    assert!(root.get_mut().is_none());
+    let grant = next.clone().try_acquire_many_owned(size as u32).unwrap();
+    assert!(root.replace_storage(&next, grant).is_err());
+    assert_eq!(original.available_permits(), 0);
+    assert_eq!(next.available_permits(), size);
+    drop(alias);
+    assert_eq!(root.strong_count(), 1);
+    *root.get_mut().unwrap() = 9;
+    let short = next
+        .clone()
+        .try_acquire_many_owned((size - 1) as u32)
+        .unwrap();
+    assert!(root.replace_storage(&next, short).is_err());
+    assert_eq!(original.available_permits(), 0);
+    assert_eq!(next.available_permits(), size);
+    let grant = next.clone().try_acquire_many_owned(size as u32).unwrap();
+    let old = super::super::metadata_vec::with_allocation_hook(
+        |_, _| panic!("fixture grant rebind created a replacement allocation"),
+        || root.replace_storage(&next, grant).unwrap(),
+    );
+    assert_eq!(std::ptr::from_ref(&*root), pointer);
+    assert_eq!(*root, 9);
+    assert!(Arc::ptr_eq(root.storage().semaphore(), &next));
+    assert!(Arc::ptr_eq(old.semaphore(), &original));
+    assert_eq!(original.available_permits(), 0);
+    assert_eq!(next.available_permits(), 0);
+    drop(old);
+    assert_eq!(original.available_permits(), size);
+    next.close();
+    drop(root);
+    assert_eq!(next.available_permits(), size);
+}
