@@ -39,13 +39,14 @@ struct DeviceGate {
     serial: Mutex<()>,
     generation: watch::Sender<Arc<()>>,
     intent: super::intent::Cell,
-    // The table key and this gate share one admission lifetime. A ticket may
-    // retain the gate after the table disappears; that last owner pays until
-    // it releases the original gate, rather than refunding at row removal.
-    _metadata: OwnedSemaphorePermit,
 }
 
-type DeviceRow = super::shared_value::Shared<DeviceGate>;
+type DeviceRow = super::shared_allocation::Shared<DeviceGate>;
+impl DeviceGate {
+    fn body_bytes() -> usize {
+        DeviceRow::allocation_bytes()
+    }
+}
 
 pub(super) struct DesiredRow {
     pub(super) udid: String,
@@ -378,7 +379,7 @@ impl Lifecycle {
                 }
                 let mut metadata = super::admission::known_metadata_charge(
                     &self.metadata_bytes,
-                    std::mem::size_of::<DeviceGate>(),
+                    DeviceGate::body_bytes(),
                 )?;
                 let key_allocation =
                     super::metadata_vec::exact_backing(&self.metadata_bytes, udid.len())?;
@@ -387,16 +388,20 @@ impl Lifecycle {
                 key_bytes.extend_from_slice(udid.as_bytes());
                 let key = String::from_utf8(key_bytes).expect("copied UDID str is valid UTF-8");
                 devices.reserve_row(&self.metadata_bytes)?;
-                let gate = DeviceRow::new(DeviceGate {
-                    udid: key,
-                    serial: Mutex::new(()),
-                    generation: watch::channel(Arc::new(())).0,
-                    intent: super::intent::Cell::new(
-                        shutdown_generation.clone(),
-                        Arc::clone(&self.metadata_bytes),
-                    ),
-                    _metadata: metadata,
-                });
+                let gate = DeviceRow::from_grant_with_fields(
+                    DeviceGate {
+                        udid: key,
+                        serial: Mutex::new(()),
+                        generation: watch::channel(Arc::new(())).0,
+                        intent: super::intent::Cell::new(
+                            shutdown_generation.clone(),
+                            Arc::clone(&self.metadata_bytes),
+                        ),
+                    },
+                    &self.metadata_bytes,
+                    metadata,
+                    udid.len(),
+                )?;
                 devices.rows.push(gate.clone());
                 gate
             }
@@ -493,12 +498,12 @@ impl Lifecycle {
 
     #[cfg(test)]
     pub(super) fn initial_metadata_bytes(udid: &str) -> usize {
-        2 * std::mem::size_of::<DeviceRow>() + std::mem::size_of::<DeviceGate>() + udid.len()
+        2 * std::mem::size_of::<DeviceRow>() + DeviceGate::body_bytes() + udid.len()
     }
 
     #[cfg(test)]
     pub(super) fn additional_metadata_bytes(udid: &str) -> usize {
-        std::mem::size_of::<DeviceGate>() + udid.len()
+        DeviceGate::body_bytes() + udid.len()
     }
 
     #[cfg(test)]
@@ -987,7 +992,7 @@ mod tests {
     async fn coordinator_canonical_key_is_admitted_before_its_first_copy() {
         use futures_util::FutureExt;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let bytes = std::mem::size_of::<DeviceGate>();
+        let bytes = DeviceGate::body_bytes();
         let bank = Arc::new(Semaphore::new(bytes));
         let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
         let allocated = Arc::new(AtomicUsize::new(0));
@@ -1074,7 +1079,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_metadata_rejected_growth_preserves_original_gates_and_capacity() {
-        let key_bytes = std::mem::size_of::<DeviceGate>() + 1;
+        let key_bytes = DeviceGate::body_bytes() + 1;
         let backing = 2 * std::mem::size_of::<DeviceRow>();
         // Two original rows plus a third gate fit, but old+new backing do not.
         let bytes = 3 * key_bytes + backing;
@@ -1110,14 +1115,14 @@ mod tests {
                 + devices
                     .rows
                     .iter()
-                    .map(|gate| gate.udid.capacity() + std::mem::size_of::<DeviceGate>())
+                    .map(|gate| gate.udid.capacity() + DeviceGate::body_bytes())
                     .sum::<usize>();
             assert_eq!(bank.available_permits(), 64 * 1024 - actual);
         }
         drop(lifecycle);
         assert_eq!(
             bank.available_permits(),
-            64 * 1024 - 5 * (std::mem::size_of::<DeviceGate>() + 1)
+            64 * 1024 - 5 * (DeviceGate::body_bytes() + 1)
         );
         drop(tickets);
         assert_eq!(bank.available_permits(), 64 * 1024);

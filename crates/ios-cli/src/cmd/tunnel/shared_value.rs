@@ -20,10 +20,6 @@ impl<T: Unpin> Shared<T> {
             other.inner.as_ref().expect("live shared value"),
         )
     }
-
-    pub(super) fn strong_count(&self) -> usize {
-        Arc::strong_count(self.inner.as_ref().expect("live shared value"))
-    }
 }
 impl<T: Unpin> AsRef<T> for Shared<T> {
     fn as_ref(&self) -> &T {
