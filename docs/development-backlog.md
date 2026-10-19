@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-19：L02 [Source前固定owner完整分配](validation/tunnel-pre-source-owners-full-allocation-2026-10-19.md)
+刷新Receipt与失败WriteOwner完整控制块/原值/原grant在Source前准入，原报告/context/
+数组费用分别保留；原IO/类别/Session完成和关闭配额后的最后退款保持。
+Receipt2/bookkeeping8/freshness21/attribution9/完整CLI1742/0FAIL/13原ignored通过；
+其它owner与原全审计继续，主项23/6/L02待核查、有效30/Q04全部排除不变。
+
+
 2026-10-19：L02 [scan 三类owner完整分配](validation/tunnel-scan-roots-full-allocation-2026-10-19.md)
 Outcomes/history/abandoned按完整实际layout准入；弃置空单元与历史快照在Source前
 实际预分配，取消/错误后只填入同一原IO，不再创建共享backing，旧历史冻结/退款保持。

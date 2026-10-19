@@ -63,20 +63,22 @@ impl MetadataOwner {
 pub(super) struct Receipt {
     original: OnceLock<anyhow::Error>,
     reports: Mutex<[Option<OwnedSemaphorePermit>; 2]>,
-    _storage: OwnedSemaphorePermit,
 }
 
-pub(super) type ReceiptOwner = super::shared_value::Shared<Receipt>;
+pub(super) type ReceiptOwner = super::shared_allocation::Shared<Receipt>;
 
 #[cfg(test)]
 #[path = "freshness/receipt_owner_tests.rs"]
 mod receipt_owner_tests;
 
 impl Receipt {
+    pub(super) fn body_bytes() -> usize {
+        ReceiptOwner::allocation_bytes()
+    }
     pub(super) fn prepare(bank: &Arc<Semaphore>) -> Result<ReceiptOwner> {
         let mut storage = admission::known_metadata_charge(
             bank,
-            std::mem::size_of::<Self>() + 2 * std::mem::size_of::<Failure>(),
+            Self::body_bytes() + 2 * std::mem::size_of::<Failure>(),
         )?;
         let first = storage
             .split(std::mem::size_of::<Failure>())
@@ -84,11 +86,14 @@ impl Receipt {
         let second = storage
             .split(std::mem::size_of::<Failure>())
             .expect("reserved second refresh report");
-        Ok(ReceiptOwner::new(Self {
-            original: OnceLock::new(),
-            reports: Mutex::new([Some(first), Some(second)]),
-            _storage: storage,
-        }))
+        ReceiptOwner::from_grant(
+            Self {
+                original: OnceLock::new(),
+                reports: Mutex::new([Some(first), Some(second)]),
+            },
+            bank,
+            storage,
+        )
     }
     pub(super) fn original(&self) -> &anyhow::Error {
         self.original.get().expect("captured refresh Source error")

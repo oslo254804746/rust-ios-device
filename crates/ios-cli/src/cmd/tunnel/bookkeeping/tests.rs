@@ -1,11 +1,58 @@
 use super::*;
 
 #[test]
-fn write_batch_bytes_exact_three_backings_and_one_byte_refusal_refund() {
+fn write_batch_bytes_exact_backings_and_whole_shared_owner_refuse_last_byte_and_refund() {
     for capacity in [0, 1, 4] {
         let bytes = WriteBatch::backing_bytes(capacity);
         let bank = Arc::new(Semaphore::new(bytes));
-        let batch = WriteBatch::new(&bank, capacity).unwrap();
+        let allocated = Arc::new(Mutex::new(Vec::new()));
+        let captured = allocated.clone();
+        let charged = bank.clone();
+        let batch = super::super::metadata_vec::with_allocation_hook(
+            move |layout, pointer| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push((layout, pointer, charged.available_permits()));
+            },
+            || WriteBatch::new(&bank, capacity).unwrap(),
+        );
+        let observed = allocated.lock().unwrap();
+        assert_eq!(observed.len(), if capacity == 0 { 1 } else { 4 });
+        if capacity != 0 {
+            assert_eq!(observed[0].0.size(), Destination::minimum_bytes());
+            assert_eq!(
+                observed[1].0,
+                std::alloc::Layout::array::<ScanIntent>(capacity).unwrap()
+            );
+            assert_eq!(observed[1].1, batch.intents.as_slice().as_ptr() as usize);
+            assert_eq!(
+                observed[2].0,
+                std::alloc::Layout::array::<super::super::reconnect::Receipt>(capacity).unwrap()
+            );
+            assert_eq!(
+                observed[2].1,
+                batch
+                    .owner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .receipts
+                    .as_slice()
+                    .as_ptr() as usize
+            );
+        }
+        let last = observed.last().unwrap();
+        assert_eq!(last.0.size(), FailureWriteOwner::body_bytes());
+        assert_eq!(last.2, 0);
+        let owner = std::ptr::from_ref(&*batch.owner) as usize;
+        assert!(last.1 <= owner && owner < last.1 + last.0.size());
+        assert_eq!(
+            batch.owner.storage().num_permits(),
+            FailureWriteOwner::body_bytes()
+        );
+        assert!(Arc::ptr_eq(batch.owner.storage().semaphore(), &bank));
+        drop(observed);
         assert_eq!(bank.available_permits(), 0);
         drop(batch);
         assert_eq!(bank.available_permits(), bytes);
@@ -33,7 +80,7 @@ fn write_batch_payload_last_shared_owner_keeps_actual_body_and_refunds_unused_co
     let bytes = WriteBatch::backing_bytes(0);
     assert_eq!(
         bytes,
-        std::mem::size_of::<FailureWriteOwner>() + std::mem::size_of::<SourceFailuresContext>()
+        FailureWriteOwner::body_bytes() + std::mem::size_of::<SourceFailuresContext>()
     );
     let bank = Arc::new(Semaphore::new(bytes));
     let batch = WriteBatch::new(&bank, 0).unwrap();
@@ -56,8 +103,7 @@ fn write_batch_payload_last_shared_owner_keeps_actual_body_and_refunds_unused_co
 
 #[test]
 fn write_batch_payload_refusal_precedes_every_destination_backing_and_preserves_original_bank() {
-    let bytes =
-        std::mem::size_of::<FailureWriteOwner>() + std::mem::size_of::<SourceFailuresContext>();
+    let bytes = FailureWriteOwner::body_bytes() + std::mem::size_of::<SourceFailuresContext>();
     let bank = Arc::new(Semaphore::new(bytes - 1));
     let error = WriteBatch::new(&bank, 1).err().unwrap();
     assert_eq!(
