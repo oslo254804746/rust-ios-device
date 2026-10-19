@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-19：L02 [scan 三类owner完整分配](validation/tunnel-scan-roots-full-allocation-2026-10-19.md)
+Outcomes/history/abandoned按完整实际layout准入；弃置空单元与历史快照在Source前
+实际预分配，取消/错误后只填入同一原IO，不再创建共享backing，旧历史冻结/退款保持。
+scan17/attribution9/完整CLI1742/0FAIL/13原ignored及strict CLI/build/Source0通过；
+其它owner与原全审计继续，主项23/6/L02待核查、有效30/Q04全部排除不变。
+
+
 2026-10-19：L02 [native registry/report 完整分配](validation/tunnel-native-roots-full-allocation-2026-10-19.md)
 registry与两个预付原报告按三个真实完整layout同池先准入，原错误/冻结snapshot/实际
 native joins与closed0捕获保持；独占夹具换池在新整份费用安装前保留旧grant。

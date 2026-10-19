@@ -18,7 +18,7 @@ impl Drop for Probe {
     fn drop(&mut self) {
         assert_eq!(
             self.bank.available_permits(),
-            self.total - std::mem::size_of::<AbandonedScan>()
+            self.total - AbandonedScan::body_bytes()
         );
         self.drops.fetch_add(1, Ordering::SeqCst);
     }
@@ -55,7 +55,7 @@ async fn history_owner_parallel_last_snapshots_and_census_keep_original_root_and
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert_eq!(
         bank.available_permits(),
-        total - std::mem::size_of::<HistorySnapshot>() - std::mem::size_of::<AbandonedScan>()
+        total - HistorySnapshot::body_bytes() - AbandonedScan::body_bytes()
     );
     let mut snapshots = (0..7).map(|_| snapshot.clone()).collect::<Vec<_>>();
     snapshots.push(snapshot);
@@ -80,7 +80,7 @@ async fn history_owner_parallel_last_snapshots_and_census_keep_original_root_and
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert_eq!(
         bank.available_permits(),
-        total - std::mem::size_of::<AbandonedScan>()
+        total - AbandonedScan::body_bytes()
     );
     assert_eq!(
         root.original().downcast_ref::<std::io::Error>().unwrap() as *const _ as usize,

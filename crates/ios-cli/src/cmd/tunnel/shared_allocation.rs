@@ -161,6 +161,11 @@ impl<T: Unpin> Clone for Shared<T> {
         }
     }
 }
+impl<T: Unpin> AsRef<T> for Shared<T> {
+    fn as_ref(&self) -> &T {
+        self.deref()
+    }
+}
 impl<T: Unpin> Deref for Shared<T> {
     type Target = T;
     fn deref(&self) -> &T {

@@ -10,9 +10,9 @@ use tokio::time::Instant;
 
 pub(super) const MAX_ABANDONED_SCANS: usize = 8;
 
-pub(super) type AbandonedOwner = super::shared_value::Shared<AbandonedScan>;
-pub(super) type HistoryOwner = super::shared_value::Shared<HistorySnapshot>;
-pub(super) type OutcomesOwner = super::shared_value::Shared<Outcomes>;
+pub(super) type AbandonedOwner = super::shared_allocation::Shared<AbandonedScan>;
+pub(super) type HistoryOwner = super::shared_allocation::Shared<HistorySnapshot>;
+pub(super) type OutcomesOwner = super::shared_allocation::Shared<Outcomes>;
 
 #[cfg(test)]
 #[path = "scan/capsule_tests.rs"]
@@ -42,15 +42,16 @@ struct HistoryRoots {
 }
 
 /// Immutable snapshot payload paid and created before its scan polls Source.
-/// The inline roots have no separate Vec allocation. Arc/anyhow private headers
-/// and the separate terminal report wrapper remain outside this body grant.
+/// The inline roots have no separate Vec allocation. The full declared shared
+/// layout is paid; opaque anyhow/context and terminal wrappers stay separate.
 pub(super) struct HistorySnapshot {
     roots: OnceLock<HistoryRoots>,
-    // The original roots drop before this application-owned body grant.
-    _storage: OwnedSemaphorePermit,
 }
 
 impl HistorySnapshot {
+    pub(super) fn body_bytes() -> usize {
+        HistoryOwner::allocation_bytes()
+    }
     fn freeze(&self, slots: &[Slot; MAX_ABANDONED_SCANS]) {
         let mut roots = HistoryRoots {
             entries: std::array::from_fn(|_| None),
@@ -101,7 +102,6 @@ impl std::ops::Index<usize> for HistorySnapshot {
 pub(super) struct Outcomes {
     slots: StdMutex<Slots>,
     bank: Arc<Semaphore>,
-    _storage: OwnedSemaphorePermit,
 }
 
 fn compound_bytes() -> usize {
@@ -111,9 +111,9 @@ fn compound_bytes() -> usize {
 
 pub(super) fn capsule_reservation_bytes() -> usize {
     compound_bytes()
-        + std::mem::size_of::<AbandonedScan>()
+        + AbandonedScan::body_bytes()
         + std::mem::size_of::<super::ScanCleanupFailure>()
-        + std::mem::size_of::<HistorySnapshot>()
+        + HistorySnapshot::body_bytes()
 }
 
 impl Outcomes {
@@ -126,20 +126,23 @@ impl Outcomes {
     }
 
     pub(super) fn body_bytes() -> usize {
-        std::mem::size_of::<Self>()
+        OutcomesOwner::allocation_bytes()
     }
 
     pub(super) fn with_metadata(bank: Arc<Semaphore>) -> Result<OutcomesOwner> {
         let storage = super::admission::known_metadata_charge(&bank, Self::body_bytes())?;
-        Ok(OutcomesOwner::new(Self {
-            slots: StdMutex::new(Slots {
-                closed: false,
-                entries: std::array::from_fn(|_| Slot::Empty),
-                history_root: None,
-            }),
-            bank,
-            _storage: storage,
-        }))
+        OutcomesOwner::from_grant(
+            Self {
+                slots: StdMutex::new(Slots {
+                    closed: false,
+                    entries: std::array::from_fn(|_| Slot::Empty),
+                    history_root: None,
+                }),
+                bank: bank.clone(),
+            },
+            &bank,
+            storage,
+        )
     }
 }
 
@@ -169,12 +172,24 @@ impl OutcomesOwner {
             .split(std::mem::size_of::<super::ScanCleanupFailure>())
             .expect("reserved cleanup bytes");
         let snapshot_storage = storage
-            .split(std::mem::size_of::<HistorySnapshot>())
+            .split(HistorySnapshot::body_bytes())
             .expect("reserved immutable history snapshot body");
-        let history_snapshot = HistoryOwner::new(HistorySnapshot {
-            roots: OnceLock::new(),
-            _storage: snapshot_storage,
-        });
+        let history_snapshot = HistoryOwner::from_grant(
+            HistorySnapshot {
+                roots: OnceLock::new(),
+            },
+            &self.bank,
+            snapshot_storage,
+        )?;
+        // Allocate the actual error cell BEFORE Source. Cancellation/failure
+        // later only fills this one cell; it never allocates a replacement root.
+        let abandoned = AbandonedOwner::from_grant(
+            AbandonedScan {
+                original: OnceLock::new(),
+            },
+            &self.bank,
+            storage,
+        )?;
         slots.entries[index] = Slot::Active;
         Ok(Session {
             outcomes: self.clone(),
@@ -183,7 +198,7 @@ impl OutcomesOwner {
             writes: StdMutex::new(None),
             compound: StdMutex::new(Some(compound)),
             cleanup: StdMutex::new(Some(cleanup)),
-            abandoned: Some(storage),
+            abandoned: Some(abandoned),
             // Separate from AbandonedScan: a snapshot must not own itself.
             history_snapshot: Some(history_snapshot),
             _lock: lock,
@@ -240,7 +255,7 @@ pub(super) struct Session<'a> {
     // Only actually materialized app-owned payloads receive their exact slice.
     compound: StdMutex<Option<OwnedSemaphorePermit>>,
     cleanup: StdMutex<Option<OwnedSemaphorePermit>>,
-    abandoned: Option<OwnedSemaphorePermit>,
+    abandoned: Option<AbandonedOwner>,
     history_snapshot: Option<HistoryOwner>,
     // Drop records the original error before this guard admits another scanner.
     _lock: MutexGuard<'a, ()>,
@@ -455,13 +470,15 @@ impl Drop for Session<'_> {
             .unwrap_or_else(|p| p.into_inner());
         let displaced = match primary {
             Some(primary) => {
-                slots.entries[self.index] = Slot::Abandoned(AbandonedOwner::new(AbandonedScan {
-                    original: primary,
-                    _storage: self
-                        .abandoned
-                        .take()
-                        .expect("reserved abandoned scan payload"),
-                }));
+                let abandoned = self
+                    .abandoned
+                    .take()
+                    .expect("preallocated abandoned scan root");
+                assert!(
+                    abandoned.original.set(primary).is_ok(),
+                    "one original error per abandoned scan"
+                );
+                slots.entries[self.index] = Slot::Abandoned(abandoned);
                 let snapshot = self
                     .history_snapshot
                     .take()
@@ -481,13 +498,17 @@ impl Drop for Session<'_> {
 }
 
 pub(super) struct AbandonedScan {
-    original: anyhow::Error,
-    _storage: OwnedSemaphorePermit,
+    original: OnceLock<anyhow::Error>,
 }
 
 impl AbandonedScan {
+    pub(super) fn body_bytes() -> usize {
+        AbandonedOwner::allocation_bytes()
+    }
     pub(super) fn original(&self) -> &anyhow::Error {
-        &self.original
+        self.original
+            .get()
+            .expect("published abandoned scan has original error")
     }
 }
 
@@ -510,7 +531,7 @@ impl std::fmt::Debug for AbandonedScan {
 
 impl Error for AbandonedScan {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.original.as_ref())
+        Some(self.original().as_ref())
     }
 }
 
