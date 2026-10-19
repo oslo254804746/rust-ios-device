@@ -10,8 +10,8 @@ fn native_report_preflight_bodies_and_slots_refuse_before_backing_then_empty_roo
     let reports = 2 * NativeReport::body_bytes();
     for available in [
         0,
-        std::mem::size_of::<Registry>() - 1,
-        std::mem::size_of::<Registry>() + reports - 1,
+        Registry::body_bytes() - 1,
+        Registry::body_bytes() + reports - 1,
         total - 1,
     ] {
         let bank = Arc::new(Semaphore::new(available));
@@ -26,14 +26,40 @@ fn native_report_preflight_bodies_and_slots_refuse_before_backing_then_empty_roo
         assert_eq!(bank.available_permits(), available);
     }
     let bank = Arc::new(Semaphore::new(total));
-    let registry = Registry::allocate(&bank, 1).unwrap();
+    let allocations = Arc::new(StdMutex::new(Vec::new()));
+    let captured = allocations.clone();
+    let charged = bank.clone();
+    let registry = super::super::metadata_vec::with_allocation_hook(
+        move |layout, pointer| {
+            assert_eq!(charged.available_permits(), 0);
+            captured.lock().unwrap().push((layout, pointer));
+        },
+        || Registry::allocate(&bank, 1).unwrap(),
+    );
+    let observed = allocations.lock().unwrap();
+    assert_eq!(observed.len(), 4);
+    assert_eq!(
+        observed[0].0,
+        std::alloc::Layout::array::<Option<Entry>>(1).unwrap()
+    );
+    assert_eq!(observed[1].0.size(), NativeReport::body_bytes());
+    assert_eq!(observed[2].0.size(), NativeReport::body_bytes());
+    assert_eq!(observed[3].0.size(), Registry::body_bytes());
+    for (index, data) in [
+        (1, std::ptr::from_ref(&*registry.error_stock) as usize),
+        (2, std::ptr::from_ref(&*registry.expiry_stock) as usize),
+        (3, std::ptr::from_ref(&*registry) as usize),
+    ] {
+        assert!(observed[index].1 <= data && data < observed[index].1 + observed[index].0.size());
+    }
+    drop(observed);
     assert_eq!(bank.available_permits(), 0);
     let error = registry.error_stock.clone();
     let expiry = registry.expiry_stock.clone();
     for stock in [&error, &expiry] {
         assert!(stock.original.get().is_none());
-        assert_eq!(stock._storage.num_permits(), NativeReport::body_bytes());
-        assert!(Arc::ptr_eq(stock._storage.semaphore(), &bank));
+        assert_eq!(stock.storage().num_permits(), NativeReport::body_bytes());
+        assert!(Arc::ptr_eq(stock.storage().semaphore(), &bank));
     }
     bank.close();
     drop(registry);

@@ -6,11 +6,8 @@ fn registry_owner_closed_pool_parallel_last_roots_keep_original_body_slots_and_r
     let bank = Arc::new(Semaphore::new(total));
     let mut registry = Registry::allocate(&bank, 3).unwrap();
     let bytes = registry.structural_bytes();
-    assert_eq!(
-        registry._body_storage.num_permits(),
-        std::mem::size_of::<Registry>()
-    );
-    assert!(Arc::ptr_eq(registry._body_storage.semaphore(), &bank));
+    assert_eq!(registry.storage().num_permits(), Registry::body_bytes());
+    assert!(Arc::ptr_eq(registry.storage().semaphore(), &bank));
     let alias = registry.clone();
     assert!(registry.get_mut().is_none());
     drop(alias);
@@ -49,7 +46,7 @@ fn registry_metadata_exact_body_capacity_and_final_registry_owner_release() {
     let bank = Arc::new(Semaphore::new(65536));
     let registry = Registry::allocate(&bank, 3).unwrap();
     let state = registry.lock();
-    let actual = std::mem::size_of::<Registry>()
+    let actual = Registry::body_bytes()
         + state.slots.capacity() * std::mem::size_of::<Option<Entry>>()
         + 2 * NativeReport::body_bytes();
     assert_eq!(state.slots.len(), 3);
@@ -69,7 +66,7 @@ fn registry_metadata_one_byte_refusal_refunds_body_and_every_partial_backing() {
     let probe = Registry::allocate(&Arc::new(Semaphore::new(65536)), 2).unwrap();
     let bytes = probe.structural_bytes();
     drop(probe);
-    for available in [std::mem::size_of::<Registry>() - 1, bytes - 1] {
+    for available in [Registry::body_bytes() - 1, bytes - 1] {
         let bank = Arc::new(Semaphore::new(available));
         let error = Registry::allocate(&bank, 2).err().unwrap();
         assert_eq!(
@@ -107,29 +104,17 @@ fn registry_metadata_rebind_is_atomic_and_preserves_original_slots_and_namespace
     let bytes = registry.structural_bytes();
     let pointer = registry.lock().slots.as_ptr();
     let denied = Arc::new(Semaphore::new(bytes - 1));
-    assert!(registry
-        .get_mut()
-        .unwrap()
-        .rebind_empty_metadata(&denied)
-        .is_err());
+    assert!(registry.rebind_empty_metadata(&denied).is_err());
     assert_eq!(old_bank.available_permits(), 65536 - bytes);
     assert_eq!(denied.available_permits(), bytes - 1);
     assert_eq!(registry.lock().slots.as_ptr(), pointer);
     let next = Arc::new(Semaphore::new(bytes));
-    registry
-        .get_mut()
-        .unwrap()
-        .rebind_empty_metadata(&next)
-        .unwrap();
+    registry.rebind_empty_metadata(&next).unwrap();
     assert_eq!(old_bank.available_permits(), 65536);
     assert_eq!(next.available_permits(), 0);
     assert_eq!(registry.lock().slots.as_ptr(), pointer);
     registry.close_and_stop_all();
-    assert!(registry
-        .get_mut()
-        .unwrap()
-        .rebind_empty_metadata(&old_bank)
-        .is_err());
+    assert!(registry.rebind_empty_metadata(&old_bank).is_err());
     assert_eq!(next.available_permits(), 0);
     assert_eq!(old_bank.available_permits(), 65536);
     drop(registry);

@@ -916,12 +916,7 @@ impl TunnelAgentState {
             .inner
             .get_mut()
             .expect("configure before sharing state");
-        inner
-            .native
-            .get_mut()
-            .expect("configure before native sharing")
-            .rebind_empty_metadata(&bank)
-            .unwrap();
+        inner.native.rebind_empty_metadata(&bank).unwrap();
         inner.lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
         inner.retry =
             reconnect::Ledger::with_metadata(inner.retry.policy().clone(), Arc::clone(&bank))

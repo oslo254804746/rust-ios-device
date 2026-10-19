@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-19：L02 [native registry/report 完整分配](validation/tunnel-native-roots-full-allocation-2026-10-19.md)
+registry与两个预付原报告按三个真实完整layout同池先准入，原错误/冻结snapshot/实际
+native joins与closed0捕获保持；独占夹具换池在新整份费用安装前保留旧grant。
+共享分配7/retirement38/attribution9/完整CLI1741/0FAIL/13原ignored及严格门禁通过；
+其它owner与原全审计继续，主项23/6/L02待核查、有效30和Q04全部排除不变。
+
+
 2026-10-18：L02 [retry Ledger 完整分配](validation/tunnel-ledger-full-allocation-2026-10-18.md)
 原policy/Mutex/State/bank进入同一完整实际共享layout，counter/value/原grant创建前准入，
 实际Attempt/独立snapshot原IO与关闭配额后的最后退款保持；旧两项测试扩展真实backing检查。
@@ -124,7 +131,7 @@ L02继续全审计，主项23/6/待核查、有效30与Q04全部排除不变。
 完整 tunnel 718/0 FAIL/2 原 ignored、strict CLI/build/Source0 通过。L02 继续全审计，
 主项 23 交付/6 缺开发/L02 待核查、有效 30 和 Q04 全部排除不变。
 
-更新：2026-10-18。用户口径允许完整实现、仅等待运行验证的任务计开发完成；
+更新：2026-10-19。用户口径允许完整实现、仅等待运行验证的任务计开发完成；
 代码、协议、生产接线、工具或收尾尚缺不能计完成。实际 NOT_RUN 不改成 PASS。
 Q04及全部子项排除，有效任务分母保持30。
 

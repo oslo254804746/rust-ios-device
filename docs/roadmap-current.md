@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-19：L02 [native registry/report 完整分配](validation/tunnel-native-roots-full-allocation-2026-10-19.md)
+registry与两个预付原报告按三个真实完整layout同池先准入，原错误/冻结snapshot/实际
+native joins与closed0捕获保持；独占夹具换池在新整份费用安装前保留旧grant。
+共享分配7/retirement38/attribution9/完整CLI1741/0FAIL/13原ignored及严格门禁通过；
+其它owner与原全审计继续，主项23/6/L02待核查、有效30和Q04全部排除不变。
+
+
 2026-10-18：L02 [retry Ledger 完整分配](validation/tunnel-ledger-full-allocation-2026-10-18.md)
 原policy/Mutex/State/bank进入同一完整实际共享layout，counter/value/原grant创建前准入，
 实际Attempt/独立snapshot原IO与关闭配额后的最后退款保持；旧两项测试扩展真实backing检查。
@@ -49,7 +56,7 @@ SDK副本、prepared公开root与其余全局边界仍待审计；主项23/6/L02
 经理层 initial RSD 生产接入仍 PENDING；L02全审计、23/6/待核查、有效30与Q04排除不变。
 
 
-更新：2026-10-18。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
+更新：2026-10-19。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
 开发计数与真实验收分开，Q04及全部子项继续排除。
 
 当前批次修复独立review确认的R01–R15。起点af20f6a，修复分支
