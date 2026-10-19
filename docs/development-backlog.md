@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-19：L02 [DeviceGate完整分配](validation/tunnel-device-gate-full-allocation-2026-10-19.md)
+原UID缓冲区与完整应用声明控制块共用同池grant；prune仍为strong_count>1或persistent，
+4096/epoch/原key地址/clear重用/旧ticket失效及关闭配额后最后退款保持。
+生命周期21/attribution9/完整CLI1742/0FAIL/13原ignored及严格门禁通过；
+其它owner与原全审计继续，主项23/6/L02待核查、有效30/Q04全部排除不变。
+
+
 2026-10-19：L02 [Source前固定owner完整分配](validation/tunnel-pre-source-owners-full-allocation-2026-10-19.md)
 刷新Receipt与失败WriteOwner完整控制块/原值/原grant在Source前准入，原报告/context/
 数组费用分别保留；原IO/类别/Session完成和关闭配额后的最后退款保持。

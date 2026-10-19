@@ -105,7 +105,6 @@ impl<T: Unpin> Shared<T> {
         // stays initialized at the original address until the final Drop.
         unsafe { self.pointer.as_ref() }
     }
-    #[cfg(test)]
     pub(super) fn strong_count(&self) -> usize {
         self.allocation().strong.load(Ordering::Acquire)
     }

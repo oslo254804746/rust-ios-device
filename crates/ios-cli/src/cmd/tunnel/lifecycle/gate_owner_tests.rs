@@ -6,7 +6,45 @@ async fn coordinator_gate_owner_parallel_old_tickets_keep_original_key_and_close
     let total = Lifecycle::initial_metadata_bytes(key);
     let bank = Arc::new(Semaphore::new(total));
     let lifecycle = Lifecycle::with_metadata(bank.clone());
-    let ticket = lifecycle.ticket(key).await.unwrap();
+    use futures_util::FutureExt;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let charged = bank.clone();
+    let ticket = super::super::metadata_vec::with_allocation_hook(
+        move |layout, pointer| {
+            captured
+                .lock()
+                .unwrap()
+                .push((layout, pointer, charged.available_permits()));
+        },
+        || lifecycle.ticket(key).now_or_never().unwrap().unwrap(),
+    );
+    let backing_pointer = lifecycle.devices.lock().await.rows.as_ptr() as usize;
+    {
+        let observed = seen.lock().unwrap();
+        assert_eq!(observed.len(), 3);
+        assert_eq!(
+            observed[0].0,
+            std::alloc::Layout::array::<u8>(key.len()).unwrap()
+        );
+        assert_eq!(observed[0].1, ticket.gate.udid.as_ptr() as usize);
+        assert_eq!(observed[0].2, 2 * std::mem::size_of::<DeviceRow>());
+        assert_eq!(
+            observed[1].0,
+            std::alloc::Layout::array::<DeviceRow>(2).unwrap()
+        );
+        assert_eq!(observed[1].2, 0);
+        assert_eq!(observed[1].1, backing_pointer);
+        assert_eq!(observed[2].0.size(), DeviceGate::body_bytes());
+        assert_eq!(observed[2].2, 0);
+        let data = std::ptr::from_ref(&*ticket.gate) as usize;
+        assert!(observed[2].1 <= data && data < observed[2].1 + observed[2].0.size());
+        assert_eq!(
+            ticket.gate.storage().num_permits(),
+            DeviceGate::body_bytes() + key.len()
+        );
+        assert!(Arc::ptr_eq(ticket.gate.storage().semaphore(), &bank));
+    }
     let alias = lifecycle.ticket(key).await.unwrap();
     assert_eq!(ticket.gate.strong_count(), 3);
     assert!(ticket.same_incarnation(&alias));
