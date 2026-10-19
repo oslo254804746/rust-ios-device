@@ -191,8 +191,8 @@ async fn scan_capsule_abandoned_context_and_history_refund_only_after_last_share
     let roots = outcomes.history().expect("abandoned scan history");
     assert_eq!(roots.len(), 1);
     same(roots[0].original(), &id, pointer);
-    let originals = std::mem::size_of::<SourceContext>() + std::mem::size_of::<AbandonedScan>();
-    let kept = originals + std::mem::size_of::<HistorySnapshot>();
+    let originals = std::mem::size_of::<SourceContext>() + AbandonedScan::body_bytes();
+    let kept = originals + HistorySnapshot::body_bytes();
     assert_eq!(bank.available_permits(), bytes - kept);
     let copy = roots[0].clone();
     drop(outcomes);
@@ -296,9 +296,7 @@ async fn scan_history_prepaid_snapshot_survives_zero_quota_repeated_reads_and_la
     drop(second);
     assert_eq!(
         bank.available_permits(),
-        std::mem::size_of::<AbandonedScan>()
-            + std::mem::size_of::<HistorySnapshot>()
-            + Outcomes::body_bytes()
+        AbandonedScan::body_bytes() + HistorySnapshot::body_bytes() + Outcomes::body_bytes()
     );
     drop(held);
     assert_eq!(bank.available_permits(), bytes + Outcomes::body_bytes());
