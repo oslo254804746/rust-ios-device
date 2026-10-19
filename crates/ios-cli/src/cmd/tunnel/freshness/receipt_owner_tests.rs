@@ -36,12 +36,15 @@ fn pointer(root: &Receipt) -> usize {
 
 #[test]
 fn freshness_receipt_owner_exact_pre_source_body_reports_and_closed_pool_last_snapshot_refund() {
-    let body = std::mem::size_of::<Receipt>();
+    let body = Receipt::body_bytes();
     let report = std::mem::size_of::<Failure>();
     let total = body + 2 * report;
     for available in [0, total - 1] {
         let bank = Arc::new(Semaphore::new(available));
-        let error = Receipt::prepare(&bank).err().unwrap();
+        let error = super::super::metadata_vec::with_allocation_hook(
+            |_, _| panic!("refresh whole capsule refused after owned backing"),
+            || Receipt::prepare(&bank).err().unwrap(),
+        );
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
             ios_core::ErrorClass::ResourceLimit
@@ -50,17 +53,35 @@ fn freshness_receipt_owner_exact_pre_source_body_reports_and_closed_pool_last_sn
     }
     let bank = Arc::new(Semaphore::new(total));
     let drops = Arc::new(AtomicUsize::new(0));
-    let root = Receipt::prepare(&bank).unwrap();
-    assert_eq!(root._storage.num_permits(), body);
-    assert!(Arc::ptr_eq(root._storage.semaphore(), &bank));
+    let allocated = Arc::new(Mutex::new(Vec::new()));
+    let captured = allocated.clone();
+    let charged = bank.clone();
+    let root = super::super::metadata_vec::with_allocation_hook(
+        move |layout, pointer| {
+            assert_eq!(layout.size(), body);
+            assert_eq!(charged.available_permits(), 0);
+            captured.lock().unwrap().push((layout, pointer));
+        },
+        || Receipt::prepare(&bank).unwrap(),
+    );
+    let observed = allocated.lock().unwrap();
+    assert_eq!(observed.len(), 1);
+    let data = std::ptr::from_ref(&*root) as usize;
+    assert!(observed[0].1 <= data && data < observed[0].1 + observed[0].0.size());
+    drop(observed);
+    assert!(root.original.get().is_none());
+    assert_eq!(root.storage().num_permits(), body);
+    assert!(Arc::ptr_eq(root.storage().semaphore(), &bank));
     assert_eq!(bank.available_permits(), 0);
     let error = original(&bank, &drops, 2 * report);
     let original_pointer = error.downcast_ref::<std::io::Error>().unwrap() as *const _ as usize;
     let original_class = crate::output::operation_error_class(error.as_ref());
     root.capture(error);
     bank.close();
-    let first = root.report();
-    let second = root.report();
+    let (first, second) = super::super::metadata_vec::with_allocation_hook(
+        |_, _| panic!("refresh capture/report replaced the original owned capsule"),
+        || (root.report(), root.report()),
+    );
     assert_eq!(
         crate::output::operation_error_class(first.as_ref()),
         original_class
@@ -91,7 +112,7 @@ fn freshness_receipt_owner_exact_pre_source_body_reports_and_closed_pool_last_sn
 
 #[test]
 fn freshness_receipt_owner_parallel_last_roots_keep_original_io_and_unused_reports_until_drop() {
-    let total = std::mem::size_of::<Receipt>() + 2 * std::mem::size_of::<Failure>();
+    let total = Receipt::body_bytes() + 2 * std::mem::size_of::<Failure>();
     let bank = Arc::new(Semaphore::new(total));
     let drops = Arc::new(AtomicUsize::new(0));
     let root = Receipt::prepare(&bank).unwrap();

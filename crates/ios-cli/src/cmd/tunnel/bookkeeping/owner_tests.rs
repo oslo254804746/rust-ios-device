@@ -122,7 +122,7 @@ async fn write_owner_parallel_last_roots_complete_only_pending_receipts_and_refu
         };
         let owner = batch.owner();
         let original_owner = &*owner as *const FailureWriteOwner as usize;
-        let released = std::mem::size_of::<FailureWriteOwner>()
+        let released = FailureWriteOwner::body_bytes()
             + std::mem::size_of::<SourceFailuresContext>()
             + owner.state.lock().unwrap().receipts.capacity() * std::mem::size_of::<Receipt>();
         let mut owners = (0..7).map(|_| owner.clone()).collect::<Vec<_>>();

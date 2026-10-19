@@ -105,14 +105,16 @@ struct WriteState {
     context_storage: Option<OwnedSemaphorePermit>,
 }
 
-pub(super) type WriteOwner = super::shared_value::Shared<FailureWriteOwner>;
+pub(super) type WriteOwner = super::shared_allocation::Shared<FailureWriteOwner>;
 
 pub(super) struct FailureWriteOwner {
     state: Mutex<WriteState>,
-    _storage: OwnedSemaphorePermit,
 }
 
 impl FailureWriteOwner {
+    pub(super) fn body_bytes() -> usize {
+        WriteOwner::allocation_bytes()
+    }
     pub(super) fn in_scan(&self) {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).in_scan = true;
     }
@@ -261,25 +263,28 @@ impl WriteBatch {
         // Error Ready(Err) never has to acquire more bytes to keep its original.
         let mut payloads = super::admission::known_metadata_charge(
             bank,
-            std::mem::size_of::<FailureWriteOwner>() + std::mem::size_of::<SourceFailuresContext>(),
+            FailureWriteOwner::body_bytes() + std::mem::size_of::<SourceFailuresContext>(),
         )?;
         let owner_storage = payloads
-            .split(std::mem::size_of::<FailureWriteOwner>())
+            .split(FailureWriteOwner::body_bytes())
             .expect("reserved failure write owner payload");
         let mut intents = KnownVec::new(Arc::clone(bank), capacity);
         intents.reserve(capacity)?;
         let mut receipts = KnownVec::new(Arc::clone(bank), receipt_capacity);
         receipts.reserve(receipt_capacity)?;
         Ok(Self {
-            owner: WriteOwner::new(FailureWriteOwner {
-                state: Mutex::new(WriteState {
-                    receipts,
-                    finished: false,
-                    in_scan: false,
-                    context_storage: Some(payloads),
-                }),
-                _storage: owner_storage,
-            }),
+            owner: WriteOwner::from_grant(
+                FailureWriteOwner {
+                    state: Mutex::new(WriteState {
+                        receipts,
+                        finished: false,
+                        in_scan: false,
+                        context_storage: Some(payloads),
+                    }),
+                },
+                bank,
+                owner_storage,
+            )?,
             intents,
             displaced: RemovedBatch::default(),
             destination,
@@ -314,14 +319,14 @@ impl WriteBatch {
 
     #[cfg(test)]
     pub(super) fn success_only_bytes(capacity: usize) -> usize {
-        std::mem::size_of::<FailureWriteOwner>()
+        FailureWriteOwner::body_bytes()
             + std::mem::size_of::<SourceFailuresContext>()
             + capacity * std::mem::size_of::<ScanIntent>()
     }
 
     #[cfg(test)]
     pub(super) fn backing_bytes(capacity: usize) -> usize {
-        std::mem::size_of::<FailureWriteOwner>()
+        FailureWriteOwner::body_bytes()
             + std::mem::size_of::<SourceFailuresContext>()
             + capacity
                 * (std::mem::size_of::<ScanIntent>()

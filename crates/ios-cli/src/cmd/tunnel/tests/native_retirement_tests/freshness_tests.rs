@@ -801,8 +801,7 @@ async fn freshness_source_receives_original_min_retry_candidate_whole_deadline()
 
 #[test]
 fn freshness_capsule_exact_body_and_report_admission_refusal_and_zero_quota_original() {
-    let bytes =
-        std::mem::size_of::<freshness::Receipt>() + 2 * std::mem::size_of::<freshness::Failure>();
+    let bytes = freshness::Receipt::body_bytes() + 2 * std::mem::size_of::<freshness::Failure>();
     let short = Arc::new(tokio::sync::Semaphore::new(bytes - 1));
     assert!(freshness::Receipt::prepare(&short).is_err());
     assert_eq!(short.available_permits(), bytes - 1);
