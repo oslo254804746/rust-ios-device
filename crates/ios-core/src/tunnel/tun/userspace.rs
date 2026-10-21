@@ -59,7 +59,7 @@ fn runtime_channel_bytes() -> usize {
 
 #[cfg(test)]
 fn runtime_owner_bytes() -> usize {
-    std::mem::size_of::<Ledger>()
+    Ledger::reservation_bytes()
         + std::mem::size_of::<SharedChildTaskSet>()
         + 4 * std::mem::size_of::<OwnedTask>()
 }

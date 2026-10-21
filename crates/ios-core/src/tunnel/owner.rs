@@ -15,6 +15,10 @@ use tokio::time::{error::Elapsed, Instant};
 
 use super::TunnelError;
 
+#[path = "owner/native_identity.rs"]
+mod native_identity;
+use native_identity::Identity;
+
 type Cause = Arc<dyn Error + Send + Sync>;
 const OUTCOME_SLOTS: usize = 10;
 // 0..4: original parent work errors; 4..8: parent JoinErrors;
@@ -68,7 +72,7 @@ impl std::fmt::Debug for CleanupClasses<'_> {
 }
 
 pub(crate) struct Ledger {
-    identity: Arc<()>,
+    identity: Identity,
     outcomes: StdMutex<Outcomes>,
     pending: AtomicUsize,
     invalid_count: AtomicBool,
@@ -77,21 +81,36 @@ pub(crate) struct Ledger {
 
 impl Ledger {
     pub(crate) fn new() -> Arc<Self> {
-        Self::with_storage(None)
+        Self::with_storage(None, Identity::new())
     }
 
     #[cfg(feature = "tunnel-userspace")]
     pub(crate) fn with_metadata(
         bank: Option<&Arc<tokio::sync::Semaphore>>,
     ) -> Result<Arc<Self>, TunnelError> {
-        let storage =
-            super::tun::userspace::runtime_storage::charge(bank, std::mem::size_of::<Self>())?;
-        Ok(Self::with_storage(storage))
+        let mut storage =
+            super::tun::userspace::runtime_storage::charge(bank, Self::reservation_bytes())?;
+        let identity = match (bank, storage.as_mut()) {
+            (Some(bank), Some(storage)) => Identity::from_grant(
+                bank,
+                storage
+                    .split(Identity::body_bytes())
+                    .expect("whole native provenance grant"),
+            )?,
+            (None, None) => Identity::new(),
+            _ => unreachable!("native metadata bank and grant are paired"),
+        };
+        Ok(Self::with_storage(storage, identity))
     }
 
-    fn with_storage(storage: Option<OwnedSemaphorePermit>) -> Arc<Self> {
+    #[cfg(feature = "tunnel-userspace")]
+    pub(crate) fn reservation_bytes() -> usize {
+        std::mem::size_of::<Self>() + Identity::body_bytes()
+    }
+
+    fn with_storage(storage: Option<OwnedSemaphorePermit>, identity: Identity) -> Arc<Self> {
         Arc::new(Self {
-            identity: Arc::new(()),
+            identity,
             outcomes: StdMutex::new(Outcomes {
                 slots: std::array::from_fn(|_| None),
                 primary: None,
@@ -154,7 +173,7 @@ impl Ledger {
         else {
             return false;
         };
-        report.work_report && Arc::ptr_eq(&self.identity, &report.identity)
+        report.work_report && self.identity.ptr_eq(&report.identity)
     }
 
     fn record(&self, slot: usize, cause: Cause, primary: bool) {
@@ -231,7 +250,7 @@ impl Ledger {
             }
         }
         let failure = TunnelShutdownFailure {
-            identity: Arc::clone(&self.identity),
+            identity: self.identity.clone(),
             work_report: !require_joined,
             primary,
             cleanup,
@@ -256,7 +275,7 @@ impl Ledger {
 /// Retrying produces a new snapshot and preserves the earlier one. Debug and
 /// Display expose fixed context and categories; inspectors retain native causes.
 pub struct TunnelShutdownFailure {
-    identity: Arc<()>,
+    identity: Identity,
     work_report: bool,
     primary: Cause,
     cleanup: Cleanup,
