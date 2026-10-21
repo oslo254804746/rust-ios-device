@@ -1,6 +1,6 @@
 //! Byte-owned current RSD catalogue, prepared without cloning into an opaque HashMap.
-//! Charges cover requested application-owned layouts, not allocator headers, Arc internals,
-//! OS sockets or process RSS. The checked prepared path separately admits raw
+//! Owned roots and fields use exact application-declared layouts. Legacy Arc internals,
+//! allocator headers, OS sockets and process RSS remain separate. The checked path admits raw
 //! payload/body storage and an explicit borrowed parser arena from the same bank.
 use super::existing_rsd::{ExistingRsdProbeError, RsdSelectionReceipt};
 #[cfg(test)]
@@ -55,6 +55,12 @@ pub(crate) fn exact_vec_from_grant<T>(
     let pointer =
         NonNull::new(pointer.cast::<T>()).ok_or_else(ExistingRsdProbeError::metadata_limit)?;
     let values = unsafe { Vec::from_raw_parts(pointer.as_ptr(), 0, capacity) };
+    #[cfg(test)]
+    ALLOCATED.with(|hook| {
+        if let Some(callback) = hook.borrow_mut().as_mut() {
+            callback(layout, values.as_ptr() as usize);
+        }
+    });
     Ok((fee, values))
 }
 struct ExactText {
@@ -152,6 +158,64 @@ impl PreparedRsdCatalogue {
         dictionary: &IndexMap<String, XpcValue>,
         bank: &Arc<Semaphore>,
     ) -> Result<Self, XpcError> {
+        let (fee, parts) =
+            CatalogueParts::decode(dictionary, bank, std::mem::size_of::<Self>(), || {
+                charge(bank, std::mem::size_of::<Self>())
+            })?;
+        Ok(parts.catalogue(fee))
+    }
+    pub(crate) fn decode_borrowed(
+        dictionary: crate::xpc::message::borrowed::Dictionary<'_, '_>,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Self, XpcError> {
+        let (fee, parts) =
+            CatalogueParts::decode_borrowed(dictionary, bank, std::mem::size_of::<Self>(), || {
+                charge(bank, std::mem::size_of::<Self>())
+            })?;
+        Ok(parts.catalogue(fee))
+    }
+
+    fn with_selection(
+        mut self,
+        selection: RsdSelectionReceipt,
+        fee: OwnedSemaphorePermit,
+    ) -> Result<Self, CoreError> {
+        self.bytes = self
+            .bytes
+            .checked_add(
+                selection.attempted_modes.capacity()
+                    * std::mem::size_of::<super::existing_rsd::RsdHandshakeMode>(),
+            )
+            .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
+        self.selection = Some(selection);
+        self._selection_fee = Some(fee);
+        Ok(self)
+    }
+    pub(crate) fn finish(
+        self,
+        selection: RsdSelectionReceipt,
+        fee: OwnedSemaphorePermit,
+    ) -> Result<Arc<Self>, CoreError> {
+        Ok(Arc::new(self.with_selection(selection, fee)?))
+    }
+}
+
+// Field buffers remain owned and paid while a separately funded EMPTY root
+// survives every fallible decoder and selection step.
+struct CatalogueParts {
+    udid: ExactText,
+    rows: Vec<Row>,
+    bytes: usize,
+    rows_fee: OwnedSemaphorePermit,
+}
+impl CatalogueParts {
+    #[cfg(test)]
+    pub(crate) fn decode<B>(
+        dictionary: &IndexMap<String, XpcValue>,
+        bank: &Arc<Semaphore>,
+        body_bytes: usize,
+        fund: impl FnOnce() -> Result<B, XpcError>,
+    ) -> Result<(B, Self), XpcError> {
         let (uid, services) = crate::xpc::rsd::checked_handshake_parts(dictionary)?;
         let uid =
             uid.ok_or_else(|| XpcError::Tls("RSD: current catalogue missing identity".into()))?;
@@ -166,10 +230,10 @@ impl PreparedRsdCatalogue {
                     .ok_or_else(|| XpcError::Tls("RSD: current catalogue missing Port".into()))?,
             )?;
         }
-        let body_fee = charge(bank, std::mem::size_of::<Self>())?;
+        let funding = fund()?;
         let (rows_fee, mut rows) = exact_vec::<Row>(bank, services.len())?;
         let udid = ExactText::copy(bank, uid)?;
-        let mut bytes = std::mem::size_of::<Self>()
+        let mut bytes = body_bytes
             .checked_add(udid.text.capacity())
             .and_then(|bytes| bytes.checked_add(rows.capacity() * std::mem::size_of::<Row>()))
             .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
@@ -214,20 +278,22 @@ impl PreparedRsdCatalogue {
             });
         }
         rows.sort_unstable_by(|a, b| a.name.text.cmp(&b.name.text));
-        Ok(Self {
-            udid,
-            rows,
-            selection: None,
-            bytes,
-            _rows_fee: rows_fee,
-            _selection_fee: None,
-            _body_fee: body_fee,
-        })
+        Ok((
+            funding,
+            Self {
+                udid,
+                rows,
+                bytes,
+                rows_fee,
+            },
+        ))
     }
-    pub(crate) fn decode_borrowed(
+    pub(crate) fn decode_borrowed<B>(
         dictionary: crate::xpc::message::borrowed::Dictionary<'_, '_>,
         bank: &Arc<Semaphore>,
-    ) -> Result<Self, XpcError> {
+        body_bytes: usize,
+        fund: impl FnOnce() -> Result<B, XpcError>,
+    ) -> Result<(B, Self), XpcError> {
         let (uid, services) = crate::xpc::rsd::checked_borrowed_parts(dictionary)?;
         let uid =
             uid.ok_or_else(|| XpcError::Tls("RSD: current catalogue missing identity".into()))?;
@@ -241,10 +307,10 @@ impl PreparedRsdCatalogue {
                     .ok_or_else(|| XpcError::Tls("RSD: current catalogue missing Port".into()))?,
             )?;
         }
-        let body_fee = charge(bank, std::mem::size_of::<Self>())?;
+        let funding = fund()?;
         let (rows_fee, mut rows) = exact_vec::<Row>(bank, services.len())?;
         let udid = ExactText::copy(bank, uid)?;
-        let mut bytes = std::mem::size_of::<Self>()
+        let mut bytes = body_bytes
             .checked_add(udid.text.capacity())
             .and_then(|bytes| bytes.checked_add(rows.capacity() * std::mem::size_of::<Row>()))
             .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
@@ -289,96 +355,64 @@ impl PreparedRsdCatalogue {
             });
         }
         rows.sort_unstable_by(|a, b| a.name.text.cmp(&b.name.text));
-        Ok(Self {
-            udid,
-            rows,
+        Ok((
+            funding,
+            Self {
+                udid,
+                rows,
+                bytes,
+                rows_fee,
+            },
+        ))
+    }
+
+    fn catalogue(self, body_fee: OwnedSemaphorePermit) -> PreparedRsdCatalogue {
+        PreparedRsdCatalogue {
+            udid: self.udid,
+            rows: self.rows,
+            bytes: self.bytes,
             selection: None,
-            bytes,
-            _rows_fee: rows_fee,
+            _rows_fee: self.rows_fee,
             _selection_fee: None,
             _body_fee: body_fee,
-        })
-    }
-
-    fn with_selection(
-        mut self,
-        selection: RsdSelectionReceipt,
-        fee: OwnedSemaphorePermit,
-    ) -> Result<Self, CoreError> {
-        self.bytes = self
-            .bytes
-            .checked_add(
-                selection.attempted_modes.capacity()
-                    * std::mem::size_of::<super::existing_rsd::RsdHandshakeMode>(),
-            )
-            .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
-        self.selection = Some(selection);
-        self._selection_fee = Some(fee);
-        Ok(self)
-    }
-    pub(crate) fn finish(
-        self,
-        selection: RsdSelectionReceipt,
-        fee: OwnedSemaphorePermit,
-    ) -> Result<Arc<Self>, CoreError> {
-        Ok(Arc::new(self.with_selection(selection, fee)?))
-    }
-    pub(crate) fn finish_owned(
-        self,
-        selection: RsdSelectionReceipt,
-        fee: OwnedSemaphorePermit,
-    ) -> Result<PreparedRsdOwner, CoreError> {
-        Ok(PreparedRsdOwner::new(self.with_selection(selection, fee)?))
-    }
-}
-
-/// Immutable ownership of a prepared current catalogue. Cloning retains the
-/// original data and grants; no raw Arc, Weak or mutable/pinned owner escapes.
-/// The payload allocation ends before its original buffers and body fee drop.
-pub struct PreparedRsdOwner {
-    inner: Option<Arc<PreparedRsdCatalogue>>,
-}
-impl PreparedRsdOwner {
-    fn new(catalogue: PreparedRsdCatalogue) -> Self {
-        Self {
-            inner: Some(Arc::new(catalogue)),
-        }
-    }
-    pub fn ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(
-            self.inner.as_ref().expect("live prepared owner"),
-            other.inner.as_ref().expect("live prepared owner"),
-        )
-    }
-}
-impl Clone for PreparedRsdOwner {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
         }
     }
 }
-impl std::ops::Deref for PreparedRsdOwner {
-    type Target = PreparedRsdCatalogue;
-    fn deref(&self) -> &Self::Target {
-        self.inner.as_deref().expect("live prepared owner")
-    }
-}
-impl std::fmt::Debug for PreparedRsdOwner {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&**self, formatter)
-    }
-}
-impl Drop for PreparedRsdOwner {
-    fn drop(&mut self) {
-        // All clones use into_inner. With no explicit Weak or raw/pin escape,
-        // the last allocation is freed before the returned catalogue drops.
-        drop(Arc::into_inner(
-            self.inner.take().expect("live prepared owner"),
-        ));
-    }
-}
+
+#[path = "prepared_rsd/owned_root.rs"]
+mod owned_root;
+pub use owned_root::PreparedRsdOwner;
+pub(crate) use owned_root::{OwnedDestination, PendingOwned};
 
 #[cfg(test)]
 #[path = "prepared_rsd/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+type AllocationHook = std::cell::RefCell<Option<Box<dyn FnMut(Layout, usize)>>>;
+#[cfg(test)]
+thread_local! { static ALLOCATED: AllocationHook = const { std::cell::RefCell::new(None) }; }
+#[cfg(test)]
+pub(crate) struct AllocationObserver;
+#[cfg(test)]
+impl Drop for AllocationObserver {
+    fn drop(&mut self) {
+        ALLOCATED.with(|hook| hook.borrow_mut().take());
+    }
+}
+#[cfg(test)]
+pub(crate) fn allocation_observer(hook: impl FnMut(Layout, usize) + 'static) -> AllocationObserver {
+    ALLOCATED.with(|pending| {
+        assert!(pending.borrow().is_none());
+        *pending.borrow_mut() = Some(Box::new(hook));
+    });
+    AllocationObserver
+}
+#[cfg(test)]
+pub(crate) fn with_allocation_hook<R>(
+    hook: impl FnMut(Layout, usize) + 'static,
+    work: impl FnOnce() -> R,
+) -> R {
+    let _observer = allocation_observer(hook);
+    work()
+}
