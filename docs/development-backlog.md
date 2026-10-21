@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-21：L02 [freshness输出拒绝与cause恢复](validation/tunnel-freshness-refusal-recovery-2026-10-21.md)
+真实H2目录在Source成功后publication峰值差一字节/错误UID/缺字段时保留原cache-table-registry，
+两次独立IO失败后成功清理registry causes，外部原report仍保持IO地址与独立最后退款。
+native freshness17/完整CLI1756/0FAIL/13原ignored及严格CLI门禁通过；全部Cargo/build由主控执行。
+endpoint恢复等原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [owned current真实服务重启](validation/tunnel-owned-current-service-restart-2026-10-21.md)
 新增同端口/变端口真实localhost peer停止、重新监听及owned current正向service IO，
 保留原目录/初始IO地址、双向严格EOF、原grant独立最后退款；prepared整组8与严格Core门禁通过。
