@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-21：L02 [publication根实际最后owner](validation/tunnel-publication-final-body-owner-2026-10-21.md)
+两池原whole费用移到真实Node Box外，完整root/key先释放再退款，固定槽按实际新owner宽度计费；
+原node/key地址、rollback、迭代恢复、!Unpin析构展开与闭池4096节点退款保持。
+publication10/完整CLI1763/0FAIL/13原ignored及严格门禁通过，全部Cargo/build由主控执行；
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [context真实预付payload](validation/tunnel-context-payload-destinations-2026-10-21.md)
 Source/Failure/Cleanup和receipt在Source前准备各自实际Box目的地，原typed wrapper/IO地址保留，
 未用分支与最后payload真实释放后才退款；闭池/byvalue/析构展开/Source后零backing已验。

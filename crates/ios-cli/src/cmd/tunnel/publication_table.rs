@@ -1,7 +1,7 @@
 //! The only publication destination: exact Vec slots and original boxed nodes.
 //! Every destination is admitted before Source; removal uses paid intrusive links.
 use std::alloc::{alloc, Layout};
-use std::ops::Index;
+use std::ops::{Deref, Index};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -25,22 +25,47 @@ fn exact_vec<U>(capacity: usize) -> Result<Vec<U>> {
     let pointer = NonNull::new(pointer.cast::<U>()).ok_or_else(|| {
         crate::output::resource_decision("tunnel publication storage allocation failed")
     })?;
-    Ok(unsafe { Vec::from_raw_parts(pointer.as_ptr(), 0, capacity) })
+    let values = unsafe { Vec::from_raw_parts(pointer.as_ptr(), 0, capacity) };
+    #[cfg(test)]
+    observe_allocation(layout, values.as_ptr() as usize);
+    Ok(values)
 }
 
-pub(super) struct Node<T> {
-    // Value/link precede permits so their actual allocations end before refund.
-    value: Option<T>,
-    next: Option<Box<Node<T>>>,
-    key: String,
-    original_slot: usize,
-    incarnation: u64,
+// The fees live outside the actual Box. Field drop order deallocates data
+// before either whole original grant (body plus canonical key) can refund.
+// No Weak, raw owning pointer, pinning or value-moving interface escapes.
+pub(super) struct OwnedNode<T> {
+    data: Box<Node<T>>,
+    #[cfg(test)]
+    _after_box_free: AfterBoxFree,
     _global: OwnedSemaphorePermit,
     _published: OwnedSemaphorePermit,
 }
+impl<T> Deref for OwnedNode<T> {
+    type Target = Node<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+impl<T> OwnedNode<T> {
+    // Mutation stays private to this table module. Exposing DerefMut<Node<T>>
+    // would let another module swap whole Nodes while leaving their original
+    // key/body grants behind in different owners.
+    fn node_mut(&mut self) -> &mut Node<T> {
+        &mut self.data
+    }
+}
+
+pub(super) struct Node<T> {
+    value: Option<T>,
+    next: Option<OwnedNode<T>>,
+    key: String,
+    original_slot: usize,
+    incarnation: u64,
+}
 
 pub(super) struct Table<T> {
-    slots: Vec<Option<Box<Node<T>>>>,
+    slots: Vec<Option<OwnedNode<T>>>,
     global_backing: Option<OwnedSemaphorePermit>,
     published_backing: Option<OwnedSemaphorePermit>,
     global: Arc<Semaphore>,
@@ -77,7 +102,7 @@ impl<T> Table<T> {
             return Ok(());
         }
         let bytes = MAX_ROWS
-            .checked_mul(std::mem::size_of::<Option<Box<Node<T>>>>())
+            .checked_mul(std::mem::size_of::<Option<OwnedNode<T>>>())
             .ok_or_else(|| {
                 crate::output::resource_decision("tunnel publication backing size overflow")
             })?;
@@ -93,7 +118,7 @@ impl<T> Table<T> {
 
     /// Own the actual node, key buffer and shared/sub-limit fees before Source.
     /// The allocated Vec is this table's sole production storage, not a receipt.
-    pub(super) fn prepare(&mut self, udid: &str) -> Result<Box<Node<T>>> {
+    pub(super) fn prepare(&mut self, udid: &str) -> Result<OwnedNode<T>> {
         super::admission::selectors(udid, None)?;
         anyhow::ensure!(
             self.len < MAX_ROWS || self.contains_key(udid),
@@ -114,16 +139,27 @@ impl<T> Table<T> {
         key.extend_from_slice(udid.as_bytes());
         // SAFETY: the copied bytes came from a str; exact capacity is unchanged.
         let key = unsafe { String::from_utf8_unchecked(key) };
-        self.next_incarnation = incarnation;
-        Ok(Box::new(Node {
+        // This is still the original pre-Source Box allocation. Its complete
+        // declared Node layout and key buffer were paid in BOTH banks before
+        // either allocation; its whole fees remain outside the Box on success.
+        // Bind data last so even a test observer unwind deallocates it first.
+        let data = Box::new(Node {
             value: None,
             next: None,
             key,
             original_slot: usize::MAX,
             incarnation,
+        });
+        #[cfg(test)]
+        observe_allocation(Layout::new::<Node<T>>(), &*data as *const Node<T> as usize);
+        self.next_incarnation = incarnation;
+        Ok(OwnedNode {
+            data,
+            #[cfg(test)]
+            _after_box_free: AfterBoxFree,
             _global: global,
             _published: published,
-        }))
+        })
     }
 
     fn slot(&self, key: &str) -> Option<usize> {
@@ -148,7 +184,7 @@ impl<T> Table<T> {
     }
     pub(super) fn get_mut(&mut self, key: &str) -> Option<&mut T> {
         let slot = self.slot(key)?;
-        self.slots[slot].as_mut()?.value.as_mut()
+        self.slots[slot].as_mut()?.node_mut().value.as_mut()
     }
     pub(super) fn get_key_value(&self, key: &str) -> Option<(&String, &T)> {
         let node = self.slots[self.slot(key)?].as_ref()?;
@@ -182,7 +218,7 @@ impl<T> Table<T> {
     pub(super) fn publish(
         &mut self,
         slot: usize,
-        mut prepared: Box<Node<T>>,
+        mut prepared: OwnedNode<T>,
         value: T,
     ) -> Change<T> {
         assert!(prepared.value.is_none() && prepared.next.is_none());
@@ -193,15 +229,15 @@ impl<T> Table<T> {
             );
             let original = self.slots[slot].as_mut().expect("original publication");
             let previous_incarnation =
-                std::mem::replace(&mut original.incarnation, prepared.incarnation);
+                std::mem::replace(&mut original.node_mut().incarnation, prepared.incarnation);
             Change {
                 slot,
                 displaced: Some((previous, previous_incarnation)),
                 unused: Some(prepared),
             }
         } else {
-            prepared.value = Some(value);
-            prepared.original_slot = slot;
+            prepared.node_mut().value = Some(value);
+            prepared.node_mut().original_slot = slot;
             self.slots[slot] = Some(prepared);
             self.len += 1;
             Change {
@@ -218,8 +254,8 @@ impl<T> Table<T> {
                 let node = self.slots[change.slot]
                     .as_mut()
                     .expect("unobserved publication");
-                let late = node.value.replace(original).expect("late value");
-                node.incarnation = incarnation;
+                let late = node.node_mut().value.replace(original).expect("late value");
+                node.node_mut().incarnation = incarnation;
                 Retired {
                     _value: Some(late),
                     _unused: change.unused.take(),
@@ -250,7 +286,7 @@ impl<T> Table<T> {
     /// Restore the original paid nodes to their retained vacant slots.
     pub(super) fn restore(&mut self, mut removed: Removed<T>) {
         while let Some(mut node) = removed.head.take() {
-            removed.head = node.next.take();
+            removed.head = node.node_mut().next.take();
             let slot = node.original_slot;
             assert!(self.slots[slot].is_none());
             self.slots[slot] = Some(node);
@@ -289,7 +325,7 @@ impl<T> Table<T> {
     }
     #[cfg(test)]
     pub(super) fn backing_bytes(&self) -> usize {
-        self.slots.capacity() * std::mem::size_of::<Option<Box<Node<T>>>>()
+        self.slots.capacity() * std::mem::size_of::<Option<OwnedNode<T>>>()
     }
     #[cfg(test)]
     pub(super) fn owned_publication_bytes(&self) -> usize {
@@ -306,7 +342,7 @@ impl<T> Table<T> {
 }
 
 pub(super) struct Iter<'a, T> {
-    slots: std::slice::Iter<'a, Option<Box<Node<T>>>>,
+    slots: std::slice::Iter<'a, Option<OwnedNode<T>>>,
     remaining: usize,
 }
 impl<'a, T> Iterator for Iter<'a, T> {
@@ -332,7 +368,7 @@ impl<T> Index<&str> for Table<T> {
 pub(super) struct Change<T> {
     slot: usize,
     displaced: Option<(T, u64)>,
-    unused: Option<Box<Node<T>>>,
+    unused: Option<OwnedNode<T>>,
 }
 impl<T> Change<T> {
     pub(super) fn finish(mut self) -> Retired<T> {
@@ -345,27 +381,27 @@ impl<T> Change<T> {
 
 pub(super) struct Retired<T> {
     _value: Option<T>,
-    _unused: Option<Box<Node<T>>>,
+    _unused: Option<OwnedNode<T>>,
 }
 
 pub(super) struct Whole<T> {
-    _slots: Vec<Option<Box<Node<T>>>>,
+    _slots: Vec<Option<OwnedNode<T>>>,
     _global: Option<OwnedSemaphorePermit>,
     _published: Option<OwnedSemaphorePermit>,
 }
 
 pub(super) struct Removed<T> {
-    head: Option<Box<Node<T>>>,
+    head: Option<OwnedNode<T>>,
     len: usize,
 }
 impl<T> Removed<T> {
     fn new() -> Self {
         Self { head: None, len: 0 }
     }
-    fn push(&mut self, mut node: Box<Node<T>>, slot: usize) {
+    fn push(&mut self, mut node: OwnedNode<T>, slot: usize) {
         assert!(node.next.is_none());
-        node.original_slot = slot;
-        node.next = self.head.take();
+        node.node_mut().original_slot = slot;
+        node.node_mut().next = self.head.take();
         self.head = Some(node);
         self.len += 1;
     }
@@ -378,7 +414,7 @@ impl<T> Drop for Removed<T> {
     fn drop(&mut self) {
         // Iterative destruction avoids a 4096-node recursive destructor chain.
         while let Some(mut node) = self.head.take() {
-            self.head = node.next.take();
+            self.head = node.node_mut().next.take();
             drop(node);
         }
     }
@@ -414,6 +450,73 @@ impl<T> Drop for Selection<'_, T> {
                 .restore(std::mem::replace(&mut self.removed, Removed::new()));
         }
     }
+}
+
+#[cfg(test)]
+type AllocationHook = std::cell::RefCell<Option<Box<dyn FnMut(Layout, usize)>>>;
+#[cfg(test)]
+type FreeHook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
+#[cfg(test)]
+thread_local! {
+    static ALLOCATED: AllocationHook = const { std::cell::RefCell::new(None) };
+    static AFTER_BOX_FREE: FreeHook = const { std::cell::RefCell::new(None) };
+}
+
+// This zero-sized field is dropped only after Box's complete destructor and
+// deallocation, including Box's unwinding cleanup if the original T panics.
+// The production owner needs no custom Drop, unsafe move or T: Unpin bound.
+#[cfg(test)]
+struct AfterBoxFree;
+#[cfg(test)]
+impl Drop for AfterBoxFree {
+    fn drop(&mut self) {
+        AFTER_BOX_FREE.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().as_mut() {
+                callback();
+            }
+        });
+    }
+}
+#[cfg(test)]
+fn observe_allocation(layout: Layout, pointer: usize) {
+    ALLOCATED.with(|hook| {
+        if let Some(callback) = hook.borrow_mut().as_mut() {
+            callback(layout, pointer);
+        }
+    });
+}
+#[cfg(test)]
+fn with_allocation_hook<R>(
+    hook: impl FnMut(Layout, usize) + 'static,
+    operation: impl FnOnce() -> R,
+) -> R {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ALLOCATED.with(|hook| hook.borrow_mut().take());
+        }
+    }
+    ALLOCATED.with(|pending| {
+        assert!(pending.borrow().is_none());
+        *pending.borrow_mut() = Some(Box::new(hook));
+    });
+    let _reset = Reset;
+    operation()
+}
+#[cfg(test)]
+fn after_box_free<R>(hook: impl FnMut() + 'static, operation: impl FnOnce() -> R) -> R {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            AFTER_BOX_FREE.with(|hook| hook.borrow_mut().take());
+        }
+    }
+    AFTER_BOX_FREE.with(|pending| {
+        assert!(pending.borrow().is_none());
+        *pending.borrow_mut() = Some(Box::new(hook));
+    });
+    let _reset = Reset;
+    operation()
 }
 
 #[cfg(test)]
