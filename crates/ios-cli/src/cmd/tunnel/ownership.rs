@@ -226,9 +226,15 @@ mod buffer_bank_tests {
             "runtime received a replacement byte pool"
         );
         let header_fee = supplied.try_acquire_many_owned(40).unwrap();
-        assert_eq!(bank.available_permits(), baseline - 40);
+        assert_eq!(
+            bank.available_permits(),
+            baseline - Registry::incarnation_bytes() - 40
+        );
         drop(header_fee);
-        assert_eq!(bank.available_permits(), baseline);
+        assert_eq!(
+            bank.available_permits(),
+            baseline - Registry::incarnation_bytes()
+        );
         drop(reservation);
         drop(owner);
         drop(registry);

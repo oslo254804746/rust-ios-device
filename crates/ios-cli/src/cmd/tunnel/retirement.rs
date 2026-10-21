@@ -117,10 +117,12 @@ impl OwnershipStamp {
     }
 }
 
+type Incarnation = super::shared_allocation::Shared<()>;
+
 #[derive(Clone)]
 struct Key {
     slot: usize,
-    incarnation: Arc<()>,
+    incarnation: Incarnation,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,7 +135,7 @@ enum Phase {
 }
 
 struct Entry {
-    incarnation: Arc<()>,
+    incarnation: Incarnation,
     stamp: OwnershipStamp,
     phase: Phase,
     retired_at: Option<NonZeroU64>,
@@ -299,6 +301,10 @@ pub(super) struct Registry {
 pub(super) type RegistryOwner = super::shared_allocation::Shared<Registry>;
 
 impl Registry {
+    pub(super) fn incarnation_bytes() -> usize {
+        Incarnation::allocation_bytes()
+    }
+
     pub(super) fn body_bytes() -> usize {
         RegistryOwner::allocation_bytes()
     }
@@ -448,10 +454,17 @@ impl RegistryOwner {
         let issued = state.issued.checked_add(1).ok_or_else(|| {
             crate::output::resource_decision("native tunnel incarnation limit exhausted")
         })?;
+        // Admit and create the complete private identity before consuming its
+        // ordinal or fixed slot. The original grant follows every stale Key
+        // through actual joins/slot reuse until this allocation's last owner.
+        let storage = super::admission::known_metadata_charge(
+            &self.byte_bank,
+            Registry::incarnation_bytes(),
+        )?;
+        let incarnation = Incarnation::from_grant((), &self.byte_bank, storage)?;
         state.issued = issued;
-        let incarnation = Arc::new(());
         state.slots[slot] = Some(Entry {
-            incarnation: Arc::clone(&incarnation),
+            incarnation: incarnation.clone(),
             stamp,
             phase: Phase::Reserved,
             retired_at: None,
@@ -477,7 +490,7 @@ impl Registry {
             .slots
             .get_mut(key.slot)?
             .as_mut()
-            .filter(|entry| Arc::ptr_eq(&entry.incarnation, &key.incarnation))
+            .filter(|entry| entry.incarnation.ptr_eq(&key.incarnation))
     }
 
     fn retire_matching(&self, matches: impl Fn(&Entry) -> bool, seal: bool) {
@@ -643,7 +656,7 @@ impl Registry {
             .filter(|entry| selected.contains(entry))
             .map(|entry| Key {
                 slot,
-                incarnation: Arc::clone(&entry.incarnation),
+                incarnation: entry.incarnation.clone(),
             })
     }
 

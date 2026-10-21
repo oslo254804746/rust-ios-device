@@ -185,14 +185,29 @@ async fn expired_clock_stops_synchronously_retains_actual_elapsed_and_retries_sa
 #[tokio::test]
 async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
     let registry = registry(1);
+    let bank = registry.byte_bank.clone();
+    let before = bank.available_permits();
+    let bytes = Registry::incarnation_bytes();
     let old_stamp = stamp();
     let (old, _old_rx) = handle();
     let delayed_old_lease = registry.reserve(old_stamp).unwrap().attach(old.clone());
+    let old_pointer = &*delayed_old_lease.key.incarnation as *const () as usize;
+    assert_eq!(bank.available_permits(), before - bytes);
     delayed_old_lease.retire();
     registry
         .drain_retired(CleanupClock::new(OBSERVE).unwrap())
         .await
         .unwrap();
+    assert_eq!(
+        bank.available_permits(),
+        before - bytes,
+        "stale original lease keeps its body after slot release"
+    );
+    assert_eq!(
+        &*delayed_old_lease.key.incarnation as *const () as usize,
+        old_pointer
+    );
+    assert_eq!(delayed_old_lease.key.incarnation.strong_count(), 1);
     let fresh_stamp = stamp();
     let (fresh, _fresh_rx) = handle();
     let fresh_lease = registry
@@ -200,14 +215,31 @@ async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
         .unwrap()
         .attach(fresh.clone());
     fresh_lease.publish(&fresh_stamp).unwrap();
+    assert_eq!(fresh_lease.key.slot, delayed_old_lease.key.slot);
+    assert!(!fresh_lease
+        .key
+        .incarnation
+        .ptr_eq(&delayed_old_lease.key.incarnation));
+    assert_eq!(bank.available_permits(), before - 2 * bytes);
     drop(delayed_old_lease);
+    assert_eq!(
+        bank.available_permits(),
+        before - bytes,
+        "only the old incarnation ended"
+    );
     assert!(fresh.is_alive());
     assert_eq!(registry.snapshot().active, 1);
     drop(fresh_lease);
+    assert_eq!(
+        bank.available_permits(),
+        before - bytes,
+        "original Entry keeps its body until certified release"
+    );
     registry
         .drain_retired(CleanupClock::new(OBSERVE).unwrap())
         .await
         .unwrap();
+    assert_eq!(bank.available_permits(), before);
 }
 
 #[tokio::test]
@@ -602,15 +634,24 @@ async fn ordinal_admission_overflow_never_wraps_or_blocks_final_cleanup() {
         .await
         .unwrap();
     assert_eq!((report.selected, report.joined), (1, 1));
+    registry.byte_bank.close();
     let polls = AtomicUsize::new(0);
     let result = async {
-        let admission = registry.reserve(stamp())?;
+        // Ordinal overflow remains the earlier rejection even if byte admission
+        // would now fail; it never allocates a root or reaches the Source.
+        let admission = super::super::metadata_vec::with_allocation_hook(
+            |_, _| panic!("exhausted ordinal allocated an incarnation body"),
+            || registry.reserve(stamp()),
+        )?;
         admission.start()?;
         polls.fetch_add(1, Ordering::SeqCst);
         Ok::<(), anyhow::Error>(())
     }
     .await;
     let error = result.expect_err("exhausted incarnation ID admitted another Source");
+    assert!(error
+        .chain()
+        .any(|cause| cause.to_string() == "native tunnel incarnation limit exhausted"));
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ErrorClass::ResourceLimit

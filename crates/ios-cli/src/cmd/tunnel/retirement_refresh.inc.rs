@@ -53,7 +53,7 @@ impl NativeLease {
         anyhow::ensure!(
             !state.sealed
                 && entry.phase == Phase::Active
-                && Arc::ptr_eq(&entry.incarnation, &self.key.incarnation)
+                && entry.incarnation.ptr_eq(&self.key.incarnation)
                 && Arc::ptr_eq(&entry.stamp.global, &stamp.global)
                 && Arc::ptr_eq(&entry.stamp.device, &stamp.device)
                 && entry
@@ -100,7 +100,7 @@ impl RefreshProof {
         anyhow::ensure!(
             !state.sealed
                 && entry.phase == Phase::Active
-                && Arc::ptr_eq(&entry.incarnation, &self.key.incarnation)
+                && entry.incarnation.ptr_eq(&self.key.incarnation)
                 && Arc::ptr_eq(&entry.stamp.global, &self.stamp.global)
                 && Arc::ptr_eq(&entry.stamp.device, &self.stamp.device)
                 && entry
