@@ -380,3 +380,292 @@ fn prepared_owned_parallel_last_roots_share_original_payload_and_refund_exactly_
     });
     assert_eq!(bank.available_permits(), 65536);
 }
+
+fn owned_catalogue_addresses(root: &PreparedRsdOwner) -> (usize, usize, usize, usize, usize) {
+    (
+        std::ptr::from_ref(&**root) as usize,
+        root.rows.as_ptr() as usize,
+        root.udid().as_ptr() as usize,
+        root.service_features(SERVICE)
+            .unwrap()
+            .next()
+            .unwrap()
+            .as_ptr() as usize,
+        root.selection().unwrap().attempted_modes.as_ptr() as usize,
+    )
+}
+
+async fn owned_service_peer(
+    listener: tokio::net::TcpListener,
+    request: &'static [u8],
+    reply: &'static [u8],
+) {
+    let (mut peer, _) = listener.accept().await.unwrap();
+    let mut body = vec![0; request.len()];
+    peer.read_exact(&mut body).await.unwrap();
+    assert_eq!(body, request);
+    peer.write_all(reply).await.unwrap();
+    let mut trailing = [0; 1];
+    assert_eq!(peer.read(&mut trailing).await.unwrap(), 0);
+    // The client initiated shutdown. End the accepted peer and the actual old
+    // listener before the fixture can bind the replacement service generation.
+    drop(peer);
+    drop(listener);
+}
+
+async fn owned_service_exchange(
+    device: &super::super::OwnedConnectedDevice,
+    request: &[u8],
+    expected_reply: &[u8],
+) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut socket = device.connect_rsd_service(SERVICE).await.unwrap();
+        socket.write_all(request).await.unwrap();
+        let mut reply = vec![0; expected_reply.len()];
+        socket.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply, expected_reply);
+        socket.shutdown().await.unwrap();
+        let mut trailing = [0; 1];
+        assert_eq!(socket.read(&mut trailing).await.unwrap(), 0);
+    })
+    .await
+    .expect("owned current service did not complete real IO and strict EOF");
+}
+
+async fn owned_current_service_restart(changed_port: bool) {
+    const QUOTA: usize = 1024 * 1024;
+    const BUDGET: Duration = Duration::from_secs(3);
+    let bank = Arc::new(Semaphore::new(QUOTA));
+    let rsd = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let std::net::SocketAddr::V6(endpoint) = rsd.local_addr().unwrap() else {
+        unreachable!()
+    };
+    let route = super::super::ExistingRsdRoute::direct(endpoint).unwrap();
+    let (ports, mut advertised) = tokio::sync::mpsc::channel(2);
+    let directory_peer = tokio::spawn(async move {
+        for _ in 0..2 {
+            let port = advertised
+                .recv()
+                .await
+                .expect("two explicit service generations");
+            let (mut peer, _) = rsd.accept().await.unwrap();
+            producer(&mut peer, port).await;
+        }
+    });
+    let first_listener = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let old_address = first_listener.local_addr().unwrap();
+    ports.send(old_address.port()).await.unwrap();
+    let first_deadline = tokio::time::Instant::now() + BUDGET;
+    let first = tokio::time::timeout_at(
+        first_deadline,
+        super::super::prepare_owned_existing_rsd_with_identity_at(
+            route,
+            first_deadline,
+            &bank,
+            uuid::Uuid::nil(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(first.belongs_to(&bank));
+    assert_eq!(first.service_port(SERVICE), Some(old_address.port()));
+    let first_paid = first.known_bytes();
+    let first_addresses = owned_catalogue_addresses(&first);
+    assert_eq!(bank.available_permits(), QUOTA - first_paid);
+    let first_export = first.clone();
+
+    let (handle, control) = crate::TunnelHandle::new(
+        UID.into(),
+        crate::TunnelInfo {
+            server_address: "::1".into(),
+            server_rsd_port: endpoint.port(),
+            client_address: "::1".into(),
+            client_mtu: 1280,
+        },
+        None,
+    );
+    let runtime = Arc::new(handle);
+    let (legacy, initial_rsd_probe) =
+        super::super::rsd_observation::RsdProbeOutcome::<crate::RsdHandshake>::Completed(Err(
+            crate::CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "owned-original-initial-observation",
+            )),
+        ))
+        .into_parts();
+    let mut device = super::super::OwnedConnectedDevice::new(super::super::ConnectedDevice {
+        info: crate::DeviceInfo {
+            udid: UID.into(),
+            device_id: 42,
+            connection_type: "USB".into(),
+            product_id: 0,
+        },
+        tunnel: Some(runtime.clone()),
+        rsd: legacy,
+        owned_initial_rsd: None,
+        owned_initial_bank: None,
+        prepared_rsd: None,
+        owned_prepared_rsd: None,
+        initial_rsd_probe,
+        pair_record: None,
+        lockdown_transport: super::super::LockdownTransport::Usbmux { device_id: 42 },
+    });
+    let initial = device.initial_rsd_probe().error().unwrap() as *const CoreError;
+    let initial_io = match device.initial_rsd_probe().error().unwrap() {
+        CoreError::Io(error) => error as *const std::io::Error,
+        _ => panic!("original typed initial IO cause missing"),
+    };
+    assert!(device
+        .swap_current_rsd_catalogue(&runtime, Some(first))
+        .unwrap()
+        .is_none());
+    assert!(device.prepared_rsd_owner().unwrap().ptr_eq(&first_export));
+    assert_eq!(
+        std::ptr::from_ref(device.current_rsd_catalogue().unwrap()) as usize,
+        first_addresses.0
+    );
+    let first_peer = tokio::spawn(owned_service_peer(
+        first_listener,
+        b"owned-before-restart",
+        b"first-peer",
+    ));
+    owned_service_exchange(&device, b"owned-before-restart", b"first-peer").await;
+    tokio::time::timeout(BUDGET, first_peer)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // This binding occurs only after the old service's real socket and listener
+    // have ended. The RSD listener/endpoint stays unchanged for both observations.
+    let second_listener = if changed_port {
+        let candidate = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        if candidate.local_addr().unwrap().port() == old_address.port() {
+            // Keep that port occupied while requesting another ephemeral port.
+            let different = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            drop(candidate);
+            different
+        } else {
+            candidate
+        }
+    } else {
+        tokio::net::TcpListener::bind(old_address).await.unwrap()
+    };
+    let new_address = second_listener.local_addr().unwrap();
+    assert_eq!(new_address.port() != old_address.port(), changed_port);
+    let old_endpoint_trap = if changed_port {
+        Some(tokio::net::TcpListener::bind(old_address).await.unwrap())
+    } else {
+        None
+    };
+    ports.send(new_address.port()).await.unwrap();
+    let second_deadline = tokio::time::Instant::now() + BUDGET;
+    let second = tokio::time::timeout_at(
+        second_deadline,
+        super::super::prepare_owned_existing_rsd_with_identity_at(
+            route,
+            second_deadline,
+            &bank,
+            uuid::Uuid::nil(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(second.belongs_to(&bank));
+    assert_eq!(second.service_port(SERVICE), Some(new_address.port()));
+    assert_eq!(
+        second.selection().unwrap().attempted_modes,
+        [super::super::existing_rsd::RsdHandshakeMode::Direct]
+    );
+    let second_paid = second.known_bytes();
+    let second_addresses = owned_catalogue_addresses(&second);
+    assert_ne!(first_addresses.0, second_addresses.0);
+    assert_eq!(bank.available_permits(), QUOTA - first_paid - second_paid);
+    let current_export = second.clone();
+    let displaced = device
+        .swap_current_rsd_catalogue(&runtime, Some(second))
+        .unwrap()
+        .unwrap();
+    assert!(displaced.ptr_eq(&first_export));
+    assert_eq!(owned_catalogue_addresses(&displaced), first_addresses);
+    assert!(device.prepared_rsd_owner().unwrap().ptr_eq(&current_export));
+    assert_eq!(
+        std::ptr::from_ref(device.current_rsd_catalogue().unwrap()) as usize,
+        second_addresses.0
+    );
+    assert!(Arc::ptr_eq(device.tunnel_handle().unwrap(), &runtime));
+    assert_eq!(device.server_address(), Some("::1"));
+    assert_eq!(device.rsd_port(), Some(endpoint.port()));
+    assert_eq!(
+        device.initial_rsd_probe().error().unwrap() as *const CoreError,
+        initial
+    );
+    let CoreError::Io(still_initial_io) = device.initial_rsd_probe().error().unwrap() else {
+        panic!("refresh replaced original typed initial IO cause");
+    };
+    assert_eq!(still_initial_io as *const std::io::Error, initial_io);
+    assert!(device.rsd().is_none(), "initial owned API stays historical");
+    tokio::time::timeout(BUDGET, directory_peer)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(ports);
+
+    // A successful current lookup must work after quota is closed. This does
+    // not claim that legacy SDK service-output allocations are byte-admitted.
+    bank.close();
+    let restarted_peer = tokio::spawn(owned_service_peer(
+        second_listener,
+        b"owned-after-restart",
+        b"restarted-peer",
+    ));
+    owned_service_exchange(&device, b"owned-after-restart", b"restarted-peer").await;
+    tokio::time::timeout(BUDGET, restarted_peer)
+        .await
+        .unwrap()
+        .unwrap();
+    if let Some(trap) = old_endpoint_trap {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), trap.accept())
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(bank.available_permits(), QUOTA - first_paid - second_paid);
+    drop(device);
+    assert_eq!(owned_catalogue_addresses(&first_export), first_addresses);
+    assert_eq!(owned_catalogue_addresses(&current_export), second_addresses);
+    assert_eq!(bank.available_permits(), QUOTA - first_paid - second_paid);
+    drop(displaced);
+    assert_eq!(bank.available_permits(), QUOTA - first_paid - second_paid);
+    drop(first_export);
+    assert_eq!(bank.available_permits(), QUOTA - second_paid);
+    assert_eq!(
+        current_export.service_port(SERVICE),
+        Some(new_address.port())
+    );
+    drop(current_export);
+    assert_eq!(bank.available_permits(), QUOTA);
+    drop((runtime, control));
+    // Channel-only TunnelHandle: no native worker or shutdown certificate is
+    // invented here. Original native joins stay covered by the CLI fixtures.
+}
+
+#[tokio::test]
+async fn prepared_owned_same_port_service_restart_uses_current_root_and_real_socket() {
+    owned_current_service_restart(false).await;
+}
+
+#[tokio::test]
+async fn prepared_owned_changed_port_service_restart_uses_current_root_and_real_socket() {
+    owned_current_service_restart(true).await;
+}
