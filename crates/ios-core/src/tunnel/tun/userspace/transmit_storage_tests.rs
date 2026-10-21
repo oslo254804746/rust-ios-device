@@ -328,7 +328,7 @@ async fn transmit_actual_partial_duplex_write_keeps_full_packet_capacity_until_f
     let handle = tokio::spawn(async move {
         write_ios_packets_owned(&mut writer, ValidatedMtu::new(1280).unwrap(), rx).await
     });
-    let task = OwnedTask::new(handle, ParentRole::Writer, Arc::clone(&ledger));
+    let task = OwnedTask::new(handle, ParentRole::Writer, ledger.clone());
     let pending = until(|| probe.pending.load(Ordering::SeqCst)).await;
     let fee_while_pending = bank.available_permits();
     let mut bytes = Vec::new();

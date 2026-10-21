@@ -142,7 +142,7 @@ fn reader_task(
     payload_capacity: usize,
     capacity: usize,
     bank: &Arc<Semaphore>,
-) -> (OwnedTask, Arc<Ledger>, mpsc::Receiver<OwnedBuffer>) {
+) -> (OwnedTask, Ledger, mpsc::Receiver<OwnedBuffer>) {
     let header = OwnedBuffer::zeroed(IPV6_HEADER_LEN, Some(bank)).unwrap();
     let (tx, rx) = mpsc::channel(capacity);
     let byte_bank = Some(Arc::clone(bank));
@@ -150,7 +150,7 @@ fn reader_task(
     let handle = tokio::spawn(async move {
         read_ios_packets_owned(&mut reader, payload_capacity, tx, header, byte_bank).await
     });
-    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, Arc::clone(&ledger));
+    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, ledger.clone());
     (task, ledger, rx)
 }
 
@@ -344,7 +344,7 @@ async fn receive_actual_8192_channel_device_and_last_rx_token_share_the_same_buf
     let (stop, _) = watch::channel(());
     let storage = RuntimeStorage {
         bank: Some(Arc::clone(&bank)),
-        ledger: Arc::clone(&ledger),
+        ledger: ledger.clone(),
         stop,
         stopped: Arc::new(AtomicBool::new(false)),
     };

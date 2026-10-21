@@ -29,17 +29,24 @@ fn ledger_actual_body_one_byte_refusal_and_last_shared_owner_refund() {
                     0,
                     "whole debit must precede the identity backing"
                 );
-                assert_eq!(layout.size(), Identity::body_bytes());
-                observed.fetch_add(1, Ordering::SeqCst);
+                let allocation = observed.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(
+                    layout.size(),
+                    if allocation == 0 {
+                        Ledger::body_bytes()
+                    } else {
+                        Identity::body_bytes()
+                    }
+                );
             },
             || Ledger::with_metadata(Some(&bank)),
         );
         match result {
             Ok(owner) => {
                 assert_eq!(bytes, required);
-                assert_eq!(allocations.load(Ordering::SeqCst), 1);
+                assert_eq!(allocations.load(Ordering::SeqCst), 2);
                 assert_eq!(bank.available_permits(), 0);
-                let last = Arc::clone(&owner);
+                let last = owner.clone();
                 drop(owner);
                 assert_eq!(bank.available_permits(), 0);
                 drop(last);
@@ -63,7 +70,7 @@ async fn child_set_actual_body_keeps_fee_across_original_join_until_last_owner()
     let short = Arc::new(Semaphore::new(required - 1));
     let ledger = Ledger::new();
     assert!(SharedChildTaskSet::with_metadata(
-        Arc::clone(&ledger),
+        ledger.clone(),
         ChildRole::ProxyClient,
         Some(&short)
     )
@@ -72,7 +79,7 @@ async fn child_set_actual_body_keeps_fee_across_original_join_until_last_owner()
     assert_eq!(ledger.pending.load(Ordering::Acquire), 0);
     let bank = Arc::new(Semaphore::new(required));
     let owner =
-        SharedChildTaskSet::with_metadata(Arc::clone(&ledger), ChildRole::ProxyClient, Some(&bank))
+        SharedChildTaskSet::with_metadata(ledger.clone(), ChildRole::ProxyClient, Some(&bank))
             .unwrap();
     let last = Arc::clone(&owner);
     owner
@@ -118,8 +125,18 @@ async fn inline_cleanup_all_originals_and_attempt_expiry_survive_ledger_drop_at_
     assert_eq!(bank.available_permits(), 0);
     assert_eq!(report(&first).cleanup().count(), OUTCOME_SLOTS - 1);
     assert_eq!(report(&second).cleanup().count(), OUTCOME_SLOTS);
-    drop(ledger);
-    let ledger_bytes = std::mem::size_of::<Ledger>();
+    let credit = bank.clone();
+    ledger_root::after_free(
+        move || {
+            assert_eq!(
+                credit.available_permits(),
+                0,
+                "Ledger refunded before actual complete root release"
+            )
+        },
+        || drop(ledger),
+    );
+    let ledger_bytes = Ledger::body_bytes();
     assert_eq!(bank.available_permits(), ledger_bytes);
     assert_eq!(
         report(&first).primary() as *const dyn Error as *const () as usize,

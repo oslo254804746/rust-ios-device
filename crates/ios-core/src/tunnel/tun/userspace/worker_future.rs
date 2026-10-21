@@ -50,7 +50,7 @@ where
         }))
     }
 
-    pub(super) fn spawn(self, role: ParentRole, ledger: Arc<Ledger>) -> OwnedTask
+    pub(super) fn spawn(self, role: ParentRole, ledger: Ledger) -> OwnedTask
     where
         F: Future<Output = Result<(), TunnelError>>,
     {

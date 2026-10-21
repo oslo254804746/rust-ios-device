@@ -2,7 +2,7 @@
 use super::*;
 
 async fn identity_panic_seed(
-    ledger: &Arc<Ledger>,
+    ledger: &Ledger,
 ) -> (
     Option<Arc<JoinError>>,
     Arc<AtomicUsize>,
@@ -16,7 +16,7 @@ async fn identity_panic_seed(
         #[allow(unreachable_code)]
         Ok(())
     });
-    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, Arc::clone(ledger));
+    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, ledger.clone());
     let result = join_task(&task, ledger).await;
     let native = {
         let state = task.join.lock().await;
@@ -48,14 +48,14 @@ fn identity_assert_balanced(ledger: &Ledger) {
 async fn native_owner_identity_same_ledger_work_report_keeps_direct_native_cleanup() {
     let ledger = Ledger::new();
     let (native, seed_drops, seeded) = identity_panic_seed(&ledger).await;
-    let work_ledger = Arc::clone(&ledger);
+    let work_ledger = ledger.clone();
     let work_drops = Arc::new(AtomicUsize::new(0));
     let native_work_drops = Arc::clone(&work_drops);
     let handle = tokio::spawn(async move {
         let _resource = DropProbe(native_work_drops);
         work_ledger.work_result()
     });
-    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, Arc::clone(&ledger));
+    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, ledger.clone());
     let first = join_task(&task, &ledger).await;
     let cached = identity_work_completion(&task).await;
     let repeated = join_task(&task, &ledger).await;
@@ -106,7 +106,7 @@ async fn native_owner_identity_foreign_work_report_is_original_typed_work_fault(
         let _resource = DropProbe(native_work_drops);
         foreign_report
     });
-    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, Arc::clone(&own));
+    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, own.clone());
     let joined = join_task(&task, &own).await;
     let cached = identity_work_completion(&task).await;
     let repeated = join_task(&task, &own).await;
@@ -170,7 +170,7 @@ async fn native_owner_identity_same_ledger_full_snapshot_is_not_a_work_report() 
         let _resource = DropProbe(native_work_drops);
         full_report
     });
-    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, Arc::clone(&ledger));
+    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, ledger.clone());
     let joined = join_task(&task, &ledger).await;
     let cached = identity_work_completion(&task).await;
     let repeated = join_task(&task, &ledger).await;
@@ -248,7 +248,7 @@ async fn native_owner_identity_extra_ordinary_wrapper_cannot_trigger_deep_skip()
         let _resource = DropProbe(native_work_drops);
         Err(wrapped)
     });
-    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, Arc::clone(&ledger));
+    let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, ledger.clone());
     let joined = join_task(&task, &ledger).await;
     let cached = identity_work_completion(&task).await;
     let repeated = join_task(&task, &ledger).await;
@@ -306,7 +306,7 @@ async fn native_owner_identity_existing_work_slot_does_not_skip_another_native_f
             let error = stream.write_all(b"x").await.unwrap_err();
             Err(TunnelError::Io(error))
         });
-        let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, Arc::clone(&ledger));
+        let task = OwnedTask::new(handle, ParentRole::ForwardOrReader, ledger.clone());
         let result = join_task(&task, &ledger).await;
         if index == 0 {
             first_completion = identity_work_completion(&task).await;

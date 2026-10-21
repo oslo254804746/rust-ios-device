@@ -18,6 +18,9 @@ use super::TunnelError;
 #[path = "owner/native_identity.rs"]
 mod native_identity;
 use native_identity::Identity;
+#[path = "owner/ledger_root.rs"]
+mod ledger_root;
+pub(crate) use ledger_root::Ledger;
 
 type Cause = Arc<dyn Error + Send + Sync>;
 const OUTCOME_SLOTS: usize = 10;
@@ -71,7 +74,7 @@ impl std::fmt::Debug for CleanupClasses<'_> {
     }
 }
 
-pub(crate) struct Ledger {
+pub(crate) struct LedgerState {
     identity: Identity,
     outcomes: StdMutex<Outcomes>,
     pending: AtomicUsize,
@@ -79,37 +82,9 @@ pub(crate) struct Ledger {
     _body_storage: Option<OwnedSemaphorePermit>,
 }
 
-impl Ledger {
-    pub(crate) fn new() -> Arc<Self> {
-        Self::with_storage(None, Identity::new())
-    }
-
-    #[cfg(feature = "tunnel-userspace")]
-    pub(crate) fn with_metadata(
-        bank: Option<&Arc<tokio::sync::Semaphore>>,
-    ) -> Result<Arc<Self>, TunnelError> {
-        let mut storage =
-            super::tun::userspace::runtime_storage::charge(bank, Self::reservation_bytes())?;
-        let identity = match (bank, storage.as_mut()) {
-            (Some(bank), Some(storage)) => Identity::from_grant(
-                bank,
-                storage
-                    .split(Identity::body_bytes())
-                    .expect("whole native provenance grant"),
-            )?,
-            (None, None) => Identity::new(),
-            _ => unreachable!("native metadata bank and grant are paired"),
-        };
-        Ok(Self::with_storage(storage, identity))
-    }
-
-    #[cfg(feature = "tunnel-userspace")]
-    pub(crate) fn reservation_bytes() -> usize {
-        std::mem::size_of::<Self>() + Identity::body_bytes()
-    }
-
-    fn with_storage(storage: Option<OwnedSemaphorePermit>, identity: Identity) -> Arc<Self> {
-        Arc::new(Self {
+impl LedgerState {
+    fn new(storage: Option<OwnedSemaphorePermit>, identity: Identity) -> Self {
+        Self {
             identity,
             outcomes: StdMutex::new(Outcomes {
                 slots: std::array::from_fn(|_| None),
@@ -120,7 +95,7 @@ impl Ledger {
             pending: AtomicUsize::new(0),
             invalid_count: AtomicBool::new(false),
             _body_storage: storage,
-        })
+        }
     }
 
     // These hooks count actual retained join slots, including child groups once
@@ -390,14 +365,14 @@ pub(crate) struct OwnedTask {
     requested_abort: AtomicBool,
     join: Mutex<JoinState>,
     role: usize,
-    ledger: Arc<Ledger>,
+    ledger: Ledger,
 }
 
 impl OwnedTask {
     pub(crate) fn new(
         handle: JoinHandle<Result<(), TunnelError>>,
         role: ParentRole,
-        ledger: Arc<Ledger>,
+        ledger: Ledger,
     ) -> Self {
         ledger.registered();
         Self {
@@ -520,7 +495,7 @@ pub(crate) async fn join_until(
 /// Dedicated child-set mutex; never a manager/global-table lock.
 pub(crate) struct SharedChildTaskSet {
     set: Mutex<JoinSet<()>>,
-    ledger: Arc<Ledger>,
+    ledger: Ledger,
     cleanup_slot: usize,
     requested_abort: AtomicBool,
     first_expected_abort: StdMutex<Option<Arc<JoinError>>>,
@@ -528,13 +503,13 @@ pub(crate) struct SharedChildTaskSet {
 }
 
 impl SharedChildTaskSet {
-    pub(crate) fn new(ledger: Arc<Ledger>, cleanup_slot: ChildRole) -> Arc<Self> {
+    pub(crate) fn new(ledger: Ledger, cleanup_slot: ChildRole) -> Arc<Self> {
         Self::with_storage(ledger, cleanup_slot, None)
     }
 
     #[cfg(feature = "tunnel-userspace")]
     pub(crate) fn with_metadata(
-        ledger: Arc<Ledger>,
+        ledger: Ledger,
         cleanup_slot: ChildRole,
         bank: Option<&Arc<tokio::sync::Semaphore>>,
     ) -> Result<Arc<Self>, TunnelError> {
@@ -544,7 +519,7 @@ impl SharedChildTaskSet {
     }
 
     fn with_storage(
-        ledger: Arc<Ledger>,
+        ledger: Ledger,
         cleanup_slot: ChildRole,
         storage: Option<OwnedSemaphorePermit>,
     ) -> Arc<Self> {
