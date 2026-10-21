@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-21：L02 [owned prepared RSD 完整分配](validation/tunnel-owned-prepared-full-allocation-2026-10-21.md)
+原 bank whole grant 在 identity/dial 前支付实际声明根，四种 wire 模式共用同一目的地；
+字段失败、取消与最后强引用均在实际根释放后退原费用，原 UID/字段/选择 backing 保持。
+existing22/prepared12/XPC210/完整CLI1765/0FAIL/13原ignored及18命令通过，全部Cargo/build由主控执行；
+legacy raw Arc/Weak、initial根与其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [freshness真实报告payload](validation/tunnel-freshness-report-payloads-2026-10-21.md)
 整笔原费用先付两个实际空报告目的地和Receipt根，Source后report零受控分配，原IO/byvalue地址保持；
 闭池逐报告退款、未使用目的地与Root最后释放无cycle已验，outer Anyhow仍待处理。

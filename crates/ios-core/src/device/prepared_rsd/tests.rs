@@ -299,11 +299,11 @@ async fn prepared_rsd_same_address_changed_port_uses_new_real_service_socket_and
 }
 
 fn owned_prepared(bank: &Arc<Semaphore>) -> PreparedRsdOwner {
-    let catalogue = PreparedRsdCatalogue::decode(&directory(12345), bank).unwrap();
+    let catalogue = PendingOwned::decode(&directory(12345), bank).unwrap();
     let (fee, mut modes) = exact_vec(bank, 1).unwrap();
     modes.push(super::super::existing_rsd::RsdHandshakeMode::Direct);
     catalogue
-        .finish_owned(
+        .finish(
             RsdSelectionReceipt {
                 handshake_mode: super::super::existing_rsd::RsdHandshakeMode::Direct,
                 attempted_modes: modes,

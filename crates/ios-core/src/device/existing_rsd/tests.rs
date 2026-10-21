@@ -754,3 +754,184 @@ async fn existing_rsd_compatibility_fallback_dials_a_fresh_socket_under_one_budg
     assert_eq!(source.dial_calls.load(Ordering::SeqCst), 2);
     assert_eq!(source.identity_calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn existing_owned_root_precedes_identity_dial_and_zero_deadline_never_allocates() {
+    use super::super::prepared_rsd::OwnedDestination;
+    let body = OwnedDestination::body_bytes();
+    for available in [0, body - 1] {
+        let bank = std::sync::Arc::new(tokio::sync::Semaphore::new(available));
+        let source = OwnedSource::new([]);
+        let hook = super::super::prepared_rsd::allocation_observer(|_, _| {
+            panic!("short owned root allocated")
+        });
+        let error = prepare_owned_from_source(&source, route(), Instant::now() + OBSERVE, &bank)
+            .await
+            .unwrap_err();
+        drop(hook);
+        assert_eq!(crate::classify_error(&error), ErrorClass::ResourceLimit);
+        assert_eq!(source.identity_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(source.dial_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(bank.available_permits(), available);
+    }
+    let bank = std::sync::Arc::new(tokio::sync::Semaphore::new(body));
+    let source = std::sync::Arc::new(OwnedSource::new([]));
+    let captured = source.clone();
+    let charged = bank.clone();
+    let allocations = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = allocations.clone();
+    // Hooks are thread-local and must surround polling, not just async creation.
+    let hook = super::super::prepared_rsd::allocation_observer(move |layout, _| {
+        assert_eq!(layout.size(), body);
+        assert_eq!(charged.available_permits(), 0);
+        assert_eq!(captured.identity_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(captured.dial_calls.load(Ordering::SeqCst), 0);
+        seen.fetch_add(1, Ordering::SeqCst);
+    });
+    let error = prepare_owned_from_source(&*source, route(), Instant::now() + OBSERVE, &bank)
+        .await
+        .unwrap_err();
+    drop(hook);
+    assert_eq!(crate::classify_error(&error), ErrorClass::ResourceLimit);
+    assert_eq!(allocations.load(Ordering::SeqCst), 1);
+    assert_eq!(source.identity_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.dial_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bank.available_permits(), body);
+    let source = OwnedSource::new([]);
+    let bank = std::sync::Arc::new(tokio::sync::Semaphore::new(body * 4));
+    let hook = super::super::prepared_rsd::allocation_observer(|_, _| {
+        panic!("expired owned clock allocated")
+    });
+    let error = prepare_owned_from_source(&source, route(), Instant::now(), &bank)
+        .await
+        .unwrap_err();
+    drop(hook);
+    assert_eq!(crate::classify_error(&error), ErrorClass::Timeout);
+    assert_eq!(source.identity_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.dial_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bank.available_permits(), body * 4);
+}
+
+#[tokio::test]
+async fn existing_owned_pending_bootstrap_drop_frees_actual_original_destination_and_socket() {
+    let quota = 65536;
+    let bank = std::sync::Arc::new(tokio::sync::Semaphore::new(quota));
+    let (stream, mut peer) = tokio::io::duplex(16384);
+    let source = OwnedSource::new([Box::new(stream) as ServiceStream]);
+    let mut future = Box::pin(prepare_owned_from_source(
+        &source,
+        route(),
+        Instant::now() + OBSERVE,
+        &bank,
+    ));
+    assert!(futures_util::poll!(&mut future).is_pending());
+    assert_eq!(source.identity_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.dial_calls.load(Ordering::SeqCst), 1);
+    assert!(bank.available_permits() < quota);
+    drop(future);
+    assert_eq!(bank.available_permits(), quota);
+    tokio::time::timeout(OBSERVE, async {
+        let mut bytes = [0; 4096];
+        let mut received = 0;
+        loop {
+            let n = peer.read(&mut bytes).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            received += n;
+        }
+        assert!(
+            received > 0,
+            "original bootstrap was not actually sent before cancellation"
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn existing_owned_wire_mode_retries_keep_one_original_pre_io_root_and_clock() {
+    let quota = 65536;
+    let bank = std::sync::Arc::new(tokio::sync::Semaphore::new(quota));
+    let streams = (0..4)
+        .map(|_| {
+            let (stream, peer) = tokio::io::duplex(16384);
+            drop(peer); // A connected stream fails during wire bootstrap, permitting mode fallback.
+            Box::new(stream) as ServiceStream
+        })
+        .collect::<Vec<_>>();
+    let source = std::sync::Arc::new(OwnedSource::new(streams));
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let observing = source.clone();
+    let hook = super::super::prepared_rsd::allocation_observer(move |layout, pointer| {
+        captured.lock().unwrap().push((
+            layout,
+            pointer,
+            observing.identity_calls.load(Ordering::SeqCst),
+            observing.dial_calls.load(Ordering::SeqCst),
+        ));
+    });
+    let deadline = Instant::now() + OBSERVE;
+    let error = prepare_owned_from_source(&*source, route(), deadline, &bank)
+        .await
+        .unwrap_err();
+    drop(hook);
+    assert!(!matches!(
+        crate::classify_error(&error),
+        ErrorClass::ResourceLimit | ErrorClass::Timeout
+    ));
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let mut original_io = false;
+    for _ in 0..32 {
+        let Some(cause) = current else { break };
+        if let Some(io) = cause.downcast_ref::<io::Error>() {
+            original_io |= matches!(
+                io.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::ConnectionReset
+            );
+            current = io
+                .get_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static));
+        } else {
+            current = cause.source();
+        }
+    }
+    assert!(original_io, "the original final wire IO must remain typed");
+    assert_eq!(source.identity_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.dial_calls.load(Ordering::SeqCst), 4);
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.len(),
+        2,
+        "only the original root and original mode backing"
+    );
+    assert_eq!(
+        seen[0].0.size(),
+        super::super::prepared_rsd::OwnedDestination::body_bytes()
+    );
+    assert_eq!((seen[0].2, seen[0].3), (0, 0));
+    assert_eq!(
+        seen[1].0,
+        std::alloc::Layout::array::<RsdHandshakeMode>(4).unwrap()
+    );
+    assert_eq!((seen[1].2, seen[1].3), (1, 0));
+    assert!(Instant::now() < deadline);
+    assert_eq!(bank.available_permits(), quota);
+}
+
+#[tokio::test]
+async fn existing_owned_connector_refusal_keeps_original_single_dial_rule() {
+    let quota = 65536;
+    let bank = std::sync::Arc::new(tokio::sync::Semaphore::new(quota));
+    let source = OwnedSource::new([]);
+    let error = prepare_owned_from_source(&source, route(), Instant::now() + OBSERVE, &bank)
+        .await
+        .unwrap_err();
+    assert_eq!(crate::classify_error(&error), ErrorClass::Io);
+    assert_eq!(source.identity_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.dial_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(bank.available_permits(), quota);
+}

@@ -341,14 +341,7 @@ pub async fn prepare_owned_existing_rsd_at(
     deadline: Instant,
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<super::PreparedRsdOwner, CoreError> {
-    prepare_selected_from_source(
-        &NativeSource,
-        route,
-        deadline,
-        bank,
-        super::PreparedRsdCatalogue::finish_owned,
-    )
-    .await
+    prepare_owned_from_source(&NativeSource, route, deadline, bank).await
 }
 
 /// Owned preparation with explicit host identity and the same original clock.
@@ -358,14 +351,7 @@ pub async fn prepare_owned_existing_rsd_with_identity_at(
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
     identity: uuid::Uuid,
 ) -> Result<super::PreparedRsdOwner, CoreError> {
-    prepare_selected_from_source(
-        &ExplicitIdentity(identity),
-        route,
-        deadline,
-        bank,
-        super::PreparedRsdCatalogue::finish_owned,
-    )
-    .await
+    prepare_owned_from_source(&ExplicitIdentity(identity), route, deadline, bank).await
 }
 
 async fn prepare_selected_from_source<T>(
@@ -413,6 +399,58 @@ async fn prepare_selected_from_source<T>(
                 receipt,
                 fee.expect("prepared selection admission"),
             )
+        })
+        .await
+}
+
+async fn prepare_owned_from_source(
+    source: &dyn Source,
+    route: ExistingRsdRoute,
+    deadline: Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<super::PreparedRsdOwner, CoreError> {
+    let clock = Clock {
+        deadline,
+        budget: deadline.saturating_duration_since(Instant::now()),
+    };
+    clock
+        .run(async {
+            // The actual complete root exists before identity/dial and every
+            // checked mode. An expired clock never polls this allocation.
+            let mut destination = Some(super::prepared_rsd::OwnedDestination::new(bank)?);
+            clock.check()?;
+            let identity = source.identity().await?;
+            clock.check()?;
+            let (catalogue, receipt, fee) =
+                crate::xpc::rsd::checked_handshake_prepared_with_parser(
+                    || async {
+                        clock.check().map_err(connection_error)?;
+                        let stream = source.dial(route).await.map_err(connection_error)?;
+                        clock.check().map_err(connection_error)?;
+                        let mut stream = clock.guard(stream);
+                        if route.proxy_port.is_some() {
+                            stream.write_all(&route.endpoint.ip().octets()).await?;
+                            stream
+                                .write_all(&(route.endpoint.port() as u32).to_le_bytes())
+                                .await?;
+                            stream.flush().await?;
+                        }
+                        clock.check().map_err(connection_error)?;
+                        Ok(stream)
+                    },
+                    identity,
+                    deadline,
+                    bank,
+                    |dictionary| {
+                        super::prepared_rsd::PendingOwned::decode_borrowed(
+                            dictionary,
+                            bank,
+                            &mut destination,
+                        )
+                    },
+                )
+                .await?;
+            catalogue.finish(receipt, fee.expect("prepared selection admission"))
         })
         .await
 }

@@ -4176,6 +4176,33 @@ where
     Fut: std::future::Future<Output = Result<S, XpcError>>,
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    checked_handshake_prepared_with_parser(connector, identity, deadline, bank, |dictionary| {
+        crate::device::PreparedRsdCatalogue::decode_borrowed(dictionary, bank)
+    })
+    .await
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) async fn checked_handshake_prepared_with_parser<F, Fut, S, T, P>(
+    connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    mut parse: P,
+) -> Result<
+    (
+        T,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
+    XpcError,
+>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    P: for<'t, 'a> FnMut(crate::xpc::message::borrowed::Dictionary<'t, 'a>) -> Result<T, XpcError>,
+{
     checked_handshake_wire(connector, identity, deadline, Some(bank), |header, body| {
         let tree = crate::xpc::message::borrowed::decode(header, body, bank)
             .map_err(checked_wire_error)?;
@@ -4185,11 +4212,7 @@ where
         match dictionary.get("MessageType") {
             None => Ok(None),
             Some(value) => match value.as_str() {
-                Some("Handshake") => {
-                    crate::device::PreparedRsdCatalogue::decode_borrowed(dictionary, bank)
-                        .map(Some)
-                        .map_err(CheckedReadError::Final)
-                }
+                Some("Handshake") => parse(dictionary).map(Some).map_err(CheckedReadError::Final),
                 Some(_) => Ok(None),
                 None => Err(CheckedReadError::Final(XpcError::Tls(
                     "RSD: MessageType was not a string".into(),

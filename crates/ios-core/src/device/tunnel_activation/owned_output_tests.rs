@@ -226,7 +226,7 @@ fn owned_initial_failed_observation_keeps_original_io_source_and_bank_validation
 async fn prepared_owned_connection_swap_prefers_current_catalogue_and_keeps_export_after_device_drop(
 ) {
     use super::super::existing_rsd::{RsdHandshakeMode, RsdSelectionReceipt};
-    use super::super::prepared_rsd::{exact_vec, PreparedRsdCatalogue};
+    use super::super::prepared_rsd::{exact_vec, PendingOwned};
     let bank = Arc::new(Semaphore::new(QUOTA));
     let initial = directory(&bank).await;
     let initial_paid = initial.known_bytes();
@@ -252,11 +252,11 @@ async fn prepared_owned_connection_swap_prefers_current_catalogue_and_keeps_expo
     ]) else {
         unreachable!()
     };
-    let prepared = PreparedRsdCatalogue::decode(&input, &bank).unwrap();
+    let prepared = PendingOwned::decode(&input, &bank).unwrap();
     let (fee, mut modes) = exact_vec(&bank, 1).unwrap();
     modes.push(RsdHandshakeMode::Direct);
     let current = prepared
-        .finish_owned(
+        .finish(
             RsdSelectionReceipt {
                 handshake_mode: RsdHandshakeMode::Direct,
                 attempted_modes: modes,
