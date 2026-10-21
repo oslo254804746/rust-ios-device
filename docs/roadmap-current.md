@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-21：L02 [freshness真实报告payload](validation/tunnel-freshness-report-payloads-2026-10-21.md)
+整笔原费用先付两个实际空报告目的地和Receipt根，Source后report零受控分配，原IO/byvalue地址保持；
+闭池逐报告退款、未使用目的地与Root最后释放无cycle已验，outer Anyhow仍待处理。
+Receipt4/native freshness17/完整CLI1765/0FAIL/13原ignored及严格门禁通过，全部Cargo/build由主控执行；
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [publication根实际最后owner](validation/tunnel-publication-final-body-owner-2026-10-21.md)
 两池原whole费用移到真实Node Box外，完整root/key先释放再退款，固定槽按实际新owner宽度计费；
 原node/key地址、rollback、迭代恢复、!Unpin析构展开与闭池4096节点退款保持。

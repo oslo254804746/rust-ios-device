@@ -58,11 +58,13 @@ impl MetadataOwner {
     }
 }
 
-/// Pre-Source capsule. Arbitrary original/private anyhow allocations remain
-/// unmeasured, while this owned body and two report payloads are byte-admitted.
+/// Pre-Source capsule with two actual empty report payload destinations.
+/// Original/private anyhow allocations and the outer Failure wrapper layout
+/// remain separate boundaries; this root and the independent payload Boxes
+/// retain their original grants through each actual allocation's destruction.
 pub(super) struct Receipt {
     original: OnceLock<anyhow::Error>,
-    reports: Mutex<[Option<OwnedSemaphorePermit>; 2]>,
+    reports: Mutex<[Option<super::owned_box::Destination<ReportPayload>>; 2]>,
 }
 
 pub(super) type ReceiptOwner = super::shared_allocation::Shared<Receipt>;
@@ -75,17 +77,32 @@ impl Receipt {
     pub(super) fn body_bytes() -> usize {
         ReceiptOwner::allocation_bytes()
     }
+    pub(super) fn reservation_bytes() -> usize {
+        Self::body_bytes() + 2 * std::mem::size_of::<ReportPayload>()
+    }
     pub(super) fn prepare(bank: &Arc<Semaphore>) -> Result<ReceiptOwner> {
-        let mut storage = admission::known_metadata_charge(
-            bank,
-            Self::body_bytes() + 2 * std::mem::size_of::<Failure>(),
-        )?;
+        let storage = admission::known_metadata_charge(bank, Self::reservation_bytes())?;
+        Self::from_grant(bank, storage)
+    }
+    fn from_grant(
+        bank: &Arc<Semaphore>,
+        mut storage: OwnedSemaphorePermit,
+    ) -> Result<ReceiptOwner> {
+        anyhow::ensure!(
+            Arc::ptr_eq(storage.semaphore(), bank)
+                && storage.num_permits() == Self::reservation_bytes(),
+            crate::output::resource_decision("tunnel freshness capsule grant mismatch")
+        );
         let first = storage
-            .split(std::mem::size_of::<Failure>())
-            .expect("reserved first refresh report");
+            .split(std::mem::size_of::<ReportPayload>())
+            .expect("reserved first refresh report payload");
         let second = storage
-            .split(std::mem::size_of::<Failure>())
-            .expect("reserved second refresh report");
+            .split(std::mem::size_of::<ReportPayload>())
+            .expect("reserved second refresh report payload");
+        // All three original grants exist before the first actual allocation.
+        // Empty destinations contain no ReceiptOwner and cannot form a cycle.
+        let first = super::owned_box::Destination::from_grant(bank, first)?;
+        let second = super::owned_box::Destination::from_grant(bank, second)?;
         ReceiptOwner::from_grant(
             Self {
                 original: OnceLock::new(),
@@ -112,19 +129,23 @@ impl ReceiptOwner {
             .reports
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let storage = reports
+        let destination = reports
             .iter_mut()
             .find_map(Option::take)
             .expect("two admitted refresh reports maximum");
+        drop(reports);
         anyhow::Error::new(Failure {
-            receipt: self.clone(),
-            _storage: storage,
+            payload: destination.place(ReportPayload {
+                receipt: self.clone(),
+            }),
         })
     }
 }
-pub(super) struct Failure {
+struct ReportPayload {
     receipt: ReceiptOwner,
-    _storage: OwnedSemaphorePermit,
+}
+pub(super) struct Failure {
+    payload: super::owned_box::Owner<ReportPayload>,
 }
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -136,20 +157,20 @@ impl std::fmt::Debug for Failure {
         f.debug_struct("RsdRefreshFailure")
             .field(
                 "class",
-                &crate::output::operation_error_class(self.receipt.original().as_ref()),
+                &crate::output::operation_error_class(self.payload.receipt.original().as_ref()),
             )
             .finish()
     }
 }
 impl std::error::Error for Failure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.receipt.original().as_ref())
+        Some(self.payload.receipt.original().as_ref())
     }
 }
 
 impl Failure {
     pub(super) fn original(&self) -> &anyhow::Error {
-        self.receipt.original()
+        self.payload.receipt.original()
     }
 }
 
