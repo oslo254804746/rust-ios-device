@@ -1,6 +1,14 @@
 //! Immutable initial-directory storage with legacy parsing semantics.
 use std::alloc::Layout;
-use std::sync::Arc;
+use std::{
+    marker::PhantomData,
+    mem::{self, ManuallyDrop},
+    ptr::NonNull,
+    sync::{
+        atomic::{fence, AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -48,26 +56,54 @@ struct Directory {
     _body: OwnedSemaphorePermit,
 }
 
+#[repr(C)]
+struct Allocation {
+    strong: AtomicUsize,
+    directory: ManuallyDrop<Directory>,
+}
+
 /// An immutable initial RSD directory. Clones share the original buffers and
 /// grants; there is no raw Arc, Weak, mutable buffer or unmetered export API.
 pub struct OwnedRsdHandshake {
-    // Always Some while live; None is only the consuming Drop move state.
-    inner: Option<Arc<Directory>>,
+    pointer: NonNull<Allocation>,
+    _allocation: PhantomData<Allocation>,
 }
+// SAFETY: the immutable directory is shared only through its atomic strong
+// count. Private fill requires a unique owner; the final owner moves it once.
+unsafe impl Send for OwnedRsdHandshake where Directory: Send + Sync {}
+unsafe impl Sync for OwnedRsdHandshake where Directory: Send + Sync {}
 impl Clone for OwnedRsdHandshake {
     fn clone(&self) -> Self {
+        if self.allocation().strong.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+            std::process::abort();
+        }
         Self {
-            inner: self.inner.clone(),
+            pointer: self.pointer,
+            _allocation: PhantomData,
         }
     }
 }
 impl Drop for OwnedRsdHandshake {
     fn drop(&mut self) {
-        // Every clone consumes this no-Weak Arc path. The allocation ends
-        // before the returned directory's original buffers and permits drop.
-        drop(Arc::into_inner(
-            self.inner.take().expect("live owned RSD directory"),
-        ));
+        if self.allocation().strong.fetch_sub(1, Ordering::Release) != 1 {
+            return;
+        }
+        fence(Ordering::Acquire);
+        fn require_unpin<T: Unpin>() {}
+        require_unpin::<Directory>();
+        let pointer = self.pointer.as_ptr();
+        // SAFETY: the final count acquired prior releases. No Weak, pin, raw
+        // owning pointer or mutable export exists. Move the original Unpin
+        // value once and deallocate the SAME capacity-one block before fees.
+        let directory = unsafe { ManuallyDrop::take(&mut (*pointer).directory) };
+        unsafe { drop(Vec::from_raw_parts(pointer, 0, 1)) };
+        #[cfg(test)]
+        AFTER_FREE.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().as_mut() {
+                callback();
+            }
+        });
+        drop(directory);
     }
 }
 impl std::fmt::Debug for OwnedRsdHandshake {
@@ -130,16 +166,34 @@ fn descriptor<'t, 'a>(value: Value<'t, 'a>) -> Option<(u16, Option<Array<'t, 'a>
 }
 
 impl OwnedRsdHandshake {
+    #[cfg(test)]
+    pub(super) fn allocation_address(&self) -> usize {
+        self.pointer.as_ptr() as usize
+    }
+    fn body_bytes() -> usize {
+        mem::size_of::<Allocation>()
+    }
     pub(super) fn prepare(bank: &Arc<Semaphore>) -> Result<Self, XpcError> {
-        let body = charge(bank, std::mem::size_of::<Directory>())?;
-        Ok(Self {
-            inner: Some(Arc::new(Directory {
+        Self::from_grant(bank, charge(bank, Self::body_bytes())?)
+    }
+    fn from_grant(bank: &Arc<Semaphore>, body: OwnedSemaphorePermit) -> Result<Self, XpcError> {
+        // Exact original whole grant validation precedes the actual root.
+        let (body, mut values) = exact_vec_from_grant(bank, 1, body)?;
+        values.push(Allocation {
+            strong: AtomicUsize::new(1),
+            directory: ManuallyDrop::new(Directory {
                 udid: Text::empty(),
                 rows: Vec::new(),
                 bytes: body.num_permits(),
                 _rows_fee: None,
                 _body: body,
-            })),
+            }),
+        });
+        let pointer = NonNull::from(&mut values[0]);
+        mem::forget(values);
+        Ok(Self {
+            pointer,
+            _allocation: PhantomData,
         })
     }
 
@@ -191,8 +245,7 @@ impl OwnedRsdHandshake {
             tracing::debug!("RSD handshake missing Services key");
         }
         add(&mut bytes, layout::<Row>(count)?)?;
-        let data = Arc::get_mut(self.inner.as_mut().expect("live owned RSD directory"))
-            .expect("initial directory is private until parsing completes");
+        let data = self.data_mut();
         let bank = data._body.semaphore().clone();
         // The entire actual output layout precedes the first output copy.
         let mut grant = if bytes == 0 {
@@ -258,7 +311,21 @@ impl OwnedRsdHandshake {
     }
 
     fn data(&self) -> &Directory {
-        self.inner.as_deref().expect("live owned RSD directory")
+        &self.allocation().directory
+    }
+    fn allocation(&self) -> &Allocation {
+        // SAFETY: a live owner retains a positive count at this address.
+        unsafe { self.pointer.as_ref() }
+    }
+    fn data_mut(&mut self) -> &mut Directory {
+        assert_eq!(
+            self.allocation().strong.load(Ordering::Acquire),
+            1,
+            "initial directory is private until parsing completes"
+        );
+        // SAFETY: &mut self and the unique strong count exclude all other
+        // readers or clones, and there are no Weak or raw ownership exports.
+        unsafe { &mut (*self.pointer.as_ptr()).directory }
     }
     pub fn udid(&self) -> &str {
         &self.data().udid.value
@@ -406,8 +473,11 @@ impl std::iter::FusedIterator for OwnedRsdServices {}
 #[cfg(test)]
 type OutputAllocationHook = std::cell::RefCell<Option<Box<dyn FnMut(Layout)>>>;
 #[cfg(test)]
+type FreeHook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
+#[cfg(test)]
 thread_local! {
     static BEFORE_ALLOC: OutputAllocationHook = const { std::cell::RefCell::new(None) };
+    static AFTER_FREE: FreeHook = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
