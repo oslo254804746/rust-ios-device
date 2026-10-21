@@ -9,8 +9,10 @@ use super::rsd_connect::{attempt_rsd, attempt_rsd_via_proxy};
 use super::rsd_observation::RsdProbeOutcome;
 #[cfg(feature = "tunnel")]
 use super::service_routing::ensure_remote_xpc_service;
+#[cfg(feature = "tunnel")]
+use super::service_routing::ResolvedRsdService;
 use super::service_routing::{
-    resolve_rsd_service_details, rsd_checkin_with_timeout, ResolvedRsdService, RSD_CHECKIN_TIMEOUT,
+    rsd_checkin_with_timeout, with_rsd_service_details, RSD_CHECKIN_TIMEOUT,
 };
 use super::support::{plist_value_to_string, plist_value_to_string_vec};
 #[cfg(feature = "tunnel")]
@@ -63,18 +65,16 @@ where
 }
 
 #[cfg(feature = "tunnel")]
-fn owned_service_details(
+fn with_owned_service<T>(
     directory: &crate::OwnedRsdHandshake,
     name: &str,
-) -> Result<ResolvedRsdService, CoreError> {
+    project: impl FnOnce(&str, u16, &mut dyn Iterator<Item = &str>) -> T,
+) -> Result<T, CoreError> {
     let service = directory
         .get_resolved_service(name)
         .ok_or_else(|| CoreError::Xpc(crate::XpcError::ServiceNotFound(name.into())))?;
-    Ok(ResolvedRsdService {
-        resolved_service_name: service.name().into(),
-        port: service.port(),
-        features: service.features().map(str::to_owned).collect(),
-    })
+    let mut features = service.features();
+    Ok(project(service.name(), service.port(), &mut features))
 }
 
 impl ConnectedDevice {
@@ -510,10 +510,13 @@ impl ConnectedDevice {
         &self,
         service_name: &str,
     ) -> Result<ServiceStream, CoreError> {
-        let resolved = self.resolve_rsd_service_with_retry(service_name).await?;
-
-        let mut stream = self.connect_tunnel_port(resolved.port).await?;
-        if resolved.resolved_service_name.ends_with(".shim.remote") {
+        let (port, shim) = self
+            .project_rsd_service_with_retry(service_name, |name, port, _features| {
+                (port, name.ends_with(".shim.remote"))
+            })
+            .await?;
+        let mut stream = self.connect_tunnel_port(port).await?;
+        if shim {
             rsd_checkin_with_timeout(&mut stream, RSD_CHECKIN_TIMEOUT).await?;
         }
         Ok(stream)
@@ -527,9 +530,13 @@ impl ConnectedDevice {
     /// Performs an on-demand RSD handshake if rsd is not already populated.
     #[cfg(feature = "tunnel")]
     pub async fn connect_xpc_service(&self, service_name: &str) -> Result<XpcClient, CoreError> {
-        self.connect_xpc_service_with_metadata(service_name)
-            .await
-            .map(|(client, _metadata)| client)
+        let port = self
+            .project_rsd_service_with_retry(service_name, |name, port, _features| {
+                ensure_remote_xpc_service(service_name, name)?;
+                Ok::<_, CoreError>(port)
+            })
+            .await??;
+        self.connect_xpc_port(port).await
     }
 
     /// Connect to an XPC service and return the exact RSD descriptor used for
@@ -553,21 +560,7 @@ impl ConnectedDevice {
         // RemoteXPC-only return type, so reject before dialing and direct
         // callers to connect_rsd_service, which performs check-in.
         ensure_remote_xpc_service(service_name, &resolved.resolved_service_name)?;
-        let stream = self.connect_tunnel_port(resolved.port).await?;
-
-        let client = XpcClient::connect_stream(stream)
-            .await
-            .map_err(CoreError::from)?;
-        let endpoint = self.tunnel_endpoint()?;
-        let port = resolved.port;
-        let client = client.with_reconnector(move || async move {
-            let stream = endpoint
-                .connect(port)
-                .await
-                .map_err(connection_error_to_xpc)?;
-            XpcClient::connect_stream(stream).await
-        });
-
+        let client = self.connect_xpc_port(resolved.port).await?;
         Ok((
             client,
             ResolvedServiceMetadata {
@@ -577,19 +570,55 @@ impl ConnectedDevice {
         ))
     }
 
+    #[cfg(feature = "tunnel")]
+    async fn connect_xpc_port(&self, port: u16) -> Result<XpcClient, CoreError> {
+        let stream = self.connect_tunnel_port(port).await?;
+        let client = XpcClient::connect_stream(stream)
+            .await
+            .map_err(CoreError::from)?;
+        let endpoint = self.tunnel_endpoint()?;
+        let client = client.with_reconnector(move || async move {
+            let stream = endpoint
+                .connect(port)
+                .await
+                .map_err(connection_error_to_xpc)?;
+            XpcClient::connect_stream(stream).await
+        });
+
+        Ok(client)
+    }
+
+    #[cfg(feature = "tunnel")]
     async fn resolve_rsd_service_with_retry(
         &self,
         service_name: &str,
     ) -> Result<ResolvedRsdService, CoreError> {
+        self.project_rsd_service_with_retry(service_name, |name, port, features| {
+            ResolvedRsdService {
+                resolved_service_name: name.into(),
+                port,
+                features: features.map(str::to_owned).collect(),
+            }
+        })
+        .await
+    }
+
+    // Project while the original directory is still alive. Plain connections
+    // need only the port/shim decision, so no owned name or feature copy exists.
+    async fn project_rsd_service_with_retry<T>(
+        &self,
+        service_name: &str,
+        project: impl FnOnce(&str, u16, &mut dyn Iterator<Item = &str>) -> T,
+    ) -> Result<T, CoreError> {
         #[cfg(feature = "tunnel")]
         if let Some(rsd) = self.current_rsd_catalogue() {
-            return rsd.resolved(service_name).ok_or_else(|| {
+            return rsd.with_resolved(service_name, project).ok_or_else(|| {
                 CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into()))
             });
         }
         #[cfg(feature = "tunnel")]
         if let Some(rsd) = self.owned_initial_rsd.as_ref() {
-            return owned_service_details(rsd, service_name);
+            return with_owned_service(rsd, service_name, project);
         }
         #[cfg(feature = "tunnel")]
         if let Some(bank) = self.owned_initial_bank.as_ref() {
@@ -617,16 +646,16 @@ impl ConnectedDevice {
                 }
             })
             .await?;
-            return owned_service_details(&rsd, service_name);
+            return with_owned_service(&rsd, service_name, project);
         }
         if let Some(rsd) = self.rsd.as_ref() {
-            return resolve_rsd_service_details(rsd, service_name).ok_or_else(|| {
+            return with_rsd_service_details(rsd, service_name, project).ok_or_else(|| {
                 CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into()))
             });
         }
 
         let rsd = self.resolve_rsd_with_retry().await?;
-        resolve_rsd_service_details(&rsd, service_name)
+        with_rsd_service_details(&rsd, service_name, project)
             .ok_or_else(|| CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into())))
     }
 

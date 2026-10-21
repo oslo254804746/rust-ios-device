@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-21：L02 [服务路由借用原目录](validation/tunnel-service-route-projection-2026-10-21.md)
+普通 raw/XPC 只投影 port/shim，去掉临时名称/feature 副本与 legacy shim key String；
+原 lookup/retry/错误/首次 observation 保持，公开 metadata 出口仍继续原范围。
+routing12/connected8/prepared13/完整CLI1765/0FAIL/13原ignored及21命令通过，全部Cargo/build由主控执行；
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [owned initial RSD 完整分配](validation/tunnel-owned-initial-full-allocation-2026-10-21.md)
 原 bank whole grant 在身份查询与拨号前支付实际根，四种初始握手共用原分配；
 原解析/超时/重试保持，service/iterator 最后 owner 在完整根实际释放后退字段与原费用。

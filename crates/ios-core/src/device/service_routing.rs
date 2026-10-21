@@ -18,6 +18,7 @@ struct RsdCheckinRequest {
 
 pub(super) const RSD_CHECKIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[cfg(feature = "tunnel")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ResolvedRsdService {
     pub(super) resolved_service_name: String,
@@ -33,19 +34,33 @@ fn find_rsd_service<'a>(
         return Some(entry);
     }
 
-    let shim_service = format!("{requested_service}.shim.remote");
-    rsd.services.get_key_value(&shim_service)
+    rsd.services.iter().find(|(name, _)| {
+        name.bytes()
+            .eq(requested_service.bytes().chain(".shim.remote".bytes()))
+    })
 }
 
-pub(super) fn resolve_rsd_service_details(
+pub(super) fn with_rsd_service_details<T>(
+    rsd: &RsdHandshake,
+    requested_service: &str,
+    project: impl FnOnce(&str, u16, &mut dyn Iterator<Item = &str>) -> T,
+) -> Option<T> {
+    let (name, descriptor) = find_rsd_service(rsd, requested_service)?;
+    let mut features = descriptor.features.iter().map(String::as_str);
+    Some(project(name, descriptor.port, &mut features))
+}
+
+#[cfg(all(test, feature = "tunnel"))]
+fn resolve_rsd_service_details(
     rsd: &RsdHandshake,
     requested_service: &str,
 ) -> Option<ResolvedRsdService> {
-    let (resolved_service_name, descriptor) = find_rsd_service(rsd, requested_service)?;
-    Some(ResolvedRsdService {
-        resolved_service_name: resolved_service_name.clone(),
-        port: descriptor.port,
-        features: descriptor.features.clone(),
+    with_rsd_service_details(rsd, requested_service, |name, port, features| {
+        ResolvedRsdService {
+            resolved_service_name: name.into(),
+            port,
+            features: features.map(str::to_owned).collect(),
+        }
     })
 }
 
@@ -155,6 +170,55 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use tokio::io::duplex;
+
+    #[test]
+    fn service_route_projection_reads_the_original_canonical_and_shim_buffers_once() {
+        let mut canonical = ServiceDescriptor::new(2345);
+        canonical.features = vec!["original-canonical-feature".into()];
+        let mut shim = ServiceDescriptor::new(6789);
+        shim.features = vec!["original-shim-feature".into()];
+        let mut rsd = RsdHandshake {
+            udid: "borrowed-fixture".into(),
+            services: HashMap::from([
+                ("service".into(), canonical),
+                ("service.shim.remote".into(), shim),
+            ]),
+        };
+        for canonical in [true, false] {
+            if !canonical {
+                rsd.services.remove("service");
+            }
+            let (name, descriptor) = rsd
+                .services
+                .get_key_value(if canonical {
+                    "service"
+                } else {
+                    "service.shim.remote"
+                })
+                .unwrap();
+            let expected = (
+                name.as_ptr() as usize,
+                descriptor.port,
+                descriptor.features[0].as_ptr() as usize,
+            );
+            let mut calls = 0;
+            let selected = with_rsd_service_details(&rsd, "service", |name, port, features| {
+                calls += 1;
+                (
+                    name.as_ptr() as usize,
+                    port,
+                    features.next().unwrap().as_ptr() as usize,
+                )
+            })
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(selected, expected);
+            assert!(with_rsd_service_details(&rsd, "missing", |_, _, _| panic!(
+                "projected a missing service"
+            ))
+            .is_none());
+        }
+    }
 
     #[test]
     fn resolve_rsd_service_reports_actual_shim_match() {
