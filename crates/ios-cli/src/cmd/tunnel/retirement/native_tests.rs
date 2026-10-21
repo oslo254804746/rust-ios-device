@@ -68,19 +68,22 @@ async fn native_report_prepaid_history_and_current_join_snapshots_survive_closed
     );
     assert_eq!(registry.snapshot().occupied(), 0);
     assert!(recovered(baseline).await);
-    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(bank.available_permits(), Registry::incarnation_bytes());
     drop(registry);
     assert_eq!(
         bank.available_permits(),
-        structural - NativeReport::body_bytes()
+        structural - NativeReport::body_bytes() + Registry::incarnation_bytes()
     );
     drop(history);
     assert_eq!(
         bank.available_permits(),
-        structural - NativeReport::body_bytes()
+        structural - NativeReport::body_bytes() + Registry::incarnation_bytes()
     );
     drop(first);
-    assert_eq!(bank.available_permits(), structural);
+    assert_eq!(
+        bank.available_permits(),
+        structural + Registry::incarnation_bytes()
+    );
     assert_eq!(
         work(second.primary().downcast_ref::<TunnelError>().unwrap()) as *const _,
         pointer
@@ -188,11 +191,17 @@ async fn native_census_current_snapshot_is_inside_prepaid_backing_and_stays_froz
         pending
     );
     assert_eq!(work(&frozen.as_slice()[0]) as *const _, original_pointer);
-    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(bank.available_permits(), Registry::incarnation_bytes());
     drop(frozen);
-    assert_eq!(bank.available_permits(), root_bytes);
+    assert_eq!(
+        bank.available_permits(),
+        root_bytes + Registry::incarnation_bytes()
+    );
     drop((spare, held));
-    assert_eq!(bank.available_permits(), before);
+    assert_eq!(
+        bank.available_permits(),
+        before + Registry::incarnation_bytes()
+    );
 }
 
 #[tokio::test]
@@ -209,7 +218,10 @@ async fn registry_owner_original_native_lease_outlives_caller_and_joins_at_close
     let native = runtime(stream).await;
     let lease = registry.reserve(stamp()).unwrap().attach(native.clone());
     assert!(lease.registry.ptr_eq(&registry));
-    assert_eq!(bank.available_permits(), total - structural);
+    assert_eq!(
+        bank.available_permits(),
+        total - structural - Registry::incarnation_bytes()
+    );
     let held = bank
         .clone()
         .try_acquire_many_owned(bank.available_permits() as u32)
@@ -245,11 +257,14 @@ async fn registry_owner_original_native_lease_outlives_caller_and_joins_at_close
     assert!(recovered(baseline).await);
     assert_eq!(
         bank.available_permits(),
-        0,
-        "joined workers do not release the live registry body/backing"
+        Registry::incarnation_bytes(),
+        "only the last incarnation key ended; the registry body/backing remain live"
     );
     drop(retained);
-    assert_eq!(bank.available_permits(), structural);
+    assert_eq!(
+        bank.available_permits(),
+        structural + Registry::incarnation_bytes()
+    );
     drop(held);
     assert_eq!(bank.available_permits(), total);
 }
@@ -292,9 +307,12 @@ async fn native_ordinal_cleanup_at_zero_pool_joins_original_workers_and_strict_e
         (1, 1, 0)
     );
     assert!(native.shutdown_status().is_ok());
-    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(bank.available_permits(), Registry::incarnation_bytes());
     drop(held);
-    assert_eq!(bank.available_permits(), before);
+    assert_eq!(
+        bank.available_permits(),
+        before + Registry::incarnation_bytes()
+    );
 }
 
 #[tokio::test]

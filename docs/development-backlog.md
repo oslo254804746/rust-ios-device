@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-21：L02 [native incarnation完整分配](validation/tunnel-native-incarnation-full-allocation-2026-10-21.md)
+原bank整份实际控制块在issued/slot变更及Source前准入；最后Entry/Key跨实际joins、
+slot复用与外部proof保留费用，原stale-key隔离和独立退款保持。
+incarnation7/retirement40/ownership2/manual12/native7/完整CLI1753/0FAIL/13原ignored及严格门禁通过；
+子Agent开发，全部Cargo及build由主控串行执行。主项23/6/L02待全审计、有效30/Q04排除不变。
+
+
 2026-10-21：L02 [metadata lease 完整分配](validation/tunnel-metadata-lease-full-allocation-2026-10-21.md)
 两池整份费用在 Source 前预付两个实际空 root，成功后原位合并字段 grant、零分配；
 原地址/独立最后 owner/闭池退款、native 实际 joins 与严格 EOF 保持。

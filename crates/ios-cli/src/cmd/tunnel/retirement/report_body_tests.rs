@@ -94,7 +94,10 @@ fn native_report_captured_history_parallel_last_roots_keep_original_io_and_body_
     assert!(std::ptr::eq(history.primary(), root.error()));
     bank.close();
     drop((history, lease, registry));
-    assert_eq!(bank.available_permits(), 65536 - NativeReport::body_bytes());
+    assert_eq!(
+        bank.available_permits(),
+        65536 - NativeReport::body_bytes() - Registry::incarnation_bytes()
+    );
     let barrier = Arc::new(std::sync::Barrier::new(8));
     std::thread::scope(|scope| {
         for _ in 0..7 {
@@ -116,5 +119,10 @@ fn native_report_captured_history_parallel_last_roots_keep_original_io_and_body_
         barrier.wait();
         drop(root);
     });
+    assert_eq!(
+        bank.available_permits(),
+        65536 - Registry::incarnation_bytes()
+    );
+    drop(key);
     assert_eq!(bank.available_permits(), 65536);
 }

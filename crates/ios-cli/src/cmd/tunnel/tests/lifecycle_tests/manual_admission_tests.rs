@@ -435,3 +435,79 @@ async fn admission_manual_authorized_http_start_rejects_before_source_and_redact
     assert_eq!(gates, 0);
     assert!(stopped);
 }
+
+#[tokio::test]
+async fn incarnation_actual_manager_last_byte_refusal_precedes_source_and_default_fallback() {
+    let source = FakeSource::new();
+    let state = state(source.clone(), LOCAL_BUDGET);
+    drop(state.inner.lifecycle.ticket(A).await.unwrap());
+    let global = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+    let published = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
+    let mut probe = publication_table::Table::<ManagedTunnel>::new(&global, &published);
+    let prefix = Arc::new(StdMutex::new(Vec::new()));
+    let captured_prefix = prefix.clone();
+    let prepared = metadata_vec::with_allocation_hook(
+        move |layout, _| captured_prefix.lock().unwrap().push(layout),
+        || probe.prepare(A).unwrap(),
+    );
+    let destination = MAX_GLOBAL_KNOWN_METADATA_BYTES - global.available_permits();
+    drop(prepared);
+    drop(probe);
+    let bank = state.inner.global_metadata_bytes.clone();
+    let before = bank.available_permits();
+    let held = Arc::new(StdMutex::new(None));
+    let captured = held.clone();
+    let charged = bank.clone();
+    let reached = Arc::new(AtomicBool::new(false));
+    let captured_reached = reached.clone();
+    *state.inner.publication_before_prepare.lock().unwrap() = Some(Box::new(move || {
+        // Pay the complete original publication destination, leaving exactly
+        // one byte less than the next complete native incarnation body.
+        let leave = destination + retirement::Registry::incarnation_bytes() - 1;
+        *captured.lock().unwrap() = Some(
+            charged
+                .clone()
+                .try_acquire_many_owned((charged.available_permits() - leave) as u32)
+                .unwrap(),
+        );
+        captured_reached.store(true, Ordering::SeqCst);
+    }));
+    let captured_reached = reached.clone();
+    let seen = Arc::new(AtomicUsize::new(0));
+    let captured_seen = seen.clone();
+    let expected_prefix = prefix.lock().unwrap().clone();
+    let hook = metadata_vec::on_allocation(move |layout, _| {
+        if captured_reached.load(Ordering::SeqCst) {
+            let index = captured_seen.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                expected_prefix.get(index),
+                Some(&layout),
+                "only the paid publication prefix may allocate before incarnation refusal"
+            );
+        }
+    });
+    let error = state.ensure_tunnel(A, None, None).await.err().unwrap();
+    drop(hook);
+    assert!(reached.load(Ordering::SeqCst));
+    assert_eq!(seen.load(Ordering::SeqCst), prefix.lock().unwrap().len());
+    assert!(held.lock().unwrap().is_some());
+    assert!(error.is::<ownership::Admission>());
+    resource(&error);
+    assert_eq!(source_counts(&source), (0, 0, 0));
+    assert_eq!(source.drops.load(Ordering::SeqCst), 0);
+    assert_eq!(state.inner.native.snapshot().occupied(), 0);
+    assert!(state.inner.tunnels.read().await.is_empty());
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    assert_eq!(state.inner.retry.receipt_count(), 0);
+    held.lock().unwrap().take();
+    let backing = state.inner.tunnels.read().await.backing_bytes();
+    assert!(
+        backing > 0,
+        "original publication backing must precede incarnation admission"
+    );
+    assert_eq!(bank.available_permits(), before - backing);
+    drop(error);
+    recover(&state, &source).await;
+    drop(state);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}

@@ -217,6 +217,7 @@ fn configured_with_discovery(
         + TunnelAgentOwner::body_bytes();
     state.set_global_metadata_limit(
         native_bytes
+            + retirement::Registry::incarnation_bytes()
             + charged
             + Lifecycle::initial_metadata_bytes(DEVICE)
             + record_copy_bytes()
@@ -283,7 +284,10 @@ async fn metadata_lease_original_roots_survive_table_removal_and_native_joins_wi
         before_p + metadata_lease::Lease::body_bytes() + p_fee
     );
     assert_eq!(publication.available_permits(), charged);
-    assert_eq!(global.available_permits(), charged + route_body_bytes());
+    assert_eq!(
+        global.available_permits(),
+        charged + route_body_bytes() + retirement::Registry::incarnation_bytes()
+    );
     drop(record);
     state.notify_shutdown();
 }
@@ -311,7 +315,7 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged + route_body_bytes()
+        charged + route_body_bytes() + retirement::Registry::incarnation_bytes()
     );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(
@@ -322,7 +326,10 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
     drop(record);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged + route_body_bytes() + record_copy_bytes()
+        charged
+            + route_body_bytes()
+            + record_copy_bytes()
+            + retirement::Registry::incarnation_bytes()
     );
 }
 
@@ -345,12 +352,15 @@ async fn native_metadata_charge_survives_certified_joins_while_table_still_owns_
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged + route_body_bytes()
+        charged + route_body_bytes() + retirement::Registry::incarnation_bytes()
     );
     drop(record);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged + route_body_bytes() + record_copy_bytes()
+        charged
+            + route_body_bytes()
+            + record_copy_bytes()
+            + retirement::Registry::incarnation_bytes()
     );
 }
 
@@ -395,7 +405,11 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged - backing + record_copy_bytes() + route_body_bytes() + discovery
+        charged - backing
+            + record_copy_bytes()
+            + route_body_bytes()
+            + discovery
+            + retirement::Registry::incarnation_bytes()
     );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(recovered(&source, expected).await);
@@ -424,7 +438,10 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
         + scan::Outcomes::body_bytes()
         + TunnelAgentOwner::body_bytes();
     state.set_global_metadata_limit(
-        native_bytes + (total + Lifecycle::initial_metadata_bytes(DEVICE)) + temporary,
+        native_bytes
+            + retirement::Registry::incarnation_bytes()
+            + (total + Lifecycle::initial_metadata_bytes(DEVICE))
+            + temporary,
     );
     let peak = SourcePeak::new(&state, temporary);
     let snapshot =
@@ -451,12 +468,12 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
     assert!(recovered(&source, expected).await);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged - backing + route_body_bytes() - 1
+        charged - backing + route_body_bytes() - 1 + retirement::Registry::incarnation_bytes()
     );
     drop(snapshot);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        total - backing
+        total - backing + retirement::Registry::incarnation_bytes()
     );
     state.notify_shutdown();
     state.clear().await;

@@ -64,7 +64,11 @@ async fn observed_route_pre_source_last_byte_refusal_keeps_original_resource_and
     *state.inner.publication_before_prepare.lock().unwrap() = Some(Box::new(move || {
         // The full lease destinations now precede the observed host. Preserve
         // the SAME host-minus-one boundary after paying this actual prefix.
-        let leave = destination + metadata_lease::Lease::pair_bytes() + host.len() - 1;
+        let leave = destination
+            + retirement::Registry::incarnation_bytes()
+            + metadata_lease::Lease::pair_bytes()
+            + host.len()
+            - 1;
         *captured.lock().unwrap() = Some(
             charged
                 .clone()
