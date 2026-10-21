@@ -256,7 +256,7 @@ where
     Fut: std::future::Future<Output = Result<S, XpcError>>,
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    match handshake_attempts_selected(connector, identity, bank, false).await? {
+    match handshake_attempts_selected(connector, identity, bank, None).await? {
         InitialDirectory::Legacy(directory) => Ok(directory),
         InitialDirectory::Owned(_) => unreachable!("legacy reader selection is fixed"),
     }
@@ -293,11 +293,29 @@ where
     Fut: std::future::Future<Output = Result<S, XpcError>>,
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let identity = default_handshake_uuid().await?;
+    owned_handshake_with_identity_and_bank(connector, bank, default_handshake_uuid()).await
+}
+
+#[cfg(feature = "tunnel")]
+async fn owned_handshake_with_identity_and_bank<F, Fut, S, I>(
+    connector: F,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    identity: I,
+) -> Result<OwnedRsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    I: std::future::Future<Output = Result<uuid::Uuid, XpcError>>,
+{
+    // Admit and allocate the complete original root before identity or IO.
+    // Its same backing spans all bootstrap modes under the original timeout.
+    let directory = OwnedRsdHandshake::prepare(bank)?;
+    let identity = identity.await?;
     match rsd_timeout(
         crate::tunnel::TUNNEL_CONNECT_TIMEOUT * 2,
         "RSD discovery timed out",
-        handshake_attempts_selected(connector, identity, Some(bank), true),
+        handshake_attempts_selected(connector, identity, Some(bank), Some(directory)),
     )
     .await?
     {
@@ -329,7 +347,7 @@ async fn handshake_attempts_selected<F, Fut, S>(
     mut connector: F,
     identity: uuid::Uuid,
     bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
-    owned: bool,
+    mut owned: Option<OwnedRsdHandshake>,
 ) -> Result<InitialDirectory, XpcError>
 where
     F: FnMut() -> Fut,
@@ -364,10 +382,11 @@ where
                 HandshakeMode::Passive => Duration::from_secs(2),
             };
             rsd_timeout(response_timeout, "RSD response timed out", async {
-                if owned {
-                    owned_handshake_on_framer(&mut framer)
-                        .await
-                        .map(InitialDirectory::Owned)
+                if let Some(directory) = owned.as_mut() {
+                    read_prepared_owned_handshake_on_framer(&mut framer, directory).await?;
+                    Ok(InitialDirectory::Owned(
+                        owned.take().expect("one successful owned handshake"),
+                    ))
                 } else {
                     handshake_on_framer(&mut framer)
                         .await
@@ -967,19 +986,50 @@ pub async fn owned_handshake_on_framer<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let mut operation = RsdOperation::begin(framer)?;
+    let operation = RsdOperation::begin(framer)?;
     let bank = operation
         .framer
         .raw_bank()
         .ok_or_else(crate::device::existing_rsd::ExistingRsdProbeError::metadata_limit)?;
     let mut directory = OwnedRsdHandshake::prepare(&bank)?;
+    read_owned_handshake_operation(operation, &bank, &mut directory).await?;
+    Ok(directory)
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_prepared_owned_handshake_on_framer<S>(
+    framer: &mut H2Framer<S>,
+    directory: &mut OwnedRsdHandshake,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let operation = RsdOperation::begin(framer)?;
+    let bank = operation
+        .framer
+        .raw_bank()
+        .ok_or_else(crate::device::existing_rsd::ExistingRsdProbeError::metadata_limit)?;
+    read_owned_handshake_operation(operation, &bank, directory).await
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_owned_handshake_operation<S>(
+    mut operation: RsdOperation<'_, S>,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    directory: &mut OwnedRsdHandshake,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if !directory.belongs_to(bank) {
+        return Err(crate::device::existing_rsd::ExistingRsdProbeError::metadata_limit());
+    }
     let result = await_rsd_operation(
-        Some(&bank),
-        read_owned_handshake_inner(operation.framer, &mut operation.progressed, &mut directory),
+        Some(bank),
+        read_owned_handshake_inner(operation.framer, &mut operation.progressed, directory),
     )?
     .await;
-    operation.finish(result)?;
-    Ok(directory)
+    operation.finish(result)
 }
 
 #[cfg(feature = "tunnel")]

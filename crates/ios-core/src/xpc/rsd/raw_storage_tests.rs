@@ -640,16 +640,53 @@ async fn initial_duplex_selected(
     }
     let quota = 16 * 1024 * 1024;
     let bank = Arc::new(Semaphore::new(quota));
+    let allocations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = allocations.clone();
+    let observed_bank = bank.clone();
+    let observer = owned.then(|| {
+        crate::device::prepared_rsd::allocation_observer(move |layout, pointer| {
+            observed
+                .lock()
+                .unwrap()
+                .push((layout, pointer, observed_bank.available_permits()));
+        })
+    });
+    let directory = owned
+        .then(|| OwnedRsdHandshake::prepare(&bank))
+        .transpose()?;
+    let original = directory
+        .as_ref()
+        .map(|directory| (directory.allocation_address(), directory.known_bytes()));
     let result = tokio::time::timeout(
         Duration::from_secs(2),
         handshake_attempts_selected(
             || std::future::ready(Ok(clients.pop_front().expect("unexpected extra mode"))),
             uuid::Uuid::from_bytes([9; 16]),
             Some(&bank),
-            owned,
+            directory,
         ),
     )
     .await;
+    drop(observer);
+    if let Some((pointer, bytes)) = original {
+        let allocations = allocations.lock().unwrap();
+        let (layout, allocated, available) = allocations[0];
+        assert_eq!(
+            (allocated, layout.size(), available),
+            (pointer, bytes, quota - bytes)
+        );
+        assert_eq!(
+            allocations
+                .iter()
+                .filter(|(other, ..)| *other == layout)
+                .count(),
+            1,
+            "all initial modes must share one original root"
+        );
+        if let Ok(Ok(InitialDirectory::Owned(directory))) = &result {
+            assert_eq!(directory.allocation_address(), pointer);
+        }
+    }
     let all_used = clients.is_empty();
     // An early-return regression must close the unused peers before joining;
     // otherwise their preface read would outlive the probe's outer timeout.
@@ -920,6 +957,136 @@ async fn owned_initial_all_four_modes_export_original_storage_after_each_fresh_f
         assert_eq!(bank.available_permits(), 16 * 1024 * 1024);
     }
 }
+
+#[tokio::test]
+async fn owned_initial_root_refusal_precedes_identity_and_connector_poll() {
+    let probe = Arc::new(Semaphore::new(1024 * 1024));
+    let root = OwnedRsdHandshake::prepare(&probe).unwrap();
+    let bytes = root.known_bytes();
+    drop(root);
+    for closed in [false, true] {
+        let bank = Arc::new(Semaphore::new(if closed { bytes } else { bytes - 1 }));
+        if closed {
+            bank.close();
+        }
+        let before = bank.available_permits();
+        let identity_polls = AtomicUsize::new(0);
+        let dials = AtomicUsize::new(0);
+        let observer = crate::device::prepared_rsd::allocation_observer(|_, _| {
+            panic!("refused initial root allocated a backing");
+        });
+        let error = owned_handshake_with_identity_and_bank(
+            || {
+                dials.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err::<tokio::io::DuplexStream, _>(XpcError::NotConnected))
+            },
+            &bank,
+            async {
+                identity_polls.fetch_add(1, Ordering::SeqCst);
+                Ok(uuid::Uuid::from_bytes([9; 16]))
+            },
+        )
+        .await
+        .unwrap_err();
+        drop(observer);
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::ResourceLimit
+        );
+        assert_eq!(identity_polls.load(Ordering::SeqCst), 0);
+        assert_eq!(dials.load(Ordering::SeqCst), 0);
+        assert_eq!(bank.available_permits(), before);
+    }
+}
+
+#[tokio::test]
+async fn owned_initial_pending_identity_drop_releases_the_actual_prepaid_root_without_dial() {
+    use std::future::Future;
+    let probe = Arc::new(Semaphore::new(1024 * 1024));
+    let root = OwnedRsdHandshake::prepare(&probe).unwrap();
+    let bytes = root.known_bytes();
+    drop(root);
+    let bank = Arc::new(Semaphore::new(bytes));
+    let dials = AtomicUsize::new(0);
+    let identity_polls = AtomicUsize::new(0);
+    let allocations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = allocations.clone();
+    let observed_bank = bank.clone();
+    let observer = crate::device::prepared_rsd::allocation_observer(move |layout, pointer| {
+        assert_eq!(observed_bank.available_permits(), 0);
+        observed.lock().unwrap().push((layout, pointer));
+    });
+    let mut operation = Box::pin(owned_handshake_with_identity_and_bank(
+        || {
+            dials.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err::<tokio::io::DuplexStream, _>(XpcError::NotConnected))
+        },
+        &bank,
+        async {
+            identity_polls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(bank.available_permits(), 0);
+            assert_eq!(allocations.lock().unwrap().len(), 1);
+            std::future::pending::<Result<uuid::Uuid, XpcError>>().await
+        },
+    ));
+    std::future::poll_fn(|cx| {
+        assert!(operation.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert_eq!(allocations.lock().unwrap()[0].0.size(), bytes);
+    assert_eq!(identity_polls.load(Ordering::SeqCst), 1);
+    assert_eq!(dials.load(Ordering::SeqCst), 0);
+    drop(operation);
+    drop(observer);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[tokio::test]
+async fn owned_initial_pending_bootstrap_drop_closes_the_same_socket_and_joins_before_refund_check()
+{
+    let quota = 16 * 1024 * 1024;
+    let bank = Arc::new(Semaphore::new(quota));
+    let (client, mut peer) = tokio::io::duplex(64 * 1024);
+    let (preface_sent, preface_seen) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let mut preface = [0; 24];
+        peer.read_exact(&mut preface).await.unwrap();
+        assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
+        preface_sent.send(()).unwrap();
+        let mut tail = [0; 1024];
+        loop {
+            if peer.read(&mut tail).await.unwrap() == 0 {
+                break;
+            }
+        }
+    });
+    let dials = AtomicUsize::new(0);
+    let mut client = Some(client);
+    let mut operation = Box::pin(owned_handshake_with_identity_and_bank(
+        || {
+            dials.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Ok(client.take().expect("only the original socket")))
+        },
+        &bank,
+        std::future::ready(Ok(uuid::Uuid::from_bytes([9; 16]))),
+    ));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::select! {
+            result = &mut operation => panic!("bootstrap completed before peer SETTINGS: {result:?}"),
+            seen = preface_seen => seen.unwrap(),
+        }
+    }).await.unwrap();
+    assert_eq!(dials.load(Ordering::SeqCst), 1);
+    assert!(bank.available_permits() < quota);
+    drop(operation);
+    tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bank.available_permits(), quota);
+}
+
 #[tokio::test]
 async fn owned_initial_six_semantic_failures_keep_fresh_queued_transport_and_owned_export() {
     let mut bad = Vec::new();

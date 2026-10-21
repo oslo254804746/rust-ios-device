@@ -150,7 +150,7 @@ fn owned_initial_complete_output_admission_precedes_first_copy_and_last_byte_ref
     let tree = borrowed::decode(&wire[..24], &wire[24..], &probe).unwrap();
     let mut owned = OwnedRsdHandshake::prepare(&probe).unwrap();
     owned.fill(tree.as_ref()).unwrap();
-    let fields = owned.known_bytes() - std::mem::size_of::<Directory>();
+    let fields = owned.known_bytes() - OwnedRsdHandshake::body_bytes();
     drop((tree, owned));
     assert_eq!(probe.available_permits(), TOTAL);
     for short in [true, false] {
@@ -272,6 +272,132 @@ fn owned_initial_parallel_last_service_exports_keep_original_directory_identity_
         barrier.wait();
         drop(service);
     });
+    assert_eq!(bank.available_permits(), TOTAL);
+}
+
+fn with_after_free<T>(hook: impl FnMut() + 'static, work: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            AFTER_FREE.with(|hook| hook.borrow_mut().take());
+        }
+    }
+    AFTER_FREE.with(|current| {
+        assert!(current.borrow().is_none());
+        *current.borrow_mut() = Some(Box::new(hook));
+    });
+    let _reset = Reset;
+    work()
+}
+
+#[test]
+fn owned_initial_actual_root_requires_the_exact_whole_original_grant_before_backing() {
+    use crate::device::prepared_rsd::with_allocation_hook;
+    let bytes = OwnedRsdHandshake::body_bytes();
+    assert_eq!(bytes, Layout::new::<Allocation>().size());
+    assert!(bytes > mem::size_of::<Directory>());
+    for (foreign, amount) in [(true, bytes), (false, bytes - 1), (false, bytes + 1)] {
+        let bank = Arc::new(Semaphore::new(2 * bytes));
+        let other = Arc::new(Semaphore::new(2 * bytes));
+        let grant = charge(if foreign { &other } else { &bank }, amount).unwrap();
+        let error = with_allocation_hook(
+            |_, _| panic!("invalid initial root grant allocated a backing"),
+            || OwnedRsdHandshake::from_grant(&bank, grant).unwrap_err(),
+        );
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::ResourceLimit
+        );
+        assert_eq!(bank.available_permits(), 2 * bytes);
+        assert_eq!(other.available_permits(), 2 * bytes);
+    }
+    let bank = Arc::new(Semaphore::new(bytes - 1));
+    with_allocation_hook(
+        |_, _| panic!("short initial root pool allocated a backing"),
+        || assert!(OwnedRsdHandshake::prepare(&bank).is_err()),
+    );
+    assert_eq!(bank.available_permits(), bytes - 1);
+    let bank = Arc::new(Semaphore::new(bytes));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let observed = seen.clone();
+    let observed_bank = bank.clone();
+    let owned = with_allocation_hook(
+        move |layout, pointer| {
+            assert_eq!(observed_bank.available_permits(), 0);
+            observed.lock().unwrap().push((layout, pointer));
+        },
+        || OwnedRsdHandshake::prepare(&bank).unwrap(),
+    );
+    assert_eq!(
+        &*seen.lock().unwrap(),
+        &[(Layout::new::<Allocation>(), owned.allocation_address())]
+    );
+    let directory = owned.data() as *const Directory as usize;
+    assert!((owned.allocation_address()..owned.allocation_address() + bytes).contains(&directory));
+    assert_eq!(owned.known_bytes(), bytes);
+    assert!(owned.belongs_to(&bank));
+    let observed_bank = bank.clone();
+    with_after_free(
+        move || {
+            assert_eq!(
+                observed_bank.available_permits(),
+                0,
+                "root credit preceded actual free"
+            )
+        },
+        || drop(owned),
+    );
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[test]
+fn owned_initial_last_export_frees_the_original_whole_root_before_any_credit_in_a_closed_pool() {
+    let wire = encode_message(&sample()).unwrap();
+    let bank = Arc::new(Semaphore::new(TOTAL));
+    let tree = borrowed::decode(&wire[..24], &wire[24..], &bank).unwrap();
+    let mut owned = OwnedRsdHandshake::prepare(&bank).unwrap();
+    let root = owned.allocation_address();
+    owned.fill(tree.as_ref()).unwrap();
+    drop(tree);
+    drop(wire);
+    let bytes = owned.known_bytes();
+    let uid = owned.udid().as_ptr();
+    let service = owned.get_resolved_service("svc").unwrap();
+    let name = service.name().as_ptr();
+    let feature = service.features().nth(1).unwrap().as_ptr();
+    let kept = owned.clone();
+    let mut services = owned.into_services();
+    let exported = services.next().unwrap();
+    assert_eq!(kept.allocation_address(), root);
+    assert_eq!(service.directory.allocation_address(), root);
+    assert_eq!(exported.directory.allocation_address(), root);
+    let rest = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    bank.close();
+    assert_eq!(kept.udid().as_ptr(), uid);
+    drop((kept, services, exported));
+    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(service.name().as_ptr(), name);
+    assert_eq!(service.features().nth(1).unwrap().as_ptr(), feature);
+    let observed_bank = bank.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = calls.clone();
+    with_after_free(
+        move || {
+            observed_calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                observed_bank.available_permits(),
+                0,
+                "an original field or root fee was returned before whole-root free"
+            );
+        },
+        || drop(service),
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(bank.available_permits(), bytes);
+    drop(rest);
     assert_eq!(bank.available_permits(), TOTAL);
 }
 
