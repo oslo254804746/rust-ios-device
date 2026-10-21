@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-22：L02 [私有 runtime unit-stop 完整根](validation/tunnel-runtime-unit-watch-2026-10-22.md)
+将通知协议放入原已预付 Ledger 完整根，保留 Tokio 版本/关闭/取消/cooperative、原 cause/偏序/实际 joins；
+差分watch10/无mDNS10、tunnel159、owner42/无mDNS37、完整CLI1765/0FAIL/13原ignored及29命令通过，
+闭池同一根/最后pending receiver取消后实际free再退款已验。全部Cargo/build由主控执行；
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [listener client 许可完整根](validation/tunnel-listener-permit-root-2026-10-21.md)
 复用完整 native Semaphore 根，在 listener bind/worker 前从原 bank 准入，原64连接上限与client permit不变；
 原 root/许可寿命、closed0/最后 client 退款、构造前拒绝及 strict EOF/实际 joins 已验。

@@ -20,8 +20,9 @@ use smoltcp::time::Instant as SmolInstant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv6Address};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::tunnel::owner::unit_stop as watch;
 use crate::tunnel::owner::{self, ChildRole, Ledger, OwnedTask, ParentRole, SharedChildTaskSet};
 use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
 
@@ -225,7 +226,7 @@ struct ConnState {
 pub struct UserspaceTunDevice {
     pub local_port: u16,
     task_handles: TaskHandles,
-    stop: watch::Sender<()>,
+    stop: watch::Sender,
     clients: SharedChildTaskSet,
     outcomes: Ledger,
 }
@@ -303,7 +304,7 @@ impl UserspaceTunDevice {
         let local_port = listener.local_addr()?.port();
 
         let (mut ios_reader, mut ios_writer) = tokio::io::split(ios_stream);
-        let (stop, stop_rx) = watch::channel(());
+        let (stop, stop_rx) = watch::channel(outcomes.clone());
 
         let storage = RuntimeStorage {
             bank: byte_bank.clone(),
@@ -964,7 +965,7 @@ impl ListenerSlots {
 async fn run_local_listener_owned(
     listener: TcpListener,
     conn_req_tx: mpsc::Sender<ConnRequest>,
-    stop: watch::Receiver<()>,
+    stop: watch::Receiver,
     clients: SharedChildTaskSet,
     outcomes: Ledger,
     storage: RuntimeStorage,
@@ -994,7 +995,7 @@ async fn run_local_listener_with_limit(
 ) {
     let outcomes = Ledger::new();
     let clients = SharedChildTaskSet::new(outcomes.clone(), ChildRole::ProxyClient);
-    let (_stop, receiver) = watch::channel(());
+    let (_stop, receiver) = watch::channel(outcomes.clone());
     run_local_listener_with_limit_owned(
         listener,
         conn_req_tx,
@@ -1013,7 +1014,7 @@ async fn run_local_listener_with_limit_owned(
     conn_req_tx: mpsc::Sender<ConnRequest>,
     max_clients: usize,
     preamble_timeout: Duration,
-    stop: watch::Receiver<()>,
+    stop: watch::Receiver,
     clients: SharedChildTaskSet,
     outcomes: Ledger,
 ) {
@@ -1036,7 +1037,7 @@ async fn run_local_listener_with_limit_storage(
     listener: TcpListener,
     conn_req_tx: mpsc::Sender<ConnRequest>,
     limits: ListenerLimits,
-    mut stop: watch::Receiver<()>,
+    mut stop: watch::Receiver,
     clients: SharedChildTaskSet,
     outcomes: Ledger,
     storage: RuntimeStorage,

@@ -4,16 +4,16 @@ use std::collections::VecDeque;
 use std::mem;
 use std::sync::Arc;
 
-use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::owned_buffer::{rejected, BufferAdmission, OwnedBuffer};
-use super::{Ledger, ParentRole, TunnelError};
+use super::{watch, Ledger, ParentRole, TunnelError};
 
 #[derive(Clone)]
 pub(super) struct RuntimeStorage {
     pub(super) bank: Option<Arc<Semaphore>>,
     pub(super) ledger: Ledger,
-    pub(super) stop: watch::Sender<()>,
+    pub(super) stop: watch::Sender,
 }
 
 impl RuntimeStorage {
@@ -35,10 +35,11 @@ impl RuntimeStorage {
 
     #[cfg(test)]
     pub(super) fn unmetered() -> Self {
-        let (stop, _) = watch::channel(());
+        let ledger = Ledger::new();
+        let (stop, _) = watch::channel(ledger.clone());
         Self {
             bank: None,
-            ledger: Ledger::new(),
+            ledger,
             stop,
         }
     }
@@ -268,8 +269,8 @@ mod stop_tests {
         let second_bank = Arc::new(Semaphore::new(bytes));
         let first_ledger = Ledger::with_metadata(Some(&first_bank)).unwrap();
         let second_ledger = Ledger::with_metadata(Some(&second_bank)).unwrap();
-        let (first_stop, _) = watch::channel(());
-        let (second_stop, _) = watch::channel(());
+        let (first_stop, _) = watch::channel(first_ledger.clone());
+        let (second_stop, _) = watch::channel(second_ledger.clone());
         let first = RuntimeStorage {
             bank: Some(first_bank.clone()),
             ledger: first_ledger.clone(),
@@ -344,10 +345,11 @@ mod stop_tests {
     ) {
         let bytes = Ledger::reservation_bytes();
         let bank = Arc::new(Semaphore::new(bytes));
-        let (stop, mut notified) = watch::channel(());
+        let ledger = Ledger::with_metadata(Some(&bank)).unwrap();
+        let (stop, mut notified) = watch::channel(ledger.clone());
         let storage = RuntimeStorage {
             bank: Some(bank.clone()),
-            ledger: Ledger::with_metadata(Some(&bank)).unwrap(),
+            ledger,
             stop,
         };
         let state = (&*storage.ledger as *const LedgerState) as usize;
@@ -400,7 +402,7 @@ mod stop_tests {
             assert!(source.get_ref().unwrap().is::<OriginalFailure>());
         }
         assert_eq!(bank.available_permits(), 0);
-        drop(storage);
+        drop((storage, notified));
         assert_eq!(bank.available_permits(), Ledger::body_bytes());
         assert_eq!(drops.load(Ordering::SeqCst), 0);
         drop(first);
