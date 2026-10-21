@@ -82,6 +82,8 @@ pub(crate) struct LedgerState {
     outcomes: StdMutex<Outcomes>,
     pending: AtomicUsize,
     invalid_count: AtomicBool,
+    #[cfg(feature = "tunnel-userspace")]
+    runtime_stopped: AtomicBool,
     _body_storage: Option<OwnedSemaphorePermit>,
 }
 
@@ -97,8 +99,20 @@ impl LedgerState {
             }),
             pending: AtomicUsize::new(0),
             invalid_count: AtomicBool::new(false),
+            #[cfg(feature = "tunnel-userspace")]
+            runtime_stopped: AtomicBool::new(false),
             _body_storage: storage,
         }
+    }
+
+    #[cfg(feature = "tunnel-userspace")]
+    pub(crate) fn is_runtime_stopped(&self) -> bool {
+        self.runtime_stopped.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "tunnel-userspace")]
+    pub(crate) fn request_runtime_stop(&self) {
+        self.runtime_stopped.store(true, Ordering::Release);
     }
 
     // These hooks count actual retained join slots, including child groups once

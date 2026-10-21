@@ -2,7 +2,6 @@
 
 use std::collections::VecDeque;
 use std::mem;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
@@ -15,7 +14,6 @@ pub(super) struct RuntimeStorage {
     pub(super) bank: Option<Arc<Semaphore>>,
     pub(super) ledger: Ledger,
     pub(super) stop: watch::Sender<()>,
-    pub(super) stopped: Arc<AtomicBool>,
 }
 
 impl RuntimeStorage {
@@ -23,12 +21,16 @@ impl RuntimeStorage {
         // The original cause becomes durable before any worker sees stop. The
         // existing ledger retains per-role errors and original typed join slots.
         self.ledger.record_work(role as usize, Arc::new(original));
-        self.stopped.store(true, Ordering::Release);
+        self.ledger.request_runtime_stop();
         self.stop.send_replace(());
     }
 
     pub(super) fn result(&self) -> Result<(), TunnelError> {
         self.ledger.work_result()
+    }
+
+    pub(super) fn stopped(&self) -> bool {
+        self.ledger.is_runtime_stopped()
     }
 
     #[cfg(test)]
@@ -38,7 +40,6 @@ impl RuntimeStorage {
             bank: None,
             ledger: Ledger::new(),
             stop,
-            stopped: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -246,4 +247,166 @@ pub(super) fn socket_buffers(
             _tx: tx_fee,
         },
     ))
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    use crate::device::prepared_rsd::with_allocation_hook;
+    use crate::tunnel::owner::LedgerState;
+    use std::{
+        error::Error,
+        fmt, io,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn runtime_stop_clones_use_the_original_paid_ledger_at_closed_zero_quota_and_isolate_other_runtimes(
+    ) {
+        let bytes = Ledger::reservation_bytes();
+        let first_bank = Arc::new(Semaphore::new(bytes));
+        let second_bank = Arc::new(Semaphore::new(bytes));
+        let first_ledger = Ledger::with_metadata(Some(&first_bank)).unwrap();
+        let second_ledger = Ledger::with_metadata(Some(&second_bank)).unwrap();
+        let (first_stop, _) = watch::channel(());
+        let (second_stop, _) = watch::channel(());
+        let first = RuntimeStorage {
+            bank: Some(first_bank.clone()),
+            ledger: first_ledger.clone(),
+            stop: first_stop,
+        };
+        let second = RuntimeStorage {
+            bank: Some(second_bank.clone()),
+            ledger: second_ledger.clone(),
+            stop: second_stop,
+        };
+        let first_state = (&*first_ledger as *const LedgerState) as usize;
+        let second_state = (&*second_ledger as *const LedgerState) as usize;
+        assert_ne!(first_state, second_state);
+        first_bank.close();
+        second_bank.close();
+        let kept = with_allocation_hook(
+            |_, _| panic!("stop views allocated a controlled backing"),
+            || {
+                let clone = first.clone();
+                assert_eq!((&*clone.ledger as *const LedgerState) as usize, first_state);
+                assert!(!clone.stopped() && !first.stopped() && !second.stopped());
+                first_ledger.request_runtime_stop();
+                assert!(clone.stopped() && first.stopped());
+                assert!(!second.stopped());
+                clone
+            },
+        );
+        assert_eq!(first_bank.available_permits(), 0);
+        assert_eq!(second_bank.available_permits(), 0);
+        drop((first, first_ledger));
+        assert!(kept.stopped());
+        assert_eq!(first_bank.available_permits(), 0);
+        drop(kept);
+        assert_eq!(first_bank.available_permits(), bytes);
+        assert_eq!(second_bank.available_permits(), 0);
+        assert!(!second.stopped());
+        drop((second, second_ledger));
+        assert_eq!(second_bank.available_permits(), bytes);
+    }
+
+    struct OriginalFailure(Arc<AtomicUsize>);
+    impl fmt::Debug for OriginalFailure {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("OriginalFailure")
+        }
+    }
+    impl fmt::Display for OriginalFailure {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("original runtime failure")
+        }
+    }
+    impl Error for OriginalFailure {}
+    impl Drop for OriginalFailure {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn failure(error: &TunnelError) -> &crate::TunnelShutdownFailure {
+        let mut current: Option<&(dyn Error + 'static)> = Some(error);
+        for _ in 0..32 {
+            let value = current.expect("original runtime report missing");
+            if let Some(report) = value.downcast_ref() {
+                return report;
+            }
+            current = value.source();
+        }
+        panic!("original runtime report depth changed");
+    }
+
+    #[tokio::test]
+    async fn runtime_failure_is_durable_before_original_stop_notification_with_exact_cause_at_closed_zero_quota(
+    ) {
+        let bytes = Ledger::reservation_bytes();
+        let bank = Arc::new(Semaphore::new(bytes));
+        let (stop, mut notified) = watch::channel(());
+        let storage = RuntimeStorage {
+            bank: Some(bank.clone()),
+            ledger: Ledger::with_metadata(Some(&bank)).unwrap(),
+            stop,
+        };
+        let state = (&*storage.ledger as *const LedgerState) as usize;
+        let worker = storage.clone();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let error = io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            OriginalFailure(drops.clone()),
+        );
+        let pointer = error.get_ref().unwrap() as *const dyn Error as *const () as usize;
+        bank.close();
+        let state_before = (&*worker.ledger as *const LedgerState) as usize;
+        assert_eq!(state_before, state);
+        let task = tokio::spawn(async move {
+            with_allocation_hook(
+                |_, _| panic!("runtime failure created a new controlled stop root"),
+                || worker.fail(ParentRole::Writer, TunnelError::Io(error)),
+            );
+        });
+        notified.changed().await.unwrap();
+        assert!(
+            storage.stopped(),
+            "stop notification preceded the original release store"
+        );
+        let first = storage.result().unwrap_err();
+        let second = storage.result().unwrap_err();
+        task.await.unwrap();
+        let mut original = None;
+        for report in [&first, &second] {
+            assert_eq!(
+                crate::classify_error(report),
+                crate::ErrorClass::PermissionDenied
+            );
+            let report = failure(report);
+            assert_eq!(report.pending_joins(), 0);
+            assert_eq!(report.cleanup().count(), 0);
+            let cause = report.primary().downcast_ref::<TunnelError>().unwrap();
+            let original_pointer = cause as *const TunnelError;
+            if let Some(previous) = original {
+                assert_eq!(original_pointer, previous);
+            }
+            original = Some(original_pointer);
+            let TunnelError::Io(source) = cause else {
+                panic!("original IO variant changed");
+            };
+            assert_eq!(
+                source.get_ref().unwrap() as *const dyn Error as *const () as usize,
+                pointer
+            );
+            assert!(source.get_ref().unwrap().is::<OriginalFailure>());
+        }
+        assert_eq!(bank.available_permits(), 0);
+        drop(storage);
+        assert_eq!(bank.available_permits(), Ledger::body_bytes());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(first);
+        assert_eq!(bank.available_permits(), Ledger::body_bytes());
+        drop(second);
+        assert_eq!(bank.available_permits(), bytes);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
 }

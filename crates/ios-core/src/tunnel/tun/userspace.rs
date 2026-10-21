@@ -6,6 +6,7 @@
 //! - Compatible with go-ios local proxy protocol:
 //!   client sends 16-byte IPv6 addr + 4-byte LE port after connecting
 
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -95,7 +96,7 @@ impl ChannelDevice {
     }
 
     fn prepare_transmit(&mut self) -> Option<Option<OwnedBuffer>> {
-        if self.storage.stopped.load(Ordering::Acquire) {
+        if self.storage.stopped() {
             return None;
         }
         #[cfg(test)]
@@ -224,7 +225,6 @@ struct ConnState {
 pub struct UserspaceTunDevice {
     pub local_port: u16,
     task_handles: TaskHandles,
-    stopped: Arc<AtomicBool>,
     stop: watch::Sender<()>,
     clients: SharedChildTaskSet,
     outcomes: Ledger,
@@ -304,12 +304,10 @@ impl UserspaceTunDevice {
         let (mut ios_reader, mut ios_writer) = tokio::io::split(ios_stream);
         let (stop, stop_rx) = watch::channel(());
 
-        let stopped = Arc::new(AtomicBool::new(false));
         let storage = RuntimeStorage {
             bank: byte_bank.clone(),
             ledger: outcomes.clone(),
             stop: stop.clone(),
-            stopped: Arc::clone(&stopped),
         };
         let future_bank = byte_bank.clone();
         let reader_storage = storage.clone();
@@ -391,7 +389,6 @@ impl UserspaceTunDevice {
         Ok(Self {
             local_port,
             task_handles,
-            stopped,
             stop,
             clients,
             outcomes,
@@ -399,12 +396,12 @@ impl UserspaceTunDevice {
     }
 
     pub fn is_alive(&self) -> bool {
-        !self.stopped.load(Ordering::Acquire)
+        !self.outcomes.is_runtime_stopped()
             && self.task_handles.iter().all(|handle| !handle.is_finished())
     }
 
     pub(crate) fn request_stop(&self) {
-        self.stopped.store(true, Ordering::Release);
+        self.outcomes.request_runtime_stop();
         self.stop.send_replace(());
         // Listener remains owned/running long enough to drain its child set.
         for task in self.task_handles.iter().take(3) {
@@ -639,7 +636,7 @@ async fn run_smoltcp(
     let mut pending_ios_tx = OwnedQueue::new(storage.bank.as_ref());
 
     loop {
-        if storage.stopped.load(Ordering::Acquire) {
+        if storage.stopped() {
             return;
         }
         let mut made_progress = false;
@@ -724,7 +721,7 @@ async fn run_smoltcp(
         }
 
         sockets.with_set(|set| iface.poll(smol_now(), &mut device, set));
-        if storage.stopped.load(Ordering::Acquire) {
+        if storage.stopped() {
             return;
         }
 
@@ -867,7 +864,7 @@ async fn run_smoltcp(
         }
 
         let mut stop = storage.stop.subscribe();
-        if storage.stopped.load(Ordering::Acquire) {
+        if storage.stopped() {
             return;
         }
         tokio::select! {
