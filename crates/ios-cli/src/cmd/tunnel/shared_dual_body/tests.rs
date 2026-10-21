@@ -40,15 +40,20 @@ fn dual_body_foreign_short_long_grants_in_either_pool_refund_both_and_drop_origi
             )
             .unwrap();
             let drops = Arc::new(AtomicUsize::new(0));
-            let error = Strong::new(
-                Value(drops.clone()),
-                &first_bank,
-                &second_bank,
-                first,
-                second,
-            )
-            .err()
-            .unwrap();
+            let error = metadata_vec::with_allocation_hook(
+                |_, _| panic!("unadmitted dual weak body allocated"),
+                || {
+                    Strong::new(
+                        Value(drops.clone()),
+                        &first_bank,
+                        &second_bank,
+                        first,
+                        second,
+                    )
+                    .err()
+                    .unwrap()
+                },
+            );
             assert_eq!(
                 crate::output::operation_error_class(error.as_ref()),
                 ios_core::ErrorClass::ResourceLimit

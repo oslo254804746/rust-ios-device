@@ -32,7 +32,8 @@ impl Life {
                 crate::output::resource_decision("tunnel published metadata byte limit exceeded")
             })?;
         // Locked Notify::new owns an inline atomic and intrusive waiters mutex;
-        // no new waiter container is created here. Arc private storage is separate.
+        // no new waiter container is created here. The declared lifetime root
+        // is paid above; opaque runtime waiter machinery remains separate.
         let life = LifeOwner::new(
             Self {
                 closed: AtomicBool::new(false),

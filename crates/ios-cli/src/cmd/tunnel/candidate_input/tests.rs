@@ -122,6 +122,7 @@ fn candidate_text_original_allocations_prepaid_before_copy_and_shared_last_error
     ] {
         let expected_host = route.host();
         let host_len = expected_host.map_or(0, str::len);
+        let field_count = 2 + usize::from(host_len != 0);
         let reserved = Input::body_bytes() + host_len;
         let total = reserved + 2 * uid.len() + host_len;
         let bank = Arc::new(Semaphore::new(total));
@@ -130,13 +131,19 @@ fn candidate_text_original_allocations_prepaid_before_copy_and_shared_last_error
         let charged = bank.clone();
         let input = super::super::metadata_vec::with_allocation_hook(
             move |layout, pointer| {
-                assert_eq!(layout.align(), 1);
                 let mut seen = captured.lock().unwrap();
-                let prior: usize = seen.iter().map(|(size, _)| size).sum();
-                assert_eq!(
-                    charged.available_permits(),
-                    total - reserved - prior - layout.size()
-                );
+                if seen.len() < field_count {
+                    assert_eq!(layout.align(), 1);
+                    let prior: usize = seen.iter().map(|(size, _)| size).sum();
+                    assert_eq!(
+                        charged.available_permits(),
+                        total - reserved - prior - layout.size()
+                    );
+                } else {
+                    assert_eq!(seen.len(), field_count);
+                    assert_eq!(layout.size(), Input::body_bytes());
+                    assert_eq!(charged.available_permits(), 0);
+                }
                 seen.push((layout.size(), pointer));
             },
             || Input::copied(uid, route, &bank).unwrap(),
@@ -145,12 +152,16 @@ fn candidate_text_original_allocations_prepaid_before_copy_and_shared_last_error
         let original = seen.lock().unwrap().clone();
         assert_eq!(original[0], (uid.len(), input.udid.as_ptr() as usize));
         assert_eq!(input.udid.capacity(), uid.len());
-        assert_eq!(original.len(), 2 + usize::from(host_len != 0));
+        assert_eq!(original.len(), field_count + 1);
+        let root = original[field_count];
+        let value = std::ptr::from_ref(&*input) as usize;
+        assert_eq!(root.0, Input::body_bytes());
+        assert!(root.1 <= value && value < root.1 + root.0);
         let outcome = input.outcome.lock().unwrap();
         let destination = outcome.as_ref().unwrap();
         assert!(destination.values.is_empty());
         assert_eq!(
-            original.last().unwrap(),
+            &original[field_count - 1],
             &(uid.len(), destination.values.as_ptr() as usize)
         );
         drop(outcome);

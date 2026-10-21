@@ -1,29 +1,17 @@
-//! Paired strong/weak references retain the original allocation body grant.
-//! Data fields end at last strong; data allocation and its paid guard payload
-//! end before the last body refund. Private Arc headers remain separate.
+//! Exact single-bank body allocation retained through the last explicit Weak.
+//! Original T fields drop at last strong, body credit after actual deallocation.
+use super::shared_weak_allocation as allocation;
+use anyhow::Result;
 use std::ops::Deref;
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Weak as StdWeak;
-
-use anyhow::Result;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::shared_value::Shared;
-
-pub(super) struct Strong<T> {
-    // Field order is essential: raw data reference ends BEFORE its body lease.
-    data: Arc<T>,
-    body: Shared<OwnedSemaphorePermit>,
-}
+pub(super) struct Strong<T>(allocation::Strong<T, ()>);
 #[cfg(test)]
-pub(super) struct Weak<T> {
-    data: StdWeak<T>,
-    body: Shared<OwnedSemaphorePermit>,
-}
+pub(super) struct Weak<T>(allocation::Weak<T, ()>);
 impl<T> Strong<T> {
     pub(super) fn body_bytes() -> usize {
-        std::mem::size_of::<T>() + std::mem::size_of::<OwnedSemaphorePermit>()
+        allocation::Strong::<T, ()>::body_bytes()
     }
     pub(super) fn new(
         incoming_value: T,
@@ -36,20 +24,14 @@ impl<T> Strong<T> {
             Arc::ptr_eq(storage.semaphore(), bank) && storage.num_permits() == Self::body_bytes(),
             crate::output::resource_decision("tunnel shared body grant mismatch")
         );
-        // The guard's OWN known payload is included before either Arc exists.
-        // Its sealed strong-only holder frees that allocation before permit Drop.
-        let body = Shared::new(storage);
-        Ok(Self {
-            data: Arc::new(value),
-            body,
-        })
+        Ok(Self(allocation::Strong::new(value, bank, storage, ())?))
     }
     pub(super) fn ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.data, &other.data)
+        self.0.ptr_eq(&other.0)
     }
     #[cfg(test)]
     pub(super) fn get_mut(&mut self) -> Option<&mut T> {
-        Arc::get_mut(&mut self.data)
+        self.0.get_mut()
     }
     #[cfg(test)]
     pub(super) fn rebind_body(&mut self, bank: &Arc<Semaphore>) -> Result<()> {
@@ -58,63 +40,47 @@ impl<T> Strong<T> {
             crate::output::resource_decision("configure shared body before sharing")
         );
         let storage = super::admission::known_metadata_charge(bank, Self::body_bytes())?;
-        // The existing data allocation remains paid by its old guard while the
-        // new guard is created. Install the prepaid replacement BEFORE freeing
-        // the old guard and returning its original bank credit.
-        let old = std::mem::replace(&mut self.body, Shared::new(storage));
+        let old = self.0.replace_first(bank, storage)?;
         drop(old);
         Ok(())
     }
     #[cfg(test)]
     pub(super) fn downgrade(&self) -> Weak<T> {
-        Weak {
-            data: Arc::downgrade(&self.data),
-            body: self.body.clone(),
-        }
+        Weak(self.0.downgrade())
     }
 }
 impl<T> Clone for Strong<T> {
     fn clone(&self) -> Self {
-        Self {
-            data: Arc::clone(&self.data),
-            body: self.body.clone(),
-        }
+        Self(self.0.clone())
     }
 }
 impl<T> Deref for Strong<T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &self.data
+        &self.0
     }
 }
 impl<T: std::fmt::Debug> std::fmt::Debug for Strong<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.data.fmt(formatter)
+        self.deref().fmt(formatter)
     }
 }
 impl<T: std::fmt::Display> std::fmt::Display for Strong<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.data.fmt(formatter)
+        self.deref().fmt(formatter)
     }
 }
 #[cfg(test)]
 impl<T> Weak<T> {
     pub(super) fn upgrade(&self) -> Option<Strong<T>> {
-        self.data.upgrade().map(|data| Strong {
-            data,
-            body: self.body.clone(),
-        })
+        self.0.upgrade().map(Strong)
     }
 }
 #[cfg(test)]
 impl<T> Clone for Weak<T> {
     fn clone(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-            body: self.body.clone(),
-        }
+        Self(self.0.clone())
     }
 }
-
 #[cfg(test)]
 mod tests;
