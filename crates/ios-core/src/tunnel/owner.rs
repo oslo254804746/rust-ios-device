@@ -21,6 +21,9 @@ use native_identity::Identity;
 #[path = "owner/ledger_root.rs"]
 mod ledger_root;
 pub(crate) use ledger_root::Ledger;
+#[path = "owner/child_root.rs"]
+mod child_root;
+pub(crate) use child_root::SharedChildTaskSet;
 
 type Cause = Arc<dyn Error + Send + Sync>;
 const OUTCOME_SLOTS: usize = 10;
@@ -493,44 +496,23 @@ pub(crate) async fn join_until(
 
 /// Existing child JoinSet kept by the runtime as well as by its parent driver.
 /// Dedicated child-set mutex; never a manager/global-table lock.
-pub(crate) struct SharedChildTaskSet {
+pub(crate) struct ChildState {
     set: Mutex<JoinSet<()>>,
     ledger: Ledger,
     cleanup_slot: usize,
     requested_abort: AtomicBool,
     first_expected_abort: StdMutex<Option<Arc<JoinError>>>,
-    _body_storage: Option<OwnedSemaphorePermit>,
 }
 
-impl SharedChildTaskSet {
-    pub(crate) fn new(ledger: Ledger, cleanup_slot: ChildRole) -> Arc<Self> {
-        Self::with_storage(ledger, cleanup_slot, None)
-    }
-
-    #[cfg(feature = "tunnel-userspace")]
-    pub(crate) fn with_metadata(
-        ledger: Ledger,
-        cleanup_slot: ChildRole,
-        bank: Option<&Arc<tokio::sync::Semaphore>>,
-    ) -> Result<Arc<Self>, TunnelError> {
-        let storage =
-            super::tun::userspace::runtime_storage::charge(bank, std::mem::size_of::<Self>())?;
-        Ok(Self::with_storage(ledger, cleanup_slot, storage))
-    }
-
-    fn with_storage(
-        ledger: Ledger,
-        cleanup_slot: ChildRole,
-        storage: Option<OwnedSemaphorePermit>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+impl ChildState {
+    fn new(ledger: Ledger, cleanup_slot: ChildRole) -> Self {
+        Self {
             set: Mutex::new(JoinSet::new()),
             ledger,
             cleanup_slot: cleanup_slot as usize,
             requested_abort: AtomicBool::new(false),
             first_expected_abort: StdMutex::new(None),
-            _body_storage: storage,
-        })
+        }
     }
 
     pub(crate) async fn lock(&self) -> ChildGuard<'_> {
@@ -557,7 +539,7 @@ pub(crate) enum ChildRole {
 
 pub(crate) struct ChildGuard<'a> {
     set: MutexGuard<'a, JoinSet<()>>,
-    owner: &'a SharedChildTaskSet,
+    owner: &'a ChildState,
 }
 
 impl ChildGuard<'_> {

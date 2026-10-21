@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-21：L02 [Core child task set 完整分配](validation/tunnel-core-child-full-allocation-2026-10-21.md)
+完整声明根由原 bank 创建前支付，最后 owner 在原位析构 State，栈 guard 真正释放根后才退费用；
+closed0/析构展开/原地址/并发最后 owner、原 native JoinError、pending/实际 drain 与 strict EOF 保持。
+owner32/tunnel140/完整CLI1765/0FAIL/13原ignored及21命令通过，全部Cargo/build由主控执行；
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [Core native Ledger 完整分配](validation/tunnel-core-ledger-full-allocation-2026-10-21.md)
 crate 内 Ledger 改为完整声明根，原整笔费用先付实际 Ledger/identity，最后根先物理释放再析构原状态与费用；
 原 cause/重试/join/报告身份保持，旧报告只保留独立原 identity，闭池/失败/原地址/并发最后 owner 已验。

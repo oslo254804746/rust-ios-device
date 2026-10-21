@@ -66,7 +66,7 @@ fn ledger_actual_body_one_byte_refusal_and_last_shared_owner_refund() {
 
 #[tokio::test]
 async fn child_set_actual_body_keeps_fee_across_original_join_until_last_owner() {
-    let required = std::mem::size_of::<SharedChildTaskSet>();
+    let required = SharedChildTaskSet::body_bytes();
     let short = Arc::new(Semaphore::new(required - 1));
     let ledger = Ledger::new();
     assert!(SharedChildTaskSet::with_metadata(
@@ -81,7 +81,8 @@ async fn child_set_actual_body_keeps_fee_across_original_join_until_last_owner()
     let owner =
         SharedChildTaskSet::with_metadata(ledger.clone(), ChildRole::ProxyClient, Some(&bank))
             .unwrap();
-    let last = Arc::clone(&owner);
+    let last = owner.clone();
+    bank.close();
     owner
         .lock()
         .await
@@ -89,8 +90,20 @@ async fn child_set_actual_body_keeps_fee_across_original_join_until_last_owner()
     assert_eq!(ledger.pending.load(Ordering::Acquire), 1);
     owner.drain().await;
     assert_eq!(ledger.pending.load(Ordering::Acquire), 0);
+    let native = owner
+        .first_expected_abort
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .expect("original child cancellation missing");
+    assert!(native.is_cancelled() && !native.is_panic());
     assert_eq!(bank.available_permits(), 0);
     drop(owner);
+    assert!(Arc::ptr_eq(
+        &native,
+        last.first_expected_abort.lock().unwrap().as_ref().unwrap()
+    ));
     assert_eq!(bank.available_permits(), 0);
     drop(last);
     assert_eq!(bank.available_permits(), required);

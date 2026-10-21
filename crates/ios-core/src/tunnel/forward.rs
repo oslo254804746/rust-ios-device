@@ -139,7 +139,7 @@ pub(crate) async fn forward_packets_inner_owned<S, D>(
     mtu: ValidatedMtu,
     cancel: watch::Receiver<()>,
     outcomes: crate::tunnel::owner::Ledger,
-    readers: std::sync::Arc<crate::tunnel::owner::SharedChildTaskSet>,
+    readers: crate::tunnel::owner::SharedChildTaskSet,
 ) -> Result<(), TunnelError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
