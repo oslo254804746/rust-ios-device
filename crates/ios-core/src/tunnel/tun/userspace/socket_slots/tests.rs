@@ -218,5 +218,9 @@ async fn socket_storage_actual_runtime_last_byte_refusal_keeps_typed_fatal_and_o
     .await
     .unwrap();
     drop(held.lock().unwrap().take());
+    let provenance_bytes = crate::tunnel::owner::Ledger::reservation_bytes()
+        - mem::size_of::<crate::tunnel::owner::Ledger>();
+    assert_eq!(bank.available_permits(), bytes - provenance_bytes);
+    drop(error);
     assert_eq!(bank.available_permits(), bytes);
 }

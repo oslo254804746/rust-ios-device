@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-21：L02 [native 报告身份完整分配](validation/tunnel-native-report-identity-2026-10-21.md)
+原 bank 整笔预付 Ledger 值与实际身份根，报告保留同一原根且在最后真实释放后退身份费用；
+原 IO/JoinError/Elapsed、同 Ledger provenance、strict EOF/实际 joins 保持，Ledger 自身 Arc 仍继续原范围。
+owner25/tunnel133/完整CLI1765/0FAIL/13原ignored及21命令通过，全部Cargo/build由主控执行；
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [服务路由借用原目录](validation/tunnel-service-route-projection-2026-10-21.md)
 普通 raw/XPC 只投影 port/shim，去掉临时名称/feature 副本与 legacy shim key String；
 原 lookup/retry/错误/首次 observation 保持，公开 metadata 出口仍继续原范围。
