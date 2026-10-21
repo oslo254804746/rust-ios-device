@@ -11,7 +11,8 @@ use super::runtime_storage::charge;
 use super::TunnelError;
 
 mod roots;
-use roots::{Destination, Root, SlotPermit, Slots};
+use roots::{Destination, Root};
+pub(super) use roots::{SlotPermit, Slots};
 
 pub(super) use legacy::error;
 

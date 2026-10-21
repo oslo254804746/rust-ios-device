@@ -130,10 +130,18 @@ impl<T> Drop for Root<T> {
 }
 
 #[derive(Clone)]
-pub(super) struct Slots(Root<Semaphore>);
+pub(in crate::tunnel::tun::userspace) struct Slots(Root<Semaphore>);
 impl Slots {
-    pub(super) fn body_bytes() -> usize {
+    pub(in crate::tunnel::tun::userspace) fn body_bytes() -> usize {
         Root::<Semaphore>::body_bytes()
+    }
+    pub(in crate::tunnel::tun::userspace) fn with_metadata(
+        capacity: usize,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Self, TunnelError> {
+        let grant = super::super::runtime_storage::charge(Some(bank), Self::body_bytes())?
+            .expect("original native slot bank and complete root grant");
+        Ok(Self::place(Destination::from_grant(bank, grant)?, capacity))
     }
     pub(super) fn place(destination: Destination<Semaphore>, capacity: usize) -> Self {
         Self(destination.finish(Semaphore::new(capacity)))
@@ -143,7 +151,9 @@ impl Slots {
         // SAFETY: this permit was acquired from this exact stable root.
         Ok(unsafe { Self::retain(permit, &self) })
     }
-    pub(super) fn try_acquire_owned(self) -> Result<SlotPermit, TryAcquireError> {
+    pub(in crate::tunnel::tun::userspace) fn try_acquire_owned(
+        self,
+    ) -> Result<SlotPermit, TryAcquireError> {
         let permit = self.0.try_acquire()?;
         // SAFETY: this permit was acquired from this exact stable root.
         Ok(unsafe { Self::retain(permit, &self) })
@@ -167,12 +177,12 @@ impl Slots {
         self.0.close();
     }
     #[cfg(test)]
-    pub(super) fn allocation_address(&self) -> usize {
+    pub(in crate::tunnel::tun::userspace) fn allocation_address(&self) -> usize {
         self.0.allocation_address()
     }
 }
 
-pub(super) struct SlotPermit {
+pub(in crate::tunnel::tun::userspace) struct SlotPermit {
     // Field order returns the ORIGINAL Tokio permit while its stable root is
     // still alive; only then may the last root free its Semaphore and fee.
     _permit: SemaphorePermit<'static>,

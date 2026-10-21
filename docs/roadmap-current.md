@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-21：L02 [listener client 许可完整根](validation/tunnel-listener-permit-root-2026-10-21.md)
+复用完整 native Semaphore 根，在 listener bind/worker 前从原 bank 准入，原64连接上限与client permit不变；
+原 root/许可寿命、closed0/最后 client 退款、构造前拒绝及 strict EOF/实际 joins 已验。
+listener3/无mDNS3/tunnel149/完整CLI1765/0FAIL/13原ignored及27命令通过，全部Cargo/build由主控执行；
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [channel 与 native slot 完整根](validation/tunnel-channel-full-roots-2026-10-21.md)
 原 bank 在三个 backing 前整笔支付两份完整根与原 ring，保留原 Tokio 公平许可/取消/close；
 原地址、闭池/独立最后 permit、任意 !Unpin T 原位析构与展开、真实释放后退款已验。
