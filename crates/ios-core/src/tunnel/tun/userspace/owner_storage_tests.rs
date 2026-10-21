@@ -15,7 +15,7 @@ async fn task_handle_real_backing_one_byte_refusal_and_original_joins_keep_fee_u
         OwnedTask::new(
             tokio::spawn(async { Ok(()) }),
             ParentRole::Writer,
-            Arc::clone(&ledger),
+            ledger.clone(),
         )
     }));
     assert_eq!(handles.len(), 4);

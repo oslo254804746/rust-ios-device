@@ -117,7 +117,7 @@ fn assert_safe(error: &TunnelError) {
 }
 
 fn gated_task(
-    ledger: Arc<Ledger>,
+    ledger: Ledger,
 ) -> (
     OwnedTask,
     oneshot::Sender<()>,

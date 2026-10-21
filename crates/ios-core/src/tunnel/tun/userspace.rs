@@ -227,7 +227,7 @@ pub struct UserspaceTunDevice {
     stopped: Arc<AtomicBool>,
     stop: watch::Sender<()>,
     clients: Arc<SharedChildTaskSet>,
-    outcomes: Arc<Ledger>,
+    outcomes: Ledger,
 }
 
 impl UserspaceTunDevice {
@@ -291,7 +291,7 @@ impl UserspaceTunDevice {
         let (conn_req_tx, conn_req_rx) = mpsc::with_bank::<ConnRequest>(32, byte_bank.as_ref())?;
         let outcomes = Ledger::with_metadata(byte_bank.as_ref())?;
         let clients = SharedChildTaskSet::with_metadata(
-            Arc::clone(&outcomes),
+            outcomes.clone(),
             ChildRole::ProxyClient,
             byte_bank.as_ref(),
         )?;
@@ -307,7 +307,7 @@ impl UserspaceTunDevice {
         let stopped = Arc::new(AtomicBool::new(false));
         let storage = RuntimeStorage {
             bank: byte_bank.clone(),
-            ledger: Arc::clone(&outcomes),
+            ledger: outcomes.clone(),
             stop: stop.clone(),
             stopped: Arc::clone(&stopped),
         };
@@ -360,7 +360,7 @@ impl UserspaceTunDevice {
         };
 
         let listener_clients = Arc::clone(&clients);
-        let listener_outcomes = Arc::clone(&outcomes);
+        let listener_outcomes = outcomes.clone();
         let listener_future = async move {
             run_local_listener_owned(
                 listener,
@@ -382,10 +382,10 @@ impl UserspaceTunDevice {
         let smoltcp = PreparedWorker::prepare(smoltcp_future, future_bank.as_ref())?;
         let listener = PreparedWorker::prepare(listener_future, future_bank.as_ref())?;
         task_handles.initialize([
-            reader.spawn(ParentRole::ForwardOrReader, Arc::clone(&outcomes)),
-            writer.spawn(ParentRole::Writer, Arc::clone(&outcomes)),
-            smoltcp.spawn(ParentRole::Smoltcp, Arc::clone(&outcomes)),
-            listener.spawn(ParentRole::Listener, Arc::clone(&outcomes)),
+            reader.spawn(ParentRole::ForwardOrReader, outcomes.clone()),
+            writer.spawn(ParentRole::Writer, outcomes.clone()),
+            smoltcp.spawn(ParentRole::Smoltcp, outcomes.clone()),
+            listener.spawn(ParentRole::Listener, outcomes.clone()),
         ]);
         tracing::info!("userspace TUN started on 127.0.0.1:{local_port}");
         Ok(Self {
@@ -939,7 +939,7 @@ async fn run_local_listener_owned(
     conn_req_tx: mpsc::Sender<ConnRequest>,
     stop: watch::Receiver<()>,
     clients: Arc<SharedChildTaskSet>,
-    outcomes: Arc<Ledger>,
+    outcomes: Ledger,
     storage: RuntimeStorage,
 ) {
     run_local_listener_with_limit_storage(
@@ -965,7 +965,7 @@ async fn run_local_listener_with_limit(
     preamble_timeout: Duration,
 ) {
     let outcomes = Ledger::new();
-    let clients = SharedChildTaskSet::new(Arc::clone(&outcomes), ChildRole::ProxyClient);
+    let clients = SharedChildTaskSet::new(outcomes.clone(), ChildRole::ProxyClient);
     let (_stop, receiver) = watch::channel(());
     run_local_listener_with_limit_owned(
         listener,
@@ -987,7 +987,7 @@ async fn run_local_listener_with_limit_owned(
     preamble_timeout: Duration,
     stop: watch::Receiver<()>,
     clients: Arc<SharedChildTaskSet>,
-    outcomes: Arc<Ledger>,
+    outcomes: Ledger,
 ) {
     run_local_listener_with_limit_storage(
         listener,
@@ -1010,7 +1010,7 @@ async fn run_local_listener_with_limit_storage(
     limits: ListenerLimits,
     mut stop: watch::Receiver<()>,
     clients: Arc<SharedChildTaskSet>,
-    outcomes: Arc<Ledger>,
+    outcomes: Ledger,
     storage: RuntimeStorage,
 ) {
     let ListenerLimits {

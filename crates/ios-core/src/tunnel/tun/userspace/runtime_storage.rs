@@ -13,7 +13,7 @@ use super::{Ledger, ParentRole, TunnelError};
 #[derive(Clone)]
 pub(super) struct RuntimeStorage {
     pub(super) bank: Option<Arc<Semaphore>>,
-    pub(super) ledger: Arc<Ledger>,
+    pub(super) ledger: Ledger,
     pub(super) stop: watch::Sender<()>,
     pub(super) stopped: Arc<AtomicBool>,
 }

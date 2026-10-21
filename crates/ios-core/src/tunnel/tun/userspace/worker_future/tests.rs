@@ -174,10 +174,8 @@ async fn original_child_joinset_keeps_payload_paid_through_cancel_and_drain() {
     bank.add_permits(bytes);
     let prepared = PreparedWorker::prepare(future, Some(&bank)).unwrap();
     let ledger = Ledger::new();
-    let clients = super::super::SharedChildTaskSet::new(
-        Arc::clone(&ledger),
-        super::super::ChildRole::ProxyClient,
-    );
+    let clients =
+        super::super::SharedChildTaskSet::new(ledger.clone(), super::super::ChildRole::ProxyClient);
     let mut guard = clients.lock().await;
     prepared.spawn_child(&mut guard);
     tokio::time::timeout(Duration::from_secs(1), async {

@@ -45,7 +45,7 @@ enum TunnelRuntime {
         _cancel_tx: watch::Sender<()>,
         stopped: AtomicBool,
         #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
-        outcomes: Arc<Ledger>,
+        outcomes: Ledger,
         #[cfg(feature = "tunnel-kernel")]
         tasks: Vec<OwnedTask>,
         #[cfg(feature = "tunnel-kernel")]
@@ -76,7 +76,7 @@ impl TunnelHandle {
                     _cancel_tx: tx,
                     stopped: AtomicBool::new(false),
                     #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
-                    outcomes: Arc::clone(&outcomes),
+                    outcomes: outcomes.clone(),
                     #[cfg(feature = "tunnel-kernel")]
                     tasks: Vec::new(),
                     #[cfg(feature = "tunnel-kernel")]
@@ -93,17 +93,17 @@ impl TunnelHandle {
         info: TunnelInfo,
         spawn: impl FnOnce(
             watch::Receiver<()>,
-            Arc<Ledger>,
+            Ledger,
             Arc<SharedChildTaskSet>,
         ) -> tokio::task::JoinHandle<Result<(), TunnelError>>,
     ) -> Self {
         let (cancel, receiver) = watch::channel(());
         let outcomes = Ledger::new();
-        let reader = SharedChildTaskSet::new(Arc::clone(&outcomes), ChildRole::ForwardReader);
+        let reader = SharedChildTaskSet::new(outcomes.clone(), ChildRole::ForwardReader);
         let task = OwnedTask::new(
-            spawn(receiver, Arc::clone(&outcomes), Arc::clone(&reader)),
+            spawn(receiver, outcomes.clone(), Arc::clone(&reader)),
             ParentRole::ForwardOrReader,
-            Arc::clone(&outcomes),
+            outcomes.clone(),
         );
         Self {
             udid,
