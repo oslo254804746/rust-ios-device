@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-21：L02 [owned current真实服务重启](validation/tunnel-owned-current-service-restart-2026-10-21.md)
+新增同端口/变端口真实localhost peer停止、重新监听及owned current正向service IO，
+保留原目录/初始IO地址、双向严格EOF、原grant独立最后退款；prepared整组8与严格Core门禁通过。
+子Agent准备外部proposal，主控应用并执行全部Cargo/build。完整CLI复用e9fc560的1753/0/13原ignored；
+endpoint重新发现等原缺口继续，主项23/6/L02待全审计、有效30/Q04排除不变。
+
+
 2026-10-21：L02 [native incarnation完整分配](validation/tunnel-native-incarnation-full-allocation-2026-10-21.md)
 原bank整份实际控制块在issued/slot变更及Source前准入；最后Entry/Key跨实际joins、
 slot复用与外部proof保留费用，原stale-key隔离和独立退款保持。
