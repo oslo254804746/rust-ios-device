@@ -232,6 +232,143 @@ async fn all_four_real_raw_h2_modes_keep_catalogue_and_release_transient_storage
 }
 
 #[tokio::test]
+async fn owned_prepare_all_four_success_modes_fill_the_original_pre_dial_root() {
+    use crate::device::{
+        existing_rsd::{prepare_owned_existing_rsd_with_identity_at, ExistingRsdRoute},
+        prepared_rsd::{allocation_observer, OwnedDestination},
+        PreparedRsdCatalogue,
+    };
+    use std::{alloc::Layout, net::SocketAddrV6, sync::Mutex};
+    use tokio::net::TcpListener;
+
+    let modes = [
+        RsdHandshakeMode::Direct,
+        RsdHandshakeMode::Queued,
+        RsdHandshakeMode::Legacy,
+        RsdHandshakeMode::Passive,
+    ];
+    for (target, mode) in modes.into_iter().enumerate() {
+        let listener = TcpListener::bind("[::1]:0").await.unwrap();
+        let std::net::SocketAddr::V6(endpoint) = listener.local_addr().unwrap() else {
+            panic!("IPv6 localhost fixture");
+        };
+        assert_eq!(*endpoint.ip(), std::net::Ipv6Addr::LOCALHOST);
+        let route =
+            ExistingRsdRoute::direct(SocketAddrV6::new(*endpoint.ip(), endpoint.port(), 0, 0))
+                .unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let accepted = accepts.clone();
+        let peer = tokio::spawn(async move {
+            for attempt in 0..=target {
+                let (stream, _) = listener.accept().await.unwrap();
+                accepted.fetch_add(1, Ordering::SeqCst);
+                if attempt == target {
+                    // Returns only on the owned client's strict Ok(0) close.
+                    fixture(stream, mode, handshake(XpcValue::Uint64(12345)))
+                        .await
+                        .unwrap();
+                } else {
+                    drop(stream);
+                }
+            }
+        });
+        let bank = Arc::new(Semaphore::new(128 * 1024 * 1024));
+        let before = bank.available_permits();
+        let allocations = Arc::new(Mutex::new(Vec::new()));
+        let observed = allocations.clone();
+        let observed_bank = bank.clone();
+        let observed_accepts = accepts.clone();
+        let observer = allocation_observer(move |layout, pointer| {
+            observed.lock().unwrap().push((
+                layout,
+                pointer,
+                observed_bank.available_permits(),
+                observed_accepts.load(Ordering::SeqCst),
+            ));
+        });
+        let catalogue = tokio::time::timeout(
+            Duration::from_secs(5),
+            prepare_owned_existing_rsd_with_identity_at(
+                route,
+                tokio::time::Instant::now() + Duration::from_secs(4),
+                &bank,
+                uuid::Uuid::from_bytes([9; 16]),
+            ),
+        )
+        .await
+        .expect("local fixture must finish within the original deadline")
+        .unwrap_or_else(|error| panic!("owned mode {mode:?}: {error:?}"));
+        drop(observer);
+        tokio::time::timeout(Duration::from_secs(1), peer)
+            .await
+            .expect("same socket must reach strict EOF and join")
+            .unwrap();
+        assert_eq!(accepts.load(Ordering::SeqCst), target + 1);
+        let allocations = allocations.lock().unwrap();
+        let (root_layout, root, available, accepts_before_root) = allocations[0];
+        assert_eq!(root_layout.size(), OwnedDestination::body_bytes());
+        assert!(root_layout.size() > Layout::new::<PreparedRsdCatalogue>().size());
+        assert_eq!(available, before - root_layout.size());
+        assert_eq!(accepts_before_root, 0, "root must exist before first dial");
+        assert_eq!(
+            allocations
+                .iter()
+                .filter(|(layout, ..)| *layout == root_layout)
+                .count(),
+            1,
+            "failed wire modes must keep the same actual destination"
+        );
+        let catalogue_pointer = (&*catalogue as *const PreparedRsdCatalogue) as usize;
+        assert!((root..root + root_layout.size()).contains(&catalogue_pointer));
+        assert_eq!(catalogue.udid(), "fixture-only-udid");
+        assert_eq!(catalogue.service_port("fixture.service"), Some(12345));
+        let selection = catalogue.selection().unwrap();
+        assert_eq!(selection.handshake_mode, mode);
+        assert_eq!(selection.attempted_modes, modes[..=target]);
+        assert_eq!(selection.attempted_modes.capacity(), 4);
+        assert!(catalogue.belongs_to(&bank));
+        assert_eq!(bank.available_permits(), before - catalogue.known_bytes());
+        let uid = catalogue.udid().as_ptr();
+        let feature = catalogue
+            .service_features("fixture.service")
+            .unwrap()
+            .next()
+            .unwrap();
+        assert_eq!(feature, "fixture-feature");
+        let feature_pointer = feature.as_ptr();
+        let modes_pointer = selection.attempted_modes.as_ptr();
+        let rest = bank
+            .clone()
+            .try_acquire_many_owned(bank.available_permits() as u32)
+            .unwrap();
+        bank.close();
+        let retained = catalogue.clone();
+        assert!(catalogue.ptr_eq(&retained));
+        drop(catalogue);
+        assert_eq!(retained.udid().as_ptr(), uid);
+        assert_eq!(
+            retained
+                .service_features("fixture.service")
+                .unwrap()
+                .next()
+                .unwrap()
+                .as_ptr(),
+            feature_pointer
+        );
+        assert_eq!(
+            retained.selection().unwrap().attempted_modes.as_ptr(),
+            modes_pointer
+        );
+        assert_eq!(bank.available_permits(), 0);
+        let bytes = retained.known_bytes();
+        drop(retained);
+        assert_eq!(bank.available_permits(), bytes);
+        drop(rest);
+        assert_eq!(bank.available_permits(), before);
+    }
+}
+
+#[tokio::test]
 async fn malformed_port_keeps_native_parse_int_source_and_drops_all_charged_storage() {
     use std::error::Error;
     let (result, bank, before) = checked_duplex(

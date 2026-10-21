@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-21：L02 [owned prepared 四模式成功](validation/tunnel-owned-prepared-four-modes-2026-10-21.md)
+公开调用通过 IPv6 loopback 实际完成四种原握手模式，预拨号根始终为同一实际分配；
+模式前缀、原字段地址、严格 EOF/peer join、闭池最后 owner 精确退款已验。
+测试一处改动，XPC211/无mDNS新测试1与九个验收命令通过；CLI哈希同57137aa，复用其全量1765结果。
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [owned prepared RSD 完整分配](validation/tunnel-owned-prepared-full-allocation-2026-10-21.md)
 原 bank whole grant 在 identity/dial 前支付实际声明根，四种 wire 模式共用同一目的地；
 字段失败、取消与最后强引用均在实际根释放后退原费用，原 UID/字段/选择 backing 保持。
