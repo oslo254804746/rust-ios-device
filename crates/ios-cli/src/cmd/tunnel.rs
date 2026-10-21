@@ -73,6 +73,7 @@ mod shared_allocation;
 mod shared_body;
 mod shared_dual_body;
 mod shared_value;
+mod shared_weak_allocation;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
 mod source;

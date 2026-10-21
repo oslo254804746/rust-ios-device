@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-21：L02 [单/双池strong-weak完整分配](validation/tunnel-weak-bodies-full-allocation-2026-10-21.md)
+原数据与费用guard合为一个应用声明布局，字段lastStrong就地析构、body lastWeak
+实际释放后才归还原单池/双池费用；独占weak锁/并发upgrade/析构展开语义保持。
+原语4/single6/dual2/字段观察器8+7+2/完整CLI1746/0FAIL/13原ignored及严格门禁通过；
+其它原边界继续，主项23/6/L02待全审计、有效30与Q04全部排除不变。
+
+
 2026-10-19：L02 [DeviceGate完整分配](validation/tunnel-device-gate-full-allocation-2026-10-19.md)
 原UID缓冲区与完整应用声明控制块共用同池grant；prune仍为strong_count>1或persistent，
 4096/epoch/原key地址/clear重用/旧ticket失效及关闭配额后最后退款保持。
@@ -77,7 +84,7 @@ SDK副本、prepared公开root与其余全局边界仍待审计；主项23/6/L02
 经理层 initial RSD 生产接入仍 PENDING；L02全审计、23/6/待核查、有效30与Q04排除不变。
 
 
-更新：2026-10-19。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
+更新：2026-10-21。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
 开发计数与真实验收分开，Q04及全部子项继续排除。
 
 当前批次修复独立review确认的R01–R15。起点af20f6a，修复分支

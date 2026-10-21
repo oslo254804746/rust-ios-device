@@ -186,7 +186,10 @@ fn input_weak_body_foreign_short_long_grant_refusal_returns_credit_and_drops_val
         let fee =
             admission::known_metadata_charge(if foreign { &other } else { &bank }, amount).unwrap();
         let drops = Arc::new(AtomicUsize::new(0));
-        let error = Strong::new(Value(drops.clone()), &bank, fee).err().unwrap();
+        let error = metadata_vec::with_allocation_hook(
+            |_, _| panic!("unadmitted weak body allocated"),
+            || Strong::new(Value(drops.clone()), &bank, fee).err().unwrap(),
+        );
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
             ios_core::ErrorClass::ResourceLimit
@@ -208,7 +211,10 @@ fn input_weak_body_zero_sized_payload_still_pays_guard_and_releases_value_at_las
     }
     DROPS.store(0, Ordering::SeqCst);
     let total = Strong::<Value>::body_bytes();
-    assert_eq!(total, std::mem::size_of::<OwnedSemaphorePermit>());
+    assert_eq!(
+        total,
+        2 * std::mem::size_of::<AtomicUsize>() + std::mem::size_of::<OwnedSemaphorePermit>()
+    );
     let bank = Arc::new(Semaphore::new(total));
     let fee = admission::known_metadata_charge(&bank, total).unwrap();
     let value = Strong::new(Value, &bank, fee).unwrap();

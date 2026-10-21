@@ -7,10 +7,12 @@ fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
     let bytes = RetainedRoute::body_bytes() + host.len();
     let bank = Arc::new(Semaphore::new(bytes));
     let charged = bank.clone();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let captured = observed.clone();
     let route = super::super::metadata_vec::with_allocation_hook(
-        move |layout, _| {
-            assert_eq!(layout.size(), host.len());
+        move |layout, pointer| {
             assert_eq!(charged.available_permits(), 0);
+            captured.lock().unwrap().push((layout, pointer));
         },
         || {
             RetainedRoute::established(
@@ -27,6 +29,20 @@ fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
     assert_eq!(text, host);
     assert_eq!(text.capacity(), host.len());
     let pointer = text.as_ptr();
+    {
+        let allocated = observed.lock().unwrap();
+        assert_eq!(allocated.len(), 2);
+        assert_eq!(
+            allocated[0],
+            (
+                std::alloc::Layout::array::<u8>(host.len()).unwrap(),
+                pointer as usize
+            )
+        );
+        assert_eq!(allocated[1].0.size(), RetainedRoute::body_bytes());
+        let value = std::ptr::from_ref(&*route) as usize;
+        assert!(allocated[1].1 <= value && value < allocated[1].1 + allocated[1].0.size());
+    }
     let cell = Cell::new(Arc::new(()), bank.clone());
     cell.checked_replace(
         || cell.manual_shared(route.clone(), authority()),

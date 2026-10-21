@@ -41,7 +41,7 @@ async fn prepaid_selector_actual_receipt_all_capsules_precede_copy_and_last_owne
             .host()
             .unwrap();
         let allocations = seen.lock().unwrap();
-        assert_eq!(allocations.len(), 3);
+        assert_eq!(allocations.len(), 4);
         assert_eq!(
             &allocations[..2],
             &[
@@ -60,6 +60,10 @@ async fn prepaid_selector_actual_receipt_all_capsules_precede_copy_and_last_owne
         assert_ne!(allocations[2].1, 0);
         assert_ne!(allocations[2].1, receipt.udid.as_ptr() as usize);
         assert_ne!(allocations[2].1, host.as_ptr() as usize);
+        assert_eq!(allocations[3].0, FailureReceipt::body_bytes());
+        let value = std::ptr::from_ref(&*receipt) as usize;
+        assert!(allocations[3].1 <= value && value < allocations[3].1 + allocations[3].0);
+        assert_ne!(allocations[3].1, allocations[2].1);
         drop(allocations);
         assert_eq!(receipt.udid.capacity(), A.len());
         assert_eq!(
