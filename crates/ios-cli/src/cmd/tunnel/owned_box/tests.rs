@@ -69,10 +69,24 @@ fn node_body_into_inner_frees_original_high_alignment_box_before_refund_and_valu
         .place(Value(bank.clone(), drops.clone(), 713));
     assert_eq!(&*owner as *const Value as usize % 128, 0);
     assert_eq!(bank.available_permits(), 0);
-    let value = metadata_vec::with_allocation_hook(
-        |_, _| panic!("into_inner allocated"),
-        || owner.into_inner(),
+    let freed = Arc::new(AtomicUsize::new(0));
+    let observed = freed.clone();
+    let charged = bank.clone();
+    let original_drops = drops.clone();
+    let value = after_free(
+        move || {
+            assert_eq!(charged.available_permits(), 0);
+            assert_eq!(original_drops.load(Ordering::SeqCst), 0);
+            observed.fetch_add(1, Ordering::SeqCst);
+        },
+        || {
+            metadata_vec::with_allocation_hook(
+                |_, _| panic!("into_inner allocated"),
+                || owner.into_inner(),
+            )
+        },
     );
+    assert_eq!(freed.load(Ordering::SeqCst), 1);
     assert_eq!(value.2, 713);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert_eq!(bank.available_permits(), bytes);
@@ -274,4 +288,71 @@ fn returned_device_box_foreign_bank_cannot_claim_credit_and_zst_needs_no_allocat
     assert_eq!(owner.bytes_in(&bank).unwrap(), 0);
     drop(owner);
     assert_eq!(bank.available_permits(), 0);
+}
+
+#[test]
+fn original_box_and_unused_destination_free_before_credit_even_when_value_drop_panics() {
+    struct Value {
+        bank: Arc<Semaphore>,
+        drops: Arc<AtomicUsize>,
+        panic: bool,
+    }
+    impl Drop for Value {
+        fn drop(&mut self) {
+            assert_eq!(self.bank.available_permits(), 0);
+            self.drops.fetch_add(1, Ordering::SeqCst);
+            assert!(!self.panic, "controlled original value destructor panic");
+        }
+    }
+    let bytes = std::mem::size_of::<Value>();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let destination = Destination::<Value>::new(&bank).unwrap();
+    assert_eq!(bank.available_permits(), 0);
+    let freed = Arc::new(AtomicUsize::new(0));
+    let observed = freed.clone();
+    let charged = bank.clone();
+    after_free(
+        move || {
+            assert_eq!(
+                charged.available_permits(),
+                0,
+                "unused backing credit preceded its physical free"
+            );
+            observed.fetch_add(1, Ordering::SeqCst);
+        },
+        || drop(destination),
+    );
+    assert_eq!(freed.load(Ordering::SeqCst), 1);
+    assert_eq!(bank.available_permits(), bytes);
+    for panic in [false, true] {
+        let bank = Arc::new(Semaphore::new(bytes));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let owner = Destination::new(&bank).unwrap().place(Value {
+            bank: bank.clone(),
+            drops: drops.clone(),
+            panic,
+        });
+        let freed = Arc::new(AtomicUsize::new(0));
+        let observed = freed.clone();
+        let charged = bank.clone();
+        let finished_drop = drops.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            after_free(
+                move || {
+                    assert_eq!(finished_drop.load(Ordering::SeqCst), 1);
+                    assert_eq!(
+                        charged.available_permits(),
+                        0,
+                        "body credit preceded original Box deallocation"
+                    );
+                    observed.fetch_add(1, Ordering::SeqCst);
+                },
+                || drop(owner),
+            );
+        }));
+        assert_eq!(result.is_err(), panic);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(freed.load(Ordering::SeqCst), 1);
+        assert_eq!(bank.available_permits(), bytes);
+    }
 }

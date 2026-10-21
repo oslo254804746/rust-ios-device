@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-21：L02 [context真实预付payload](validation/tunnel-context-payload-destinations-2026-10-21.md)
+Source/Failure/Cleanup和receipt在Source前准备各自实际Box目的地，原typed wrapper/IO地址保留，
+未用分支与最后payload真实释放后才退款；闭池/byvalue/析构展开/Source后零backing已验。
+完整CLI1760/0FAIL/13原ignored及严格门禁通过，全部Cargo/build由主控执行；opaque外壳仍待处理。
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [freshness输出拒绝与cause恢复](validation/tunnel-freshness-refusal-recovery-2026-10-21.md)
 真实H2目录在Source成功后publication峰值差一字节/错误UID/缺字段时保留原cache-table-registry，
 两次独立IO失败后成功清理registry causes，外部原report仍保持IO地址与独立最后退款。

@@ -124,15 +124,34 @@ async fn scan_all_shared_roots_are_preallocated_before_source_and_closed_drop_fi
         || outcomes.begin(lock.try_lock().unwrap()).unwrap(),
     );
     let before = allocated.lock().unwrap();
-    assert_eq!(before.len(), 2);
-    assert_eq!(before[0].0.size(), HistorySnapshot::body_bytes());
-    assert_eq!(before[1].0.size(), AbandonedScan::body_bytes());
+    assert_eq!(before.len(), 5);
+    assert_eq!(before[0].0, std::alloc::Layout::new::<SourcePayload>());
+    assert_eq!(
+        before[1].0,
+        std::alloc::Layout::new::<super::super::bookkeeping::FailurePayload>()
+    );
+    assert_eq!(
+        before[2].0,
+        std::alloc::Layout::new::<super::super::ScanCleanupPayload>()
+    );
+    {
+        let compound = session.compound.lock().unwrap();
+        let compound = compound.as_ref().unwrap();
+        assert_eq!(before[0].1, compound.source.as_ptr() as usize);
+        assert_eq!(before[1].1, compound.failure.as_ptr() as usize);
+        assert_eq!(
+            before[2].1,
+            session.cleanup.lock().unwrap().as_ref().unwrap().as_ptr() as usize
+        );
+    }
+    assert_eq!(before[3].0.size(), HistorySnapshot::body_bytes());
+    assert_eq!(before[4].0.size(), AbandonedScan::body_bytes());
     let history_pointer =
         std::ptr::from_ref(&**session.history_snapshot.as_ref().unwrap()) as usize;
     let abandoned_pointer = std::ptr::from_ref(&**session.abandoned.as_ref().unwrap()) as usize;
-    assert!(before[0].1 <= history_pointer && history_pointer < before[0].1 + before[0].0.size());
+    assert!(before[3].1 <= history_pointer && history_pointer < before[3].1 + before[3].0.size());
     assert!(
-        before[1].1 <= abandoned_pointer && abandoned_pointer < before[1].1 + before[1].0.size()
+        before[4].1 <= abandoned_pointer && abandoned_pointer < before[4].1 + before[4].0.size()
     );
     assert!(session.abandoned.as_ref().unwrap().original.get().is_none());
     assert_eq!(

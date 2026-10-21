@@ -76,13 +76,15 @@ pub(super) enum ScanIntent {
 
 // The primary bookkeeping error stays the original anyhow object. The context
 // exposes independent Source originals without allocating diagnostic strings.
-pub(super) struct SourceFailuresContext {
+pub(super) struct ReceiptPayload {
     receipts: KnownVec<super::reconnect::Receipt>,
-    _storage: OwnedSemaphorePermit,
+}
+pub(super) struct SourceFailuresContext {
+    payload: super::owned_box::Owner<ReceiptPayload>,
 }
 impl SourceFailuresContext {
     pub(super) fn receipts(&self) -> &[super::reconnect::Receipt] {
-        self.receipts.as_slice()
+        self.payload.receipts.as_slice()
     }
 }
 impl std::fmt::Display for SourceFailuresContext {
@@ -102,7 +104,7 @@ struct WriteState {
     receipts: KnownVec<super::reconnect::Receipt>,
     finished: bool,
     in_scan: bool,
-    context_storage: Option<OwnedSemaphorePermit>,
+    context_destination: Option<super::owned_box::Destination<ReceiptPayload>>,
 }
 
 pub(super) type WriteOwner = super::shared_allocation::Shared<FailureWriteOwner>;
@@ -161,14 +163,15 @@ impl FailureWriteOwner {
         for receipt in state.receipts.as_slice() {
             receipt.complete(completion);
         }
-        let context_storage = state
-            .context_storage
+        let destination = state
+            .context_destination
             .take()
             .expect("one admitted source failure context");
         match result {
             Err(error) if state.receipts.len() != 0 => Err(error.context(SourceFailuresContext {
-                receipts: state.receipts.take(),
-                _storage: context_storage,
+                payload: destination.place(ReceiptPayload {
+                    receipts: state.receipts.take(),
+                }),
             })),
             result => result,
         }
@@ -183,15 +186,16 @@ impl FailureWriteOwner {
         for receipt in state.receipts.as_slice() {
             receipt.complete(super::reconnect::Completion::Abandoned);
         }
-        let context_storage = state
-            .context_storage
+        let destination = state
+            .context_destination
             .take()
             .expect("one admitted source failure context");
         match primary {
             Some(error) if state.receipts.len() != 0 => {
                 Some(error.context(SourceFailuresContext {
-                    receipts: state.receipts.take(),
-                    _storage: context_storage,
+                    payload: destination.place(ReceiptPayload {
+                        receipts: state.receipts.take(),
+                    }),
                 }))
             }
             other => other,
@@ -263,11 +267,12 @@ impl WriteBatch {
         // Error Ready(Err) never has to acquire more bytes to keep its original.
         let mut payloads = super::admission::known_metadata_charge(
             bank,
-            FailureWriteOwner::body_bytes() + std::mem::size_of::<SourceFailuresContext>(),
+            FailureWriteOwner::body_bytes() + std::mem::size_of::<ReceiptPayload>(),
         )?;
         let owner_storage = payloads
             .split(FailureWriteOwner::body_bytes())
             .expect("reserved failure write owner payload");
+        let context_destination = super::owned_box::Destination::from_grant(bank, payloads)?;
         let mut intents = KnownVec::new(Arc::clone(bank), capacity);
         intents.reserve(capacity)?;
         let mut receipts = KnownVec::new(Arc::clone(bank), receipt_capacity);
@@ -279,7 +284,7 @@ impl WriteBatch {
                         receipts,
                         finished: false,
                         in_scan: false,
-                        context_storage: Some(payloads),
+                        context_destination: Some(context_destination),
                     }),
                 },
                 bank,
@@ -320,14 +325,14 @@ impl WriteBatch {
     #[cfg(test)]
     pub(super) fn success_only_bytes(capacity: usize) -> usize {
         FailureWriteOwner::body_bytes()
-            + std::mem::size_of::<SourceFailuresContext>()
+            + std::mem::size_of::<ReceiptPayload>()
             + capacity * std::mem::size_of::<ScanIntent>()
     }
 
     #[cfg(test)]
     pub(super) fn backing_bytes(capacity: usize) -> usize {
         FailureWriteOwner::body_bytes()
-            + std::mem::size_of::<SourceFailuresContext>()
+            + std::mem::size_of::<ReceiptPayload>()
             + capacity
                 * (std::mem::size_of::<ScanIntent>()
                     + std::mem::size_of::<super::reconnect::Receipt>())
@@ -363,29 +368,43 @@ impl std::fmt::Debug for ExternalIntentsContext {
 
 // Context leaves the original primary anyhow object in its downcast/source
 // chain. The independent secondary is inspectable without logging device data.
-pub(super) struct FailureContext {
+pub(super) struct FailurePayload {
     secondary: anyhow::Error,
-    _storage: Option<OwnedSemaphorePermit>,
+}
+
+enum FailureStorage {
+    Admitted(super::owned_box::Owner<FailurePayload>),
+    // Already-owned fixture causes stay external; no invented fee/admission.
+    #[cfg(test)]
+    External(FailurePayload),
+}
+pub(super) struct FailureContext {
+    payload: FailureStorage,
 }
 
 impl FailureContext {
     #[cfg(test)]
     pub(super) fn new(secondary: anyhow::Error) -> Self {
         Self {
-            secondary,
-            _storage: None,
+            payload: FailureStorage::External(FailurePayload { secondary }),
         }
     }
 
-    pub(super) fn admitted(secondary: anyhow::Error, storage: OwnedSemaphorePermit) -> Self {
+    pub(super) fn admitted(
+        secondary: anyhow::Error,
+        destination: super::owned_box::Destination<FailurePayload>,
+    ) -> Self {
         Self {
-            secondary,
-            _storage: Some(storage),
+            payload: FailureStorage::Admitted(destination.place(FailurePayload { secondary })),
         }
     }
 
     pub(super) fn secondary(&self) -> &anyhow::Error {
-        &self.secondary
+        match &self.payload {
+            FailureStorage::Admitted(payload) => &payload.secondary,
+            #[cfg(test)]
+            FailureStorage::External(payload) => &payload.secondary,
+        }
     }
 }
 
@@ -401,7 +420,7 @@ impl std::fmt::Debug for FailureContext {
             .debug_struct("TunnelScanBookkeepingFailure")
             .field(
                 "secondary_class",
-                &ios_core::classify_error(self.secondary.as_ref()),
+                &ios_core::classify_error(self.secondary().as_ref()),
             )
             .finish()
     }
