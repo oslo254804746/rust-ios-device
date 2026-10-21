@@ -346,7 +346,6 @@ async fn receive_actual_8192_channel_device_and_last_rx_token_share_the_same_buf
         bank: Some(Arc::clone(&bank)),
         ledger: ledger.clone(),
         stop,
-        stopped: Arc::new(AtomicBool::new(false)),
     };
     let mut device = ChannelDevice::new(mtu, storage);
     device.rx_buf.push_back(first).unwrap();

@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-21：L02 [runtime stop bit 并入原付费根](validation/tunnel-runtime-stop-inline-2026-10-21.md)
+删除 stopped 私有 Arc，把原 Acquire/Release bit 放入已准入的原 Ledger 根，listener/worker 前覆盖完整布局；
+原 cause→stop→通知顺序、A/B 隔离、closed0 原地址与原 IO/最后报告费用保持。
+stop2/无mDNS2/tunnel142/完整CLI1765/0FAIL/13原ignored及23命令通过，全部Cargo/build由主控执行；
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [Core child task set 完整分配](validation/tunnel-core-child-full-allocation-2026-10-21.md)
 完整声明根由原 bank 创建前支付，最后 owner 在原位析构 State，栈 guard 真正释放根后才退费用；
 closed0/析构展开/原地址/并发最后 owner、原 native JoinError、pending/实际 drain 与 strict EOF 保持。

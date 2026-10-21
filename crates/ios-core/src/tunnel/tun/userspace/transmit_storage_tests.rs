@@ -70,7 +70,7 @@ fn transmit_token_quota_refusal_records_original_error_stops_and_exposes_no_toke
     let stop = storage.stop.subscribe();
     let mut device = ChannelDevice::new(mtu, storage.clone());
     assert!(device.transmit(smol_now()).is_none());
-    assert!(storage.stopped.load(Ordering::Acquire));
+    assert!(storage.stopped());
     assert!(stop.has_changed().unwrap());
     let error = storage.result().unwrap_err();
     assert_eq!(
