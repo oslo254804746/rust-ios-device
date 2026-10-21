@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-21：L02 [channel 与 native slot 完整根](validation/tunnel-channel-full-roots-2026-10-21.md)
+原 bank 在三个 backing 前整笔支付两份完整根与原 ring，保留原 Tokio 公平许可/取消/close；
+原地址、闭池/独立最后 permit、任意 !Unpin T 原位析构与展开、真实释放后退款已验。
+channel13/无mDNS13/tunnel148/完整CLI1765/0FAIL/13原ignored及25命令通过，全部Cargo/build由主控执行；
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-21：L02 [runtime stop bit 并入原付费根](validation/tunnel-runtime-stop-inline-2026-10-21.md)
 删除 stopped 私有 Arc，把原 Acquire/Release bit 放入已准入的原 Ledger 根，listener/worker 前覆盖完整布局；
 原 cause→stop→通知顺序、A/B 隔离、closed0 原地址与原 IO/最后报告费用保持。

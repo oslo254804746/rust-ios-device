@@ -1,5 +1,5 @@
 //! Metered message storage has an actual fixed backing; legacy uses Tokio.
-//! Notify/semaphore waiter futures and Arc allocator headers remain separate.
+//! Complete private roots are prepaid; opaque waiter/task internals remain separate.
 use std::collections::VecDeque;
 use std::mem;
 use std::sync::{Arc, Mutex};
@@ -10,11 +10,14 @@ use super::owned_buffer::{rejected, BufferAdmission};
 use super::runtime_storage::charge;
 use super::TunnelError;
 
+mod roots;
+use roots::{Destination, Root, SlotPermit, Slots};
+
 pub(super) use legacy::error;
 
 struct Entry<T> {
     value: T,
-    _slot: OwnedSemaphorePermit,
+    _slot: SlotPermit,
 }
 struct State<T> {
     items: VecDeque<Entry<T>>,
@@ -24,10 +27,9 @@ struct State<T> {
 }
 pub(super) struct Shared<T> {
     state: Mutex<State<T>>,
-    slots: Arc<Semaphore>,
+    slots: Slots,
     arrived: Notify,
     closed: Notify,
-    _body: OwnedSemaphorePermit,
 }
 struct Detached<T> {
     _items: VecDeque<Entry<T>>,
@@ -36,11 +38,11 @@ struct Detached<T> {
 
 pub(super) enum Sender<T> {
     Legacy(legacy::Sender<T>),
-    Metered(Arc<Shared<T>>),
+    Metered(Root<Shared<T>>),
 }
 pub(super) enum Receiver<T> {
     Legacy(legacy::Receiver<T>),
-    Metered(Arc<Shared<T>>),
+    Metered(Root<Shared<T>>),
 }
 
 #[cfg(test)]
@@ -61,47 +63,44 @@ pub(super) fn with_bank<T>(
     let bytes = capacity
         .checked_mul(mem::size_of::<Entry<T>>())
         .ok_or_else(|| rejected(BufferAdmission::SizeOverflow))?;
-    let body_bytes = mem::size_of::<Shared<T>>()
-        .checked_add(mem::size_of::<Semaphore>())
+    let body_bytes = Root::<Shared<T>>::body_bytes()
+        .checked_add(Slots::body_bytes())
         .ok_or_else(|| rejected(BufferAdmission::SizeOverflow))?;
-    let body = charge(Some(bank), body_bytes)?.expect("metered channel body");
-    let mut backing = charge(Some(bank), bytes)?.expect("metered channel backing");
-    let mut items = VecDeque::new();
-    items
-        .try_reserve_exact(capacity)
-        .map_err(|original| rejected(BufferAdmission::Allocation(original)))?;
-    let actual = items
-        .capacity()
-        .checked_mul(mem::size_of::<Entry<T>>())
+    let whole_bytes = body_bytes
+        .checked_add(bytes)
         .ok_or_else(|| rejected(BufferAdmission::SizeOverflow))?;
-    if actual > bytes {
-        return Err(rejected(BufferAdmission::UnexpectedCapacity));
-    }
-    let exact = backing.split(actual).expect("prepaid channel capacity");
-    drop(backing);
-    let shared = Arc::new(Shared {
+    let mut whole = charge(Some(bank), whole_bytes)?.expect("whole channel roots and ring");
+    let shared_fee = whole
+        .split(Root::<Shared<T>>::body_bytes())
+        .expect("admitted channel root");
+    let slot_fee = whole
+        .split(Slots::body_bytes())
+        .expect("admitted slot root");
+    let destination = Destination::from_grant(bank, shared_fee)?;
+    let slots = Destination::from_grant(bank, slot_fee)?;
+    let (backing, items) =
+        crate::device::prepared_rsd::exact_vec_from_grant::<Entry<T>>(bank, capacity, whole)
+            .map_err(|source| TunnelError::Io(std::io::Error::other(source)))?;
+    // Vec -> VecDeque is publicly guaranteed O(1), with no reallocation or
+    // additional allocation. The exact original empty ring remains unchanged.
+    let items = VecDeque::from(items);
+    let shared = destination.finish(Shared {
         state: Mutex::new(State {
             items,
             senders: 1,
             receiver: true,
-            backing: Some(exact),
+            backing: Some(backing),
         }),
-        slots: Arc::new(Semaphore::new(capacity)),
+        slots: Slots::place(slots, capacity),
         arrived: Notify::new(),
         closed: Notify::new(),
-        _body: body,
     });
-    Ok((
-        Sender::Metered(Arc::clone(&shared)),
-        Receiver::Metered(shared),
-    ))
+    Ok((Sender::Metered(shared.clone()), Receiver::Metered(shared)))
 }
 
 #[cfg(test)]
 pub(super) fn required_bytes<T>(capacity: usize) -> usize {
-    capacity * mem::size_of::<Entry<T>>()
-        + mem::size_of::<Shared<T>>()
-        + mem::size_of::<Semaphore>()
+    capacity * mem::size_of::<Entry<T>>() + Root::<Shared<T>>::body_bytes() + Slots::body_bytes()
 }
 
 impl<T> Shared<T> {
@@ -110,7 +109,7 @@ impl<T> Shared<T> {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
-    fn enqueue(&self, value: T, slot: OwnedSemaphorePermit) -> Result<(), error::SendError<T>> {
+    fn enqueue(&self, value: T, slot: SlotPermit) -> Result<(), error::SendError<T>> {
         let mut state = self.lock();
         if !state.receiver {
             drop(state);
@@ -135,7 +134,7 @@ impl<T> Clone for Sender<T> {
                     .checked_add(1)
                     .expect("live sender count overflow");
                 drop(state);
-                Self::Metered(Arc::clone(shared))
+                Self::Metered(shared.clone())
             }
         }
     }
@@ -145,7 +144,7 @@ impl<T> Sender<T> {
         match self {
             Self::Legacy(sender) => sender.send(value).await,
             Self::Metered(shared) => {
-                let slot = match Arc::clone(&shared.slots).acquire_owned().await {
+                let slot = match shared.slots.clone().acquire_owned().await {
                     Ok(slot) => slot,
                     Err(_) => return Err(error::SendError(value)),
                 };
@@ -159,7 +158,7 @@ impl<T> Sender<T> {
         match self {
             Self::Legacy(sender) => sender.try_send(value),
             Self::Metered(shared) => {
-                let slot = match Arc::clone(&shared.slots).try_acquire_owned() {
+                let slot = match shared.slots.clone().try_acquire_owned() {
                     Ok(slot) => slot,
                     Err(_) => {
                         return Err(if shared.lock().receiver {

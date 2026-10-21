@@ -16,7 +16,7 @@ fn channel_actual_body_backing_exact_and_one_byte_refusal_refund() {
                     panic!("metered channel used legacy storage")
                 };
                 assert_eq!(shared.lock().items.capacity(), 3);
-                let body = shared._body.num_permits();
+                let body = Root::<Shared<u64>>::body_bytes() + Slots::body_bytes();
                 drop(receiver);
                 assert_eq!(bank.available_permits(), needed - body);
                 drop(sender);
@@ -31,6 +31,132 @@ fn channel_actual_body_backing_exact_and_one_byte_refusal_refund() {
         }
         assert_eq!(bank.available_permits(), limit);
     }
+}
+
+#[test]
+fn channel_whole_root_and_ring_refusal_precedes_every_backing_and_keeps_original_three_allocations()
+{
+    use crate::device::prepared_rsd::with_allocation_hook;
+    use std::{alloc::Layout, sync::Mutex};
+    let bytes = required_bytes::<u64>(3);
+    let short = Arc::new(Semaphore::new(bytes - 1));
+    let error = with_allocation_hook(
+        |_, _| panic!("incomplete whole channel grant created a backing"),
+        || match with_bank::<u64>(3, Some(&short)) {
+            Err(error) => error,
+            Ok(_) => panic!("short channel accepted"),
+        },
+    );
+    assert_eq!(
+        crate::classify_error(&error),
+        crate::ErrorClass::ResourceLimit
+    );
+    assert_eq!(short.available_permits(), bytes - 1);
+    let bank = Arc::new(Semaphore::new(bytes));
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let records = observed.clone();
+    let observed_bank = bank.clone();
+    let (sender, receiver) = with_allocation_hook(
+        move |layout, pointer| {
+            assert_eq!(
+                observed_bank.available_permits(),
+                0,
+                "whole debit must precede all root/ring backings"
+            );
+            records.lock().unwrap().push((layout, pointer));
+        },
+        || with_bank::<u64>(3, Some(&bank)).unwrap(),
+    );
+    let Sender::Metered(shared) = &sender else {
+        panic!("original bank bypassed");
+    };
+    let records = observed.lock().unwrap();
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        (records[0].0.size(), records[0].1),
+        (
+            Root::<Shared<u64>>::body_bytes(),
+            shared.allocation_address()
+        )
+    );
+    assert_eq!(
+        (records[1].0.size(), records[1].1),
+        (Slots::body_bytes(), shared.slots.allocation_address())
+    );
+    assert_eq!(records[2].0, Layout::array::<Entry<u64>>(3).unwrap());
+    assert_eq!(
+        shared.lock().items.as_slices().0.as_ptr() as usize,
+        records[2].1
+    );
+    bank.close();
+    with_allocation_hook(
+        |_, _| panic!("closed channel operation created a controlled backing"),
+        || {
+            let kept = sender.clone();
+            let Sender::Metered(clone) = &kept else {
+                panic!("clone bypassed");
+            };
+            assert_eq!(clone.allocation_address(), shared.allocation_address());
+            assert_eq!(
+                clone.slots.allocation_address(),
+                shared.slots.allocation_address()
+            );
+            kept.try_send(7).unwrap();
+            drop(kept);
+        },
+    );
+    let mut receiver = receiver;
+    assert_eq!(receiver.try_recv().unwrap(), 7);
+    assert_eq!(bank.available_permits(), 0);
+    let freed = Arc::new(Mutex::new(Vec::new()));
+    let seen_free = freed.clone();
+    let free_bank = bank.clone();
+    let slot_pointer = shared.slots.allocation_address();
+    let root_pointer = shared.allocation_address();
+    drop(receiver);
+    let ring_bytes = records[2].0.size();
+    let slot_bytes = Slots::body_bytes();
+    assert_eq!(bank.available_permits(), ring_bytes);
+    roots::after_free(
+        move |_, pointer| {
+            if pointer == slot_pointer {
+                assert_eq!(free_bank.available_permits(), ring_bytes);
+            } else {
+                assert_eq!(pointer, root_pointer);
+                assert_eq!(free_bank.available_permits(), ring_bytes + slot_bytes);
+            }
+            seen_free.lock().unwrap().push(pointer);
+        },
+        || drop(sender),
+    );
+    assert_eq!(&*freed.lock().unwrap(), &[slot_pointer, root_pointer]);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[test]
+fn channel_original_slot_permit_outlives_channel_root_with_its_independent_whole_fee() {
+    let bytes = required_bytes::<u8>(1);
+    let slot_bytes = Slots::body_bytes();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let (sender, receiver) = with_bank::<u8>(1, Some(&bank)).unwrap();
+    let Sender::Metered(shared) = &sender else {
+        panic!("bank bypassed");
+    };
+    let pointer = shared.slots.allocation_address();
+    let permit = shared.slots.clone().try_acquire_owned().unwrap();
+    bank.close();
+    drop((receiver, sender));
+    assert_eq!(bank.available_permits(), bytes - slot_bytes);
+    let credit = bank.clone();
+    roots::after_free(
+        move |layout, address| {
+            assert_eq!(address, pointer);
+            assert_eq!(layout.size(), slot_bytes);
+            assert_eq!(credit.available_permits(), bytes - slot_bytes);
+        },
+        || drop(permit),
+    );
+    assert_eq!(bank.available_permits(), bytes);
 }
 
 #[tokio::test]
