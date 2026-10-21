@@ -133,25 +133,23 @@ impl PreparedRsdCatalogue {
             .ok()
             .map(|index| &self.rows[index])
     }
-    pub(super) fn resolved(
+    pub(super) fn with_resolved<T>(
         &self,
         requested: &str,
-    ) -> Option<super::service_routing::ResolvedRsdService> {
+        project: impl FnOnce(&str, u16, &mut dyn Iterator<Item = &str>) -> T,
+    ) -> Option<T> {
         let row = self.find(requested).or_else(|| {
             self.rows
                 .iter()
                 .find(|row| row.name.text.strip_suffix(".shim.remote") == Some(requested))
         })?;
-        Some(super::service_routing::ResolvedRsdService {
-            resolved_service_name: row.name.text.clone(),
-            port: row.port,
-            features: row.features.as_ref().map_or_else(Vec::new, |features| {
-                features
-                    .iter()
-                    .map(|feature| feature.text.clone())
-                    .collect()
-            }),
-        })
+        let mut features = row
+            .features
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|feature| feature.text.as_str());
+        Some(project(&row.name.text, row.port, &mut features))
     }
     #[cfg(test)]
     pub(crate) fn decode(

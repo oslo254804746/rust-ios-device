@@ -312,6 +312,79 @@ fn owned_prepared(bank: &Arc<Semaphore>) -> PreparedRsdOwner {
         )
         .unwrap()
 }
+
+#[test]
+fn prepared_owned_route_projection_borrows_canonical_and_shim_fields_at_closed_zero_quota() {
+    for canonical in [true, false] {
+        let bank = Arc::new(Semaphore::new(65536));
+        let mut input = directory(12345);
+        let XpcValue::Dictionary(services) = input.get_mut("Services").unwrap() else {
+            unreachable!()
+        };
+        let mut shim = services[SERVICE].clone();
+        let XpcValue::Dictionary(shim_descriptor) = &mut shim else {
+            unreachable!()
+        };
+        shim_descriptor.insert("Port".into(), XpcValue::Uint64(23456));
+        services.insert(format!("{SERVICE}.shim.remote"), shim);
+        if !canonical {
+            services.shift_remove(SERVICE);
+        }
+        let pending = PendingOwned::decode(&input, &bank).unwrap();
+        let (fee, mut modes) = exact_vec(&bank, 1).unwrap();
+        modes.push(super::super::existing_rsd::RsdHandshakeMode::Direct);
+        let root = pending
+            .finish(
+                RsdSelectionReceipt {
+                    handshake_mode: super::super::existing_rsd::RsdHandshakeMode::Direct,
+                    attempted_modes: modes,
+                },
+                fee,
+            )
+            .unwrap();
+        let paid = root.known_bytes();
+        let row = &root.rows[0];
+        let name = row.name.text.as_ptr() as usize;
+        let feature = row.features.as_ref().unwrap()[0].text.as_ptr() as usize;
+        let rest = bank
+            .clone()
+            .try_acquire_many_owned(bank.available_permits() as u32)
+            .unwrap();
+        bank.close();
+        let projected = with_allocation_hook(
+            |_, _| panic!("route projection created a controlled backing"),
+            || {
+                root.with_resolved(SERVICE, |name, port, features| {
+                    (
+                        name.as_ptr() as usize,
+                        port,
+                        features.next().unwrap().as_ptr() as usize,
+                        name.ends_with(".shim.remote"),
+                    )
+                })
+                .unwrap()
+            },
+        );
+        assert_eq!(
+            projected,
+            (
+                name,
+                if canonical { 12345 } else { 23456 },
+                feature,
+                !canonical
+            )
+        );
+        assert!(root
+            .with_resolved("missing", |_, _, _| panic!("projected a missing service"))
+            .is_none());
+        assert_eq!(bank.available_permits(), 0);
+        drop(root);
+        assert_eq!(bank.available_permits(), paid);
+        drop(rest);
+        assert_eq!(bank.available_permits(), 65536);
+    }
+}
+
 #[test]
 fn prepared_owned_root_exports_keep_original_body_rows_features_and_selection_until_last_owner() {
     let bank = Arc::new(Semaphore::new(65536));
