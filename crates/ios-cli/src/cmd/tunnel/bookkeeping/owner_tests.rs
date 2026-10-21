@@ -62,6 +62,14 @@ fn original(receipt: &Receipt) -> usize {
 async fn write_owner_actual_session_retains_original_batch_root_and_finishes_error_at_zero_quota() {
     let (bank, batch, receipt, pointer) = fixture().await;
     let owner = batch.owner();
+    let payload_pointer = owner
+        .state
+        .lock()
+        .unwrap()
+        .context_destination
+        .as_ref()
+        .unwrap()
+        .as_ptr();
     let lock = tokio::sync::Mutex::new(());
     let outcomes = super::super::scan::Outcomes::with_metadata(bank.clone()).unwrap();
     let session = outcomes.begin(lock.lock().await).unwrap();
@@ -81,12 +89,21 @@ async fn write_owner_actual_session_retains_original_batch_root_and_finishes_err
     ));
     let completion_pointer =
         completion.downcast_ref::<std::io::Error>().unwrap() as *const _ as usize;
-    let error = session.finish(Err(completion)).unwrap_err();
+    bank.close();
+    let error = super::super::metadata_vec::with_allocation_hook(
+        |_, _| panic!("finish allocated a post-Source context body"),
+        || session.finish(Err(completion)).unwrap_err(),
+    );
     assert_eq!(
         error.downcast_ref::<std::io::Error>().unwrap() as *const _ as usize,
         completion_pointer
     );
     let context = error.downcast_ref::<SourceFailuresContext>().unwrap();
+    assert_eq!(&*context.payload as *const ReceiptPayload, payload_pointer);
+    assert_eq!(
+        context.payload.bytes_in(&bank).unwrap(),
+        std::mem::size_of::<ReceiptPayload>()
+    );
     assert!(context.receipts()[0].ptr_eq(&receipt));
     assert_eq!(original(&context.receipts()[0]), pointer);
     assert_eq!(
@@ -95,7 +112,19 @@ async fn write_owner_actual_session_retains_original_batch_root_and_finishes_err
     );
     drop(owner);
     assert_eq!(original(&receipt), pointer);
-    drop(error);
+    let context = error.downcast::<SourceFailuresContext>().unwrap();
+    assert_eq!(&*context.payload as *const ReceiptPayload, payload_pointer);
+    let before = bank.available_permits();
+    let backing = context.payload.receipts.capacity() * std::mem::size_of::<Receipt>();
+    let charged = bank.clone();
+    super::super::owned_box::after_free(
+        move || assert_eq!(charged.available_permits(), before + backing),
+        || drop(context),
+    );
+    assert_eq!(
+        bank.available_permits(),
+        before + backing + std::mem::size_of::<ReceiptPayload>()
+    );
     assert_eq!(
         receipt.completion(),
         Completion::Failed(ios_core::ErrorClass::Timeout)
@@ -123,7 +152,7 @@ async fn write_owner_parallel_last_roots_complete_only_pending_receipts_and_refu
         let owner = batch.owner();
         let original_owner = &*owner as *const FailureWriteOwner as usize;
         let released = FailureWriteOwner::body_bytes()
-            + std::mem::size_of::<SourceFailuresContext>()
+            + std::mem::size_of::<ReceiptPayload>()
             + owner.state.lock().unwrap().receipts.capacity() * std::mem::size_of::<Receipt>();
         let mut owners = (0..7).map(|_| owner.clone()).collect::<Vec<_>>();
         owners.push(owner);
@@ -175,5 +204,54 @@ async fn write_owner_session_caller_drop_abandons_original_receipt_without_losin
     drop(owner);
     assert_eq!(original(&receipt), pointer);
     drop((held, receipt, outcomes));
+    assert_eq!(bank.available_permits(), TOTAL);
+}
+
+#[tokio::test]
+async fn write_owner_closed_pool_abandon_moves_original_receipt_payload_without_new_backing() {
+    let (bank, batch, receipt, pointer) = fixture().await;
+    let owner = batch.owner();
+    let payload_pointer = owner
+        .state
+        .lock()
+        .unwrap()
+        .context_destination
+        .as_ref()
+        .unwrap()
+        .as_ptr();
+    drop(batch);
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    bank.close();
+    assert_eq!(bank.available_permits(), 0);
+    let primary = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    let primary_pointer = primary.downcast_ref::<std::io::Error>().unwrap() as *const _ as usize;
+    let error = super::super::metadata_vec::with_allocation_hook(
+        |_, _| panic!("abandon allocated a new receipt payload after Source"),
+        || owner.abandon(Some(primary)).unwrap(),
+    );
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap() as *const _ as usize,
+        primary_pointer
+    );
+    assert_eq!(receipt.completion(), Completion::Abandoned);
+    let context = error.downcast_ref::<SourceFailuresContext>().unwrap();
+    assert_eq!(&*context.payload as *const ReceiptPayload, payload_pointer);
+    assert!(context.receipts()[0].ptr_eq(&receipt));
+    assert_eq!(original(&context.receipts()[0]), pointer);
+    assert_eq!(
+        context.payload.bytes_in(&bank).unwrap(),
+        std::mem::size_of::<ReceiptPayload>()
+    );
+    assert_eq!(bank.available_permits(), 0);
+    drop(owner);
+    let context = error.downcast::<SourceFailuresContext>().unwrap();
+    assert_eq!(&*context.payload as *const ReceiptPayload, payload_pointer);
+    assert_eq!(original(&context.receipts()[0]), pointer);
+    drop(context);
+    assert_eq!(original(&receipt), pointer);
+    drop((receipt, held));
     assert_eq!(bank.available_permits(), TOTAL);
 }

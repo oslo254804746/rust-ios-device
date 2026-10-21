@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::sync::{watch, MutexGuard, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{watch, MutexGuard, Semaphore};
 use tokio::time::Instant;
 
 pub(super) const MAX_ABANDONED_SCANS: usize = 8;
@@ -105,14 +105,13 @@ pub(super) struct Outcomes {
 }
 
 fn compound_bytes() -> usize {
-    std::mem::size_of::<SourceContext>()
-        .max(std::mem::size_of::<super::bookkeeping::FailureContext>())
+    std::mem::size_of::<SourcePayload>() + std::mem::size_of::<super::bookkeeping::FailurePayload>()
 }
 
 pub(super) fn capsule_reservation_bytes() -> usize {
     compound_bytes()
         + AbandonedScan::body_bytes()
-        + std::mem::size_of::<super::ScanCleanupFailure>()
+        + std::mem::size_of::<super::ScanCleanupPayload>()
         + HistorySnapshot::body_bytes()
 }
 
@@ -165,12 +164,22 @@ impl OutcomesOwner {
         // return an error. No later quota refusal may discard that original.
         let mut storage =
             super::admission::known_metadata_charge(&self.bank, capsule_reservation_bytes())?;
-        let compound = storage
-            .split(compound_bytes())
-            .expect("reserved compound bytes");
+        let source_storage = storage
+            .split(std::mem::size_of::<SourcePayload>())
+            .expect("reserved source payload bytes");
+        let failure_storage = storage
+            .split(std::mem::size_of::<super::bookkeeping::FailurePayload>())
+            .expect("reserved completion payload bytes");
         let cleanup = storage
-            .split(std::mem::size_of::<super::ScanCleanupFailure>())
+            .split(std::mem::size_of::<super::ScanCleanupPayload>())
             .expect("reserved cleanup bytes");
+        // Every branch owns its actual distinct empty allocation before Source.
+        // Choosing a context later moves values into it without new backing.
+        let compound = ContextDestinations {
+            source: super::owned_box::Destination::from_grant(&self.bank, source_storage)?,
+            failure: super::owned_box::Destination::from_grant(&self.bank, failure_storage)?,
+        };
+        let cleanup = super::owned_box::Destination::from_grant(&self.bank, cleanup)?;
         let snapshot_storage = storage
             .split(HistorySnapshot::body_bytes())
             .expect("reserved immutable history snapshot body");
@@ -251,10 +260,8 @@ pub(super) struct Session<'a> {
     index: usize,
     acquired: StdMutex<Acquired>,
     writes: StdMutex<Option<super::bookkeeping::WriteOwner>>,
-    // Stack-held prospective permits are not a claim about stack/heap size.
-    // Only actually materialized app-owned payloads receive their exact slice.
-    compound: StdMutex<Option<OwnedSemaphorePermit>>,
-    cleanup: StdMutex<Option<OwnedSemaphorePermit>>,
+    compound: StdMutex<Option<ContextDestinations>>,
+    cleanup: StdMutex<Option<super::owned_box::Destination<super::ScanCleanupPayload>>>,
     abandoned: Option<AbandonedOwner>,
     history_snapshot: Option<HistoryOwner>,
     // Drop records the original error before this guard admits another scanner.
@@ -301,7 +308,7 @@ impl Acquired {
     fn finish(
         mut self,
         mut completion: Option<anyhow::Error>,
-        storage: &StdMutex<Option<OwnedSemaphorePermit>>,
+        destinations: &StdMutex<Option<ContextDestinations>>,
     ) -> Option<anyhow::Error> {
         let primary = self
             .usb
@@ -316,57 +323,64 @@ impl Acquired {
             return Some(match completion {
                 Some(error) => primary.context(super::bookkeeping::FailureContext::admitted(
                     error,
-                    materialize::<super::bookkeeping::FailureContext>(storage),
+                    take_destinations(destinations).failure,
                 )),
                 None => primary,
             });
         }
         Some(primary.context(SourceContext {
-            usb: self.usb,
-            paired: self.paired,
-            coordinator: self.coordinator,
-            freshness: self.freshness,
-            completion,
-            _storage: materialize::<SourceContext>(storage),
+            payload: take_destinations(destinations).source.place(SourcePayload {
+                usb: self.usb,
+                paired: self.paired,
+                coordinator: self.coordinator,
+                freshness: self.freshness,
+                completion,
+            }),
         }))
     }
 }
 
-/// The primary remains the original anyhow object. Independent causes are
-/// owned by one safe typed context, without exposing their arbitrary strings.
-pub(super) struct SourceContext {
+// Each branch owns a distinct original allocation and its complete grant.
+// The unused branch is physically freed before its own credit returns.
+struct ContextDestinations {
+    source: super::owned_box::Destination<SourcePayload>,
+    failure: super::owned_box::Destination<super::bookkeeping::FailurePayload>,
+}
+
+pub(super) struct SourcePayload {
     usb: Option<anyhow::Error>,
     paired: Option<anyhow::Error>,
     coordinator: Option<anyhow::Error>,
     freshness: Option<anyhow::Error>,
     completion: Option<anyhow::Error>,
-    _storage: OwnedSemaphorePermit,
 }
 
-fn materialize<T>(storage: &StdMutex<Option<OwnedSemaphorePermit>>) -> OwnedSemaphorePermit {
-    let mut reserved = storage
+/// The primary remains the original anyhow object. Independent causes use the
+/// original pre-Source payload Box; the opaque outer context is still separate.
+pub(super) struct SourceContext {
+    payload: super::owned_box::Owner<SourcePayload>,
+}
+
+fn take_destinations(destinations: &StdMutex<Option<ContextDestinations>>) -> ContextDestinations {
+    destinations
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .take()
-        .expect("one terminal compound context per admitted scan");
-    // The unused maximum is refunded before constructing the chosen payload.
-    reserved
-        .split(std::mem::size_of::<T>())
-        .expect("reserved exact context payload")
+        .expect("one terminal compound context per admitted scan")
 }
 
 impl SourceContext {
     pub(super) fn secondary(&self, source: Source) -> Option<&anyhow::Error> {
         match source {
-            Source::Usb => self.usb.as_ref(),
-            Source::Paired => self.paired.as_ref(),
-            Source::Coordinator => self.coordinator.as_ref(),
-            Source::Freshness => self.freshness.as_ref(),
+            Source::Usb => self.payload.usb.as_ref(),
+            Source::Paired => self.payload.paired.as_ref(),
+            Source::Coordinator => self.payload.coordinator.as_ref(),
+            Source::Freshness => self.payload.freshness.as_ref(),
         }
     }
 
     pub(super) fn completion(&self) -> Option<&anyhow::Error> {
-        self.completion.as_ref()
+        self.payload.completion.as_ref()
     }
 }
 
@@ -384,11 +398,11 @@ impl std::fmt::Debug for SourceContext {
                 .map(|error| crate::output::operation_error_class(error.as_ref()))
         };
         f.debug_struct("TunnelScanSources")
-            .field("usb_class", &class(&self.usb))
-            .field("paired_class", &class(&self.paired))
-            .field("coordinator_class", &class(&self.coordinator))
-            .field("freshness_class", &class(&self.freshness))
-            .field("completion_class", &class(&self.completion))
+            .field("usb_class", &class(&self.payload.usb))
+            .field("paired_class", &class(&self.payload.paired))
+            .field("coordinator_class", &class(&self.payload.coordinator))
+            .field("freshness_class", &class(&self.payload.freshness))
+            .field("completion_class", &class(&self.payload.completion))
             .finish()
     }
 }
@@ -424,7 +438,9 @@ impl Session<'_> {
         self.take_acquired().finish(None, &self.compound)
     }
 
-    pub(super) fn cleanup_storage(&self) -> OwnedSemaphorePermit {
+    pub(super) fn cleanup_destination(
+        &self,
+    ) -> super::owned_box::Destination<super::ScanCleanupPayload> {
         self.cleanup
             .lock()
             .unwrap_or_else(|p| p.into_inner())

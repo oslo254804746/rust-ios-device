@@ -23,7 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(test)]
 use tokio::sync::Notify;
-use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{watch, Mutex, RwLock, Semaphore};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
 
@@ -570,10 +570,30 @@ struct FailedTunnelAttempt {
     slot: Option<failure_slot::Owner>,
 }
 
-struct ScanCleanupFailure {
+struct ScanCleanupPayload {
     primary: anyhow::Error,
     cleanup: anyhow::Error,
-    _storage: OwnedSemaphorePermit,
+}
+
+struct ScanCleanupFailure {
+    payload: owned_box::Owner<ScanCleanupPayload>,
+}
+impl ScanCleanupFailure {
+    fn admitted(
+        primary: anyhow::Error,
+        cleanup: anyhow::Error,
+        destination: owned_box::Destination<ScanCleanupPayload>,
+    ) -> Self {
+        Self {
+            payload: destination.place(ScanCleanupPayload { primary, cleanup }),
+        }
+    }
+}
+impl std::ops::Deref for ScanCleanupFailure {
+    type Target = ScanCleanupPayload;
+    fn deref(&self) -> &Self::Target {
+        &self.payload
+    }
 }
 
 impl std::fmt::Display for ScanCleanupFailure {
@@ -2239,11 +2259,11 @@ impl TunnelAgentState {
                     }
                     Ok(None) => {}
                     Err(cleanup) => {
-                        return Err(ScanCleanupFailure {
-                            primary: session.take().expect("acquired list primary"),
+                        return Err(ScanCleanupFailure::admitted(
+                            session.take().expect("acquired list primary"),
                             cleanup,
-                            _storage: session.cleanup_storage(),
-                        }
+                            session.cleanup_destination(),
+                        )
                         .into());
                     }
                 }

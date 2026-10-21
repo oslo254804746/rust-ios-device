@@ -18,20 +18,20 @@ fn write_batch_bytes_exact_backings_and_whole_shared_owner_refuse_last_byte_and_
             || WriteBatch::new(&bank, capacity).unwrap(),
         );
         let observed = allocated.lock().unwrap();
-        assert_eq!(observed.len(), if capacity == 0 { 1 } else { 4 });
+        assert_eq!(observed.len(), if capacity == 0 { 2 } else { 5 });
         if capacity != 0 {
             assert_eq!(observed[0].0.size(), Destination::minimum_bytes());
             assert_eq!(
-                observed[1].0,
+                observed[2].0,
                 std::alloc::Layout::array::<ScanIntent>(capacity).unwrap()
             );
-            assert_eq!(observed[1].1, batch.intents.as_slice().as_ptr() as usize);
+            assert_eq!(observed[2].1, batch.intents.as_slice().as_ptr() as usize);
             assert_eq!(
-                observed[2].0,
+                observed[3].0,
                 std::alloc::Layout::array::<super::super::reconnect::Receipt>(capacity).unwrap()
             );
             assert_eq!(
-                observed[2].1,
+                observed[3].1,
                 batch
                     .owner
                     .state
@@ -42,6 +42,36 @@ fn write_batch_bytes_exact_backings_and_whole_shared_owner_refuse_last_byte_and_
                     .as_ptr() as usize
             );
         }
+        let payload_index = usize::from(capacity != 0);
+        assert_eq!(
+            observed[payload_index].0,
+            std::alloc::Layout::new::<ReceiptPayload>()
+        );
+        assert_eq!(
+            observed[payload_index].1,
+            batch
+                .owner
+                .state
+                .lock()
+                .unwrap()
+                .context_destination
+                .as_ref()
+                .unwrap()
+                .as_ptr() as usize
+        );
+        // The owner and this actual payload were admitted together before alloc.
+        let destination_bytes = if capacity == 0 {
+            0
+        } else {
+            Destination::minimum_bytes()
+        };
+        assert_eq!(
+            observed[payload_index].2,
+            bytes
+                - destination_bytes
+                - FailureWriteOwner::body_bytes()
+                - std::mem::size_of::<ReceiptPayload>()
+        );
         let last = observed.last().unwrap();
         assert_eq!(last.0.size(), FailureWriteOwner::body_bytes());
         assert_eq!(last.2, 0);
@@ -80,7 +110,7 @@ fn write_batch_payload_last_shared_owner_keeps_actual_body_and_refunds_unused_co
     let bytes = WriteBatch::backing_bytes(0);
     assert_eq!(
         bytes,
-        FailureWriteOwner::body_bytes() + std::mem::size_of::<SourceFailuresContext>()
+        FailureWriteOwner::body_bytes() + std::mem::size_of::<ReceiptPayload>()
     );
     let bank = Arc::new(Semaphore::new(bytes));
     let batch = WriteBatch::new(&bank, 0).unwrap();
@@ -90,12 +120,12 @@ fn write_batch_payload_last_shared_owner_keeps_actual_body_and_refunds_unused_co
     batch.finish(Ok(())).unwrap();
     assert_eq!(
         bank.available_permits(),
-        std::mem::size_of::<SourceFailuresContext>()
+        std::mem::size_of::<ReceiptPayload>()
     );
     drop(owner);
     assert_eq!(
         bank.available_permits(),
-        std::mem::size_of::<SourceFailuresContext>()
+        std::mem::size_of::<ReceiptPayload>()
     );
     drop(copied);
     assert_eq!(bank.available_permits(), bytes);
@@ -103,7 +133,7 @@ fn write_batch_payload_last_shared_owner_keeps_actual_body_and_refunds_unused_co
 
 #[test]
 fn write_batch_payload_refusal_precedes_every_destination_backing_and_preserves_original_bank() {
-    let bytes = FailureWriteOwner::body_bytes() + std::mem::size_of::<SourceFailuresContext>();
+    let bytes = FailureWriteOwner::body_bytes() + std::mem::size_of::<ReceiptPayload>();
     let bank = Arc::new(Semaphore::new(bytes - 1));
     let error = WriteBatch::new(&bank, 1).err().unwrap();
     assert_eq!(
