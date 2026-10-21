@@ -68,6 +68,7 @@ mod liveness_tests;
 mod manager_owner_tests;
 mod manual_admission_tests;
 mod manual_deadline_tests;
+mod metadata_lease_tests;
 mod parallel_tests;
 mod publication_commit_tests;
 mod publication_tests;

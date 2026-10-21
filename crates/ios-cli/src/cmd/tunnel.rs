@@ -547,8 +547,8 @@ fn managed_metadata_bytes(
     // ManagedTunnel), original key and Vec slot backing in both byte banks.
     // The publication ceiling still counts both route texts. Their independent
     // global owners are subtracted by the caller, leaving the native device fee.
-    // Each independent shared fee root also owns a real two-permit payload;
-    // both banks pay both payloads before either root allocation exists.
+    // The ceiling includes both complete fee roots. Both banks prepaid their
+    // actual declared layouts before Source; the caller subtracts that once.
     device_bytes
         .checked_add(observed.text_bytes())
         .and_then(|bytes| bytes.checked_add(desired.text_bytes()))
@@ -1443,6 +1443,11 @@ impl TunnelAgentState {
         let mut attempt = None;
         let mut manual_version = None;
         let result = async {
+            let metadata_destinations = metadata_lease::PreparedPair::new(
+                &self.inner.global_metadata_bytes,
+                &self.inner.metadata_bytes,
+            )
+            .map_err(ownership::before_source)?;
             let observed_route = observed_route::Observed::new(
                 route,
                 input.as_ref(),
@@ -1525,6 +1530,7 @@ impl TunnelAgentState {
                 .checked_sub(route_intent.text_bytes())
                 .and_then(|size| size.checked_sub(observed_route.text_bytes()))
                 .and_then(|size| size.checked_sub(independently_owned))
+                .and_then(|size| size.checked_sub(metadata_lease::Lease::pair_bytes()))
                 .ok_or_else(|| {
                     crate::output::resource_decision(
                         "tunnel independently owned metadata size mismatch",
@@ -1532,11 +1538,16 @@ impl TunnelAgentState {
                 })?;
             let global_metadata =
                 admission::known_metadata_charge(&self.inner.global_metadata_bytes, global_size)?;
+            let publication_fields = metadata_size
+                .checked_sub(metadata_lease::Lease::pair_bytes())
+                .ok_or_else(|| {
+                    crate::output::resource_decision("tunnel prepaid metadata size mismatch")
+                })?;
             let metadata = self
                 .inner
                 .metadata_bytes
                 .clone()
-                .try_acquire_many_owned(u32::try_from(metadata_size).map_err(|_| {
+                .try_acquire_many_owned(u32::try_from(publication_fields).map_err(|_| {
                     crate::output::resource_decision("tunnel metadata admission overflow")
                 })?)
                 .map_err(|_| {
@@ -1560,12 +1571,8 @@ impl TunnelAgentState {
                     }
                 }
             };
-            let (metadata, global_metadata) = metadata_lease::Lease::from_grants(
-                &self.inner.global_metadata_bytes,
-                &self.inner.metadata_bytes,
-                global_metadata,
-                metadata,
-            )?;
+            let (metadata, global_metadata) =
+                metadata_destinations.finish(global_metadata, metadata)?;
             if let Some(native) = &native {
                 native.retain_metadata(metadata.clone())?;
                 native.retain_global_metadata(global_metadata.clone())?;

@@ -41,6 +41,7 @@ struct OwnedStream {
     flush_fault: Arc<AtomicU8>,
     flush_completed: Arc<AtomicUsize>,
     flush_delay: Option<Pin<Box<tokio::time::Sleep>>>,
+    flush_gate: Arc<FlushGate>,
     received: Arc<AtomicUsize>,
 }
 impl Drop for OwnedStream {
@@ -87,6 +88,12 @@ impl AsyncWrite for OwnedStream {
                     return Poll::Pending;
                 }
             }
+            4 => {
+                self.flush_gate.waker.register(cx.waker());
+                if !self.flush_gate.released.load(Ordering::Acquire) {
+                    return Poll::Pending;
+                }
+            }
             _ => {}
         }
         let result = Pin::new(&mut self.inner).poll_flush(cx);
@@ -100,6 +107,17 @@ impl AsyncWrite for OwnedStream {
     }
 }
 
+pub(in crate::cmd::webinspector) struct FlushGate {
+    released: AtomicBool,
+    waker: futures_util::task::AtomicWaker,
+}
+impl FlushGate {
+    pub(in crate::cmd::webinspector) fn release(&self) {
+        self.released.store(true, Ordering::Release);
+        self.waker.wake();
+    }
+}
+
 pub(in crate::cmd::webinspector) struct Source {
     stream: StdMutex<Option<ServiceStream>>,
     pub(in crate::cmd::webinspector) calls: AtomicUsize,
@@ -110,6 +128,7 @@ pub(in crate::cmd::webinspector) struct Source {
     pub(in crate::cmd::webinspector) blocked: Arc<AtomicUsize>,
     pub(in crate::cmd::webinspector) flush_fault: Arc<AtomicU8>,
     pub(in crate::cmd::webinspector) flush_completed: Arc<AtomicUsize>,
+    pub(in crate::cmd::webinspector) flush_gate: Arc<FlushGate>,
     pub(in crate::cmd::webinspector) received: Arc<AtomicUsize>,
 }
 impl InspectorSource for Source {
@@ -148,6 +167,10 @@ pub(in crate::cmd::webinspector) fn source_with_delay(
     let blocked = Arc::new(AtomicUsize::new(0));
     let flush_fault = Arc::new(AtomicU8::new(0));
     let flush_completed = Arc::new(AtomicUsize::new(0));
+    let flush_gate = Arc::new(FlushGate {
+        released: AtomicBool::new(false),
+        waker: futures_util::task::AtomicWaker::new(),
+    });
     let received = Arc::new(AtomicUsize::new(0));
     (
         Arc::new(Source {
@@ -159,6 +182,7 @@ pub(in crate::cmd::webinspector) fn source_with_delay(
                 flush_fault: flush_fault.clone(),
                 flush_completed: flush_completed.clone(),
                 flush_delay: None,
+                flush_gate: flush_gate.clone(),
                 received: received.clone(),
             }))),
             calls: AtomicUsize::new(0),
@@ -169,6 +193,7 @@ pub(in crate::cmd::webinspector) fn source_with_delay(
             blocked,
             flush_fault,
             flush_completed,
+            flush_gate,
             received,
         }),
         peer,

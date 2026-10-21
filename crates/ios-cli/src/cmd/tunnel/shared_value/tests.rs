@@ -1,6 +1,7 @@
 use super::super::{admission, metadata_vec, selector_copy::Copier};
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::sync::Barrier;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -15,7 +16,7 @@ struct Value {
 }
 impl Drop for Value {
     fn drop(&mut self) {
-        // The sealed final Arc yielded T after freeing its own allocation;
+        // The sealed final root yielded T after freeing its own allocation;
         // this unpinned value is now in a different place, with fields intact.
         assert_ne!(
             self as *const Self as usize,
@@ -29,21 +30,28 @@ impl Drop for Value {
 }
 fn value(panic_on_drop: bool) -> (Shared<Value>, Arc<Semaphore>, Arc<AtomicUsize>, usize) {
     let text = "original-shared-field";
-    let total = std::mem::size_of::<Value>() + text.len();
+    let total = Shared::<Value>::body_bytes() + text.len();
     let bank = Arc::new(Semaphore::new(total));
     let drops = Arc::new(AtomicUsize::new(0));
     let mut storage = admission::known_metadata_charge(&bank, total).unwrap();
-    let mut copier = Copier::new(storage, std::mem::size_of::<Value>()).unwrap();
+    let mut copier = Copier::new(storage, Shared::<Value>::body_bytes()).unwrap();
     let text = copier.text(text).unwrap();
     storage = copier.finish();
-    let value = Shared::new(Value {
-        text,
-        original: AtomicUsize::new(0),
-        bank: bank.clone(),
-        drops: drops.clone(),
-        panic_on_drop,
-        _storage: storage,
-    });
+    let fields = storage.split(text.len()).unwrap();
+    let backing = metadata_vec::from_grant::<Allocation<Value>>(&bank, 1, storage).unwrap();
+    let mut storage = backing.storage;
+    storage.merge(fields);
+    let value = Shared::place(
+        Value {
+            text,
+            original: AtomicUsize::new(0),
+            bank: bank.clone(),
+            drops: drops.clone(),
+            panic_on_drop,
+            _storage: storage,
+        },
+        backing.values,
+    );
     let pointer = &*value as *const Value as usize;
     assert_eq!(pointer % 128, 0);
     value.original.store(pointer, Ordering::SeqCst);
@@ -69,7 +77,11 @@ fn identity_arc_live_clones_share_original_value_and_field_until_final_moved_val
     assert_eq!(bank.available_permits(), 0);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert_eq!(retained.text.as_ptr(), text);
-    drop(retained);
+    let captured = bank.clone();
+    after_free(
+        move || assert_eq!(captured.available_permits(), 0),
+        || drop(retained),
+    );
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     assert_eq!(bank.available_permits(), total);
 }
@@ -120,10 +132,18 @@ fn identity_arc_zero_sized_value_is_destroyed_once_after_last_clone() {
         }
     }
     DROPS.store(0, Ordering::SeqCst);
-    let value = Shared::new(Value);
+    let bytes = Shared::<Value>::body_bytes();
+    assert_eq!(bytes, std::mem::size_of::<AtomicUsize>());
+    let bank = Arc::new(Semaphore::new(bytes));
+    let backing = metadata_vec::exact_backing::<Allocation<Value>>(&bank, 1).unwrap();
+    let storage = backing.storage;
+    let value = Shared::place(Value, backing.values);
     let retained = value.clone();
     drop(value);
     assert_eq!(DROPS.load(Ordering::SeqCst), 0);
     drop(retained);
     assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+    assert_eq!(bank.available_permits(), 0);
+    drop(storage);
+    assert_eq!(bank.available_permits(), bytes);
 }

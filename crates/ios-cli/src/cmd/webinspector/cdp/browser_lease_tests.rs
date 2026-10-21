@@ -422,9 +422,19 @@ async fn lifecycle_cdp_browser_lease_reload_awaits_one_real_cleanup_total() {
 
 #[tokio::test]
 async fn lifecycle_cdp_browser_lease_reload_during_detach_keeps_retiring_child() {
+    struct ReleaseFlush(Arc<Source>);
+    impl Drop for ReleaseFlush {
+        fn drop(&mut self) {
+            self.0.flush_gate.release();
+        }
+    }
     let mut browser = attached(false).await;
     let before = browser.child.flush_completed.load(Ordering::SeqCst);
-    browser.child.flush_fault.store(3, Ordering::SeqCst);
+    // Keep the original flush pending until the actual reload has completed.
+    // An 80ms timer can finish (and legitimately reply to detach) before HTTP
+    // reload on a busy host, which does not exercise cancellation during detach.
+    browser.child.flush_fault.store(4, Ordering::SeqCst);
+    let _release = ReleaseFlush(browser.child.clone());
     browser.socket.send(ClientMessage::Text(json!({"id":9,"method":"Target.detachFromTarget","params":{"sessionId":browser.session}}).to_string())).await.unwrap();
     close(&mut browser).await;
     assert_eq!(
@@ -433,6 +443,8 @@ async fn lifecycle_cdp_browser_lease_reload_during_detach_keeps_retiring_child()
         "reload must interrupt still-pending detach cleanup"
     );
     browser.host.reload().await;
+    assert_eq!(browser.child.flush_completed.load(Ordering::SeqCst), before);
+    browser.child.flush_gate.release();
     no_more_requests(&mut browser.peer).await;
     assert_eq!(
         browser.child.flush_completed.load(Ordering::SeqCst),

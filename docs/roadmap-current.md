@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-21：L02 [metadata lease 完整分配](validation/tunnel-metadata-lease-full-allocation-2026-10-21.md)
+两池整份费用在 Source 前预付两个实际空 root，成功后原位合并字段 grant、零分配；
+原地址/独立最后 owner/闭池退款、native 实际 joins 与严格 EOF 保持。
+专项4+5+2/observed边界1/CDP9/native7+14/完整CLI1750/0FAIL/13原ignored及严格门禁通过；
+其它原边界继续，主项23/6/L02待全审计、有效30与Q04全部排除不变。
+
+
 2026-10-21：L02 [单/双池strong-weak完整分配](validation/tunnel-weak-bodies-full-allocation-2026-10-21.md)
 原数据与费用guard合为一个应用声明布局，字段lastStrong就地析构、body lastWeak
 实际释放后才归还原单池/双池费用；独占weak锁/并发upgrade/析构展开语义保持。
