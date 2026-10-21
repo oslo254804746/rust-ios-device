@@ -341,7 +341,7 @@ async fn receive_actual_8192_channel_device_and_last_rx_token_share_the_same_buf
     let first = first.unwrap();
     let second = second.unwrap();
     let original_ptr = second.as_ptr();
-    let (stop, _) = watch::channel(());
+    let (stop, _) = watch::channel(ledger.clone());
     let storage = RuntimeStorage {
         bank: Some(Arc::clone(&bank)),
         ledger: ledger.clone(),

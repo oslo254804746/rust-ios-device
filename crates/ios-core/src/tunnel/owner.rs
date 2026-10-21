@@ -24,6 +24,9 @@ pub(crate) use ledger_root::Ledger;
 #[path = "owner/child_root.rs"]
 mod child_root;
 pub(crate) use child_root::SharedChildTaskSet;
+#[cfg(feature = "tunnel-userspace")]
+#[path = "owner/unit_stop.rs"]
+pub(crate) mod unit_stop;
 
 type Cause = Arc<dyn Error + Send + Sync>;
 const OUTCOME_SLOTS: usize = 10;
@@ -84,6 +87,8 @@ pub(crate) struct LedgerState {
     invalid_count: AtomicBool,
     #[cfg(feature = "tunnel-userspace")]
     runtime_stopped: AtomicBool,
+    #[cfg(feature = "tunnel-userspace")]
+    stop_watch: unit_stop::State,
     _body_storage: Option<OwnedSemaphorePermit>,
 }
 
@@ -101,6 +106,8 @@ impl LedgerState {
             invalid_count: AtomicBool::new(false),
             #[cfg(feature = "tunnel-userspace")]
             runtime_stopped: AtomicBool::new(false),
+            #[cfg(feature = "tunnel-userspace")]
+            stop_watch: unit_stop::State::new(),
             _body_storage: storage,
         }
     }
