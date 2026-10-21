@@ -49,7 +49,7 @@ enum TunnelRuntime {
         #[cfg(feature = "tunnel-kernel")]
         tasks: Vec<OwnedTask>,
         #[cfg(feature = "tunnel-kernel")]
-        reader: Arc<SharedChildTaskSet>,
+        reader: SharedChildTaskSet,
     },
     #[cfg(feature = "tunnel-userspace")]
     Userspace { _runtime: UserspaceTunDevice },
@@ -94,14 +94,14 @@ impl TunnelHandle {
         spawn: impl FnOnce(
             watch::Receiver<()>,
             Ledger,
-            Arc<SharedChildTaskSet>,
+            SharedChildTaskSet,
         ) -> tokio::task::JoinHandle<Result<(), TunnelError>>,
     ) -> Self {
         let (cancel, receiver) = watch::channel(());
         let outcomes = Ledger::new();
         let reader = SharedChildTaskSet::new(outcomes.clone(), ChildRole::ForwardReader);
         let task = OwnedTask::new(
-            spawn(receiver, outcomes.clone(), Arc::clone(&reader)),
+            spawn(receiver, outcomes.clone(), reader.clone()),
             ParentRole::ForwardOrReader,
             outcomes.clone(),
         );

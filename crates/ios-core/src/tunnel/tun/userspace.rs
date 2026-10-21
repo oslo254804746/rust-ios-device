@@ -60,7 +60,7 @@ fn runtime_channel_bytes() -> usize {
 #[cfg(test)]
 fn runtime_owner_bytes() -> usize {
     Ledger::reservation_bytes()
-        + std::mem::size_of::<SharedChildTaskSet>()
+        + SharedChildTaskSet::body_bytes()
         + 4 * std::mem::size_of::<OwnedTask>()
 }
 
@@ -226,7 +226,7 @@ pub struct UserspaceTunDevice {
     task_handles: TaskHandles,
     stopped: Arc<AtomicBool>,
     stop: watch::Sender<()>,
-    clients: Arc<SharedChildTaskSet>,
+    clients: SharedChildTaskSet,
     outcomes: Ledger,
 }
 
@@ -359,7 +359,7 @@ impl UserspaceTunDevice {
             smoltcp_storage.result()
         };
 
-        let listener_clients = Arc::clone(&clients);
+        let listener_clients = clients.clone();
         let listener_outcomes = outcomes.clone();
         let listener_future = async move {
             run_local_listener_owned(
@@ -938,7 +938,7 @@ async fn run_local_listener_owned(
     listener: TcpListener,
     conn_req_tx: mpsc::Sender<ConnRequest>,
     stop: watch::Receiver<()>,
-    clients: Arc<SharedChildTaskSet>,
+    clients: SharedChildTaskSet,
     outcomes: Ledger,
     storage: RuntimeStorage,
 ) {
@@ -986,7 +986,7 @@ async fn run_local_listener_with_limit_owned(
     max_clients: usize,
     preamble_timeout: Duration,
     stop: watch::Receiver<()>,
-    clients: Arc<SharedChildTaskSet>,
+    clients: SharedChildTaskSet,
     outcomes: Ledger,
 ) {
     run_local_listener_with_limit_storage(
@@ -1009,7 +1009,7 @@ async fn run_local_listener_with_limit_storage(
     conn_req_tx: mpsc::Sender<ConnRequest>,
     limits: ListenerLimits,
     mut stop: watch::Receiver<()>,
-    clients: Arc<SharedChildTaskSet>,
+    clients: SharedChildTaskSet,
     outcomes: Ledger,
     storage: RuntimeStorage,
 ) {
