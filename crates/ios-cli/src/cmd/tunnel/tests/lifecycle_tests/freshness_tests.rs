@@ -62,7 +62,9 @@ async fn observed_route_pre_source_last_byte_refusal_keeps_original_resource_and
     let captured = held.clone();
     let charged = bank.clone();
     *state.inner.publication_before_prepare.lock().unwrap() = Some(Box::new(move || {
-        let leave = destination + host.len() - 1;
+        // The full lease destinations now precede the observed host. Preserve
+        // the SAME host-minus-one boundary after paying this actual prefix.
+        let leave = destination + metadata_lease::Lease::pair_bytes() + host.len() - 1;
         *captured.lock().unwrap() = Some(
             charged
                 .clone()
@@ -70,11 +72,27 @@ async fn observed_route_pre_source_last_byte_refusal_keeps_original_resource_and
                 .unwrap(),
         );
     }));
+    let roots = Arc::new(AtomicUsize::new(0));
+    let captured = roots.clone();
+    let charged = bank.clone();
+    let hook = metadata_vec::on_allocation(move |layout, _| {
+        if layout.size() == metadata_lease::Lease::body_bytes()
+            && charged.available_permits() == host.len() - 1
+        {
+            captured.fetch_add(1, Ordering::SeqCst);
+        }
+    });
     let error = state
         .ensure_tunnel(A, Some(host), Some(StartTunnelConnectionType::Wifi))
         .await
         .err()
         .unwrap();
+    drop(hook);
+    assert_eq!(
+        roots.load(Ordering::SeqCst),
+        2,
+        "lease prefix was not fully paid before the original host refusal"
+    );
     assert!(error.is::<observed_route::Admission>());
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
