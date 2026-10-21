@@ -296,6 +296,7 @@ impl UserspaceTunDevice {
             byte_bank.as_ref(),
         )?;
         let mut task_handles = runtime_storage::task_handles(byte_bank.as_ref())?;
+        let client_permits = ListenerSlots::new(MAX_LOCAL_PROXY_CLIENTS, byte_bank.as_ref())?;
 
         // All buffer/channel admission precedes listener setup and workers.
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -367,6 +368,7 @@ impl UserspaceTunDevice {
                 listener_clients,
                 listener_outcomes,
                 storage,
+                client_permits,
             )
             .await;
             tracing::debug!("userspace: local listener exited");
@@ -927,8 +929,36 @@ fn flush_socket_send(socket: &mut tcp::Socket, pending: &mut OwnedQueue<OwnedBuf
 // ── Local TCP listener (go-ios compatible protocol) ────────────────────────────
 
 struct ListenerLimits {
-    max_clients: usize,
+    permits: ListenerSlots,
     preamble_timeout: Duration,
+}
+
+#[derive(Clone)]
+enum ListenerSlots {
+    Legacy(Arc<Semaphore>),
+    Metered(mpsc::Slots),
+}
+enum ListenerPermit {
+    Legacy { _permit: OwnedSemaphorePermit },
+    Metered { _permit: mpsc::SlotPermit },
+}
+impl ListenerSlots {
+    fn new(capacity: usize, bank: Option<&Arc<Semaphore>>) -> Result<Self, TunnelError> {
+        match bank {
+            Some(bank) => mpsc::Slots::with_metadata(capacity, bank).map(Self::Metered),
+            None => Ok(Self::Legacy(Arc::new(Semaphore::new(capacity)))),
+        }
+    }
+    fn try_acquire_owned(self) -> Result<ListenerPermit, tokio::sync::TryAcquireError> {
+        match self {
+            Self::Legacy(slots) => slots
+                .try_acquire_owned()
+                .map(|permit| ListenerPermit::Legacy { _permit: permit }),
+            Self::Metered(slots) => slots
+                .try_acquire_owned()
+                .map(|permit| ListenerPermit::Metered { _permit: permit }),
+        }
+    }
 }
 
 async fn run_local_listener_owned(
@@ -938,12 +968,13 @@ async fn run_local_listener_owned(
     clients: SharedChildTaskSet,
     outcomes: Ledger,
     storage: RuntimeStorage,
+    permits: ListenerSlots,
 ) {
     run_local_listener_with_limit_storage(
         listener,
         conn_req_tx,
         ListenerLimits {
-            max_clients: MAX_LOCAL_PROXY_CLIENTS,
+            permits,
             preamble_timeout: LOCAL_PROXY_PREAMBLE_TIMEOUT,
         },
         stop,
@@ -990,7 +1021,7 @@ async fn run_local_listener_with_limit_owned(
         listener,
         conn_req_tx,
         ListenerLimits {
-            max_clients,
+            permits: ListenerSlots::new(max_clients, None).expect("legacy slot constructor"),
             preamble_timeout,
         },
         stop,
@@ -1011,10 +1042,9 @@ async fn run_local_listener_with_limit_storage(
     storage: RuntimeStorage,
 ) {
     let ListenerLimits {
-        max_clients,
+        permits,
         preamble_timeout,
     } = limits;
-    let permits = Arc::new(Semaphore::new(max_clients));
     let mut client_tasks = clients.lock().await;
 
     loop {
@@ -1077,7 +1107,7 @@ async fn handle_local_client(
     handle_local_client_storage(
         client,
         conn_req_tx,
-        permit,
+        ListenerPermit::Legacy { _permit: permit },
         preamble_timeout,
         RuntimeStorage::unmetered(),
     )
@@ -1087,7 +1117,7 @@ async fn handle_local_client(
 async fn handle_local_client_storage(
     mut client: tokio::net::TcpStream,
     conn_req_tx: mpsc::Sender<ConnRequest>,
-    _permit: OwnedSemaphorePermit,
+    _permit: ListenerPermit,
     preamble_timeout: Duration,
     storage: RuntimeStorage,
 ) {
