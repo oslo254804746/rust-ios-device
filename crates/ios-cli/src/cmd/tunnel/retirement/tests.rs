@@ -729,3 +729,95 @@ fn native_census_backing_refusal_keeps_original_history_and_last_root_grant() {
     drop(roots);
     assert_eq!(bank.available_permits(), before);
 }
+
+#[tokio::test]
+async fn marker_census_foreign_registries_keep_distinct_old_stamps_after_origin_lifecycle_drop() {
+    // Audit the current raw Arc identities, not a future arena refund contract.
+    // Arena integration must replace the origin-credit assertions below with
+    // backing-fee retention while preserving independent Registry admission.
+    const KEY: &str = "marker-cross-bank-census";
+    let bytes = Lifecycle::watch_bytes() + Lifecycle::initial_metadata_bytes(KEY);
+    let origin = Arc::new(Semaphore::new(bytes));
+    let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
+    drop(lifecycle.ticket(KEY).await.unwrap());
+    assert_eq!(origin.available_permits(), 0);
+    origin.close(); // Keep the producer live; this is not Lifecycle::close.
+
+    // Finite external fixture bookkeeping is not charged to the origin pool.
+    // Every destination has its own finite bank and original paid backing.
+    let mut keepers = Vec::new();
+    for _ in 0..4 {
+        let destination = registry(1);
+        let bank = destination.byte_bank();
+        assert!(!Arc::ptr_eq(&bank, &origin));
+        let before = bank.available_permits();
+        let ticket = lifecycle.ticket(KEY).await.unwrap();
+        assert!(ticket.is_current());
+        let reservation = ticket
+            .commit(|| destination.reserve(ticket.ownership_stamp()))
+            .unwrap();
+        assert_eq!(
+            bank.available_permits(),
+            before - Registry::incarnation_bytes()
+        );
+        drop(ticket);
+        let old = lifecycle.clear_owned().unwrap();
+        destination.retire_global(&old);
+        drop(old);
+        assert_eq!(destination.snapshot().retired, 1);
+        assert_eq!(destination.snapshot().native_handles, 0);
+        assert_eq!(origin.available_permits(), 0);
+        assert_eq!(lifecycle.coordinator_count().await, 1);
+        keepers.push((destination, reservation, bank, before));
+    }
+
+    // Replace the last Cell epoch and device watch value as well. The witness
+    // Ticket/stamp must not become another historical keeper in this census.
+    let witness = lifecycle.ticket(KEY).await.unwrap();
+    assert!(witness.is_current());
+    drop(witness);
+    assert_eq!(origin.available_permits(), 0);
+
+    let inspect = || {
+        for (index, (destination, _, _, _)) in keepers.iter().enumerate() {
+            let state = destination.lock();
+            let entry = state.slots[0].as_ref().unwrap();
+            assert_eq!(Arc::strong_count(&entry.stamp.global), 1);
+            assert_eq!(Arc::strong_count(&entry.stamp.device), 1);
+            assert!(!Arc::ptr_eq(&entry.stamp.global, &entry.stamp.device));
+            assert!(entry.handle.is_none());
+            assert!(entry.metadata.is_none() && entry.global_metadata.is_none());
+            assert!(entry._input.is_none() && entry.fresh_metadata.is_none());
+            assert!(entry.first_freshness.is_none() && entry.latest_freshness.is_none());
+            for (other, _, _, _) in keepers.iter().skip(index + 1) {
+                let other = other.lock();
+                let other = &other.slots[0].as_ref().unwrap().stamp;
+                for old in [&entry.stamp.global, &entry.stamp.device] {
+                    assert!(!Arc::ptr_eq(old, &other.global));
+                    assert!(!Arc::ptr_eq(old, &other.device));
+                }
+            }
+        }
+    };
+    inspect();
+    drop(lifecycle);
+    // Current raw stamps contain no gate, watch, or origin permit. All origin
+    // fees have returned although the same eight physical old Arc values live.
+    assert_eq!(origin.available_permits(), bytes);
+    inspect();
+
+    for (destination, reservation, bank, before) in keepers {
+        assert_eq!(
+            bank.available_permits(),
+            before - Registry::incarnation_bytes()
+        );
+        drop(reservation);
+        assert_eq!(destination.snapshot().occupied(), 0);
+        assert_eq!(bank.available_permits(), before);
+        drop(destination);
+        assert_eq!(
+            bank.available_permits(),
+            super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
+        );
+    }
+}

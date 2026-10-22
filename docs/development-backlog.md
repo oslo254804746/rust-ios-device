@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-22：L02 [marker跨bank有限持有审计](validation/tunnel-marker-cross-bank-census-2026-10-22.md)
+执行closed0原Lifecycle A、四个独立Registry B、最后lazy reset：8个distinct旧Arc各strong1。
+原producer Drop后A现有费用全退而B旧marker仍在，确认不能假设所有keeper均支付A。
+仅追加1个cfg(test) fixture，7门禁通过；registry22/lifecycle29/reconnect47，生产/Core/lock未变。
+当前全退是rawArc未计费现状，未来arena须保持真实backing费；非cap证明或生产无限轨迹。
+全部Cargo主控；未重跑fullCLI/build/host，沿用1501af2生产证据；23/6/L02/Q04口径保持。
+
 2026-10-22：L02 [standalone启动完整具体future](validation/tunnel-standalone-frame-2026-10-22.md)
 原Registry bank预付实际整F，包含Owner/Ownership、Core具体连接、输出/信号和原terminal drain。
 原prefix、30s仅connect、lease先device后Drop及原cleanup合并顺序保持；SDK仅构造未poll。
