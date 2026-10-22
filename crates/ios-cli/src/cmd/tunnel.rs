@@ -1,6 +1,5 @@
 #[cfg(test)]
 use std::collections::HashMap;
-use std::io::Write;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -15,7 +14,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use ios_core::TunMode;
-use ios_core::{connect_with_owner, ConnectOptions, OwnedConnectedDevice};
+use ios_core::{ConnectOptions, OwnedConnectedDevice};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
@@ -82,6 +81,7 @@ mod shared_weak_allocation;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
 mod source;
+mod standalone;
 mod upgrade_owner;
 mod upstream_registry;
 mod usb_index;
@@ -351,72 +351,19 @@ pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) 
     }
 
     let native = retirement::Registry::new()?;
-    let _owner = StandaloneOwner(native.clone());
-    let ownership = ownership::Ownership::standalone(native.clone())?;
-    let primary = async {
-        let connect_timeout = Duration::from_secs(30);
-        let device =
-            tokio::time::timeout(connect_timeout, connect_with_owner(udid, opts, &ownership))
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "tunnel connect timed out after {}s — the device may not support \
-                 CoreDevice tunneling or the handshake is blocked",
-                        connect_timeout.as_secs()
-                    )
-                })??;
-        let _lease = ownership.take_completed(
-            device
-                .tunnel_handle()
-                .ok_or_else(|| lifecycle::cancelled().context("native tunnel handle missing"))?,
-        )?;
-        let server_address = device
-            .server_address()
-            .ok_or_else(|| anyhow::anyhow!("tunnel started without a server address"))?;
-        let rsd_port = device
-            .rsd_port()
-            .ok_or_else(|| anyhow::anyhow!("tunnel started without an RSD port"))?;
-
-        if script_mode {
-            crate::output::outln!("{server_address} {rsd_port}");
-        } else {
-            crate::output::outln!("Identifier: {udid}");
-            crate::output::outln!("Mode: {mode}");
-            crate::output::outln!("Protocol: tcp");
-            crate::output::outln!("RSD Address: {server_address}");
-            crate::output::outln!("RSD Port: {rsd_port}");
-            if let Some(userspace_port) = device.userspace_port() {
-                crate::output::outln!("Userspace Proxy: 127.0.0.1:{userspace_port}");
-            }
-            crate::output::outln!("Use the following connection option:");
-            crate::output::outln!("--rsd {server_address} {rsd_port}");
-        }
-        std::io::stdout().flush()?;
-
-        tokio::signal::ctrl_c().await?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-    let clock = retirement::CleanupClock::new(server::CLEANUP_TIMEOUT);
-    native.close_and_stop_all();
-    drop(ownership);
-    let cleanup = match clock {
-        Ok(clock) => server::drain_native_terminal(&native, clock).await,
-        Err(error) => Err(error),
-    };
-    match (primary, cleanup) {
-        (Ok(()), cleanup) => cleanup,
-        (Err(primary), Ok(())) => Err(primary),
-        (Err(primary), Err(cleanup)) => Err(server::CleanupFailure { primary, cleanup }.into()),
-    }
-}
-
-struct StandaloneOwner(retirement::RegistryOwner);
-
-impl Drop for StandaloneOwner {
-    fn drop(&mut self) {
-        self.0.close_and_stop_all();
-    }
+    standalone::prepare(
+        native,
+        standalone::Request {
+            udid,
+            opts,
+            mode,
+            script_mode,
+        },
+        standalone::NativeConnector,
+        standalone::NativeReporter,
+        tokio::signal::ctrl_c(),
+    )?
+    .await
 }
 
 #[derive(Clone)]

@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-22：L02 [standalone启动完整具体future](validation/tunnel-standalone-frame-2026-10-22.md)
+原Registry bank预付实际整F，包含Owner/Ownership、Core具体连接、输出/信号和原terminal drain。
+原prefix、30s仅connect、lease先device后Drop及原cleanup合并顺序保持；SDK仅构造未poll。
+15门禁通过，新增8/完整CLI1839/0FAIL/13原ignored，708源码3处仅CLI；真实duplex joins/EOF/错误指针。
+初轮修正测试的pre-join错误断言，生产未变；其它原scope与marker/endpoint全范围继续。
+全部Cargo/build主控；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [前台连接Semaphore实际共享根](validation/tunnel-foreground-slots-root-2026-10-22.md)
 原Registry bank同时预付并准备Inner+Slots两份实际backing，全部成功后才构造Inner；无partial close。
 同Tokio四许可计数与独立Slots owned permit，末Scope仍先close，许可只持自身根到实际free后退费。
