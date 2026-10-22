@@ -81,6 +81,7 @@ mod shared_weak_allocation;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
 mod source;
+mod upgrade_owner;
 mod upstream_registry;
 mod usb_index;
 mod ws_payload;
@@ -3493,6 +3494,20 @@ async fn agent_connect_authorized(
             error.as_ref(),
         )
     })?;
+    let local_owner = if query.upstream.is_none() {
+        Some(
+            upgrade_owner::prepare(&state.inner.global_metadata_bytes, upgrade_owner::local)
+                .map_err(|error| {
+                    replies.operation_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "WebSocket owner admission failed",
+                        error.as_ref(),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
     let local = if query.upstream.is_none() {
         state
             .get_local_target(&query.udid)
@@ -3557,24 +3572,21 @@ async fn agent_connect_authorized(
                 )
             })?;
         let payload_bytes = state.inner.global_metadata_bytes.clone();
+        let callback = local_owner.expect("local upgrade owner prepared").complete(
+            upgrade_owner::Local {
+                ticket,
+                publication,
+                stream,
+                payload_bytes,
+                principal,
+            },
+            upgrade_owner::local,
+        );
         return Ok(bounded_websocket_upgrade(ws)
-            .on_upgrade(move |socket| async move {
-                tokio::select! {
-                    result = publication.run(ticket.run(async { Ok(bridge_tcp_websocket(socket, stream, &payload_bytes).await) })) => {
-                        match result {
-                            Ok(completion) => {
-                                if let Err(err) = completion.result() {
-                                    tracing::debug!(error = %crate::output::error_message(err), "tunnel agent: local WebSocket bridge ended");
-                                }
-                            }
-                            Err(err) => tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: local WebSocket lifetime ended"),
-                        }
-                    }
-                    _ = principal.revoked() => tracing::debug!("tunnel agent: local WebSocket authorization revoked"),
-                }
-            })
+            .on_upgrade(callback)
             .into_response());
     }
+    drop(local_owner);
     if query.hop >= MAX_FEDERATION_HOPS {
         return Err(replies.classified_error(
             StatusCode::LOOP_DETECTED,
@@ -3591,6 +3603,16 @@ async fn agent_connect_authorized(
             ));
         }
     }
+    let remote_owner =
+        upgrade_owner::prepare(&state.inner.global_metadata_bytes, upgrade_owner::remote).map_err(
+            |error| {
+                replies.operation_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "WebSocket owner admission failed",
+                    error.as_ref(),
+                )
+            },
+        )?;
     let epoch = state.inner.lifecycle.global_epoch().map_err(|error| {
         replies.operation_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3693,17 +3715,16 @@ async fn agent_connect_authorized(
             error.as_ref(),
         )
     })?;
+    let callback = remote_owner.complete(
+        upgrade_owner::Remote {
+            epoch,
+            remote,
+            principal,
+        },
+        upgrade_owner::remote,
+    );
     Ok(bounded_websocket_upgrade(ws)
-        .on_upgrade(move |socket| async move {
-            tokio::select! {
-                result = epoch.run(bridge_websockets(socket, remote)) => {
-                    if let Err(err) = result {
-                        tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: remote WebSocket bridge ended");
-                    }
-                }
-                _ = principal.revoked() => tracing::debug!("tunnel agent: remote WebSocket authorization revoked"),
-            }
-        })
+        .on_upgrade(callback)
         .into_response())
 }
 

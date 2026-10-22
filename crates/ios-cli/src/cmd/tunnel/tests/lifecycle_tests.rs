@@ -86,6 +86,7 @@ mod snapshot_admission_tests;
 mod source_route_tests;
 mod success_bookkeeping_tests;
 mod upgrade_epoch_tests;
+mod upgrade_owner_tests;
 mod upstream_registry_tests;
 
 enum Behavior {

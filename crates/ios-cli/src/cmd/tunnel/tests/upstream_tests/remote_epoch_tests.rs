@@ -3,6 +3,16 @@ use super::*;
 #[tokio::test]
 async fn remote_epoch_local_stop_keeps_remote_but_global_clear_shutdown_close_original_proxy() {
     const UID: &str = "remote-epoch-fixture";
+    let probe_bank = Arc::new(tokio::sync::Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+    let probe = upgrade_owner::prepare(&probe_bank, upgrade_owner::remote).unwrap();
+    let future_bytes = MAX_GLOBAL_KNOWN_METADATA_BYTES
+        - probe_bank.available_permits()
+        - shared_weak_allocation::Strong::<std::sync::Mutex<Option<WebSocket>>, ()>::body_bytes();
+    drop(probe);
+    assert_eq!(
+        probe_bank.available_permits(),
+        MAX_GLOBAL_KNOWN_METADATA_BYTES
+    );
     let mut closed = Vec::new();
     for shutdown in [false, true] {
         let proxy = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -61,6 +71,9 @@ async fn remote_epoch_local_stop_keeps_remote_but_global_clear_shutdown_close_or
             .await
             .insert(format!("http://127.0.0.1:{leaf_port}/"))
             .unwrap();
+        let bank = state.inner.global_metadata_bytes.clone();
+        let before = bank.available_permits();
+        let mut gate_bytes = 0;
         let (port, server) = spawn_test_router(agent_router(state.clone())).await;
         let (mut websocket, _) = tokio_tungstenite::connect_async(format!(
             "ws://127.0.0.1:{port}/connect?udid={UID}&port=12345"
@@ -75,6 +88,10 @@ async fn remote_epoch_local_stop_keeps_remote_but_global_clear_shutdown_close_or
         for bytes in [b"before-stop".as_slice(), b"after-local-stop".as_slice()] {
             if bytes == b"after-local-stop" {
                 assert!(!state.stop_tunnel(UID).await.unwrap());
+                // Stopping an unknown local UID still creates the original
+                // canonical suppression gate, independently of the remote WS.
+                gate_bytes = Lifecycle::initial_metadata_bytes(UID);
+                assert_eq!(state.inner.lifecycle.coordinator_count().await, 1);
             }
             websocket
                 .send(tungstenite::Message::Binary(bytes.to_vec()))
@@ -88,6 +105,8 @@ async fn remote_epoch_local_stop_keeps_remote_but_global_clear_shutdown_close_or
                     .unwrap(),
                 tungstenite::Message::Binary(bytes.to_vec())
             );
+            assert_eq!(before - bank.available_permits(), future_bytes + gate_bytes,
+                "actual active remote bridge owns its original concrete future fee after HTTP/target owners end");
         }
         if shutdown {
             state.notify_shutdown();
@@ -104,6 +123,13 @@ async fn remote_epoch_local_stop_keeps_remote_but_global_clear_shutdown_close_or
             .await
             .unwrap()
             .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while bank.available_permits() != before - gate_bytes {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actual final bridge drop refunds its own backing");
         server.abort();
         leaf_task.abort();
         assert!(server.await.unwrap_err().is_cancelled());
