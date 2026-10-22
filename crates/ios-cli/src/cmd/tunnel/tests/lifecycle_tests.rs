@@ -82,6 +82,7 @@ mod scan_frame_tests;
 mod scan_setup_tests;
 mod scan_terminal_tests;
 mod scan_total_tests;
+mod server_frame_tests;
 mod server_tests;
 mod shutdown_admission_tests;
 mod snapshot_admission_tests;

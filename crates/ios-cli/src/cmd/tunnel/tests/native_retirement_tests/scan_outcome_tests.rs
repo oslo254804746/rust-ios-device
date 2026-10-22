@@ -188,17 +188,20 @@ async fn native_scan_outcome_server_signal_keeps_original_paired_error_after_sca
     let state = manager(source.clone());
     let signal = Semaphore::new(0);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut owner = Box::pin(server::serve(
-        listener,
-        agent_router(state.clone()),
-        state.clone(),
-        Duration::from_secs(60),
-        OBSERVE,
-        async {
-            signal.acquire().await.unwrap().forget();
-            Ok(())
-        },
-    ));
+    let mut owner = Box::pin(
+        server::prepare(
+            listener,
+            agent_router(state.clone()),
+            state.clone(),
+            Duration::from_secs(60),
+            OBSERVE,
+            async {
+                signal.acquire().await.unwrap().forget();
+                Ok(())
+            },
+        )
+        .unwrap(),
+    );
     let entered = drive_until(&mut owner, || source.entered.load(Ordering::SeqCst) == 1).await;
     let native = source.base.handle();
     let original = source.originals.lock().unwrap()[0];
@@ -222,21 +225,24 @@ async fn native_scan_outcome_list_error_survives_held_metadata_cleanup_expiry() 
     let expected = baseline();
     let source = OutcomeSource::new(Stage::List, 1).await;
     let state = manager(source.clone());
-    publish(&state, Route::Wifi(None)).await.unwrap();
-    let native = source.base.handle();
     let signal = Semaphore::new(0);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut owner = Box::pin(server::serve(
-        listener,
-        agent_router(state.clone()),
-        state.clone(),
-        Duration::from_secs(60),
-        Duration::from_millis(40),
-        async {
-            signal.acquire().await.unwrap().forget();
-            Ok(())
-        },
-    ));
+    let mut owner = Box::pin(
+        server::prepare(
+            listener,
+            agent_router(state.clone()),
+            state.clone(),
+            Duration::from_secs(60),
+            Duration::from_millis(40),
+            async {
+                signal.acquire().await.unwrap().forget();
+                Ok(())
+            },
+        )
+        .unwrap(),
+    );
+    publish(&state, Route::Wifi(None)).await.unwrap();
+    let native = source.base.handle();
     let discovery = drive_until(&mut owner, || source.usb_calls.load(Ordering::SeqCst) == 1).await;
     let table = state.inner.tunnels.write().await;
     source.list_gate.add_permits(1);
@@ -330,14 +336,17 @@ async fn native_scan_outcome_caller_drop_retains_history_after_clear_and_termina
     let source = OutcomeSource::new(Stage::Paired, 1).await;
     let state = manager(source.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut owner = Box::pin(server::serve(
-        listener,
-        agent_router(state.clone()),
-        state.clone(),
-        Duration::from_secs(60),
-        OBSERVE,
-        std::future::pending(),
-    ));
+    let mut owner = Box::pin(
+        server::prepare(
+            listener,
+            agent_router(state.clone()),
+            state.clone(),
+            Duration::from_secs(60),
+            OBSERVE,
+            std::future::pending(),
+        )
+        .unwrap(),
+    );
     assert!(drive_until(&mut owner, || source.entered.load(Ordering::SeqCst) == 1).await);
     drop(owner);
     let before = state
@@ -392,6 +401,25 @@ async fn native_scan_outcome_repeated_terminal_reports_share_original_history() 
     let expected = baseline();
     let source = OutcomeSource::new(Stage::Paired, 1).await;
     let state = manager(source.clone());
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    // Both complete future allocations exist BEFORE the original paired
+    // failure. Reporting that acquired history later requires no new grant.
+    let mut servers = Vec::new();
+    for _ in 0..2 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let signal = std::future::ready(Ok::<(), io::Error>(()));
+        let frame_bytes = server::frame_bytes(&signal);
+        let prepared = server::prepare(
+            listener,
+            agent_router(state.clone()),
+            state.clone(),
+            Duration::from_secs(60),
+            OBSERVE,
+            signal,
+        )
+        .unwrap();
+        servers.push((prepared, frame_bytes));
+    }
     let mut scan = Box::pin(state.refresh_once());
     assert!(drive_until(&mut scan, || source.entered.load(Ordering::SeqCst) == 1).await);
     drop(scan);
@@ -401,22 +429,20 @@ async fn native_scan_outcome_repeated_terminal_reports_share_original_history() 
         .scan_outcomes
         .history()
         .expect("abandoned scan history");
-    let bank = Arc::clone(&state.inner.global_metadata_bytes);
-    let held = Arc::clone(&bank)
+    let mut held = Arc::clone(&bank)
         .try_acquire_many_owned(bank.available_permits().try_into().unwrap())
         .unwrap();
-    for _ in 0..2 {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let error = server::serve(
-            listener,
-            agent_router(state.clone()),
-            state.clone(),
-            Duration::from_secs(60),
-            OBSERVE,
-            async { Ok(()) },
-        )
-        .await
-        .unwrap_err();
+    for (prepared, frame_bytes) in servers {
+        assert_eq!(bank.available_permits(), 0);
+        let error = prepared.await.unwrap_err();
+        // That actual F has now ended and its allocation was freed. Reapply
+        // exactly its observed returned credit as pressure for the next report.
+        assert_eq!(bank.available_permits(), frame_bytes);
+        held.merge(
+            bank.clone()
+                .try_acquire_many_owned(frame_bytes.try_into().unwrap())
+                .unwrap(),
+        );
         let terminal = error
             .downcast_ref::<server::TerminalCleanupFailure>()
             .unwrap();

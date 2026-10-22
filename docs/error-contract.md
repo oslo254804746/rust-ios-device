@@ -1965,6 +1965,8 @@ L03–L04/Q04/classes5–9 and native worker/device conditions remain.
 
 ## Tunnel server outcomes and cleanup
 
+Private server startup has a synchronous fallible preparation step which admits the complete concrete generic future from the original global metadata bank before its Source work. Lifecycle Owner starts only on the returned future's first poll; failed preparation or unpolled Drop does not newly shut down retained state. Already acquired native/scan outcomes must not require a new frame grant during terminal reporting: callers retain the originally prepared future through quota exhaustion and consume that same instance. Repeated zero-quota reports preserve the same prepaid history and deep native cause; actual frame-free credit remains an independent refund. The original execution/cleanup body and started Owner Drop rules remain. See [prepared server evidence](validation/tunnel-server-frame-owner-2026-10-22.md).
+
 The [server gate](validation/tunnel-server-2026-10-06.md), `5120fa90e06a92f4734603382b98779b69f1ca38`,
 retains signal/server IO and actual cleanup Elapsed. A dual failure stores both
 outcomes with the primary as its source; BrokenPipe still classifies as

@@ -146,14 +146,17 @@ async fn lifecycle_tunnel_shutdown_admission_server_caller_drop_rejects_retained
     *source.usb_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut owner = Box::pin(server::serve(
-        listener,
-        agent_router(state.clone()),
-        state.clone(),
-        Duration::from_secs(10),
-        server::CLEANUP_TIMEOUT,
-        std::future::pending(),
-    ));
+    let mut owner = Box::pin(
+        server::prepare(
+            listener,
+            agent_router(state.clone()),
+            state.clone(),
+            Duration::from_secs(10),
+            server::CLEANUP_TIMEOUT,
+            std::future::pending(),
+        )
+        .unwrap(),
+    );
     tokio::time::timeout(LOCAL_BUDGET, async {
         while source.usb_active.load(Ordering::SeqCst) == 0 {
             assert!(futures_util::poll!(&mut owner).is_pending());
@@ -193,7 +196,7 @@ async fn lifecycle_tunnel_shutdown_admission_http_body_finishing_after_clear_can
     let port = listener.local_addr().unwrap().port();
     let owner_state = state.clone();
     let owner = tokio::spawn(async move {
-        server::serve(
+        server::prepare(
             listener,
             app,
             owner_state,
@@ -201,6 +204,7 @@ async fn lifecycle_tunnel_shutdown_admission_http_body_finishing_after_clear_can
             server::CLEANUP_TIMEOUT,
             std::future::pending(),
         )
+        .unwrap()
         .await
     });
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
