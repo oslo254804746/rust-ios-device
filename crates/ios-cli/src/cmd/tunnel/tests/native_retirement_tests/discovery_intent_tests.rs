@@ -92,7 +92,7 @@ impl Source for DiscoverySource {
     > {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
-                let mut reservation = owner.reserve()?;
+                let mut reservation = owner.reserve_owned()?;
                 let device = self.connect(udid, route.fixture_owned(), mode).await?;
                 reservation.attach(device.native_handle().unwrap().clone())?;
                 self.entered.fetch_add(1, Ordering::SeqCst);

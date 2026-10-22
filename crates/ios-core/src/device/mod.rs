@@ -151,7 +151,7 @@ mod service_routing;
 mod support;
 mod tunnel_owner;
 
-pub use tunnel_owner::{TunnelOwner, TunnelReservation};
+pub use tunnel_owner::{TunnelOwner, TunnelReservation, TunnelReservationOwner};
 
 pub use rsd_observation::{InitialRsdProbe, InitialRsdProbeSkipReason, InitialRsdProbeState};
 

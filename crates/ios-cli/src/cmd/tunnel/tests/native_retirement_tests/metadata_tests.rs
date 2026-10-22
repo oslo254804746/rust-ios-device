@@ -180,7 +180,8 @@ impl SourcePeak {
         let held = Arc::new(StdMutex::new(None));
         let captured = held.clone();
         let hook = future_storage::after_drop(move || {
-            // The actual Source Box and its fee are ALREADY destroyed. Model
+            // The actual Source and Attempt Boxes and their fees are ALREADY
+            // destroyed. Model
             // other quota usage with its measured temporary peak, retaining
             // the original zero-free-byte metadata/cleanup fixture boundary.
             *captured.lock().unwrap() =
@@ -204,7 +205,7 @@ fn configured_with_discovery(
     source: Arc<LocalSource>,
     discovery: usize,
 ) -> (TunnelAgentState, usize, SourcePeak) {
-    let temporary = source_future_bytes(&*source);
+    let temporary = source_future_bytes(&*source) + ownership::Ownership::attempt_bytes();
     let mut state = state(source);
     let charged = std::mem::size_of::<NativeDevice>()
         + actual_publication_destination_bytes()
@@ -425,7 +426,7 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
     let source = LocalSource::new();
     let (mut state, charged, old_peak) = configured(source.clone());
     drop(old_peak);
-    let temporary = source_future_bytes(&*source);
+    let temporary = source_future_bytes(&*source) + ownership::Ownership::attempt_bytes();
     let devices = vec![source::UsbDevice {
         udid: DEVICE.into(),
         device_id: 7,

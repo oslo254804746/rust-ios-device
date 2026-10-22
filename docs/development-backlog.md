@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-22：L02 [native Attempt实际Box](validation/tunnel-attempt-box-owner-2026-10-22.md)
+首个实际destination在Source前从原Registry bank准入，额外策略各自先原Ticket fence/准入再start。
+Core栈上owner保留同一个Box并在其释放后退款；旧公开callback保持，legacy同一paid费用根由scope及各Box共同保留，覆盖正常Drop与忘记Box的寿命。
+24命令通过，新增Core2/CLI7、完整CLI1816/0FAIL/13原ignored；703源码23处差异，Core本轮已重验。
+真实本地双runtime/闭池0交接/两份runtime原始joins与严格EOF已验；marker完整证明和其它原范围继续。
+全部Cargo/build主控；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [HTTP停止/epoch实际F](validation/tunnel-http-control-frames-2026-10-22.md)
 原权限/Replies/success wire后精确准入stop+Principal与clear具体F；原guard/epoch不加guard语义保持。
 真实HTTP N−1锁前拒绝/旧global逐份Drop/权限撤销/核心closed0 stop-clear与实际退款已验。

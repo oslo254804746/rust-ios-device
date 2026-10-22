@@ -67,7 +67,7 @@ impl Source for DelayedSource {
     > {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
-                let mut reservation = owner.reserve()?;
+                let mut reservation = owner.reserve_owned()?;
                 let device = self.base.connect(udid, route.fixture_owned(), mode).await?;
                 reservation.attach(device.native_handle().unwrap().clone())?;
                 if matches!(self.delay, Delay::SourceSuccess | Delay::SourceFailure) {

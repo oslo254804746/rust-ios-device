@@ -13,6 +13,70 @@ use crate::{CoreError, TunnelHandle};
 /// the connection. Ordinary connection functions do not invoke this interface.
 pub trait TunnelOwner: Send + Sync {
     fn reserve(&self) -> Result<Box<dyn TunnelReservation + '_>, CoreError>;
+
+    /// Keep an admitted reservation's byte grant outside its original Box.
+    /// Existing implementations retain their original callback and allocation.
+    fn reserve_owned(&self) -> Result<TunnelReservationOwner<'_>, CoreError> {
+        self.reserve().map(|reservation| TunnelReservationOwner {
+            reservation,
+            #[cfg(test)]
+            _after_free: AfterFree,
+            _storage: None,
+        })
+    }
+}
+
+/// The original reservation allocation, destroyed before its optional grant.
+/// This owner is stored inline and introduces no second allocation.
+pub struct TunnelReservationOwner<'a> {
+    reservation: Box<dyn TunnelReservation + 'a>,
+    #[cfg(test)]
+    _after_free: AfterFree,
+    _storage: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl<'a> TunnelReservationOwner<'a> {
+    /// Adopt an already admitted original Box. The caller must acquire this
+    /// exact grant before allocating the Box. A mismatch returns both original
+    /// owners, in destruction order, without allocating or changing either.
+    pub fn try_from_grant(
+        reservation: Box<dyn TunnelReservation + 'a>,
+        storage: tokio::sync::OwnedSemaphorePermit,
+    ) -> Result<
+        Self,
+        (
+            Box<dyn TunnelReservation + 'a>,
+            tokio::sync::OwnedSemaphorePermit,
+        ),
+    > {
+        if storage.num_permits() != std::mem::size_of_val(&*reservation)
+            || !reservation
+                .byte_bank()
+                .is_some_and(|bank| Arc::ptr_eq(&bank, storage.semaphore()))
+        {
+            return Err((reservation, storage));
+        }
+        Ok(Self {
+            reservation,
+            #[cfg(test)]
+            _after_free: AfterFree,
+            _storage: Some(storage),
+        })
+    }
+}
+
+impl<'a> std::ops::Deref for TunnelReservationOwner<'a> {
+    type Target = dyn TunnelReservation + 'a;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.reservation
+    }
+}
+
+impl std::ops::DerefMut for TunnelReservationOwner<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.reservation
+    }
 }
 
 /// Caller cleanup responsibility for one attempted tunnel runtime.
@@ -48,8 +112,8 @@ pub trait TunnelReservation: Send {
 pub(super) fn reserve_initial<'a>(
     owner: Option<&'a dyn TunnelOwner>,
     bank: Option<&Arc<tokio::sync::Semaphore>>,
-) -> Result<Option<Box<dyn TunnelReservation + 'a>>, CoreError> {
-    let reservation = owner.map(TunnelOwner::reserve).transpose()?;
+) -> Result<Option<TunnelReservationOwner<'a>>, CoreError> {
+    let reservation = owner.map(TunnelOwner::reserve_owned).transpose()?;
     if bank.is_some_and(|required| {
         !reservation
             .as_ref()
@@ -63,13 +127,37 @@ pub(super) fn reserve_initial<'a>(
     Ok(reservation)
 }
 
-/// Stack-only selection for one strategy. The original reservation remains
-/// unwrapped; owned bank selection cannot affect public legacy entrypoints.
+/// Stack-only selection for one strategy. The original reservation allocation
+/// stays intact; owned bank selection cannot affect public legacy entrypoints.
 #[derive(Clone, Copy)]
 pub(super) struct InitialOwner<'a> {
     cleanup: Option<&'a dyn TunnelOwner>,
     pub(super) bank: Option<&'a Arc<tokio::sync::Semaphore>>,
 }
+
+#[cfg(test)]
+type FreeHook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
+#[cfg(test)]
+thread_local! {
+    static AFTER_RESERVATION_FREE: FreeHook = const { std::cell::RefCell::new(None) };
+}
+// Box completes deallocation (also on unwind) before this observer is dropped,
+// and the original byte grant is still held by the following field.
+#[cfg(test)]
+struct AfterFree;
+#[cfg(test)]
+impl Drop for AfterFree {
+    fn drop(&mut self) {
+        AFTER_RESERVATION_FREE.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().as_mut() {
+                callback();
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod reservation_owner_tests;
 impl<'a> InitialOwner<'a> {
     pub(super) fn new(
         cleanup: Option<&'a dyn TunnelOwner>,
@@ -78,7 +166,7 @@ impl<'a> InitialOwner<'a> {
         Self { cleanup, bank }
     }
     #[cfg(feature = "tunnel")]
-    pub(super) fn reserve(self) -> Result<Option<Box<dyn TunnelReservation + 'a>>, CoreError> {
+    pub(super) fn reserve(self) -> Result<Option<TunnelReservationOwner<'a>>, CoreError> {
         reserve_initial(self.cleanup, self.bank)
     }
 }

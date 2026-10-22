@@ -111,7 +111,7 @@ impl Source for IntentSource {
     > {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
-                let mut reservation = owner.reserve()?;
+                let mut reservation = owner.reserve_owned()?;
                 let device = self.connect(udid, route.fixture_owned(), mode).await?;
                 reservation.attach(device.native_handle().unwrap().clone())?;
                 if udid == AUTH_DEVICE {

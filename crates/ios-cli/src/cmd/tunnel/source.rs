@@ -172,7 +172,7 @@ pub(super) trait Source: Send + Sync {
     > {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
-                let mut reservation = owner.reserve()?;
+                let mut reservation = owner.reserve_owned()?;
                 let device = self.connect(udid, route.fixture_owned(), mode).await?;
                 if let Some(handle) = device.native_handle() {
                     reservation.attach(Arc::clone(handle))?;

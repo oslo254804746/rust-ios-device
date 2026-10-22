@@ -172,7 +172,7 @@ impl Source for MeasurementSource {
                         "duplicate original fixture owner"
                     );
                 }
-                let mut reservation = owner.reserve()?;
+                let mut reservation = owner.reserve_owned()?;
                 let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
                 let address = listener.local_addr()?;
                 let (stream, accepted) =

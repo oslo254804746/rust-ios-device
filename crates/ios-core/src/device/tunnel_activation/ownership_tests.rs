@@ -150,7 +150,7 @@ async fn native_activation_caller_drop_before_rsd_return_keeps_original_owner_fo
         connection(),
         stream,
         TunMode::Userspace,
-        Some(owner.reserve().unwrap()),
+        Some(owner.reserve_owned().unwrap()),
     ));
     let attached = tokio::time::timeout(OBSERVE, async {
         tokio::select! {
@@ -190,7 +190,7 @@ async fn native_activation_success_returns_the_exact_attached_arc_and_transfers_
         connection(),
         stream,
         TunMode::Userspace,
-        Some(owner.reserve().unwrap()),
+        Some(owner.reserve_owned().unwrap()),
     )
     .await;
     let retained = owner.handle();
@@ -224,7 +224,7 @@ async fn native_activation_rejected_attachment_stops_workers_and_retains_origina
         connection(),
         stream,
         TunMode::Userspace,
-        Some(owner.reserve().unwrap()),
+        Some(owner.reserve_owned().unwrap()),
     )
     .await;
     let native = owner.handle();
@@ -261,7 +261,7 @@ async fn native_activation_passes_the_original_reservation_bank_before_any_users
         connection(),
         stream,
         TunMode::Userspace,
-        Some(owner.reserve().unwrap()),
+        Some(owner.reserve_owned().unwrap()),
     )
     .await;
     let mut peer = peer_task.await.unwrap();

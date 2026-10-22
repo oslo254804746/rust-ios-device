@@ -154,7 +154,7 @@ pub(super) async fn activate_tunnel<T>(
     connection: TunnelConnection,
     mut stream: T,
     tun_mode: TunMode,
-    reservation: Option<Box<dyn super::TunnelReservation + '_>>,
+    reservation: Option<super::TunnelReservationOwner<'_>>,
 ) -> Result<ConnectedDevice, CoreError>
 where
     T: TunnelTransport,

@@ -435,6 +435,10 @@ impl RegistryOwner {
         self.reserve_with_input(stamp, None)
     }
 
+    pub(super) fn byte_bank(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.byte_bank)
+    }
+
     pub(super) fn reserve_with_input(
         &self,
         stamp: OwnershipStamp,
