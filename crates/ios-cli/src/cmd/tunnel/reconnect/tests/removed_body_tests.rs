@@ -5,12 +5,13 @@ fn row(
     identity: AttemptIdentity,
     ticket: Ticket,
     admitted: super::super::super::failure_slot::Owner,
+    version: FailureVersion,
 ) -> Episode {
     Episode {
         identity,
         ticket,
         slot: admitted,
-        version: Arc::new(()),
+        version,
         snapshot: Snapshot {
             schedule: ScheduleProvenance::Episode,
             phase: Phase::Connecting,
@@ -31,14 +32,17 @@ async fn removed_body_episode_into_inner_refunds_only_original_body_while_select
     let identity = buffered_identity();
     let body = std::mem::size_of::<Removed>();
     let fields = A.len() + super::super::super::candidate_input::route_length(&identity.route);
-    let bank = Arc::new(Semaphore::new(body + fields + slot_bytes()));
+    let bank = Arc::new(Semaphore::new(
+        body + fields + slot_bytes() + FailureVersion::body_bytes(),
+    ));
     let admitted = slot(&bank);
+    let version = FailureVersion::new(&bank).unwrap();
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let node = Removed::episode(
         A,
         &identity,
-        |identity| row(identity, ticket, admitted),
+        |identity| row(identity, ticket, admitted, version),
         &bank,
     )
     .unwrap();
@@ -71,7 +75,10 @@ async fn removed_body_episode_into_inner_refunds_only_original_body_while_select
         identity.native_id
     );
     drop(value);
-    assert_eq!(bank.available_permits(), body + fields + slot_bytes());
+    assert_eq!(
+        bank.available_permits(),
+        body + fields + slot_bytes() + FailureVersion::body_bytes()
+    );
 }
 
 #[tokio::test]
@@ -80,8 +87,15 @@ async fn removed_body_cause_last_byte_refusal_and_original_receipt_handoff_are_e
     let bank = Arc::new(Semaphore::new(total));
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
-    let receipt =
-        FailureReceipt::reserve(A, &identity(), &ticket, slot(&bank), Arc::new(()), &bank).unwrap();
+    let receipt = FailureReceipt::reserve(
+        A,
+        &identity(),
+        &ticket,
+        slot(&bank),
+        FailureVersion::new(&bank).unwrap(),
+        &bank,
+    )
+    .unwrap();
     let body = std::mem::size_of::<Removed>();
     let leave = body - 1;
     let held = bank
@@ -240,7 +254,8 @@ async fn removed_body_actual_ledger_rollback_and_last_batch_keep_original_boxes_
     assert_eq!(pointer(receipt.primary()), first_pointer);
     let receipt_bytes = FailureReceipt::initial_bytes(A, &identity)
         - std::mem::size_of::<SourceFailure>()
-        + slot_bytes();
+        + slot_bytes()
+        + FailureVersion::body_bytes();
     assert_eq!(
         bank.available_permits(),
         total - held.num_permits() - receipt_bytes

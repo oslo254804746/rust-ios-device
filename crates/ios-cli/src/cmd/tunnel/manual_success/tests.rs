@@ -24,7 +24,7 @@ fn authority(state: &TunnelAgentState, key: &str) -> DeviceAuthority {
         .unwrap()
 }
 
-async fn manual(state: &TunnelAgentState, key: &str) -> (Ticket, Arc<()>, Arc<()>) {
+async fn manual(state: &TunnelAgentState, key: &str) -> (Ticket, Arc<()>, FailureVersion) {
     manual_authorized(state, key, authority(state, key)).await
 }
 
@@ -32,7 +32,7 @@ async fn manual_authorized(
     state: &TunnelAgentState,
     key: &str,
     authority: DeviceAuthority,
-) -> (Ticket, Arc<()>, Arc<()>) {
+) -> (Ticket, Arc<()>, FailureVersion) {
     let ticket = state.inner.lifecycle.ticket(key).await.unwrap();
     let slot = state.reserve_failure_slot(key).await.unwrap();
     state
@@ -54,7 +54,7 @@ async fn manual_authorized(
             ticket.establish_manual(
                 super::super::intent::RouteIntent::Wifi(None),
                 authority,
-                Some(Arc::clone(&failure)),
+                Some(failure.clone()),
                 None,
             )
         })
@@ -117,12 +117,14 @@ async fn manual_preflight_revoked_authority_keeps_original_failure_and_exact_pen
         )
         .await
         .unwrap();
-    assert!(Arc::ptr_eq(
+    assert!(FailureVersion::ptr_eq(
         &state.inner.failed_attempts.read().await[DEVICE].version,
         &failure
     ));
     let pending = ticket.pending_success().unwrap();
-    assert!(Arc::ptr_eq(&pending.0, &desired) && Arc::ptr_eq(&pending.1.version, &failure));
+    assert!(
+        Arc::ptr_eq(&pending.0, &desired) && FailureVersion::ptr_eq(&pending.1.version, &failure)
+    );
     state.notify_shutdown();
     state.clear().await;
 }
@@ -141,7 +143,7 @@ async fn manual_preflight_stop_skips_old_writer_without_restarting_backoff() {
         )
         .await
         .unwrap();
-    assert!(Arc::ptr_eq(
+    assert!(FailureVersion::ptr_eq(
         &state.inner.failed_attempts.read().await[ticket.udid()].version,
         &failure
     ));
@@ -184,12 +186,14 @@ async fn manual_preflight_expired_authority_keeps_failure_and_unprocessed_pendin
         )
         .await
         .unwrap();
-    assert!(Arc::ptr_eq(
+    assert!(FailureVersion::ptr_eq(
         &state.inner.failed_attempts.read().await[DEVICE].version,
         &failure
     ));
     let pending = ticket.pending_success().unwrap();
-    assert!(Arc::ptr_eq(&pending.0, &desired) && Arc::ptr_eq(&pending.1.version, &failure));
+    assert!(
+        Arc::ptr_eq(&pending.0, &desired) && FailureVersion::ptr_eq(&pending.1.version, &failure)
+    );
     state.notify_shutdown();
     state.clear().await;
 }
@@ -214,7 +218,9 @@ async fn actual_pending_clear_late_clock_restores_same_desired_and_failure_arcs(
     assert!(error.is::<super::super::scan::DeadlineReached>());
     assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 2);
     let pending = ticket.pending_success().unwrap();
-    assert!(Arc::ptr_eq(&pending.0, &desired) && Arc::ptr_eq(&pending.1.version, &failure));
+    assert!(
+        Arc::ptr_eq(&pending.0, &desired) && FailureVersion::ptr_eq(&pending.1.version, &failure)
+    );
     state.notify_shutdown();
     state.clear().await;
 }
@@ -254,7 +260,7 @@ async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at
             ticket.establish_manual(
                 super::super::intent::RouteIntent::Wifi(Some("current-host".into())),
                 authority(&state, ticket.udid()),
-                Some(Arc::clone(&failure)),
+                Some(failure.clone()),
                 None,
             )
         })
@@ -347,7 +353,7 @@ async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() 
         .unwrap();
     let new_desired = ticket.desired().version;
     assert!(!Arc::ptr_eq(&old_desired, &new_desired));
-    assert!(!Arc::ptr_eq(&old_failure, &new_failure));
+    assert!(!FailureVersion::ptr_eq(&old_failure, &new_failure));
     plan.into_inner()
         .flush_collected(
             &state,
@@ -355,13 +361,13 @@ async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() 
         )
         .await
         .unwrap();
-    assert!(Arc::ptr_eq(
+    assert!(FailureVersion::ptr_eq(
         &state.inner.failed_attempts.read().await[ticket.udid()].version,
         &new_failure
     ));
     let (pending_desired, pending) = ticket.pending_success().unwrap();
     assert!(Arc::ptr_eq(&pending_desired, &new_desired));
-    assert!(Arc::ptr_eq(&pending.version, &new_failure));
+    assert!(FailureVersion::ptr_eq(&pending.version, &new_failure));
     state.notify_shutdown();
     state.clear().await;
 }
@@ -382,14 +388,19 @@ async fn manual_preflight_actual_late_writer_restores_failure_stamp_and_pending_
         .await
         .unwrap_err();
     assert!(error.is::<super::super::scan::DeadlineReached>());
-    assert!(Arc::ptr_eq(
+    assert!(FailureVersion::ptr_eq(
         &state.inner.failed_attempts.read().await[ticket.udid()].version,
         &failure
     ));
     let stamp = ticket.failure_stamp().unwrap();
-    assert!(Arc::ptr_eq(&stamp.0, &original_stamp.0) && Arc::ptr_eq(&stamp.1, &original_stamp.1));
+    assert!(
+        FailureVersion::ptr_eq(&stamp.0, &original_stamp.0)
+            && Arc::ptr_eq(&stamp.1, &original_stamp.1)
+    );
     let pending = ticket.pending_success().unwrap();
-    assert!(Arc::ptr_eq(&pending.0, &desired) && Arc::ptr_eq(&pending.1.version, &failure));
+    assert!(
+        Arc::ptr_eq(&pending.0, &desired) && FailureVersion::ptr_eq(&pending.1.version, &failure)
+    );
     state.notify_shutdown();
     state.clear().await;
 }

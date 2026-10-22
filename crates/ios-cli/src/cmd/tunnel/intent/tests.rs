@@ -237,7 +237,8 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
     let new = route(2048, "new-host");
     let old_bytes = RetainedRoute::bytes(&old);
     let new_bytes = RetainedRoute::bytes(&new);
-    let bank = Arc::new(Semaphore::new(old_bytes + new_bytes));
+    let version_bytes = FailureVersion::body_bytes();
+    let bank = Arc::new(Semaphore::new(old_bytes + new_bytes + version_bytes));
     let cell = Cell::new(Arc::new(()), Arc::clone(&bank));
     manual(&cell, old).unwrap();
     let before = cell.snapshot();
@@ -245,7 +246,7 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
     let error = cell
         .checked_replace(
             || cell.manual(new, authority()),
-            Some(Arc::new(())),
+            Some(FailureVersion::new(&bank).unwrap()),
             || {
                 if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                     Ok(())
@@ -266,11 +267,14 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
     };
     assert!(old.ptr_eq(current));
     assert!(cell.pending_success().is_none());
-    assert_eq!(bank.available_permits(), new_bytes);
+    assert_eq!(bank.available_permits(), new_bytes + version_bytes);
     drop(before);
     drop(after);
     drop(cell);
-    assert_eq!(bank.available_permits(), old_bytes + new_bytes);
+    assert_eq!(
+        bank.available_permits(),
+        old_bytes + new_bytes + version_bytes
+    );
 }
 
 #[test]

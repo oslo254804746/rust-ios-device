@@ -318,7 +318,7 @@ thread_local! {
     static BEFORE_UNIQUE:FreeHook=const{std::cell::RefCell::new(None)};
 }
 #[cfg(test)]
-fn after_free<R>(callback: impl FnMut() + 'static, work: impl FnOnce() -> R) -> R {
+pub(super) fn after_free<R>(callback: impl FnMut() + 'static, work: impl FnOnce() -> R) -> R {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {

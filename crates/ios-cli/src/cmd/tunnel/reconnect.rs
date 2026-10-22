@@ -14,7 +14,7 @@ use ios_core::ErrorClass;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
-use super::{AttemptIdentity, Ticket, MAX_FAILURE_RECORDS};
+use super::{AttemptIdentity, FailureVersion, Ticket, MAX_FAILURE_RECORDS};
 
 mod causes;
 pub(super) use causes::{Completion, FailureReceipt, Receipt, SourceFailure};
@@ -173,7 +173,7 @@ struct Episode {
     identity: AttemptIdentity,
     ticket: Ticket,
     slot: super::failure_slot::Owner,
-    version: Arc<()>,
+    version: FailureVersion,
     snapshot: Snapshot,
     pending_event: Option<Reason>,
 }
@@ -308,12 +308,12 @@ impl Ledger {
             .and_then(|row| row.snapshot.deadline)
     }
 
-    pub(super) fn version(&self, udid: &str, ticket: &Ticket) -> Option<Arc<()>> {
+    pub(super) fn version(&self, udid: &str, ticket: &Ticket) -> Option<FailureVersion> {
         let state = self.lock();
         state
             .row(udid)
             .filter(|row| row.ticket.same_incarnation(ticket))
-            .map(|row| Arc::clone(&row.version))
+            .map(|row| row.version.clone())
             .or_else(|| {
                 state
                     .cause(udid)
@@ -324,19 +324,19 @@ impl Ledger {
 
     /// An explicitly requested successful connection also ends the prior
     /// automatic failure episode, but cannot clear an independently newer row.
-    pub(super) fn recovered(&self, udid: &str, ticket: &Ticket, version: &Arc<()>) {
+    pub(super) fn recovered(&self, udid: &str, ticket: &Ticket, version: &FailureVersion) {
         let mut removed = None;
         let mut cause = None;
         let _ = ticket.commit(|| {
             let mut state = self.lock();
             if state.row(udid).is_some_and(|row| {
-                row.ticket.same_incarnation(ticket) && Arc::ptr_eq(&row.version, version)
+                row.ticket.same_incarnation(ticket) && FailureVersion::ptr_eq(&row.version, version)
             }) {
                 removed = state.remove_row(udid);
             }
             if state.cause(udid).is_some_and(|receipt| {
                 receipt.same_ticket(ticket)
-                    && (Arc::ptr_eq(&receipt.version(), version) || removed.is_some())
+                    && (FailureVersion::ptr_eq(&receipt.version(), version) || removed.is_some())
             }) {
                 cause = state.remove_cause(udid);
             }
@@ -400,7 +400,7 @@ impl LedgerOwner {
             state.rows.reserve(1)?;
         }
         state.causes.reserve(1)?;
-        let version = Arc::new(());
+        let version = FailureVersion::new(&self.bank)?;
         let slot = state
             .row(udid)
             .filter(|_| same)
@@ -410,7 +410,7 @@ impl LedgerOwner {
             identity,
             ticket,
             slot.clone(),
-            Arc::clone(&version),
+            version.clone(),
             &self.bank,
         )?;
         let cause_node = Removed::receipt(receipt.clone(), &self.bank)?;
@@ -422,7 +422,7 @@ impl LedgerOwner {
                     identity,
                     ticket: ticket.clone(),
                     slot,
-                    version: Arc::clone(&version),
+                    version: version.clone(),
                     snapshot: Snapshot {
                         schedule: if self.policy.authoritative_schedule() {
                             ScheduleProvenance::Episode
@@ -498,7 +498,7 @@ impl Ledger {
             let mut state = self.lock();
             let Some(row) = state
                 .row_mut(&attempt.receipt.udid)
-                .filter(|row| Arc::ptr_eq(&row.version, &attempt.receipt.version))
+                .filter(|row| FailureVersion::ptr_eq(&row.version, &attempt.receipt.version))
             else {
                 return Ok(());
             };
@@ -564,7 +564,7 @@ impl Ledger {
             let mut state = self.lock();
             if state
                 .row(&attempt.receipt.udid)
-                .is_some_and(|row| Arc::ptr_eq(&row.version, &attempt.receipt.version))
+                .is_some_and(|row| FailureVersion::ptr_eq(&row.version, &attempt.receipt.version))
             {
                 removed = state.remove_row(&attempt.receipt.udid);
             }
@@ -666,6 +666,7 @@ impl Ledger {
             + udid.len()
             + super::candidate_input::route_length(&identity.route)
             + FailureReceipt::initial_bytes(udid, identity)
+            + FailureVersion::body_bytes()
     }
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {

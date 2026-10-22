@@ -370,7 +370,7 @@ async fn lifecycle_tunnel_success_cleanup_deadline_crossing_restores_original_ro
                 row.slot
                     .as_ref()
                     .map(|slot| &**slot as *const failure_slot::Slot),
-                Arc::as_ptr(&row.version),
+                row.version.as_ptr(),
             )
         };
         let hook = if after_remove {
@@ -397,7 +397,7 @@ async fn lifecycle_tunnel_success_cleanup_deadline_crossing_restores_original_ro
                     row.slot
                         .as_ref()
                         .map(|slot| &**slot as *const failure_slot::Slot),
-                    Arc::as_ptr(&row.version),
+                    row.version.as_ptr(),
                 ) == before
             })
         };
@@ -572,7 +572,7 @@ async fn lifecycle_tunnel_success_fast_cleanup_crossing_candidate_clock_defers_w
             row.slot
                 .as_ref()
                 .map(|slot| &**slot as *const failure_slot::Slot),
-            Arc::as_ptr(&row.version),
+            row.version.as_ptr(),
         )
     };
     *state.inner.success_after_remove.lock().unwrap() = Some(Box::new(|| {
@@ -591,7 +591,7 @@ async fn lifecycle_tunnel_success_fast_cleanup_crossing_candidate_clock_defers_w
                 row.slot
                     .as_ref()
                     .map(|slot| &**slot as *const failure_slot::Slot),
-                Arc::as_ptr(&row.version),
+                row.version.as_ptr(),
             ) == before
         })
     };

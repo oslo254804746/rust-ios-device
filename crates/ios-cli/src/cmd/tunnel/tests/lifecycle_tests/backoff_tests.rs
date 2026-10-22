@@ -152,7 +152,7 @@ async fn lifecycle_tunnel_backoff_known_route_change_does_not_inherit_usb_failur
 fn lifecycle_tunnel_backoff_debug_does_not_expose_retained_route_host() {
     let secret = "synthetic-private-host-identity";
     let attempt = FailedTunnelAttempt {
-        version: Arc::new(()),
+        version: FailureVersion::new(&Arc::new(Semaphore::new(1024))).unwrap(),
         global: None,
         last_attempt: Instant::now(),
         fail_count: 2,

@@ -40,6 +40,8 @@ mod candidate_input;
 mod error_payload;
 mod failure_slot;
 mod failure_table;
+mod failure_version;
+use failure_version::FailureVersion;
 mod federation_output;
 mod freshness;
 mod future_storage;
@@ -560,7 +562,7 @@ fn managed_metadata_bytes(
 struct FailedTunnelAttempt {
     // Every committed failure write gets a fresh identity, even with a paused
     // clock, a saturated fail count or a reused reservation permit.
-    version: Arc<()>,
+    version: FailureVersion,
     // Set under the committing ticket fence; pending/test-only rows may be
     // unbound. Device stop/manual generations do not change this global owner.
     global: Option<Arc<()>>,
@@ -1995,7 +1997,7 @@ impl TunnelAgentState {
                                         Instant::now(),
                                         self.inner.retry.policy(),
                                     ),
-                                Some(Arc::clone(&failed.version)),
+                                Some(failed.version.clone()),
                             )
                         });
                     if skip {
@@ -4419,7 +4421,7 @@ mod tests {
     fn failed_tunnel_attempt_skip_honors_backoff_window() {
         let now = Instant::now();
         let failed = FailedTunnelAttempt {
-            version: Arc::new(()),
+            version: FailureVersion::new(&Arc::new(Semaphore::new(1024))).unwrap(),
             global: None,
             last_attempt: now - Duration::from_secs(10),
             fail_count: 2,
@@ -4436,7 +4438,7 @@ mod tests {
         assert!(failed.should_skip(now));
 
         let expired = FailedTunnelAttempt {
-            version: Arc::new(()),
+            version: FailureVersion::new(&Arc::new(Semaphore::new(1024))).unwrap(),
             global: None,
             last_attempt: now - Duration::from_secs(61),
             fail_count: 2,

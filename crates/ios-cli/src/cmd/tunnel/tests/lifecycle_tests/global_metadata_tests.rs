@@ -179,7 +179,10 @@ async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_wi
     assert!(publication.ptr_eq(&state.inner.tunnels.read().await[B].publication));
     {
         let failed = state.inner.failed_attempts.read().await;
-        assert!(Arc::ptr_eq(&original.version, &failed[B].version));
+        assert!(FailureVersion::ptr_eq(
+            &original.version,
+            &failed[B].version
+        ));
         assert_eq!(original.identity, failed[B].identity);
         assert_eq!(original.last_attempt, failed[B].last_attempt);
         assert_eq!(original.fail_count, failed[B].fail_count);
@@ -718,7 +721,7 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
     );
     let failed = state.inner.failed_attempts.read().await;
     let current = &failed[B];
-    assert!(Arc::ptr_eq(&current.version, &original.version));
+    assert!(FailureVersion::ptr_eq(&current.version, &original.version));
     assert_eq!(current.last_attempt, original.last_attempt);
     assert_eq!(current.fail_count, original.fail_count);
     assert_eq!(current.identity, original.identity);

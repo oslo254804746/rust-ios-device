@@ -15,7 +15,7 @@ use super::candidate_input::route_capacity;
 use super::candidate_input::Input;
 use super::metadata_vec::KnownVec;
 use super::shared_allocation::Shared;
-use super::{AttemptIdentity, FailedTunnelAttempt, Route, MAX_FAILURE_RECORDS};
+use super::{AttemptIdentity, FailedTunnelAttempt, FailureVersion, Route, MAX_FAILURE_RECORDS};
 
 struct IdentityOwner {
     value: AttemptIdentity,
@@ -134,11 +134,12 @@ impl Node {
         // Prepare node/identity before consuming Input's single key destination.
         let destination = super::owned_box::Destination::<Self>::new(bank)?;
         let identity = Identity::copied(&input.route, native_id, bank)?;
+        let version = FailureVersion::new(bank)?;
         let (udid, key_storage) = input.outcome_key()?;
         Ok(destination.place(Self {
             udid,
             row: FailedTunnelAttempt {
-                version: Arc::new(()),
+                version,
                 global: None,
                 last_attempt: Instant::now(),
                 fail_count: 0,
@@ -167,7 +168,7 @@ impl Node {
         Ok(destination.place(Self {
             udid,
             row: FailedTunnelAttempt {
-                version: Arc::new(()),
+                version: FailureVersion::new(bank)?,
                 global: None,
                 last_attempt: Instant::now(),
                 fail_count: 0,
@@ -212,7 +213,10 @@ impl Node {
             Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::len),
             Route::Mobdev2(host) => host.len(),
         };
-        std::mem::size_of::<Self>() + Identity::allocation_bytes() + route_bytes
+        std::mem::size_of::<Self>()
+            + Identity::allocation_bytes()
+            + route_bytes
+            + FailureVersion::body_bytes()
     }
 }
 

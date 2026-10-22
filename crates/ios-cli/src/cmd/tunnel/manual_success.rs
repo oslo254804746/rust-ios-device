@@ -6,13 +6,13 @@ use tokio::sync::Semaphore;
 
 use super::bookkeeping::{DeferredSuccess, SuccessIntent, SuccessKey, WriteBatch};
 use super::metadata_vec::KnownVec;
-use super::{Ticket, TunnelAgentState};
+use super::{FailureVersion, Ticket, TunnelAgentState};
 use crate::access::DeviceAuthority;
 
 struct Completed {
     ticket: Ticket,
     desired: Arc<()>,
-    failure: Arc<()>,
+    failure: FailureVersion,
     authority: DeviceAuthority,
 }
 
@@ -37,13 +37,13 @@ impl Preflight {
         &mut self,
         ticket: Ticket,
         desired: Arc<()>,
-        failure: Arc<()>,
+        failure: FailureVersion,
         authority: DeviceAuthority,
     ) {
         self.completed.push_reserved(Completed {
             ticket: ticket.clone(),
             desired: Arc::clone(&desired),
-            failure: Arc::clone(&failure),
+            failure: failure.clone(),
             authority: authority.clone(),
         });
         self.batch.record_success_reserved(SuccessIntent {

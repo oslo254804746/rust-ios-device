@@ -17,7 +17,9 @@ async fn lifecycle_tunnel_clear_preserves_failure_committed_in_replacement_epoch
     state
         .record_failed_attempt(A, identity(71), slot, &old)
         .await;
-    let old_version = Arc::downgrade(&state.inner.failed_attempts.read().await[A].version);
+    let old_version = state.inner.failed_attempts.read().await[A]
+        .version
+        .downgrade();
     let expected = Arc::new(StdMutex::new(None));
     let captured = Arc::clone(&expected);
     let fresh = state.clone();
@@ -41,7 +43,7 @@ async fn lifecycle_tunnel_clear_preserves_failure_committed_in_replacement_epoch
         let failed = fresh.inner.failed_attempts.try_read().unwrap();
         let row = &failed[A];
         *captured.lock().unwrap() = Some((
-            Arc::clone(&row.version),
+            row.version.clone(),
             row.slot
                 .as_ref()
                 .map(|slot| &**slot as *const failure_slot::Slot as usize),
@@ -58,7 +60,7 @@ async fn lifecycle_tunnel_clear_preserves_failure_committed_in_replacement_epoch
             .expect("old clear erased replacement-epoch failure");
         let expected = expected.lock().unwrap();
         let (version, slot) = expected.as_ref().unwrap();
-        assert!(Arc::ptr_eq(&row.version, version));
+        assert!(FailureVersion::ptr_eq(&row.version, version));
         assert_eq!(
             row.slot
                 .as_ref()
@@ -253,7 +255,7 @@ async fn lifecycle_tunnel_clear_cancelled_while_publication_locked_keeps_old_epo
     state
         .record_failed_attempt(A, identity(71), slot, &ticket)
         .await;
-    let version = Arc::clone(&state.inner.failed_attempts.read().await[A].version);
+    let version = state.inner.failed_attempts.read().await[A].version.clone();
     let tunnels = state.inner.tunnels.write().await;
     let mut clear = Box::pin(state.clear());
     assert!(futures_util::poll!(&mut clear).is_pending());
@@ -261,7 +263,7 @@ async fn lifecycle_tunnel_clear_cancelled_while_publication_locked_keeps_old_epo
     drop(clear);
     drop(tunnels);
     let failed = state.inner.failed_attempts.try_write().unwrap();
-    assert!(Arc::ptr_eq(&failed[A].version, &version));
+    assert!(FailureVersion::ptr_eq(&failed[A].version, &version));
     assert_eq!(failed[A].fail_count, 1);
     drop(failed);
     assert!(source.calls.lock().unwrap().is_empty());
