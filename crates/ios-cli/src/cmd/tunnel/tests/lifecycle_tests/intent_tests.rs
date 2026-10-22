@@ -10,7 +10,7 @@ async fn shared_route_pre_source_refusal_keeps_original_resource_without_default
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
-    let leave = intent::RetainedRoute::body_bytes() - 1;
+    let leave = state.ensure_frame_bytes() + intent::RetainedRoute::body_bytes() - 1;
     let held = bank
         .clone()
         .try_acquire_many_owned((before - leave) as u32)

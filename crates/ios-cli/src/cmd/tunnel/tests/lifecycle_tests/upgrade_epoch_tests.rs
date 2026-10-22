@@ -13,7 +13,10 @@ async fn publication_lifetime_pre_source_refusal_from_either_pool_never_browses_
         let bank = state.inner.global_metadata_bytes.clone();
         let before = bank.available_permits();
         let held = if global_short {
-            let leave = intent::RetainedRoute::body_bytes() + publication::Life::bytes() - 1;
+            let leave = state.ensure_frame_bytes()
+                + intent::RetainedRoute::body_bytes()
+                + publication::Life::bytes()
+                - 1;
             Some(
                 bank.clone()
                     .try_acquire_many_owned((before - leave) as u32)

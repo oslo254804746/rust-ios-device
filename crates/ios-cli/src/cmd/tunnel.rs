@@ -1252,6 +1252,35 @@ impl TunnelAgentState {
             )
         );
         let deadline = lifecycle::ConnectionDeadline::new(self.inner.connect_timeout)?;
+        // Pay the actual explicit-start frame before a Ticket can be captured
+        // or a coordinator/serial wait can retain old desired generations.
+        future_storage::PaidFuture::new(
+            self.ensure_admitted(udid, ip_filter, requested_connection_type, manual, deadline),
+            &self.inner.global_metadata_bytes,
+        )?
+        .await
+    }
+
+    #[cfg(test)]
+    fn ensure_frame_bytes(&self) -> usize {
+        fn size<A, B, C, D, E, F: std::future::Future>(
+            _create: impl FnOnce(A, B, C, D, E) -> F,
+        ) -> usize {
+            std::mem::size_of::<F>()
+        }
+        size(|udid, ip_filter, connection, manual, deadline| {
+            self.ensure_admitted(udid, ip_filter, connection, manual, deadline)
+        })
+    }
+
+    async fn ensure_admitted(
+        &self,
+        udid: &str,
+        ip_filter: Option<&str>,
+        requested_connection_type: Option<StartTunnelConnectionType>,
+        manual: Option<intent::ManualRequest<'_>>,
+        deadline: lifecycle::ConnectionDeadline,
+    ) -> Result<PaidRecord> {
         let ticket = deadline.run(self.inner.lifecycle.ticket(udid)).await?;
         ticket
             .run(deadline.run(async {

@@ -6,7 +6,7 @@ async fn record_copy_refusal_keeps_live_device_and_never_starts_another_source()
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     drop(start(state.clone(), A).await.unwrap());
     let bank = state.inner.global_metadata_bytes.clone();
-    let held = bank
+    let mut held = bank
         .clone()
         .try_acquire_many_owned(bank.available_permits() as u32)
         .unwrap();
@@ -17,7 +17,11 @@ async fn record_copy_refusal_keeps_live_device_and_never_starts_another_source()
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
     );
+    // Keep the direct copy/list zero-quota checks above. The live ensure must
+    // first own its actual F, then reach the SAME record-copy refusal at zero.
+    drop(held.split(state.ensure_frame_bytes()).unwrap());
     let error = state.ensure_tunnel(A, None, None).await.unwrap_err();
+    assert!(error.is::<record_owner::CopyAdmission>());
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
