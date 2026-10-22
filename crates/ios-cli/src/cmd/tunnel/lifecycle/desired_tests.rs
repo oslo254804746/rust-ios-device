@@ -7,8 +7,34 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
     let key = "synthetic-desired-key";
     let ticket = lifecycle.ticket(key).await.unwrap();
     lifecycle.stop(key).await;
-    let before = bank.available_permits();
+    let row_bytes = 2 * std::mem::size_of::<DesiredRow>();
+    let before = row_bytes + key.len();
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((bank.available_permits() - before) as u32)
+        .unwrap();
+    let observed_bank = bank.clone();
+    let allocations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = allocations.clone();
+    let guard = super::super::metadata_vec::on_allocation(move |layout, pointer| {
+        let mut observed = observed.lock().unwrap();
+        if observed.is_empty() {
+            assert_eq!(layout.size(), row_bytes);
+            assert_eq!(observed_bank.available_permits(), key.len());
+        } else {
+            assert_eq!(observed.len(), 1);
+            assert_eq!(layout.size(), key.len());
+            assert_eq!(layout.align(), 1);
+            assert_eq!(
+                observed_bank.available_permits(),
+                0,
+                "original key grant precedes allocation"
+            );
+        }
+        observed.push((layout.size(), pointer));
+    });
     let rows = lifecycle.desired().await.unwrap();
+    drop(guard);
     assert_eq!(rows.len(), 1);
     let copied = &rows.as_slice()[0];
     assert_eq!(copied.udid, key);
@@ -18,8 +44,20 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
     ));
     assert!(copied.ticket.gate.ptr_eq(&ticket.gate));
     let key_bytes = copied.udid.capacity();
-    let row_bytes = 2 * std::mem::size_of::<DesiredRow>();
+    assert_eq!(key_bytes, key.len());
+    assert_eq!(copied._key_storage.num_permits(), key_bytes);
+    assert!(Arc::ptr_eq(copied._key_storage.semaphore(), &bank));
+    assert_eq!(
+        *allocations.lock().unwrap(),
+        [
+            (row_bytes, rows.as_slice().as_ptr() as usize),
+            (key_bytes, copied.udid.as_ptr() as usize),
+        ]
+    );
+    assert_ne!(copied.udid.as_ptr(), ticket.gate.udid.as_ptr());
+    let key_pointer = copied.udid.as_ptr();
     assert_eq!(bank.available_permits(), before - key_bytes - row_bytes);
+    bank.close();
     let mut iterator = rows.into_iter();
     let DesiredRow {
         udid,
@@ -32,10 +70,70 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
     drop(iterator);
     assert_eq!(bank.available_permits(), before - key_bytes);
     assert_eq!(udid, key);
+    assert_eq!(udid.as_ptr(), key_pointer);
     drop(udid);
+    assert_eq!(
+        bank.available_permits(),
+        before - key_bytes,
+        "key fee survives actual String deallocation"
+    );
     drop(key_storage);
     assert_eq!(bank.available_permits(), before);
+    drop(held);
     drop(ticket);
+    drop(lifecycle);
+    assert_eq!(bank.available_permits(), 65536);
+}
+
+#[tokio::test]
+async fn desired_listing_one_byte_key_refusal_never_allocates_the_copy_or_changes_original() {
+    let bank = Arc::new(Semaphore::new(65536));
+    let lifecycle = Lifecycle::with_metadata(bank.clone()).unwrap();
+    let key = "synthetic-独立-key";
+    let ticket = lifecycle.ticket(key).await.unwrap();
+    lifecycle.stop(key).await;
+    let original = ticket.desired();
+    let pointer = ticket.gate.udid.as_ptr();
+    let row_bytes = 2 * std::mem::size_of::<DesiredRow>();
+    let available = row_bytes + key.len() - 1;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((bank.available_permits() - available) as u32)
+        .unwrap();
+    let allocated = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = allocated.clone();
+    let observed_bank = bank.clone();
+    let guard = super::super::metadata_vec::on_allocation(move |layout, _| {
+        assert_eq!(
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no refused key backing"
+        );
+        assert_eq!(layout.size(), row_bytes);
+        assert_eq!(observed_bank.available_permits(), key.len() - 1);
+    });
+    let error = lifecycle.desired().await.err().unwrap();
+    drop(guard);
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(allocated.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(bank.available_permits(), available);
+    assert_eq!(ticket.gate.udid.as_ptr(), pointer);
+    assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
+    assert!(matches!(
+        ticket.desired().desired,
+        super::super::intent::Desired::Stopped
+    ));
+    assert_eq!(lifecycle.coordinator_count().await, 1);
+    drop(held);
+    let rows = lifecycle.desired().await.unwrap();
+    assert_eq!(rows.as_slice()[0].udid, key);
+    assert_ne!(rows.as_slice()[0].udid.as_ptr(), pointer);
+    drop(rows);
+    drop(ticket);
+    drop(original);
     drop(lifecycle);
     assert_eq!(bank.available_permits(), 65536);
 }

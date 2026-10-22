@@ -1,5 +1,11 @@
 # 当前待开发清单
 
+2026-10-22：L02 [desired key 复制前准入](validation/tunnel-desired-key-preallocation-2026-10-22.md)
+独立String先原bank精确backing准入再复制，原row/key/iterator/转移permit寿命及部分列表回滚保持。
+actual layout/地址/闭池0移交/UTF8 key N−1拒绝/原snapshot与最后退款已验；11命令通过，
+desired5/lifecycle过滤29/完整CLI1788/0FAIL/13原ignored，2处仅CLI，Core/lock哈希未变沿用已验。
+全部Cargo/build主控执行；其它原范围继续，23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [WebSocket 升级 owner](validation/tunnel-ws-upgrade-owner-2026-10-22.md)
 原bank整笔预付实际输入根及具体桥接F，目标/epoch/拨号前准入，回调等待升级即持有paid F；
 closed0同分配转移/取消/typed panic/实际free后退款、HTTP锁前拒绝及active远端F费用寿命已验。
