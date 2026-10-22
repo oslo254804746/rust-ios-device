@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-23：L02 [失败记录计数Semaphore完整共享根](validation/tunnel-failure-count-root-2026-10-23.md)
+原G支付Counts实际根，私有owned单许可仅持独立Counts，不延长State/native寿命。
+原count优先/Slot重用/退款、容量与清理路径保持；根直到最后实际free后退款。
+20门禁首轮通过，新增3/Slot7/完整CLI1843/0FAIL/13原ignored，708源码13处仅CLI。
+九处结构配额只加真实根费，独立fixture池显式计费，Core/lock沿用已验；全部Cargo/build主控。
+完整marker/opaque/endpoint原scope继续；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [marker跨bank有限持有审计](validation/tunnel-marker-cross-bank-census-2026-10-22.md)
 执行closed0原Lifecycle A、四个独立Registry B、最后lazy reset：8个distinct旧Arc各strong1。
 原producer Drop后A现有费用全退而B旧marker仍在，确认不能假设所有keeper均支付A。

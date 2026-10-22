@@ -18,6 +18,7 @@ fn minimum(state: &TunnelAgentState) -> usize {
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
         + TunnelAgentState::watch_bytes()
+        + failure_slot::Counts::body_bytes()
 }
 
 fn no_source_calls(source: &FakeSource) {

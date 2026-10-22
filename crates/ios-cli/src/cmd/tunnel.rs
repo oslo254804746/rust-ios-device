@@ -384,7 +384,7 @@ struct TunnelAgentInner {
     upstream_access: Upstreams,
     failed_attempts: RwLock<failure_table::Table>,
     retry: reconnect::LedgerOwner,
-    failure_slots: Arc<Semaphore>,
+    failure_slots: failure_slot::Counts,
     metadata_bytes: Arc<Semaphore>,
     global_metadata_bytes: Arc<Semaphore>,
     ready: RwLock<bool>,
@@ -840,7 +840,10 @@ impl TunnelAgentState {
                         retry,
                         Arc::clone(&global_metadata_bytes),
                     )?,
-                    failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
+                    failure_slots: failure_slot::Counts::new(
+                        MAX_FAILURE_RECORDS,
+                        &global_metadata_bytes,
+                    )?,
                     metadata_bytes,
                     global_metadata_bytes: Arc::clone(&global_metadata_bytes),
                     ready: RwLock::new(false),
@@ -891,6 +894,7 @@ impl TunnelAgentState {
             .get_mut()
             .expect("configure before sharing state");
         inner.native.rebind_empty_metadata(&bank).unwrap();
+        inner.failure_slots.rebind_empty_metadata(&bank).unwrap();
         inner.lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
         assert!(inner.shutdown.is_unique_initial());
         let shutdown = *inner.shutdown.borrow();

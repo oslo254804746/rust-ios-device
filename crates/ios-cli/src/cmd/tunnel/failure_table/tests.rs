@@ -401,7 +401,7 @@ fn failure_destination_survives_clear_and_adopts_without_new_quota() {
 #[tokio::test]
 async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() {
     let bank = Arc::new(Semaphore::new(BANK));
-    let slots = Arc::new(Semaphore::new(3));
+    let slots = super::super::failure_slot::Counts::fixture(3);
     let mut table = table(&bank);
     for key in ["a", "b", "c"] {
         let mut node = Node::owned(key.into(), identity(key), &bank).unwrap();
