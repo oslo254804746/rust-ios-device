@@ -66,7 +66,7 @@ async fn manual_authorized(
 #[tokio::test]
 async fn canonical_coordinator_key_buffer_and_fee_follow_last_ticket_after_table_drop() {
     let bank = Arc::new(Semaphore::new(65536));
-    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
     let ticket = lifecycle.ticket("original-canonical-key").await.unwrap();
     let pointer = ticket.udid().as_ptr();
     let same = lifecycle.ticket(ticket.udid()).await.unwrap();

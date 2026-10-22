@@ -1,10 +1,10 @@
+use super::super::paid_watch as watch;
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::watch;
-fn epoch() -> (Epoch, watch::Sender<Option<Arc<()>>>) {
+fn epoch(bank: &Arc<Semaphore>) -> (Epoch, watch::Sender<Option<Arc<()>>>) {
     let generation = Arc::new(());
-    let (sender, changes) = watch::channel(Some(Arc::clone(&generation)));
+    let (sender, changes) = watch::channel(Some(Arc::clone(&generation)), bank).unwrap();
     (
         Epoch {
             changes,
@@ -25,7 +25,7 @@ fn entries(bank: &Arc<Semaphore>) -> Table<Box<u8>> {
 #[test]
 fn publication_retain_original_paid_nodes_remove_with_depleted_quota_and_last_owner_release() {
     let bank = Arc::new(Semaphore::new(2 * 1024 * 1024));
-    let (epoch, _sender) = epoch();
+    let (epoch, _sender) = epoch(&bank);
     let clock = Deadline::new(Duration::from_secs(1)).unwrap();
     let mut table = entries(&bank);
     let (key, value) = table.get_key_value("a").unwrap();
@@ -53,7 +53,7 @@ fn publication_retain_actual_late_clock_zero_quota_restores_original_nodes_keys_
         table.get_key_value("a").unwrap().0.as_ptr(),
         table.get_key_value("b").unwrap().0.as_ptr(),
     ];
-    let (epoch, _sender) = epoch();
+    let (epoch, _sender) = epoch(&bank);
     let clock = Deadline::new(Duration::from_millis(20)).unwrap();
     let held = bank
         .clone()
@@ -82,7 +82,7 @@ fn publication_retain_stale_epoch_and_predicate_unwind_restore_each_original_slo
         let bank = Arc::new(Semaphore::new(2 * 1024 * 1024));
         let mut table = entries(&bank);
         let before = [table.proof("a"), table.proof("b")];
-        let (epoch, sender) = epoch();
+        let (epoch, sender) = epoch(&bank);
         let clock = Deadline::new(Duration::from_secs(1)).unwrap();
         let calls = AtomicUsize::new(0);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

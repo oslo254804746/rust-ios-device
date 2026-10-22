@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner() {
     let bank = Arc::new(Semaphore::new(65536));
-    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
     let key = "synthetic-desired-key";
     let ticket = lifecycle.ticket(key).await.unwrap();
     lifecycle.stop(key).await;
@@ -43,7 +43,7 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
 #[tokio::test]
 async fn desired_listing_refused_key_restores_all_partial_rows_and_original_states() {
     let bank = Arc::new(Semaphore::new(65536));
-    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
     let a = lifecycle.ticket("synthetic-a").await.unwrap();
     let b = lifecycle.ticket("synthetic-b").await.unwrap();
     lifecycle.stop("synthetic-a").await;
@@ -73,7 +73,7 @@ async fn desired_listing_refused_key_restores_all_partial_rows_and_original_stat
 async fn desired_listing_one_byte_backing_refusal_does_not_change_stopped_gate() {
     let key = "synthetic-stopped-key";
     let bank = Arc::new(Semaphore::new(65536));
-    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
     let ticket = lifecycle.ticket(key).await.unwrap();
     lifecycle.stop(key).await;
     let old = ticket.desired();
@@ -94,7 +94,7 @@ async fn desired_listing_one_byte_backing_refusal_does_not_change_stopped_gate()
 #[tokio::test]
 async fn desired_listing_empty_clear_and_terminal_need_no_storage() {
     let bank = Arc::new(Semaphore::new(65536));
-    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
     let ticket = lifecycle.ticket("synthetic-old-epoch").await.unwrap();
     lifecycle.stop("synthetic-old-epoch").await;
     let old = lifecycle.desired().await.unwrap();

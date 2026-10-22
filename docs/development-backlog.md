@@ -1,5 +1,13 @@
 # 当前待开发清单
 
+2026-10-22：L02 [CLI 私有 watch 完整根](validation/tunnel-cli-watch-roots-2026-10-22.md)
+五类私有watch使用原bank完整声明根，三个初始/每gate两个根提前准入；原epoch身份、Ref fence、wait_for、
+cooperative/取消/panic/实际wake-all及最后原根退款已验，公开Core watch保持。13命令通过，
+watch10/lifecycle过滤28/intent10/global metadata17/manager4/完整CLI1781/0FAIL/13原ignored。
+18处仅CLI源码变化，Core全量哈希未变沿用已验；全部Cargo/build由主控执行。
+其它原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-22：L02 [retry/failure generation 完整根](validation/tunnel-failure-version-root-2026-10-22.md)
 失败版本由原bank按实际完整根预付，原retry/receipt/manual-success/rollback共享同一身份和费用；
 closed0/最后Weak实际free后退款/foreign与N-1拒绝/原deadline计数及IO不变已验；
