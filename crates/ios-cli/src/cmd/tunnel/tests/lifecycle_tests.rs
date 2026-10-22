@@ -58,6 +58,7 @@ mod bookkeeping_tests;
 mod discovery_future_tests;
 mod discovery_intent_tests;
 mod discovery_tests;
+mod ensure_frame_tests;
 mod failure_cause_tests;
 mod failure_commit_tests;
 mod freshness_tests;

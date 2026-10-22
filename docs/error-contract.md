@@ -2017,6 +2017,8 @@ preserve native sources; no error-enum, protocol, safe-retry or remote-ACK chang
 
 ## Late manual connection Ready and acquired IO
 
+Explicit tunnel start preserves selector bounds, the manual exact-identifier check and original ConnectionDeadline construction before admitting its concrete future from the same global metadata bank. A refused frame returns resource_limit before Ticket capture, coordinator/serial waits or Source/fallback work, including a prepared zero deadline or terminal lifecycle. An admitted frame retains the original deadline.run/Ticket ordering, acquired-error priorities, absolute clock and route/fallback guards. See [explicit-start frame evidence](validation/tunnel-ensure-frame-owner-2026-10-22.md).
+
 Implementation `a963679ab0f853b1a38bfcee9ac59471d4920641`; [original error evidence](validation/tunnel-manual-poll-crossing-2026-10-07.md).
 Payload-free private deadline decisions return control to the independently
 polled Tokio timer; callers still receive actual Elapsed classified Timeout.
