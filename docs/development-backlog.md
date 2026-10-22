@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-22：L02 [前台Scope实际共享根](validation/tunnel-foreground-scope-root-2026-10-22.md)
+原Registry bank先精确支付完整Shared<Inner>布局，再构造根；clone同一根到实际free/Inner Drop后才退费。
+原连接/InnerDrop/cleanup/error正文保持，closed0末根物理free及实际失败错误持根/native joins/严格EOF已验。
+16命令通过，新增3/前台10/完整CLI1825/0FAIL/13原ignored；705源码3处仅CLI，Core/lock不变沿用已验。
+独立连接Semaphore/SDK/其它原scope与marker完整证明继续，未声称整个heap/RSS或L02完成。
+全部Cargo/build主控；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [前台NativeScope完整连接F](validation/tunnel-foreground-connect-frame-2026-10-22.md)
 原selector/4连接许可后，Registry原bank精确准入完整具体F，再创建standalone Ownership并调用原SDK。
 具体连接器未擦除或另装箱；原device→lease→permit Drop及collect/close保持，原handle/joins与IO地址已验。
