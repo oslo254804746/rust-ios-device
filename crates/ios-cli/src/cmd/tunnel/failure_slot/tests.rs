@@ -4,7 +4,7 @@ use super::*;
 fn failure_slot_body_refusal_returns_original_count_and_preserves_count_refusal_priority() {
     let body = Slot::body_bytes();
     for available in [0, body - 1] {
-        let counts = Arc::new(Semaphore::new(1));
+        let counts = Counts::fixture(1);
         let bytes = Arc::new(Semaphore::new(available));
         let error = Slot::reserve(&counts, &bytes).err().unwrap();
         assert_eq!(
@@ -14,7 +14,7 @@ fn failure_slot_body_refusal_returns_original_count_and_preserves_count_refusal_
         assert_eq!(counts.available_permits(), 1);
         assert_eq!(bytes.available_permits(), available);
     }
-    let counts = Arc::new(Semaphore::new(0));
+    let counts = Counts::fixture(0);
     let bytes = Arc::new(Semaphore::new(body));
     bytes.close();
     let error = Slot::reserve(&counts, &bytes).err().unwrap();
@@ -26,11 +26,11 @@ fn failure_slot_body_refusal_returns_original_count_and_preserves_count_refusal_
 #[test]
 fn failure_slot_body_exact_closed_pools_parallel_last_roots_return_one_count_and_actual_bytes() {
     let body = Slot::body_bytes();
-    let counts = Arc::new(Semaphore::new(1));
+    let counts = Counts::fixture(1);
     let bytes = Arc::new(Semaphore::new(body));
     let slot = Slot::reserve(&counts, &bytes).unwrap();
     assert_eq!(slot.num_permits(), 1);
-    assert!(Arc::ptr_eq(slot.semaphore(), &counts));
+    assert!(slot.counts().ptr_eq(&counts));
     assert_eq!(slot.storage().num_permits(), body);
     assert!(Arc::ptr_eq(slot.storage().semaphore(), &bytes));
     assert_eq!(counts.available_permits(), 0);
@@ -48,7 +48,7 @@ fn failure_slot_body_exact_closed_pools_parallel_last_roots_return_one_count_and
             scope.spawn(move || {
                 assert_eq!(&*kept as *const Slot as usize, pointer);
                 assert_eq!(kept.num_permits(), 1);
-                assert!(Arc::ptr_eq(kept.semaphore(), &counts));
+                assert!(kept.counts().ptr_eq(&counts));
                 barrier.wait();
                 drop(kept);
             });
@@ -114,7 +114,7 @@ async fn failure_slot_body_actual_manager_reuses_original_receipt_slot_at_closed
     drop((result, receipt, ticket, state, held));
     assert_eq!(
         bytes.available_permits(),
-        super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES - Slot::body_bytes()
+        super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES - Slot::body_bytes() - Counts::body_bytes()
     );
     drop(slot);
     assert_eq!(
@@ -128,6 +128,21 @@ async fn failure_slot_body_actual_manager_reuses_original_receipt_slot_at_closed
     );
     assert_eq!(
         bytes.available_permits(),
+        super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES - Counts::body_bytes()
+    );
+    let charged = bytes.clone();
+    super::super::shared_allocation::after_free(
+        move || {
+            assert_eq!(
+                charged.available_permits(),
+                super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES - Counts::body_bytes(),
+                "count root refunded before its actual free"
+            );
+        },
+        || drop(counts),
+    );
+    assert_eq!(
+        bytes.available_permits(),
         super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
     );
 }
@@ -137,7 +152,7 @@ fn failure_slot_exact_control_block_uses_actual_layout_before_backing_and_closed
 ) {
     let bytes = Slot::body_bytes();
     let bank = Arc::new(Semaphore::new(bytes));
-    let counts = Arc::new(Semaphore::new(1));
+    let counts = Counts::fixture(1);
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let capture = seen.clone();
     let charged = bank.clone();
@@ -163,4 +178,135 @@ fn failure_slot_exact_control_block_uses_actual_layout_before_backing_and_closed
     drop(last);
     assert_eq!(counts.available_permits(), 1);
     assert_eq!(bank.available_permits(), bytes);
+}
+
+#[test]
+fn failure_count_root_short_and_closed_refusal_precedes_backing_or_count_construction() {
+    let bytes = Counts::body_bytes();
+    for closed in [false, true] {
+        let bank = Arc::new(Semaphore::new(bytes - 1));
+        if closed {
+            bank.close();
+        }
+        let _hook = super::super::metadata_vec::on_allocation(|_, _| {
+            panic!("unadmitted count root allocated");
+        });
+        let error = Counts::new(super::super::MAX_FAILURE_RECORDS, &bank)
+            .err()
+            .unwrap();
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+        assert_eq!(bank.available_permits(), bytes - 1);
+    }
+}
+
+#[test]
+fn failure_count_root_exact_backing_survives_bank_close_and_original_count_owners_until_last_free()
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let bytes = Counts::body_bytes();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let allocations = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(AtomicUsize::new(0));
+    let observed = allocations.clone();
+    let address = start.clone();
+    let charged = bank.clone();
+    let hook = super::super::metadata_vec::on_allocation(move |layout, pointer| {
+        assert_eq!(layout.size(), bytes);
+        assert_eq!(charged.available_permits(), 0);
+        address.store(pointer, Ordering::SeqCst);
+        observed.fetch_add(1, Ordering::SeqCst);
+        charged.close(); // Admission is complete before Semaphore construction.
+    });
+    let counts = Counts::new(3, &bank).unwrap();
+    drop(hook);
+    assert_eq!(allocations.load(Ordering::SeqCst), 1);
+    assert!(bank.is_closed());
+    assert!(!counts.0.is_closed());
+    assert!(Arc::ptr_eq(counts.0.storage().semaphore(), &bank));
+    assert_eq!(counts.0.storage().num_permits(), bytes);
+    let pointer = &*counts.0 as *const Semaphore as usize;
+    let start = start.load(Ordering::SeqCst);
+    assert!(pointer >= start && pointer + std::mem::size_of::<Semaphore>() <= start + bytes);
+    let one = counts.clone().try_acquire_owned().unwrap();
+    let two = counts.clone().try_acquire_owned().unwrap();
+    let three = counts.clone().try_acquire_owned().unwrap();
+    assert!(matches!(
+        counts.clone().try_acquire_owned(),
+        Err(TryAcquireError::NoPermits)
+    ));
+    assert_eq!(bank.available_permits(), 0);
+    drop(one);
+    assert_eq!(counts.available_permits(), 1);
+    let one = counts.clone().try_acquire_owned().unwrap();
+    counts.close();
+    assert!(matches!(
+        counts.clone().try_acquire_owned(),
+        Err(TryAcquireError::Closed)
+    ));
+    assert!(one.counts.ptr_eq(&counts) && two.counts.ptr_eq(&counts));
+    drop(counts);
+    drop(one);
+    drop(two);
+    assert_eq!(three.counts.available_permits(), 2);
+    assert_eq!(&*three.counts.0 as *const Semaphore as usize, pointer);
+    assert_eq!(bank.available_permits(), 0);
+    let freed = Arc::new(AtomicUsize::new(0));
+    let observed = freed.clone();
+    let charged = bank.clone();
+    super::super::shared_allocation::after_free(
+        move || {
+            assert_eq!(charged.available_permits(), 0);
+            observed.fetch_add(1, Ordering::SeqCst);
+        },
+        || drop(three),
+    );
+    assert_eq!(freed.load(Ordering::SeqCst), 1);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[test]
+fn failure_count_root_fixture_rebind_preserves_original_semaphore_and_requires_unused_exact_grant()
+{
+    let bytes = Counts::body_bytes();
+    let first = Arc::new(Semaphore::new(bytes));
+    let second = Arc::new(Semaphore::new(bytes));
+    let mut counts = Counts::new(2, &first).unwrap();
+    let pointer = &*counts.0 as *const Semaphore as usize;
+    let held = second.clone().try_acquire_owned().unwrap();
+    assert!(counts.rebind_empty_metadata(&second).is_err());
+    assert_eq!(second.available_permits(), bytes - 1);
+    drop(held);
+    let alias = counts.clone();
+    assert!(counts.rebind_empty_metadata(&second).is_err());
+    assert_eq!(second.available_permits(), bytes);
+    drop(alias);
+    let original = counts.clone().try_acquire_owned().unwrap();
+    assert!(counts.rebind_empty_metadata(&second).is_err());
+    assert_eq!(counts.available_permits(), 1);
+    assert_eq!(second.available_permits(), bytes);
+    drop(original);
+    let closed = Arc::new(Semaphore::new(bytes));
+    closed.close();
+    assert!(counts.rebind_empty_metadata(&closed).is_err());
+    assert_eq!(first.available_permits(), 0);
+    let hook = super::super::metadata_vec::on_allocation(|_, _| {
+        panic!("fixture rebind replaced original allocation");
+    });
+    counts.rebind_empty_metadata(&second).unwrap();
+    drop(hook);
+    assert_eq!(&*counts.0 as *const Semaphore as usize, pointer);
+    assert!(Arc::ptr_eq(counts.0.storage().semaphore(), &second));
+    assert_eq!(counts.available_permits(), 2);
+    assert_eq!(first.available_permits(), bytes);
+    assert_eq!(second.available_permits(), 0);
+    second.close();
+    let one = counts.clone().try_acquire_owned().unwrap();
+    assert_eq!(counts.available_permits(), 1);
+    drop(one);
+    assert_eq!(counts.available_permits(), 2);
+    drop(counts);
+    assert_eq!(second.available_permits(), bytes);
 }

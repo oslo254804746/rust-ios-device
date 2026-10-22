@@ -216,7 +216,8 @@ fn configured_with_discovery(
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
         + TunnelAgentOwner::body_bytes()
-        + TunnelAgentState::watch_bytes();
+        + TunnelAgentState::watch_bytes()
+        + failure_slot::Counts::body_bytes();
     state.set_global_metadata_limit(
         native_bytes
             + retirement::Registry::incarnation_bytes()
@@ -439,7 +440,8 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
         + TunnelAgentOwner::body_bytes()
-        + TunnelAgentState::watch_bytes();
+        + TunnelAgentState::watch_bytes()
+        + failure_slot::Counts::body_bytes();
     state.set_global_metadata_limit(
         native_bytes
             + retirement::Registry::incarnation_bytes()

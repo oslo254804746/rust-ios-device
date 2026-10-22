@@ -123,7 +123,8 @@ fn lifecycle() -> Lifecycle {
     .unwrap()
 }
 fn slot(bank: &Arc<Semaphore>) -> super::super::failure_slot::Owner {
-    super::super::failure_slot::Slot::reserve(&Arc::new(Semaphore::new(1)), bank).unwrap()
+    super::super::failure_slot::Slot::reserve(&super::super::failure_slot::Counts::fixture(1), bank)
+        .unwrap()
 }
 fn slot_bytes() -> usize {
     super::super::failure_slot::Slot::body_bytes()

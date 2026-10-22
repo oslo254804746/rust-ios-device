@@ -145,7 +145,8 @@ async fn original_capsule_real_ledger_prepays_whole_control_block_and_captures_s
     let ledger = Ledger::with_metadata(RetryPolicy::default(), bank.clone()).unwrap();
     let lifecycle = Lifecycle::new();
     let ticket = lifecycle.ticket(key).await.unwrap();
-    let admitted = Slot::reserve(&Arc::new(Semaphore::new(1)), &bank).unwrap();
+    let admitted =
+        Slot::reserve(&crate::cmd::tunnel::failure_slot::Counts::fixture(1), &bank).unwrap();
     let allocations = Arc::new(StdMutex::new(Vec::new()));
     let captured = allocations.clone();
     let charged = bank.clone();

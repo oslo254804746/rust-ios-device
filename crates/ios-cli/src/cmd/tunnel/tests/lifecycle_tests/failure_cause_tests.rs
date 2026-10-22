@@ -734,7 +734,8 @@ async fn failure_cause_slot_exhaustion_rejects_fresh_source_and_stop_releases_or
     let source = RefusedSource::new().await;
     source.devices.lock().unwrap().push(B.into());
     let mut state = manager(source.clone());
-    state.inner.get_mut().unwrap().failure_slots = Arc::new(Semaphore::new(1));
+    state.inner.get_mut().unwrap().failure_slots =
+        failure_slot::Counts::new(1, &state.inner.global_metadata_bytes).unwrap();
     state.refresh_once().await.unwrap();
     assert_eq!((source.count(A), source.count(B)), (1, 0));
     assert_eq!(state.inner.retry.receipt_count(), 1);
