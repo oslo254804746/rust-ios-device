@@ -7,14 +7,14 @@ use super::{
 use anyhow::{Context, Result};
 use ios_core::{ConnectOptions, ConnectedDevice, TunMode, TunnelHandle, TunnelOwner};
 use std::{future::Future, ops::Deref, sync::Arc, time::Duration};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Semaphore, TryAcquireError};
 
 #[derive(Clone)]
 pub(crate) struct NativeScope(InnerOwner);
 type InnerOwner = super::shared_allocation::Shared<Inner>;
 struct Inner {
     registry: RegistryOwner,
-    connections: Arc<Semaphore>,
+    connections: ConnectionSlots,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -25,7 +25,7 @@ impl Drop for Inner {
 pub(crate) struct NativeConnection<D = ConnectedDevice> {
     device: Option<D>,
     lease: Option<NativeLease>,
-    _permit: OwnedSemaphorePermit,
+    _permit: ConnectionPermit,
 }
 impl<D> Deref for NativeConnection<D> {
     type Target = D;
@@ -37,6 +37,45 @@ impl<D> Drop for NativeConnection<D> {
     fn drop(&mut self) {
         drop(self.device.take());
         drop(self.lease.take());
+    }
+}
+
+type SlotsOwner = super::shared_allocation::Shared<Semaphore>;
+
+#[derive(Clone)]
+struct ConnectionSlots(SlotsOwner);
+impl Deref for ConnectionSlots {
+    type Target = Semaphore;
+
+    fn deref(&self) -> &Semaphore {
+        &self.0
+    }
+}
+impl ConnectionSlots {
+    fn try_acquire_owned(self) -> std::result::Result<ConnectionPermit, TryAcquireError> {
+        self.try_acquire_many_owned(1)
+    }
+
+    fn try_acquire_many_owned(
+        self,
+        count: u32,
+    ) -> std::result::Result<ConnectionPermit, TryAcquireError> {
+        // Only the root changes: the original Tokio semaphore still makes the
+        // nonblocking admission decision. This owner returns exactly this count.
+        self.0.try_acquire_many(count)?.forget();
+        Ok(ConnectionPermit { slots: self, count })
+    }
+}
+
+struct ConnectionPermit {
+    slots: ConnectionSlots,
+    count: u32,
+}
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.slots.add_permits(self.count as usize);
+        // The separate slots root can outlive Inner. A live connection permit
+        // must never postpone the last Scope's original native stop request.
     }
 }
 
@@ -82,16 +121,21 @@ impl NativeScope {
 
     fn from_registry(registry: RegistryOwner) -> Result<Self> {
         let bank = registry.byte_bank();
-        let storage =
-            super::admission::known_metadata_charge(&bank, InnerOwner::allocation_bytes())?;
-        Ok(Self(InnerOwner::from_grant(
-            Inner {
-                registry,
-                connections: Arc::new(Semaphore::new(4)),
-            },
-            &bank,
-            storage,
-        )?))
+        let bytes = InnerOwner::allocation_bytes()
+            .checked_add(SlotsOwner::allocation_bytes())
+            .ok_or_else(|| crate::output::resource_decision("foreground roots layout overflow"))?;
+        let mut storage = super::admission::known_metadata_charge(&bank, bytes)?;
+        let inner_storage = storage
+            .split(InnerOwner::allocation_bytes())
+            .expect("whole foreground roots grant");
+        // Prepare BOTH actual allocations before Inner exists. Any refusal
+        // frees empty destinations without closing the incoming registry.
+        let inner = super::shared_allocation::Destination::from_grant(&bank, inner_storage)?;
+        let slots = super::shared_allocation::Destination::from_grant(&bank, storage)?;
+        Ok(Self(inner.place(Inner {
+            registry,
+            connections: ConnectionSlots(slots.place(Semaphore::new(4))),
+        })))
     }
     pub(crate) async fn connect(&self, udid: &str, mode: TunMode) -> Result<NativeConnection> {
         self.prepare_connect(udid, mode, NativeConnector)?.await
@@ -123,7 +167,7 @@ impl NativeScope {
         &self,
         udid: &str,
         mode: TunMode,
-        permit: OwnedSemaphorePermit,
+        permit: ConnectionPermit,
         connector: C,
     ) -> Result<NativeConnection<C::Device>> {
         let ownership = Ownership::standalone(self.0.registry.clone())?;
@@ -200,6 +244,8 @@ impl std::error::Error for RetainedScopeFailure {
 mod frame_tests;
 #[cfg(test)]
 mod root_tests;
+#[cfg(test)]
+mod slots_tests;
 
 #[cfg(test)]
 mod tests {

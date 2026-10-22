@@ -39,6 +39,18 @@ fn allocate_backing<T>(
     layout: Layout,
     storage: OwnedSemaphorePermit,
 ) -> Result<AdmittedVec<T>> {
+    #[cfg(test)]
+    if layout.size() != 0
+        && REFUSE_ALLOCATION.with(|hook| {
+            hook.borrow_mut()
+                .as_mut()
+                .is_some_and(|refuse| refuse(layout))
+        })
+    {
+        return Err(crate::output::resource_decision(
+            "tunnel owned vector allocation failed",
+        ));
+    }
     let values = if layout.size() == 0 {
         Vec::with_capacity(capacity)
     } else {
@@ -58,6 +70,33 @@ fn allocate_backing<T>(
         });
     }
     Ok(AdmittedVec { values, storage })
+}
+
+#[cfg(test)]
+type AllocationRefusal = std::cell::RefCell<Option<Box<dyn FnMut(Layout) -> bool>>>;
+#[cfg(test)]
+thread_local! {
+    static REFUSE_ALLOCATION: AllocationRefusal = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) struct RefusalGuard;
+#[cfg(test)]
+impl Drop for RefusalGuard {
+    fn drop(&mut self) {
+        REFUSE_ALLOCATION.with(|hook| hook.borrow_mut().take());
+    }
+}
+#[cfg(test)]
+pub(super) fn refuse_allocation(hook: impl FnMut(Layout) -> bool + 'static) -> RefusalGuard {
+    REFUSE_ALLOCATION.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        assert!(
+            pending.is_none(),
+            "allocation refusal hook already installed"
+        );
+        *pending = Some(Box::new(hook));
+    });
+    RefusalGuard
 }
 
 #[cfg(test)]

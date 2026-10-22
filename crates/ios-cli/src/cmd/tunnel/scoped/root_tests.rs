@@ -16,7 +16,7 @@ fn foreground_root_short_and_closed_refusal_precedes_scope_allocation_or_registr
         let leave = if closed {
             0
         } else {
-            InnerOwner::allocation_bytes() - 1
+            InnerOwner::allocation_bytes() + SlotsOwner::allocation_bytes() - 1
         };
         let held = bank
             .clone()
@@ -50,7 +50,9 @@ fn foreground_root_exact_original_bank_and_same_shared_body_survive_clones_until
     let bank = Arc::new(Semaphore::new(TOTAL));
     let registry = Registry::with_metadata(&bank).unwrap();
     let before = bank.available_permits();
-    let bytes = InnerOwner::allocation_bytes();
+    let inner_bytes = InnerOwner::allocation_bytes();
+    let slots_bytes = SlotsOwner::allocation_bytes();
+    let bytes = inner_bytes + slots_bytes;
     let observed = Arc::new(StdMutex::new(Vec::new()));
     let captured = observed.clone();
     let charged = bank.clone();
@@ -59,16 +61,16 @@ fn foreground_root_exact_original_bank_and_same_shared_body_survive_clones_until
         .try_acquire_many_owned((before - bytes) as u32)
         .unwrap();
     let _hook = super::super::metadata_vec::on_allocation(move |layout, pointer| {
-        assert_eq!(layout.size(), bytes);
+        assert!(layout.size() == inner_bytes || layout.size() == slots_bytes);
         assert_eq!(charged.available_permits(), 0);
         captured.lock().unwrap().push(pointer);
     });
     let scope = NativeScope::from_registry(registry.clone()).unwrap();
     drop(_hook);
     let pointer = observed.lock().unwrap()[0];
-    assert_eq!(observed.lock().unwrap().len(), 1);
+    assert_eq!(observed.lock().unwrap().len(), 2);
     let body = &*scope.0 as *const Inner as usize;
-    assert!(body >= pointer && body + std::mem::size_of::<Inner>() <= pointer + bytes);
+    assert!(body >= pointer && body + std::mem::size_of::<Inner>() <= pointer + inner_bytes);
     assert!(Arc::ptr_eq(&scope.0.registry.byte_bank(), &bank));
     let second = scope.clone();
     let third = second.clone();
@@ -91,15 +93,16 @@ fn foreground_root_exact_original_bank_and_same_shared_body_survive_clones_until
                 0,
                 "root fee returned before physical free"
             );
-            assert!(
-                !original.snapshot().sealed,
-                "Inner Drop ran before this root deallocation observer"
+            let previous = count.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                original.snapshot().sealed,
+                previous == 1,
+                "Inner root must free before its Drop, then slots root frees after close"
             );
-            count.fetch_add(1, Ordering::SeqCst);
         },
         || drop(third),
     );
-    assert_eq!(freed.load(Ordering::SeqCst), 1);
+    assert_eq!(freed.load(Ordering::SeqCst), 2);
     assert!(registry.snapshot().closed_and_empty());
     assert_eq!(bank.available_permits(), bytes);
     drop(held);
@@ -160,7 +163,7 @@ async fn foreground_root_actual_cleanup_failure_retains_scope_and_original_nativ
     drop(error);
     assert_eq!(
         bank.available_permits(),
-        before + InnerOwner::allocation_bytes()
+        before + InnerOwner::allocation_bytes() + SlotsOwner::allocation_bytes()
     );
     let clock = CleanupClock::new(OBSERVE).unwrap();
     registry.drain_retired(clock).await.unwrap();
