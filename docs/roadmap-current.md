@@ -1,5 +1,11 @@
 # 当前工程调度
 
+2026-10-22：L02 [扫描具体F完整owner](validation/tunnel-scan-frame-owner-2026-10-22.md)
+原whole/terminal/discovery-overflow前缀后，同一bank精确准入实际F，随后才捕获控制、等待锁/创建session。
+两个不同旧epoch的真实frame闭池0到最后Drop退款、原两钟/Ready原IO、HTTP锁前拒绝及明确preSource准入分支已验。
+17命令通过，frame5/完整CLI1793/0FAIL/13原ignored；Core/lock哈希未变沿用已验。
+全部Cargo/build主控；其它原范围继续，23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [desired key 复制前准入](validation/tunnel-desired-key-preallocation-2026-10-22.md)
 独立String先原bank精确backing准入再复制，原row/key/iterator/转移permit寿命及部分列表回滚保持。
 actual layout/地址/闭池0移交/UTF8 key N−1拒绝/原snapshot与最后退款已验；11命令通过，

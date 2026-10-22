@@ -14,7 +14,10 @@ async fn manual_success_preflight_one_byte_refusal_is_before_all_source_and_keep
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    let bytes = scan::capsule_reservation_bytes() + manual_success::Preflight::bytes() - 1;
+    let bytes = state.scan_frame_bytes()
+        + scan::capsule_reservation_bytes()
+        + manual_success::Preflight::bytes()
+        - 1;
     let structural = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
@@ -225,7 +228,8 @@ async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let before = bank.available_permits();
-    let remaining = scan::capsule_reservation_bytes()
+    let remaining = state.scan_frame_bytes()
+        + scan::capsule_reservation_bytes()
         + manual_success::Preflight::bytes()
         + std::mem::size_of::<source::UsbDevice>()
         + A.len()
@@ -374,7 +378,8 @@ async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication
     drop(desired);
     assert_eq!(bank.available_permits(), before);
     let pending = 2 * std::mem::size_of::<(&str, &Ticket, Option<&str>)>();
-    let admitted = scan::capsule_reservation_bytes()
+    let admitted = state.scan_frame_bytes()
+        + scan::capsule_reservation_bytes()
         + manual_success::Preflight::bytes()
         + listing_bytes
         + manual_bytes
@@ -482,8 +487,11 @@ async fn scan_desired_suppressed_index_quota_refusal_precedes_source_and_keeps_s
     let desired = state.inner.lifecycle.desired().await.unwrap();
     let listing_bytes = before - bank.available_permits();
     drop(desired);
-    let admitted =
-        scan::capsule_reservation_bytes() + listing_bytes + 2 * std::mem::size_of::<&str>() - 1;
+    let admitted = state.scan_frame_bytes()
+        + scan::capsule_reservation_bytes()
+        + listing_bytes
+        + 2 * std::mem::size_of::<&str>()
+        - 1;
     let held = bank
         .clone()
         .try_acquire_many_owned((before - admitted) as u32)
@@ -566,7 +574,7 @@ async fn scan_capsule_preflight_refusal_has_zero_source_calls_and_no_history_or_
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    let bytes = scan::capsule_reservation_bytes() - 1;
+    let bytes = state.scan_frame_bytes() + scan::capsule_reservation_bytes() - 1;
     let native_bytes = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
@@ -595,7 +603,7 @@ async fn scan_capsule_preflight_refusal_has_zero_source_calls_and_no_history_or_
 async fn desired_listing_bytes_refusal_is_before_discovery_and_preserves_stop() {
     let source = FakeSource::new();
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    let reserve = scan::capsule_reservation_bytes();
+    let reserve = state.scan_frame_bytes() + scan::capsule_reservation_bytes();
     let bytes = Lifecycle::initial_metadata_bytes(A) + reserve;
     let native_bytes = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
@@ -629,10 +637,12 @@ async fn desired_listing_bytes_refusal_is_before_discovery_and_preserves_stop() 
 async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
+    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let raw = std::mem::size_of::<source::UsbDevice>() + A.len();
     let selection = std::mem::size_of::<source::UsbDevice>();
     let rows = candidate_index::Candidate::first_usb_bytes(A);
-    let bytes = scan::capsule_reservation_bytes()
+    let bytes = state.scan_frame_bytes()
+        + scan::capsule_reservation_bytes()
         + manual_success::Preflight::bytes()
         + raw
         + selection
@@ -641,7 +651,6 @@ async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
         + TunnelAgentState::scan_window_bytes(1)
         + bookkeeping::WriteBatch::backing_bytes(1)
         - 1;
-    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let native_bytes = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
@@ -688,7 +697,8 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let raw = std::mem::size_of::<source::UsbDevice>() + A.len();
     let selection = std::mem::size_of::<source::UsbDevice>();
-    let remaining = scan::capsule_reservation_bytes()
+    let remaining = state.scan_frame_bytes()
+        + scan::capsule_reservation_bytes()
         + manual_success::Preflight::bytes()
         + raw
         + selection
@@ -824,6 +834,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     let selection = std::mem::size_of::<source::UsbDevice>();
     let candidate = candidate_index::Candidate::first_usb_bytes(A);
     let paired_frame = paired_source_frame_bytes(&*source);
+    let scan_frame = state.scan_frame_bytes();
     let native_bytes = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
@@ -831,6 +842,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
         + TunnelAgentState::watch_bytes();
     state.set_global_metadata_limit(
         native_bytes
+            + scan_frame
             + (scan::capsule_reservation_bytes()
                 + manual_success::Preflight::bytes()
                 + charge
@@ -849,7 +861,8 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     drop(scan);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        scan::capsule_reservation_bytes()
+        scan_frame
+            + scan::capsule_reservation_bytes()
             + manual_success::Preflight::bytes()
             + charge
             + selection
@@ -880,7 +893,8 @@ async fn initial_publication_snapshot_refusal_is_before_discovery_and_keeps_exac
     let desired_bytes = before - bank.available_permits();
     drop(desired);
     assert_eq!(bank.available_permits(), before);
-    let admitted = scan::capsule_reservation_bytes()
+    let admitted = state.scan_frame_bytes()
+        + scan::capsule_reservation_bytes()
         + desired_bytes
         + publication_retain::first_bytes::<ManagedTunnel>()
         + scan_publications::InitialPublications::first_bytes(A)

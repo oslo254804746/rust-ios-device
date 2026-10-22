@@ -2116,10 +2116,36 @@ impl TunnelAgentState {
     async fn refresh_once(&self) -> Result<()> {
         // Only scans serialize. Queries, stops and explicit starts never take this lock.
         let whole = scan::Deadline::new(self.inner.scan_timeout)?;
-        let mut control = self
+        let discovery_at = self
             .inner
             .lifecycle
-            .scan_control(self.inner.connect_timeout)?;
+            .scan_deadline(self.inner.connect_timeout)?;
+        // This is a new pre-Source admission branch. A refusal captures no
+        // generation, takes no scan lock and creates no session/timer outcome.
+        // Both original absolute clocks already exist and are never restarted.
+        future_storage::PaidFuture::new(
+            self.refresh_admitted(whole, discovery_at),
+            &self.inner.global_metadata_bytes,
+        )?
+        .await
+    }
+
+    #[cfg(test)]
+    fn scan_frame_bytes(&self) -> usize {
+        fn size<F: std::future::Future>(
+            _create: impl FnOnce(scan::Deadline, tokio::time::Instant) -> F,
+        ) -> usize {
+            std::mem::size_of::<F>()
+        }
+        size(|whole, discovery_at| self.refresh_admitted(whole, discovery_at))
+    }
+
+    async fn refresh_admitted(
+        &self,
+        whole: scan::Deadline,
+        discovery_at: tokio::time::Instant,
+    ) -> Result<()> {
+        let mut control = self.inner.lifecycle.scan_control_at(discovery_at)?;
         let epoch = control.epoch.clone();
         let lock = whole
             .run(&epoch, control.drive(self.inner.scan_lock.lock()))
