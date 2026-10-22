@@ -1,5 +1,11 @@
 # 当前工程调度
 
+2026-10-22：L02 [WebSocket 升级 owner](validation/tunnel-ws-upgrade-owner-2026-10-22.md)
+原bank整笔预付实际输入根及具体桥接F，目标/epoch/拨号前准入，回调等待升级即持有paid F；
+closed0同分配转移/取消/typed panic/实际free后退款、HTTP锁前拒绝及active远端F费用寿命已验。
+13命令通过，owner6/完整CLI1787/0FAIL/13原ignored，6处仅CLI差异，Core/lock哈希未变沿用已验。
+全部Cargo/build主控执行；框架/marker/opaque/各mode恢复等原范围继续，23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [CLI 私有 watch 完整根](validation/tunnel-cli-watch-roots-2026-10-22.md)
 五类私有watch使用原bank完整声明根，三个初始/每gate两个根提前准入；原epoch身份、Ref fence、wait_for、
 cooperative/取消/panic/实际wake-all及最后原根退款已验，公开Core watch保持。13命令通过，
