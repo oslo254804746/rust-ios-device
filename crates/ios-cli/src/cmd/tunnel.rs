@@ -45,6 +45,7 @@ use failure_version::FailureVersion;
 mod federation_output;
 mod freshness;
 mod future_storage;
+mod http_control;
 mod intent;
 mod lifecycle;
 mod manual_success;
@@ -3851,8 +3852,14 @@ async fn agent_delete_tunnel(
         )
     })?;
     let success = replies.cancelled(&udid)?;
-    let removed = principal
-        .run(state.stop_tunnel(&udid))
+    let removed = http_control::prepare_stop(&state, &principal, &udid)
+        .map_err(|error| {
+            replies.operation_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "tunnel stop owner admission failed",
+                error.as_ref(),
+            )
+        })?
         .await?
         .map_err(|error| {
             replies.operation_error(
@@ -4030,7 +4037,15 @@ async fn agent_epoch(
     principal.require(Permission::ManageServer, None, None)?;
     let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
     let response = replies.operation("epoch")?;
-    state.clear().await;
+    http_control::prepare_epoch(&state)
+        .map_err(|error| {
+            replies.operation_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "tunnel epoch owner admission failed",
+                error.as_ref(),
+            )
+        })?
+        .await;
     Ok(response)
 }
 

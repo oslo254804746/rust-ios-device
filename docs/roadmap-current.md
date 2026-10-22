@@ -1,5 +1,11 @@
 # 当前工程调度
 
+2026-10-22：L02 [HTTP停止/epoch实际F](validation/tunnel-http-control-frames-2026-10-22.md)
+原权限/Replies/success wire后精确准入stop+Principal与clear具体F；原guard/epoch不加guard语义保持。
+真实HTTP N−1锁前拒绝/旧global逐份Drop/权限撤销/核心closed0 stop-clear与实际退款已验。
+16命令通过，control5/完整CLI1809/0FAIL/13原ignored；700源码4处仅CLI，core控制/server正文与Core/lock hash不变。
+全部Cargo/build主控，其它原范围继续；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [server完整future提前准备](validation/tunnel-server-frame-owner-2026-10-22.md)
 同步prepare在Source前从原bank准入完整generic F，原Owner只在首次poll启动，server正文/原cleanup与joins保持。
 两份预付F在bank0两次保留原history/IO，exact退款再持压；原signal地址/未poll与active Drop/HTTP生命周期已验。
