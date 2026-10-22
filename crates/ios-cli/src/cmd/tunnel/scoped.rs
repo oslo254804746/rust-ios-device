@@ -1,11 +1,12 @@
 //! Finite foreground owners reuse the manager's original native retirement registry.
 use super::{
+    future_storage::PaidFuture,
     ownership::Ownership,
     retirement::{CleanupClock, NativeLease, Registry, RegistryOwner},
 };
 use anyhow::{Context, Result};
-use ios_core::{ConnectOptions, ConnectedDevice, TunMode};
-use std::{ops::Deref, sync::Arc, time::Duration};
+use ios_core::{ConnectOptions, ConnectedDevice, TunMode, TunnelHandle, TunnelOwner};
+use std::{future::Future, ops::Deref, sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone)]
@@ -20,23 +21,59 @@ impl Drop for Inner {
     }
 }
 
-pub(crate) struct NativeConnection {
-    device: Option<ConnectedDevice>,
+pub(crate) struct NativeConnection<D = ConnectedDevice> {
+    device: Option<D>,
     lease: Option<NativeLease>,
     _permit: OwnedSemaphorePermit,
 }
-impl Deref for NativeConnection {
-    type Target = ConnectedDevice;
-    fn deref(&self) -> &ConnectedDevice {
+impl<D> Deref for NativeConnection<D> {
+    type Target = D;
+    fn deref(&self) -> &D {
         self.device.as_ref().expect("live native connection")
     }
 }
-impl Drop for NativeConnection {
+impl<D> Drop for NativeConnection<D> {
     fn drop(&mut self) {
         drop(self.device.take());
         drop(self.lease.take());
     }
 }
+
+trait Device {
+    fn tunnel_handle(&self) -> Option<&Arc<TunnelHandle>>;
+}
+impl Device for ConnectedDevice {
+    fn tunnel_handle(&self) -> Option<&Arc<TunnelHandle>> {
+        ConnectedDevice::tunnel_handle(self)
+    }
+}
+
+// Keep the complete concrete connector future in its original containing F.
+// The test connector uses the same reservation/handoff path without device IO.
+trait Connector: Send + Sync {
+    type Device: Device + Send;
+
+    fn connect<'a>(
+        &'a self,
+        udid: &'a str,
+        options: ConnectOptions,
+        owner: &'a dyn TunnelOwner,
+    ) -> impl Future<Output = Result<Self::Device>> + Send + 'a;
+}
+struct NativeConnector;
+impl Connector for NativeConnector {
+    type Device = ConnectedDevice;
+
+    async fn connect<'a>(
+        &'a self,
+        udid: &'a str,
+        options: ConnectOptions,
+        owner: &'a dyn TunnelOwner,
+    ) -> Result<Self::Device> {
+        Ok(ios_core::connect_with_owner(udid, options, owner).await?)
+    }
+}
+
 impl NativeScope {
     pub(crate) fn new() -> Result<Self> {
         Ok(Self(Arc::new(Inner {
@@ -45,6 +82,16 @@ impl NativeScope {
         })))
     }
     pub(crate) async fn connect(&self, udid: &str, mode: TunMode) -> Result<NativeConnection> {
+        self.prepare_connect(udid, mode, NativeConnector)?.await
+    }
+
+    fn prepare_connect<'a, C: Connector + 'a>(
+        &'a self,
+        udid: &'a str,
+        mode: TunMode,
+        connector: C,
+    ) -> Result<PaidFuture<impl Future<Output = Result<NativeConnection<C::Device>>> + Send + 'a>>
+    {
         super::admission::selectors(udid, None)?;
         let permit = self
             .0
@@ -54,17 +101,31 @@ impl NativeScope {
             .map_err(|_| {
                 crate::output::resource_decision("foreground native connection capacity")
             })?;
-        let ownership = Ownership::standalone(self.0.registry.clone())?;
-        let device = ios_core::connect_with_owner(
-            udid,
-            ConnectOptions {
-                tun_mode: mode,
-                pair_record_path: None,
-                skip_tunnel: false,
-            },
-            &ownership,
+        PaidFuture::new(
+            self.connect_admitted(udid, mode, permit, connector),
+            &self.0.registry.byte_bank(),
         )
-        .await?;
+    }
+
+    async fn connect_admitted<C: Connector>(
+        &self,
+        udid: &str,
+        mode: TunMode,
+        permit: OwnedSemaphorePermit,
+        connector: C,
+    ) -> Result<NativeConnection<C::Device>> {
+        let ownership = Ownership::standalone(self.0.registry.clone())?;
+        let device = connector
+            .connect(
+                udid,
+                ConnectOptions {
+                    tun_mode: mode,
+                    pair_record_path: None,
+                    skip_tunnel: false,
+                },
+                &ownership,
+            )
+            .await?;
         let lease = device
             .tunnel_handle()
             .map(|handle| ownership.take_completed(handle))
@@ -122,6 +183,9 @@ impl std::error::Error for RetainedScopeFailure {
         Some(self.primary.as_ref())
     }
 }
+
+#[cfg(test)]
+mod frame_tests;
 
 #[cfg(test)]
 mod tests {
