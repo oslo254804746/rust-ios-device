@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-22：L02 [前台NativeScope完整连接F](validation/tunnel-foreground-connect-frame-2026-10-22.md)
+原selector/4连接许可后，Registry原bank精确准入完整具体F，再创建standalone Ownership并调用原SDK。
+具体连接器未擦除或另装箱；原device→lease→permit Drop及collect/close保持，原handle/joins与IO地址已验。
+首轮15命令通过，新增6/前台7/完整CLI1822/0FAIL/13原ignored；704源码2处仅CLI，Core/lock不变沿用已验。
+实际SDK F仅构造未poll，实际本地runtime closed0/严格EOF及退款通过；其它原scope与marker完整证明继续。
+全部Cargo/build主控；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [native Attempt实际Box](validation/tunnel-attempt-box-owner-2026-10-22.md)
 首个实际destination在Source前从原Registry bank准入，额外策略各自先原Ticket fence/准入再start。
 Core栈上owner保留同一个Box并在其释放后退款；旧公开callback保持，legacy同一paid费用根由scope及各Box共同保留，覆盖正常Drop与忘记Box的寿命。
