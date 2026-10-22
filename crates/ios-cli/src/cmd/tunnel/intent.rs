@@ -1,8 +1,8 @@
 //! Current desired state on the existing bounded device coordinator.
 //! No retry history, failure permit or independent device task lives here.
 
+use super::paid_watch as watch;
 use std::sync::{Arc, Mutex, MutexGuard};
-use tokio::sync::watch;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::candidate_input::RouteRef;
@@ -179,15 +179,28 @@ pub(super) struct Cell {
 }
 
 impl Cell {
-    pub(super) fn new(epoch: Arc<()>, metadata_bytes: Arc<Semaphore>) -> Self {
+    #[cfg(test)]
+    pub(super) fn new(epoch: Arc<()>, metadata_bytes: Arc<Semaphore>) -> anyhow::Result<Self> {
+        let storage = super::admission::known_metadata_charge(
+            &metadata_bytes,
+            watch::body_bytes::<Arc<()>>(),
+        )?;
+        Self::from_grant(epoch, metadata_bytes, storage)
+    }
+    pub(super) fn from_grant(
+        epoch: Arc<()>,
+        metadata_bytes: Arc<Semaphore>,
+        storage: OwnedSemaphorePermit,
+    ) -> anyhow::Result<Self> {
         let version = Arc::new(());
-        Self {
+        let (changes, _) = watch::from_grant(version.clone(), &metadata_bytes, storage)?;
+        Ok(Self {
             state: Mutex::new(Snapshot {
                 epoch,
                 version: version.clone(),
                 desired: Desired::Automatic,
             }),
-            changes: watch::channel(version).0,
+            changes,
             failure: Mutex::new(None),
             pending_success: Mutex::new(None),
             metadata_bytes,
@@ -195,7 +208,7 @@ impl Cell {
             before_checked_replace: Mutex::new(None),
             #[cfg(test)]
             after_checked_candidate: Mutex::new(None),
-        }
+        })
     }
 
     pub(super) fn lock(&self) -> MutexGuard<'_, Snapshot> {

@@ -120,6 +120,7 @@ fn lifecycle() -> Lifecycle {
     Lifecycle::with_metadata(Arc::new(Semaphore::new(
         super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
     )))
+    .unwrap()
 }
 fn slot(bank: &Arc<Semaphore>) -> super::super::failure_slot::Owner {
     super::super::failure_slot::Slot::reserve(&Arc::new(Semaphore::new(1)), bank).unwrap()

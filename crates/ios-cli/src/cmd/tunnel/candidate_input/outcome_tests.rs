@@ -150,7 +150,7 @@ async fn outcome_key_actual_success_intent_keeps_original_key_fee_after_input_an
     let total = 32 * 1024;
     let uid = "success-key-identity";
     let bank = Arc::new(Semaphore::new(total));
-    let lifecycle = Lifecycle::with_metadata(bank.clone());
+    let lifecycle = Lifecycle::with_metadata(bank.clone()).unwrap();
     let ticket = lifecycle.ticket(uid).await.unwrap();
     let input = Input::copied(uid, RouteRef::Usbmux, &bank).unwrap();
     let weak = input.downgrade();

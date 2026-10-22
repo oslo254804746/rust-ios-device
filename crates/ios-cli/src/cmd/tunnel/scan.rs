@@ -4,8 +4,9 @@ use std::future::Future;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
+use super::paid_watch as watch;
 use anyhow::{Context, Result};
-use tokio::sync::{watch, MutexGuard, Semaphore};
+use tokio::sync::{MutexGuard, Semaphore};
 use tokio::time::Instant;
 
 pub(super) const MAX_ABANDONED_SCANS: usize = 8;

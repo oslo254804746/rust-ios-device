@@ -4,9 +4,10 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::paid_watch as watch;
 use super::FailureVersion;
 use anyhow::{Context, Result};
-use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 pub(super) const MAX_CONNECTS: usize = 4;
@@ -46,6 +47,9 @@ type DeviceRow = super::shared_allocation::Shared<DeviceGate>;
 impl DeviceGate {
     fn body_bytes() -> usize {
         DeviceRow::allocation_bytes()
+    }
+    fn watch_bytes() -> usize {
+        2 * watch::body_bytes::<Arc<()>>()
     }
 }
 
@@ -309,22 +313,34 @@ impl Lifecycle {
         Self::with_metadata(Arc::new(Semaphore::new(
             super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
         )))
+        .expect("prepaid lifecycle fixture watch roots")
     }
 
-    pub(super) fn with_metadata(metadata_bytes: Arc<Semaphore>) -> Self {
-        Self {
+    pub(super) fn with_metadata(metadata_bytes: Arc<Semaphore>) -> Result<Self> {
+        let mut storage =
+            super::admission::known_metadata_charge(&metadata_bytes, Self::watch_bytes())?;
+        let shutdown = watch::from_grant(
+            Some(Arc::new(())),
+            &metadata_bytes,
+            storage
+                .split(watch::body_bytes::<Option<Arc<()>>>())
+                .expect("whole lifecycle watch grant"),
+        )?
+        .0;
+        let scan = watch::from_grant(Arc::new(()), &metadata_bytes, storage)?.0;
+        Ok(Self {
             devices: Mutex::new(DeviceTable::default()),
             metadata_bytes,
             connects: Semaphore::new(MAX_CONNECTS),
-            shutdown: watch::channel(Some(Arc::new(()))).0,
-            scan: watch::channel(Arc::new(())).0,
+            shutdown,
+            scan,
             #[cfg(test)]
             scan_after_open: std::sync::Mutex::new(None),
             #[cfg(test)]
             failure_before_commit: std::sync::Mutex::new(None),
             #[cfg(test)]
             clear_before_cleanup: std::sync::Mutex::new(None),
-        }
+        })
     }
 
     pub(super) fn global_epoch(&self) -> Result<GlobalEpoch> {
@@ -380,8 +396,14 @@ impl Lifecycle {
                 }
                 let mut metadata = super::admission::known_metadata_charge(
                     &self.metadata_bytes,
-                    DeviceGate::body_bytes(),
+                    DeviceGate::body_bytes() + DeviceGate::watch_bytes(),
                 )?;
+                let generation_storage = metadata
+                    .split(watch::body_bytes::<Arc<()>>())
+                    .expect("whole gate watch grant");
+                let intent_storage = metadata
+                    .split(watch::body_bytes::<Arc<()>>())
+                    .expect("whole intent watch grant");
                 let key_allocation =
                     super::metadata_vec::exact_backing(&self.metadata_bytes, udid.len())?;
                 metadata.merge(key_allocation.storage);
@@ -393,11 +415,17 @@ impl Lifecycle {
                     DeviceGate {
                         udid: key,
                         serial: Mutex::new(()),
-                        generation: watch::channel(Arc::new(())).0,
-                        intent: super::intent::Cell::new(
+                        generation: watch::from_grant(
+                            Arc::new(()),
+                            &self.metadata_bytes,
+                            generation_storage,
+                        )?
+                        .0,
+                        intent: super::intent::Cell::from_grant(
                             shutdown_generation.clone(),
                             Arc::clone(&self.metadata_bytes),
-                        ),
+                            intent_storage,
+                        )?,
                     },
                     &self.metadata_bytes,
                     metadata,
@@ -499,12 +527,15 @@ impl Lifecycle {
 
     #[cfg(test)]
     pub(super) fn initial_metadata_bytes(udid: &str) -> usize {
-        2 * std::mem::size_of::<DeviceRow>() + DeviceGate::body_bytes() + udid.len()
+        2 * std::mem::size_of::<DeviceRow>() + Self::additional_metadata_bytes(udid)
     }
 
     #[cfg(test)]
     pub(super) fn additional_metadata_bytes(udid: &str) -> usize {
-        DeviceGate::body_bytes() + udid.len()
+        DeviceGate::body_bytes() + udid.len() + DeviceGate::watch_bytes()
+    }
+    pub(super) fn watch_bytes() -> usize {
+        watch::body_bytes::<Option<Arc<()>>>() + watch::body_bytes::<Arc<()>>()
     }
 
     #[cfg(test)]
@@ -993,9 +1024,9 @@ mod tests {
     async fn coordinator_canonical_key_is_admitted_before_its_first_copy() {
         use futures_util::FutureExt;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let bytes = DeviceGate::body_bytes();
-        let bank = Arc::new(Semaphore::new(bytes));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        let bytes = DeviceGate::body_bytes() + DeviceGate::watch_bytes();
+        let bank = Arc::new(Semaphore::new(bytes + Lifecycle::watch_bytes()));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
         let allocated = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&allocated);
         let result = super::super::metadata_vec::with_allocation_hook(
@@ -1020,9 +1051,9 @@ mod tests {
     #[tokio::test]
     async fn coordinator_metadata_exact_capacity_shared_tickets_and_last_owner_release() {
         let key = "synthetic-byte-owner";
-        let bytes = Lifecycle::initial_metadata_bytes(key);
+        let bytes = Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes();
         let bank = Arc::new(Semaphore::new(bytes));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
         let original = lifecycle.ticket(key).await.unwrap();
         assert_eq!(bank.available_permits(), 0);
         let repeated = lifecycle.ticket(key).await.unwrap();
@@ -1044,11 +1075,11 @@ mod tests {
         );
         let clone = original.clone();
         drop(lifecycle);
-        let backing = 2 * std::mem::size_of::<DeviceRow>();
+        let backing = 2 * std::mem::size_of::<DeviceRow>() + watch::body_bytes::<Arc<()>>();
         assert_eq!(
             bank.available_permits(),
             backing,
-            "table backing freed, original gate still owned"
+            "table and scan root freed; original gate and global root still owned"
         );
         drop(original);
         drop(repeated);
@@ -1060,9 +1091,9 @@ mod tests {
     #[tokio::test]
     async fn coordinator_metadata_failed_backing_admission_rolls_back_original_storage() {
         let key = "synthetic-backing";
-        let bytes = Lifecycle::initial_metadata_bytes(key) - 1;
+        let bytes = Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes() - 1;
         let bank = Arc::new(Semaphore::new(bytes));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
         resource(&lifecycle.ticket(key).await.err().unwrap());
         let devices = lifecycle.devices.lock().await;
         assert!(devices.rows.is_empty());
@@ -1071,8 +1102,8 @@ mod tests {
         drop(devices);
         assert_eq!(
             bank.available_permits(),
-            bytes,
-            "failed key and backing charges returned"
+            bytes - Lifecycle::watch_bytes(),
+            "failed gate/key/backing grants returned; original lifecycle watches retained"
         );
         drop(lifecycle);
         assert_eq!(bank.available_permits(), bytes);
@@ -1080,12 +1111,12 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_metadata_rejected_growth_preserves_original_gates_and_capacity() {
-        let key_bytes = DeviceGate::body_bytes() + 1;
+        let key_bytes = Lifecycle::additional_metadata_bytes("a");
         let backing = 2 * std::mem::size_of::<DeviceRow>();
         // Two original rows plus a third gate fit, but old+new backing do not.
-        let bytes = 3 * key_bytes + backing;
+        let bytes = 3 * key_bytes + backing + Lifecycle::watch_bytes();
         let bank = Arc::new(Semaphore::new(bytes));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
         let first = lifecycle.ticket("a").await.unwrap();
         let second = lifecycle.ticket("b").await.unwrap();
         assert_eq!(bank.available_permits(), key_bytes);
@@ -1097,7 +1128,10 @@ mod tests {
         assert!(same.same_incarnation(&first));
         assert!(second.is_current());
         drop(lifecycle);
-        assert_eq!(bank.available_permits(), key_bytes + backing);
+        assert_eq!(
+            bank.available_permits(),
+            key_bytes + backing + watch::body_bytes::<Arc<()>>()
+        );
         drop(first);
         drop(second);
         drop(same);
@@ -1107,7 +1141,7 @@ mod tests {
     #[tokio::test]
     async fn coordinator_metadata_growth_charges_actual_vec_capacity_and_releases_old_backing() {
         let bank = Arc::new(Semaphore::new(64 * 1024));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
         let mut tickets = Vec::new();
         for key in ["a", "b", "c", "d", "e"] {
             tickets.push(lifecycle.ticket(key).await.unwrap());
@@ -1116,14 +1150,19 @@ mod tests {
                 + devices
                     .rows
                     .iter()
-                    .map(|gate| gate.udid.capacity() + DeviceGate::body_bytes())
-                    .sum::<usize>();
+                    .map(|gate| {
+                        gate.udid.capacity() + DeviceGate::body_bytes() + DeviceGate::watch_bytes()
+                    })
+                    .sum::<usize>()
+                + Lifecycle::watch_bytes();
             assert_eq!(bank.available_permits(), 64 * 1024 - actual);
         }
         drop(lifecycle);
         assert_eq!(
             bank.available_permits(),
-            64 * 1024 - 5 * (DeviceGate::body_bytes() + 1)
+            64 * 1024
+                - 5 * Lifecycle::additional_metadata_bytes("a")
+                - watch::body_bytes::<Option<Arc<()>>>()
         );
         drop(tickets);
         assert_eq!(bank.available_permits(), 64 * 1024);

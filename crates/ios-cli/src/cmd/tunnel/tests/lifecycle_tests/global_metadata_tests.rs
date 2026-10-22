@@ -18,7 +18,8 @@ async fn manual_success_preflight_one_byte_refusal_is_before_all_source_and_keep
     let structural = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
-        + TunnelAgentOwner::body_bytes();
+        + TunnelAgentOwner::body_bytes()
+        + TunnelAgentState::watch_bytes();
     state.set_global_metadata_limit(structural + bytes);
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let error = state.refresh_once().await.unwrap_err();
@@ -569,7 +570,8 @@ async fn scan_capsule_preflight_refusal_has_zero_source_calls_and_no_history_or_
     let native_bytes = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
-        + TunnelAgentOwner::body_bytes();
+        + TunnelAgentOwner::body_bytes()
+        + TunnelAgentState::watch_bytes();
     state.set_global_metadata_limit(native_bytes + (bytes));
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let error = state.refresh_once().await.unwrap_err();
@@ -598,7 +600,8 @@ async fn desired_listing_bytes_refusal_is_before_discovery_and_preserves_stop() 
     let native_bytes = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
-        + TunnelAgentOwner::body_bytes();
+        + TunnelAgentOwner::body_bytes()
+        + TunnelAgentState::watch_bytes();
     state.set_global_metadata_limit(native_bytes + (bytes));
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
@@ -642,7 +645,8 @@ async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
     let native_bytes = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
-        + TunnelAgentOwner::body_bytes();
+        + TunnelAgentOwner::body_bytes()
+        + TunnelAgentState::watch_bytes();
     state.set_global_metadata_limit(native_bytes + (bytes));
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let error = state.refresh_once().await.unwrap_err();
@@ -823,7 +827,8 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     let native_bytes = state.inner.native.structural_bytes()
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
-        + TunnelAgentOwner::body_bytes();
+        + TunnelAgentOwner::body_bytes()
+        + TunnelAgentState::watch_bytes();
     state.set_global_metadata_limit(
         native_bytes
             + (scan::capsule_reservation_bytes()

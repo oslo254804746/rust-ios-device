@@ -133,7 +133,8 @@ async fn publication_table_actual_destination_one_byte_refusal_before_any_native
             let original_structure = state.inner.native.structural_bytes()
                 + reconnect::Ledger::structural_bytes()
                 + scan::Outcomes::body_bytes()
-                + TunnelAgentOwner::body_bytes();
+                + TunnelAgentOwner::body_bytes()
+                + TunnelAgentState::watch_bytes();
             state.set_global_metadata_limit(
                 original_structure + Lifecycle::initial_metadata_bytes(DEVICE) + bytes - 1,
             );

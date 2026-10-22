@@ -23,7 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(test)]
 use tokio::sync::Notify;
-use tokio::sync::{watch, Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
 
@@ -56,7 +56,9 @@ mod owned_join;
 mod owned_window;
 mod ownership;
 mod paid_json;
+mod paid_watch;
 mod paired_observed;
+use paid_watch as watch;
 mod publication;
 mod publication_retain;
 mod publication_table;
@@ -893,7 +895,7 @@ impl TunnelAgentState {
                     metadata_bytes,
                     global_metadata_bytes: Arc::clone(&global_metadata_bytes),
                     ready: RwLock::new(false),
-                    lifecycle: Lifecycle::with_metadata(Arc::clone(&global_metadata_bytes)),
+                    lifecycle: Lifecycle::with_metadata(Arc::clone(&global_metadata_bytes))?,
                     scan_lock: Mutex::new(()),
                     scan_outcomes: scan::Outcomes::with_metadata(Arc::clone(
                         &global_metadata_bytes,
@@ -902,7 +904,7 @@ impl TunnelAgentState {
                     source,
                     connect_timeout,
                     failure_write_timeout: FAILURE_WRITE_TIMEOUT,
-                    shutdown: watch::channel(false).0,
+                    shutdown: watch::channel(false, &global_metadata_bytes)?.0,
                     native,
                     #[cfg(test)]
                     publication_after_insert: std::sync::Mutex::new(None),
@@ -940,7 +942,11 @@ impl TunnelAgentState {
             .get_mut()
             .expect("configure before sharing state");
         inner.native.rebind_empty_metadata(&bank).unwrap();
-        inner.lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        inner.lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
+        assert!(inner.shutdown.is_unique_initial());
+        let shutdown = *inner.shutdown.borrow();
+        assert!(!shutdown, "configure original, unobserved shutdown root");
+        inner.shutdown = watch::channel(shutdown, &bank).unwrap().0;
         inner.retry =
             reconnect::Ledger::with_metadata(inner.retry.policy().clone(), Arc::clone(&bank))
                 .unwrap();
@@ -952,6 +958,11 @@ impl TunnelAgentState {
         assert_eq!(inner.upstreams.get_mut().len(), 0);
         *inner.upstreams.get_mut() = upstream_registry::Registry::new(&bank);
         inner.global_metadata_bytes = bank;
+    }
+
+    #[cfg(test)]
+    fn watch_bytes() -> usize {
+        watch::body_bytes::<bool>() + Lifecycle::watch_bytes()
     }
 
     fn notify_shutdown(&self) {

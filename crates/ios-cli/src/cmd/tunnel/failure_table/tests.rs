@@ -422,7 +422,7 @@ async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() 
             )
         })
         .collect::<Vec<_>>();
-    let lifecycle = super::super::Lifecycle::with_metadata(Arc::clone(&bank));
+    let lifecycle = super::super::Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
     let control = lifecycle
         .scan_control(std::time::Duration::from_secs(1))
         .unwrap();
