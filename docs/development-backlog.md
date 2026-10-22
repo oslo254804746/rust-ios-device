@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-22：L02 [前台连接Semaphore实际共享根](validation/tunnel-foreground-slots-root-2026-10-22.md)
+原Registry bank同时预付并准备Inner+Slots两份实际backing，全部成功后才构造Inner；无partial close。
+同Tokio四许可计数与独立Slots owned permit，末Scope仍先close，许可只持自身根到实际free后退费。
+18命令首轮通过，新增6/前台16/完整CLI1831/0FAIL/13原ignored；706源码5处仅CLI，Core/lock沿用已验。
+两backing失败/closed后place、跨Scope许可/并发归还与原实际native回归通过；其它原scope继续。
+全部Cargo/build主控；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [前台Scope实际共享根](validation/tunnel-foreground-scope-root-2026-10-22.md)
 原Registry bank先精确支付完整Shared<Inner>布局，再构造根；clone同一根到实际free/Inner Drop后才退费。
 原连接/InnerDrop/cleanup/error正文保持，closed0末根物理free及实际失败错误持根/native joins/严格EOF已验。

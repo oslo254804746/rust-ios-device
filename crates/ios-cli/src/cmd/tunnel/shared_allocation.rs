@@ -29,6 +29,24 @@ pub(super) struct Shared<T: Unpin> {
     // variance and auto-trait ownership tied to the actual declared allocation.
     _allocation: PhantomData<Allocation<T>>,
 }
+
+/// A fully admitted, actually allocated empty shared body. Construct T only
+/// after every independent destination needed by its owner is available.
+pub(super) struct Destination<T: Unpin>(AdmittedVec<Allocation<T>>);
+impl<T: Unpin> Destination<T> {
+    pub(super) fn from_grant(bank: &Arc<Semaphore>, storage: OwnedSemaphorePermit) -> Result<Self> {
+        from_grant(bank, 1, storage).map(Self)
+    }
+
+    pub(super) fn place(self, value: T) -> Shared<T> {
+        Shared::place(value, self.0)
+    }
+
+    #[cfg(test)]
+    pub(super) fn as_ptr(&self) -> usize {
+        self.0.values.as_ptr() as usize
+    }
+}
 // SAFETY: roots only share immutable T, as Arc does. Clones count atomically;
 // a single final root moves T only after all other owning roots have ended.
 unsafe impl<T: Send + Sync + Unpin> Send for Shared<T> {}
