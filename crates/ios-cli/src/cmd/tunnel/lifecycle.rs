@@ -462,9 +462,13 @@ impl Lifecycle {
                 continue;
             }
             rows.reserve(1)?;
-            let udid = udid.clone();
-            let key_storage =
-                super::admission::known_metadata_charge(&self.metadata_bytes, udid.capacity())?;
+            // The listing owns an independent key buffer. Admit its exact
+            // backing before copying, separately from the inline row storage.
+            let allocation = super::metadata_vec::exact_backing(&self.metadata_bytes, udid.len())?;
+            let key_storage = allocation.storage;
+            let mut key = allocation.values;
+            key.extend_from_slice(udid.as_bytes());
+            let udid = String::from_utf8(key).expect("copied canonical key remains UTF-8");
             rows.push(DesiredRow {
                 udid,
                 ticket: Ticket {
