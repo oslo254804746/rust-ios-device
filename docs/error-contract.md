@@ -1870,6 +1870,8 @@ store abort and generic Drop/server supervision remain. See
 
 ## Tunnel manager connection generations
 
+Fresh HTTP DELETE and epoch requests admit the concrete control future only after their original permission, diagnostic and success-wire preparation. A refused allocation returns 503/resource_limit before Ticket/lock/mutation work. DELETE keeps the original Principal cancellation guard and ScopeDenied response, while epoch keeps its original unguarded core clear body. Internal core stop/clear/notify and terminal Drop receive no new byte admission and retain their existing closed-zero control rules. See [HTTP control future evidence](validation/tunnel-http-control-frames-2026-10-22.md).
+
 The [L02 manager host profile](validation/tunnel-isolation-2026-10-06.md),
 `e0f52671396e6408fc38921f78f73a256a45ce65`, preserves native IO, Tokio Elapsed
 and OperationCancelled through the private source/actual HTTP error adapter.

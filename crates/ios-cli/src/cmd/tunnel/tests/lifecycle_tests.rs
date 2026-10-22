@@ -63,6 +63,7 @@ mod failure_cause_tests;
 mod failure_commit_tests;
 mod freshness_tests;
 mod global_metadata_tests;
+mod http_control_tests;
 mod identity_tests;
 mod intent_tests;
 mod liveness_tests;
