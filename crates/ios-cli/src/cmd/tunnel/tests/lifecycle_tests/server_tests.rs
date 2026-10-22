@@ -69,17 +69,20 @@ async fn lifecycle_tunnel_server_inline_scanner_drops_original_frame_before_bloc
     let (listener, port) = listener().await;
     let signal = Arc::new(Semaphore::new(0));
     let entered_signal = signal.clone();
-    let mut owner = Box::pin(server::serve(
-        listener,
-        agent_router(state.clone()),
-        state.clone(),
-        Duration::from_millis(5),
-        server::CLEANUP_TIMEOUT,
-        async move {
-            entered_signal.acquire().await.unwrap().forget();
-            Ok(())
-        },
-    ));
+    let mut owner = Box::pin(
+        server::prepare(
+            listener,
+            agent_router(state.clone()),
+            state.clone(),
+            Duration::from_millis(5),
+            server::CLEANUP_TIMEOUT,
+            async move {
+                entered_signal.acquire().await.unwrap().forget();
+                Ok(())
+            },
+        )
+        .unwrap(),
+    );
     tokio::time::timeout(LOCAL_BUDGET, async {
         while base.count(A) == 0 {
             assert!(futures_util::poll!(&mut owner).is_pending());
@@ -121,14 +124,15 @@ async fn lifecycle_tunnel_server_shutdown_before_start_does_not_poll_source() {
     let (listener, port) = listener().await;
     tokio::time::timeout(
         LOCAL_BUDGET,
-        server::serve(
+        server::prepare(
             listener,
             agent_router(state.clone()),
             state,
             Duration::from_millis(5),
             server::CLEANUP_TIMEOUT,
             std::future::pending(),
-        ),
+        )
+        .unwrap(),
     )
     .await
     .unwrap()
@@ -150,7 +154,7 @@ async fn lifecycle_tunnel_server_http_shutdown_drops_pending_scan_and_clears_own
     let signal_entered = signal_polls.clone();
     let owner_state = state.clone();
     let owner = tokio::spawn(async move {
-        server::serve(
+        server::prepare(
             listener,
             agent_router(owner_state.clone()),
             owner_state,
@@ -161,6 +165,7 @@ async fn lifecycle_tunnel_server_http_shutdown_drops_pending_scan_and_clears_own
                 std::future::pending().await
             },
         )
+        .unwrap()
         .await
     });
     source.entered(A, 1).await;
@@ -203,14 +208,17 @@ async fn lifecycle_tunnel_server_caller_drop_owns_scanner_without_detached_monit
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     start(state.clone(), B).await.unwrap();
     let (listener, port) = listener().await;
-    let mut owner = Box::pin(server::serve(
-        listener,
-        agent_router(state.clone()),
-        state.clone(),
-        Duration::from_millis(5),
-        server::CLEANUP_TIMEOUT,
-        std::future::pending(),
-    ));
+    let mut owner = Box::pin(
+        server::prepare(
+            listener,
+            agent_router(state.clone()),
+            state.clone(),
+            Duration::from_millis(5),
+            server::CLEANUP_TIMEOUT,
+            std::future::pending(),
+        )
+        .unwrap(),
+    );
     tokio::time::timeout(LOCAL_BUDGET, async {
         while source.count(A) == 0 {
             assert!(futures_util::poll!(&mut owner).is_pending());
@@ -244,7 +252,7 @@ async fn lifecycle_tunnel_server_signal_failure_keeps_native_io_and_clears_state
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     start(state.clone(), B).await.unwrap();
     let (listener, _) = listener().await;
-    let error = server::serve(
+    let error = server::prepare(
         listener,
         agent_router(state.clone()),
         state.clone(),
@@ -257,6 +265,7 @@ async fn lifecycle_tunnel_server_signal_failure_keeps_native_io_and_clears_state
             ))
         },
     )
+    .unwrap()
     .await
     .unwrap_err();
     assert_eq!(
@@ -277,7 +286,7 @@ async fn lifecycle_tunnel_server_cleanup_lock_deadline_preserves_primary_and_ela
     let (listener, _) = listener().await;
     let error = tokio::time::timeout(
         LOCAL_BUDGET,
-        server::serve(
+        server::prepare(
             listener,
             agent_router(state.clone()),
             state.clone(),
@@ -289,7 +298,8 @@ async fn lifecycle_tunnel_server_cleanup_lock_deadline_preserves_primary_and_ela
                     "synthetic-private-signal-input",
                 ))
             },
-        ),
+        )
+        .unwrap(),
     )
     .await
     .unwrap()
@@ -341,7 +351,7 @@ async fn lifecycle_tunnel_server_graceful_http_drain_uses_cleanup_deadline() {
     let owner_signal = signal.clone();
     let (listener, port) = listener().await;
     let owner = tokio::spawn(async move {
-        server::serve(
+        server::prepare(
             listener,
             app,
             state,
@@ -352,6 +362,7 @@ async fn lifecycle_tunnel_server_graceful_http_drain_uses_cleanup_deadline() {
                 Ok(())
             },
         )
+        .unwrap()
         .await
     });
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -394,14 +405,17 @@ async fn lifecycle_tunnel_server_real_sigint_cancels_scan_and_exits_runtime() {
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
         start(state.clone(), B).await.unwrap();
         let (listener, _) = listener().await;
-        let mut owner = Box::pin(server::serve(
-            listener,
-            agent_router(state.clone()),
-            state.clone(),
-            Duration::from_millis(5),
-            server::CLEANUP_TIMEOUT,
-            tokio::signal::ctrl_c(),
-        ));
+        let mut owner = Box::pin(
+            server::prepare(
+                listener,
+                agent_router(state.clone()),
+                state.clone(),
+                Duration::from_millis(5),
+                server::CLEANUP_TIMEOUT,
+                tokio::signal::ctrl_c(),
+            )
+            .unwrap(),
+        );
         while source.count(A) == 0 {
             assert!(futures_util::poll!(&mut owner).is_pending());
             tokio::task::yield_now().await;

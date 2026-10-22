@@ -3312,6 +3312,15 @@ async fn run_tunnel_agent(
         crate::http_diagnostics::ErrorShape::Manager,
     );
 
+    let serving = server::prepare(
+        listener,
+        app,
+        state,
+        scan_interval,
+        server::CLEANUP_TIMEOUT,
+        tokio::signal::ctrl_c(),
+    )?;
+
     tracing::info!(
         "tunnel agent listening on http://{} ({})",
         bound,
@@ -3321,15 +3330,7 @@ async fn run_tunnel_agent(
         }
     );
 
-    server::serve(
-        listener,
-        app,
-        state,
-        scan_interval,
-        server::CLEANUP_TIMEOUT,
-        tokio::signal::ctrl_c(),
-    )
-    .await
+    serving.await
 }
 
 fn agent_router(state: TunnelAgentState) -> Router {

@@ -1,5 +1,11 @@
 # 当前待开发清单
 
+2026-10-22：L02 [server完整future提前准备](validation/tunnel-server-frame-owner-2026-10-22.md)
+同步prepare在Source前从原bank准入完整generic F，原Owner只在首次poll启动，server正文/原cleanup与joins保持。
+两份预付F在bank0两次保留原history/IO，exact退款再持压；原signal地址/未poll与active Drop/HTTP生命周期已验。
+16命令首轮通过，server frame5/完整CLI1804/0FAIL/13原ignored；698源码8处仅CLI，Core/lock hash未变沿用已验。
+全部Cargo/build主控；其它原范围继续，23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-22：L02 [显式start具体F完整owner](validation/tunnel-ensure-frame-owner-2026-10-22.md)
 保留原selector/manual-exact/deadline前缀，同一bank准入实际F后才捕获Ticket并等待协调/serial。
 旧global epoch跨closed0到实际F Drop、原时钟/IO/fallback、实际HTTP拒绝及TypedCopyAdmission边界已验。

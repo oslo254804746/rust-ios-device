@@ -34,13 +34,40 @@ impl Drop for Owner {
     }
 }
 
-pub(super) async fn serve(
+/// Prepare the complete original server future before its Source work. The
+/// returned future starts lifecycle ownership only when it is actually polled.
+pub(super) fn prepare<S: Future<Output = std::io::Result<()>>>(
     listener: TcpListener,
     app: Router,
     state: TunnelAgentState,
     scan_interval: Duration,
     cleanup_timeout: Duration,
-    signal: impl Future<Output = std::io::Result<()>>,
+    signal: S,
+) -> Result<impl Future<Output = Result<()>>> {
+    let bank = state.inner.global_metadata_bytes.clone();
+    super::future_storage::PaidFuture::new(
+        serve_admitted(listener, app, state, scan_interval, cleanup_timeout, signal),
+        &bank,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn frame_bytes<S: Future<Output = std::io::Result<()>>>(_signal: &S) -> usize {
+    fn size<S, F: Future>(
+        _create: impl FnOnce(TcpListener, Router, TunnelAgentState, Duration, Duration, S) -> F,
+    ) -> usize {
+        std::mem::size_of::<F>()
+    }
+    size(serve_admitted::<S>)
+}
+
+async fn serve_admitted<S: Future<Output = std::io::Result<()>>>(
+    listener: TcpListener,
+    app: Router,
+    state: TunnelAgentState,
+    scan_interval: Duration,
+    cleanup_timeout: Duration,
+    signal: S,
 ) -> Result<()> {
     let _owner = Owner(state.clone());
     let shutdown_state = state.clone();

@@ -309,6 +309,16 @@ async fn native_cli_server_caller_drop_stops_and_joins_with_table_lock_and_state
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let prepared = server::prepare(
+        listener,
+        agent_router(state.clone()),
+        state.clone(),
+        Duration::from_millis(5),
+        OBSERVE,
+        std::future::pending(),
+    )
+    .unwrap();
     publish(&state, Route::Wifi(None)).await.unwrap();
     let native = source.handle();
     let mut proxy = TcpStream::connect(("127.0.0.1", native.userspace_port.unwrap()))
@@ -339,15 +349,7 @@ async fn native_cli_server_caller_drop_stops_and_joins_with_table_lock_and_state
     .await
     .is_ok();
     let table = state.inner.tunnels.write().await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut owner = Box::pin(server::serve(
-        listener,
-        agent_router(state.clone()),
-        state.clone(),
-        Duration::from_millis(5),
-        OBSERVE,
-        std::future::pending(),
-    ));
+    let mut owner = Box::pin(prepared);
     let pending = futures_util::poll!(&mut owner).is_pending();
     drop(owner);
     let stopped = !native.is_alive();
@@ -374,27 +376,25 @@ async fn native_cli_server_native_joins_survive_metadata_lock_timeout_and_signal
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let prepared = server::prepare(
+        listener,
+        agent_router(state.clone()),
+        state.clone(),
+        Duration::from_millis(5),
+        Duration::from_millis(30),
+        async {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "synthetic-private-signal",
+            ))
+        },
+    )
+    .unwrap();
     publish(&state, Route::Wifi(None)).await.unwrap();
     let native = source.handle();
     let table = state.inner.tunnels.write().await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let result = tokio::time::timeout(
-        OBSERVE,
-        server::serve(
-            listener,
-            agent_router(state.clone()),
-            state.clone(),
-            Duration::from_millis(5),
-            Duration::from_millis(30),
-            async {
-                Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "synthetic-private-signal",
-                ))
-            },
-        ),
-    )
-    .await;
+    let result = tokio::time::timeout(OBSERVE, prepared).await;
     let snapshot = state.inner.native.snapshot();
     let recovery = recovered(&source, expected).await;
     drop(table);
