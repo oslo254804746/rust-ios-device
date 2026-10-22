@@ -105,7 +105,7 @@ pub use device::{
     connect_remote_pairing_tunnel_with_owner, connect_tcp_lockdown_tunnel,
     connect_tcp_lockdown_tunnel_with_owner, connect_with_owner, ConnectOptions, ConnectedDevice,
     InitialRsdProbe, InitialRsdProbeSkipReason, InitialRsdProbeState, InternationalConfiguration,
-    PairedMobdev2Device, ServiceStream, TunnelOwner, TunnelReservation,
+    PairedMobdev2Device, ServiceStream, TunnelOwner, TunnelReservation, TunnelReservationOwner,
 };
 #[cfg(feature = "tunnel")]
 pub use device::{

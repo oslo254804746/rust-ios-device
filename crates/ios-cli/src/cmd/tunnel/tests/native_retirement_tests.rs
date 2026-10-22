@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 const DEVICE: &str = "native-cli-retirement-fixture";
 const OBSERVE: Duration = Duration::from_secs(2);
 
+mod attempt_storage_tests;
 mod bookkeeping_tests;
 mod deadline_tests;
 mod discovery_future_tests;
@@ -563,7 +564,7 @@ async fn native_cli_core_candidate_guard_keeps_failed_owner_before_fresh_target_
     let state = state(source.clone());
     let ticket = state.inner.lifecycle.ticket(DEVICE).await.unwrap();
     let owner = ownership::Ownership::admitted(state.inner.native.clone(), &ticket).unwrap();
-    let mut first = owner.reserve().unwrap();
+    let mut first = owner.reserve_owned().unwrap();
     let device = source
         .connect(DEVICE, Route::Wifi(None), TunMode::Userspace)
         .await
@@ -571,7 +572,7 @@ async fn native_cli_core_candidate_guard_keeps_failed_owner_before_fresh_target_
     let old = device.native_handle().unwrap().clone();
     first.attach(old.clone()).unwrap();
     drop(first); // Simulates the native target future expiring before complete.
-    let mut second = owner.reserve().unwrap();
+    let mut second = owner.reserve_owned().unwrap();
     let next = source
         .connect(DEVICE, Route::Wifi(None), TunMode::Userspace)
         .await

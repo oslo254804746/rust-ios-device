@@ -138,7 +138,7 @@ mod tests {
         let mut peer = listener.accept().await.unwrap().0;
         let scope = NativeScope::new().unwrap();
         let ownership = Ownership::standalone(scope.0.registry.clone()).unwrap();
-        let mut reservation = ownership.reserve().unwrap();
+        let mut reservation = ownership.reserve_owned().unwrap();
         let runtime = UserspaceTunDevice::start("fd00::2", "fd00::1", 1280, stream)
             .await
             .unwrap();

@@ -39,7 +39,7 @@ impl Source for ReconnectSource {
     > {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
-                let mut reservation = owner.reserve()?;
+                let mut reservation = owner.reserve_owned()?;
                 let device = self.base.connect(udid, route.fixture_owned(), mode).await?;
                 reservation.attach(Arc::clone(device.native_handle().unwrap()))?;
                 let fate = self
@@ -461,7 +461,7 @@ impl Source for IsolatedSource {
     > {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
-                let mut reservation = owner.reserve()?;
+                let mut reservation = owner.reserve_owned()?;
                 let device = self.connect(udid, route.fixture_owned(), mode).await?;
                 reservation.attach(device.native_handle().unwrap().clone())?;
                 if udid == PENDING_DEVICE {

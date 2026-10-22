@@ -85,7 +85,7 @@ impl Source for SuccessSource {
     > {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
-                let mut reservation = owner.reserve()?;
+                let mut reservation = owner.reserve_owned()?;
                 let device = self.connect(udid, route.fixture_owned(), mode).await?;
                 // Attach the exact native Arc before the held source boundary.
                 reservation.attach(device.native_handle().unwrap().clone())?;
