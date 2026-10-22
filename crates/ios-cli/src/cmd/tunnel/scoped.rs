@@ -10,7 +10,8 @@ use std::{future::Future, ops::Deref, sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone)]
-pub(crate) struct NativeScope(Arc<Inner>);
+pub(crate) struct NativeScope(InnerOwner);
+type InnerOwner = super::shared_allocation::Shared<Inner>;
 struct Inner {
     registry: RegistryOwner,
     connections: Arc<Semaphore>,
@@ -76,10 +77,21 @@ impl Connector for NativeConnector {
 
 impl NativeScope {
     pub(crate) fn new() -> Result<Self> {
-        Ok(Self(Arc::new(Inner {
-            registry: Registry::new()?,
-            connections: Arc::new(Semaphore::new(4)),
-        })))
+        Self::from_registry(Registry::new()?)
+    }
+
+    fn from_registry(registry: RegistryOwner) -> Result<Self> {
+        let bank = registry.byte_bank();
+        let storage =
+            super::admission::known_metadata_charge(&bank, InnerOwner::allocation_bytes())?;
+        Ok(Self(InnerOwner::from_grant(
+            Inner {
+                registry,
+                connections: Arc::new(Semaphore::new(4)),
+            },
+            &bank,
+            storage,
+        )?))
     }
     pub(crate) async fn connect(&self, udid: &str, mode: TunMode) -> Result<NativeConnection> {
         self.prepare_connect(udid, mode, NativeConnector)?.await
@@ -186,6 +198,8 @@ impl std::error::Error for RetainedScopeFailure {
 
 #[cfg(test)]
 mod frame_tests;
+#[cfg(test)]
+mod root_tests;
 
 #[cfg(test)]
 mod tests {

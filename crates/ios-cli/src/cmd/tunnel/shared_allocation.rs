@@ -212,7 +212,7 @@ type FreeHook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
 #[cfg(test)]
 thread_local! { static AFTER_FREE: FreeHook = const { std::cell::RefCell::new(None) }; }
 #[cfg(test)]
-fn after_free<R>(hook: impl FnMut() + 'static, work: impl FnOnce() -> R) -> R {
+pub(super) fn after_free<R>(hook: impl FnMut() + 'static, work: impl FnOnce() -> R) -> R {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
