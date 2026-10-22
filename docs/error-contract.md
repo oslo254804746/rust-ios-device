@@ -2070,6 +2070,8 @@ Whole-scan total/global cancellation/durable paired or List primary across calle
 
 ## Interrupted scans and abandoned discovery errors
 
+The original whole-deadline construction, terminal check and discovery-deadline overflow check precede admission of the actual scan future. The same global metadata bank must pay that concrete frame before generation capture, scan-lock waits or Source work. A refused frame returns resource_limit, including a prepared zero/expired whole deadline; no timer or Source result has been acquired. Admitted scans retain both original absolute clocks and the existing acquired-error/cancellation rules. See [scan frame evidence](validation/tunnel-scan-frame-owner-2026-10-22.md).
+
 A whole scan timeout returns native Elapsed. If discovery already failed, its original anyhow error remains primary and a private redacted context retains the secondary elapsed/cancellation; normal returns preserve direct IO downcast. Global cancellation without an acquired primary remains quiet. A whole timeout creates no device-failure backoff.
 
 Caller Drop preserves the original error in immutable bounded history, exposed through the server terminal report's error source and private original-error getter. The wrapper does not promise transparent direct IO downcast. Full eight-slot history returns the existing CLI resource_limit before Source polling. Native and server primary priorities remain. See [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).

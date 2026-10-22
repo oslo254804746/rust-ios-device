@@ -638,13 +638,23 @@ impl Lifecycle {
         self.scan.send_replace(Arc::new(()));
     }
 
-    pub(super) fn scan_control(&self, timeout: Duration) -> Result<ScanControl> {
+    /// Original allocation-free prefix, before the scan frame's admission.
+    /// No generation or receiver is captured until its destination is paid.
+    pub(super) fn scan_deadline(&self, timeout: Duration) -> Result<Instant> {
         if self.shutdown.borrow().is_none() {
             return Err(cancelled());
         }
-        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-            crate::output::input_decision("tunnel scan discovery deadline overflow")
-        })?;
+        Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| crate::output::input_decision("tunnel scan discovery deadline overflow"))
+    }
+
+    #[cfg(test)]
+    pub(super) fn scan_control(&self, timeout: Duration) -> Result<ScanControl> {
+        self.scan_control_at(self.scan_deadline(timeout)?)
+    }
+
+    pub(super) fn scan_control_at(&self, deadline: Instant) -> Result<ScanControl> {
         #[cfg(test)]
         {
             // Force one admission boundary on this instance, without retaining
