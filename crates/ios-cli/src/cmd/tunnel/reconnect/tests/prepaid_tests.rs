@@ -9,9 +9,10 @@ async fn prepaid_selector_actual_receipt_all_capsules_precede_copy_and_last_owne
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     for short in [true, false] {
-        let total = bytes - usize::from(short) + slot_bytes();
+        let total = bytes - usize::from(short) + slot_bytes() + FailureVersion::body_bytes();
         let bank = Arc::new(Semaphore::new(total));
         let admitted = slot(&bank);
+        let version = FailureVersion::new(&bank).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let captured = seen.clone();
         let charged = bank.clone();
@@ -24,7 +25,7 @@ async fn prepaid_selector_actual_receipt_all_capsules_precede_copy_and_last_owne
                 assert_eq!(charged.available_permits(), 0);
                 captured.lock().unwrap().push((layout.size(), pointer));
             },
-            || FailureReceipt::reserve(A, &identity, &ticket, admitted, Arc::new(()), &bank),
+            || FailureReceipt::reserve(A, &identity, &ticket, admitted, version, &bank),
         );
         if short {
             let error = result.err().unwrap();
@@ -83,9 +84,14 @@ async fn prepaid_selector_actual_receipt_all_capsules_precede_copy_and_last_owne
 async fn prepaid_selector_actual_retry_node_keys_and_route_use_original_exact_buffers() {
     let identity = buffered_identity();
     let host_length = super::super::super::candidate_input::route_length(&identity.route);
-    let total = std::mem::size_of::<Removed>() + A.len() + host_length + slot_bytes();
+    let total = std::mem::size_of::<Removed>()
+        + A.len()
+        + host_length
+        + slot_bytes()
+        + FailureVersion::body_bytes();
     let bank = Arc::new(Semaphore::new(total));
     let admitted = slot(&bank);
+    let version = FailureVersion::new(&bank).unwrap();
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -104,7 +110,7 @@ async fn prepaid_selector_actual_retry_node_keys_and_route_use_original_exact_bu
                     identity,
                     ticket,
                     slot: admitted,
-                    version: Arc::new(()),
+                    version,
                     snapshot: Snapshot {
                         schedule: ScheduleProvenance::Episode,
                         phase: Phase::Connecting,

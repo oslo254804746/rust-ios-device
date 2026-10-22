@@ -465,9 +465,9 @@ async fn intent_contested_manual_cleanup_never_removes_later_real_source_failure
     let _ = server.await;
     cleanup(&state, &source).await;
     assert_eq!(started, StatusCode::OK);
-    assert!(Arc::ptr_eq(&old, &queued));
-    assert!(!Arc::ptr_eq(&old, &newer_version));
-    assert!(Arc::ptr_eq(&newer_version, &retained));
+    assert!(FailureVersion::ptr_eq(&old, &queued));
+    assert!(!FailureVersion::ptr_eq(&old, &newer_version));
+    assert!(FailureVersion::ptr_eq(&newer_version, &retained));
     assert_eq!(newer_fail_count, 1);
     assert_eq!(calls, 3);
 }

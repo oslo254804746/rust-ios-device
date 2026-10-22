@@ -2,7 +2,7 @@ use super::super::{
     bookkeeping::{DeferredSuccess, SuccessIntent, SuccessKey},
     failure_table::Node,
     lifecycle::Lifecycle,
-    metadata_vec,
+    metadata_vec, FailureVersion,
 };
 use super::*;
 
@@ -94,7 +94,7 @@ fn outcome_key_node_uses_original_destination_and_duplicate_refusal_keeps_origin
         || Node::input(input.clone(), None, &bank).unwrap(),
     );
     let observed = allocations.lock().unwrap();
-    assert_eq!(observed.len(), 2);
+    assert_eq!(observed.len(), 3);
     assert_eq!(
         observed[0],
         (
@@ -102,10 +102,18 @@ fn outcome_key_node_uses_original_destination_and_duplicate_refusal_keeps_origin
             std::ptr::from_ref(&*node) as usize
         )
     );
-    let identity_bytes = Node::input_bytes(&Route::Usbmux) - std::mem::size_of::<Node>();
+    let identity_bytes = Node::input_bytes(&Route::Usbmux)
+        - std::mem::size_of::<Node>()
+        - FailureVersion::body_bytes();
     assert_eq!(observed[1].0.size(), identity_bytes);
     let identity_pointer = std::ptr::from_ref(&*node.row.identity) as usize;
     assert!(observed[1].1 <= identity_pointer && identity_pointer < observed[1].1 + identity_bytes);
+    assert_eq!(observed[2].0.size(), FailureVersion::body_bytes());
+    let version_pointer = node.row.version.as_ptr() as usize;
+    assert!(
+        observed[2].1 <= version_pointer && version_pointer <= observed[2].1 + observed[2].0.size()
+    );
+    assert!(node.row.version.is_from(&bank));
     drop(observed);
     assert_eq!(node.udid.as_ptr(), pointer);
     let before = bank.available_permits();
@@ -118,11 +126,13 @@ fn outcome_key_node_uses_original_destination_and_duplicate_refusal_keeps_origin
         || Node::input(input.clone(), None, &bank).err().unwrap(),
     );
     let refused = second.lock().unwrap();
-    assert_eq!(refused.len(), 2);
+    assert_eq!(refused.len(), 3);
     assert_eq!(refused[0].0, std::alloc::Layout::new::<Node>());
     assert_eq!(refused[1].0.size(), identity_bytes);
+    assert_eq!(refused[2].0.size(), FailureVersion::body_bytes());
     assert_ne!(refused[0].1, std::ptr::from_ref(&*node) as usize);
     assert_ne!(refused[1].1, allocations.lock().unwrap()[1].1);
+    assert_ne!(refused[2].1, allocations.lock().unwrap()[2].1);
     drop(refused);
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
@@ -185,7 +195,10 @@ async fn outcome_key_actual_success_intent_keeps_original_key_fee_after_input_an
         .unwrap();
     assert_eq!(bank.available_permits(), 0);
     drop(success);
-    assert_eq!(bank.available_permits(), uid.len());
+    assert_eq!(
+        bank.available_permits(),
+        uid.len() + FailureVersion::body_bytes()
+    );
     drop(weak);
     drop((other_usage, ticket, lifecycle));
     assert_eq!(bank.available_permits(), total);

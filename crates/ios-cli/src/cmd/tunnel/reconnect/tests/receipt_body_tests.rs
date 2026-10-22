@@ -9,12 +9,15 @@ async fn receipt_body_preflight_and_last_weak_keep_exact_body_and_paid_guard_aft
     let ticket = lifecycle.ticket(A).await.unwrap();
     let bytes = FailureReceipt::initial_bytes(A, &identity);
     for available in [0, FailureReceipt::body_bytes() - 1, bytes - 1] {
-        let bank = Arc::new(Semaphore::new(available + slot_bytes()));
+        let bank = Arc::new(Semaphore::new(
+            available + slot_bytes() + FailureVersion::body_bytes(),
+        ));
         let admitted = slot(&bank);
+        let version = FailureVersion::new(&bank).unwrap();
         let error = metadata_vec::with_allocation_hook(
             |_, _| panic!("receipt selectors allocated before all capsules were admitted"),
             || {
-                FailureReceipt::reserve(A, &identity, &ticket, admitted, Arc::new(()), &bank)
+                FailureReceipt::reserve(A, &identity, &ticket, admitted, version, &bank)
                     .err()
                     .unwrap()
             },
@@ -23,12 +26,22 @@ async fn receipt_body_preflight_and_last_weak_keep_exact_body_and_paid_guard_aft
             crate::output::operation_error_class(error.as_ref()),
             ErrorClass::ResourceLimit
         );
-        assert_eq!(bank.available_permits(), available + slot_bytes());
+        assert_eq!(
+            bank.available_permits(),
+            available + slot_bytes() + FailureVersion::body_bytes()
+        );
     }
-    let bytes = bytes + slot_bytes();
+    let bytes = bytes + slot_bytes() + FailureVersion::body_bytes();
     let bank = Arc::new(Semaphore::new(bytes));
-    let receipt =
-        FailureReceipt::reserve(A, &identity, &ticket, slot(&bank), Arc::new(()), &bank).unwrap();
+    let receipt = FailureReceipt::reserve(
+        A,
+        &identity,
+        &ticket,
+        slot(&bank),
+        FailureVersion::new(&bank).unwrap(),
+        &bank,
+    )
+    .unwrap();
     let weak = receipt.downgrade();
     let retained_weak = weak.clone();
     let same = weak.upgrade().unwrap();

@@ -39,7 +39,7 @@ pub(in super::super) struct FailureReceipt {
     pub(super) identity: AttemptIdentity,
     pub(super) ticket: Ticket,
     pub(super) slot: super::super::failure_slot::Owner,
-    pub(super) version: Arc<()>,
+    pub(super) version: FailureVersion,
     original: Shared<Original>,
     history: OnceLock<History>,
     completion: Mutex<Completion>,
@@ -57,9 +57,13 @@ impl FailureReceipt {
         identity: &AttemptIdentity,
         ticket: &Ticket,
         slot: super::super::failure_slot::Owner,
-        version: Arc<()>,
+        version: FailureVersion,
         bank: &Arc<Semaphore>,
     ) -> Result<Receipt> {
+        anyhow::ensure!(
+            version.is_from(bank),
+            crate::output::resource_decision("tunnel failure version metadata bank mismatch")
+        );
         let bytes = Self::body_bytes()
             .checked_add(udid.len())
             .and_then(|bytes| {
@@ -119,8 +123,8 @@ impl FailureReceipt {
     pub(in super::super) fn slot(&self) -> super::super::failure_slot::Owner {
         self.slot.clone()
     }
-    pub(in super::super) fn version(&self) -> Arc<()> {
-        Arc::clone(&self.version)
+    pub(in super::super) fn version(&self) -> FailureVersion {
+        self.version.clone()
     }
     pub(in super::super) fn same_ticket(&self, ticket: &Ticket) -> bool {
         self.ticket.same_incarnation(ticket)
@@ -283,7 +287,7 @@ impl Ledger {
             if state.sealed
                 || !state
                     .row(&receipt.udid)
-                    .is_some_and(|row| Arc::ptr_eq(&row.version, &receipt.version))
+                    .is_some_and(|row| FailureVersion::ptr_eq(&row.version, &receipt.version))
             {
                 return Err(super::super::lifecycle::cancelled());
             }

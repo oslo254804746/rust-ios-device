@@ -4,6 +4,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::FailureVersion;
 use anyhow::{Context, Result};
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
@@ -714,7 +715,7 @@ impl Ticket {
         &self,
         route: super::intent::RouteIntent,
         authority: crate::access::DeviceAuthority,
-        failure: Option<Arc<()>>,
+        failure: Option<FailureVersion>,
         deadline: Option<&ConnectionDeadline>,
     ) -> Result<()> {
         self.establish_manual_with(
@@ -729,7 +730,7 @@ impl Ticket {
         &self,
         route: super::intent::RouteOwner,
         authority: crate::access::DeviceAuthority,
-        failure: Option<Arc<()>>,
+        failure: Option<FailureVersion>,
         deadline: Option<&ConnectionDeadline>,
     ) -> Result<()> {
         self.establish_manual_with(
@@ -744,7 +745,7 @@ impl Ticket {
         &self,
         desired: impl FnOnce() -> Result<super::intent::Desired>,
         authority: &crate::access::DeviceAuthority,
-        failure: Option<Arc<()>>,
+        failure: Option<FailureVersion>,
         deadline: Option<&ConnectionDeadline>,
     ) -> Result<()> {
         debug_assert!(self.intent_version.is_none());
@@ -778,30 +779,30 @@ impl Ticket {
         self.gate.intent.subscribe()
     }
 
-    pub(super) fn failure_version(&self) -> Option<Arc<()>> {
+    pub(super) fn failure_version(&self) -> Option<FailureVersion> {
         self.gate.intent.failure().map(|(row, _)| row)
     }
 
-    pub(super) fn failure_stamp(&self) -> Option<(Arc<()>, Arc<()>)> {
+    pub(super) fn failure_stamp(&self) -> Option<(FailureVersion, Arc<()>)> {
         self.gate.intent.failure()
     }
 
-    pub(super) fn restore_failure_stamp(&self, stamp: Option<(Arc<()>, Arc<()>)>) {
+    pub(super) fn restore_failure_stamp(&self, stamp: Option<(FailureVersion, Arc<()>)>) {
         self.gate.intent.set_failure(stamp);
     }
 
-    pub(super) fn clear_failure_version(&self, version: &Arc<()>) {
+    pub(super) fn clear_failure_version(&self, version: &FailureVersion) {
         let stamp = self.failure_stamp();
         if stamp
             .as_ref()
-            .is_some_and(|(row, _)| Arc::ptr_eq(row, version))
+            .is_some_and(|(row, _)| FailureVersion::ptr_eq(row, version))
         {
             self.restore_failure_stamp(None);
         }
     }
 
     // Called under the original failure-table writer/commit, including rollback.
-    pub(super) fn remember_failure(&self, version: Option<Arc<()>>) {
+    pub(super) fn remember_failure(&self, version: Option<FailureVersion>) {
         let desired = self
             .intent_version
             .clone()
@@ -811,11 +812,11 @@ impl Ticket {
             .set_failure(version.map(|version| (version, desired)));
     }
 
-    pub(super) fn failure_is_current(&self, version: &Arc<()>) -> bool {
+    pub(super) fn failure_is_current(&self, version: &FailureVersion) -> bool {
         let desired = self.desired();
         matches!(desired.desired, super::intent::Desired::Automatic)
             || self.gate.intent.failure().is_some_and(|(row, intent)| {
-                Arc::ptr_eq(&row, version) && Arc::ptr_eq(&intent, &desired.version)
+                FailureVersion::ptr_eq(&row, version) && Arc::ptr_eq(&intent, &desired.version)
             })
     }
 
@@ -827,14 +828,14 @@ impl Ticket {
             .map(|(desired, version)| (desired, super::bookkeeping::DeferredSuccess { version }))
     }
 
-    pub(super) fn clear_success(&self, desired: &Arc<()>, failure: &Arc<()>) {
+    pub(super) fn clear_success(&self, desired: &Arc<()>, failure: &FailureVersion) {
         self.gate.intent.clear_success(desired, failure);
     }
 
     pub(super) fn clear_success_checked(
         &self,
         desired: &Arc<()>,
-        failure: &Arc<()>,
+        failure: &FailureVersion,
         check: impl Fn() -> Result<()>,
     ) -> Result<()> {
         self.gate

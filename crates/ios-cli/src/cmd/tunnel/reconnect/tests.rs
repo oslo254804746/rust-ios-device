@@ -2,6 +2,105 @@
 use super::super::{lifecycle::Lifecycle, source::Route};
 use super::*;
 
+#[tokio::test]
+async fn failure_version_foreign_receipt_refuses_before_any_capsule_or_selector_backing() {
+    let bytes = FailureVersion::body_bytes();
+    let bank = Arc::new(Semaphore::new(16 * 1024));
+    let other = Arc::new(Semaphore::new(bytes));
+    let version = FailureVersion::new(&other).unwrap();
+    let lifecycle = lifecycle();
+    let ticket = lifecycle.ticket(A).await.unwrap();
+    let slot = slot(&bank);
+    let error = super::super::metadata_vec::with_allocation_hook(
+        |_, _| panic!("foreign failure identity allocated receipt backing"),
+        || {
+            FailureReceipt::reserve(A, &identity(), &ticket, slot, version, &bank)
+                .err()
+                .unwrap()
+        },
+    );
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ErrorClass::ResourceLimit
+    );
+    assert_eq!(bank.available_permits(), 16 * 1024);
+    assert_eq!(other.available_permits(), bytes);
+}
+
+#[tokio::test(start_paused = true)]
+async fn failure_version_last_byte_refusal_keeps_original_retry_clock_counters_receipt_and_io() {
+    let bytes = 32 * 1024;
+    let bank = Arc::new(Semaphore::new(bytes));
+    let policy = RetryPolicy::new(
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        NonZeroU32::new(3),
+        Some(Duration::from_secs(30)),
+    )
+    .unwrap();
+    let ledger = Ledger::with_metadata(policy, bank.clone()).unwrap();
+    let lifecycle = lifecycle();
+    let ticket = lifecycle.ticket(A).await.unwrap();
+    let admitted = slot(&bank);
+    let attempt = ledger
+        .start(A, identity(), &ticket, admitted.clone())
+        .unwrap();
+    let (original, original_pointer) = io_original("original-version-refusal-work");
+    let result = failed_result(attempt.source_failed(original));
+    attempt.finish(&result);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(ledger.admission(A, &identity(), &ticket), Admission::Ready);
+    let before = ledger.snapshot(A).unwrap();
+    assert!(before.deadline.is_some());
+    let version = ledger.version(A, &ticket).unwrap();
+    let receipt = ledger.receipt(A).unwrap();
+    let leave = FailureVersion::body_bytes() - 1;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((bank.available_permits() - leave) as u32)
+        .unwrap();
+    let error = super::super::metadata_vec::with_allocation_hook(
+        |_, _| panic!("refused retry identity allocated or copied a field"),
+        || {
+            ledger
+                .start(A, identity(), &ticket, admitted.clone())
+                .err()
+                .unwrap()
+        },
+    );
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ErrorClass::ResourceLimit
+    );
+    assert_eq!(bank.available_permits(), leave);
+    let after = ledger.snapshot(A).unwrap();
+    assert_eq!(before.schedule, after.schedule);
+    assert_eq!(before.phase, after.phase);
+    assert_eq!(before.attempts, after.attempts);
+    assert_eq!(before.failures, after.failures);
+    assert_eq!(before.first_attempt, after.first_attempt);
+    assert_eq!(before.deadline, after.deadline);
+    assert_eq!(before.next_attempt, after.next_attempt);
+    assert_eq!(before.last_class, after.last_class);
+    assert_eq!(before.sequence, after.sequence);
+    assert!(version.ptr_eq(&ledger.version(A, &ticket).unwrap()));
+    assert!(receipt.ptr_eq(&ledger.receipt(A).unwrap()));
+    assert_eq!(pointer(receipt.latest()), original_pointer);
+    drop((error, held));
+    bank.close();
+    let removed = ledger.remove_where(|_, _, _| true);
+    drop((removed, ledger, receipt, admitted, version));
+    assert!(bank.available_permits() < bytes);
+    let source = result
+        .as_ref()
+        .unwrap_err()
+        .downcast_ref::<SourceFailure>()
+        .unwrap();
+    assert_eq!(pointer(source.receipt().primary()), original_pointer);
+    drop(result);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
 mod ledger_owner_tests;
 mod prepaid_tests;
 mod receipt_body_tests;
@@ -357,7 +456,7 @@ async fn retry_receipt_actual_backing_removal_rollback_preserves_order_versions_
             [A, B, C]
         );
         for (index, key) in [A, B, C].iter().enumerate() {
-            assert!(Arc::ptr_eq(
+            assert!(FailureVersion::ptr_eq(
                 &state.row(key).unwrap().version,
                 &versions[index]
             ));
@@ -378,5 +477,11 @@ async fn retry_receipt_actual_backing_removal_rollback_preserves_order_versions_
         "removed original nodes refunded before batch release"
     );
     drop(removed);
+    assert_eq!(
+        bank.available_permits(),
+        bytes - versions.len() * FailureVersion::body_bytes(),
+        "original observed versions still own their exact root fees"
+    );
+    drop(versions);
     assert_eq!(bank.available_permits(), bytes);
 }

@@ -58,9 +58,15 @@ fn node_body_original_pointer_and_outer_grant_survive_table_removal_until_last_o
         || Node::input(input, Some(7), &bank).unwrap(),
     );
     let observed = body.lock().unwrap();
-    assert_eq!(observed.len(), 2);
+    assert_eq!(observed.len(), 3);
     assert_eq!(observed[0].0, std::mem::size_of::<Node>());
     assert_eq!(observed[1].0, Identity::allocation_bytes());
+    assert_eq!(observed[2].0, FailureVersion::body_bytes());
+    let original_version = node.row.version.as_ptr() as usize;
+    assert!(observed[2].1 <= original_version && original_version <= observed[2].1 + observed[2].0);
+    assert!(node.row.version.is_from(&bank));
+    assert_ne!(observed[2].1, observed[0].1);
+    assert_ne!(observed[2].1, observed[1].1);
     let original_identity = std::ptr::from_ref(&*node.row.identity.0) as usize;
     assert!(
         observed[1].1 <= original_identity && original_identity < observed[1].1 + observed[1].0
@@ -275,7 +281,8 @@ fn failure_row_snapshot_shares_route_and_refunds_identity_only_after_last_clone(
     let node = Node::owned("key".into(), identity("retained-route"), &bank).unwrap();
     let snapshot = node.row.clone();
     assert_eq!(host(&snapshot).as_ptr(), host(&node.row).as_ptr());
-    let identity_bytes = Identity::allocation_bytes() + host(&snapshot).len();
+    let identity_bytes =
+        Identity::allocation_bytes() + host(&snapshot).len() + FailureVersion::body_bytes();
     drop(node);
     assert_eq!(bank.available_permits(), BANK - identity_bytes);
     drop(snapshot);
@@ -291,7 +298,7 @@ fn failure_late_replace_zero_quota_restores_exact_key_route_node_and_version() {
     let old_node = &*old as *const Node;
     let old_key = old.udid.as_ptr();
     let old_route = host(&old.row).as_ptr();
-    let old_version = Arc::clone(&old.row.version);
+    let old_version = old.row.version.clone();
     assert!(Table::commit(table.insert_reserved(old)).is_none());
     let next = Node::owned("key".into(), identity("replacement-host"), &bank).unwrap();
     let next_node = &*next as *const Node;
@@ -306,7 +313,7 @@ fn failure_late_replace_zero_quota_restores_exact_key_route_node_and_version() {
     assert_eq!(&**current as *const Node, old_node);
     assert_eq!(current.udid.as_ptr(), old_key);
     assert_eq!(host(&current.row).as_ptr(), old_route);
-    assert!(Arc::ptr_eq(&current.row.version, &old_version));
+    assert!(FailureVersion::ptr_eq(&current.row.version, &old_version));
     assert_eq!(current.row.fail_count, 7);
     assert_eq!(bank.available_permits(), 0);
     drop(held);
@@ -333,7 +340,7 @@ fn failure_remove_batch_zero_quota_restores_original_nodes_keys_routes_and_order
                 &**node as *const Node,
                 node.udid.as_ptr(),
                 host(&node.row).as_ptr(),
-                Arc::clone(&node.row.version),
+                node.row.version.clone(),
             )
         })
         .collect::<Vec<_>>(); // test-observation allocation, not production removal
@@ -360,7 +367,7 @@ fn failure_remove_batch_zero_quota_restores_original_nodes_keys_routes_and_order
         assert_eq!(&**node as *const Node, original.0);
         assert_eq!(node.udid.as_ptr(), original.1);
         assert_eq!(host(&node.row).as_ptr(), original.2);
-        assert!(Arc::ptr_eq(&node.row.version, &original.3));
+        assert!(FailureVersion::ptr_eq(&node.row.version, &original.3));
     }
     assert_eq!(bank.available_permits(), 0);
     drop(held);
@@ -410,7 +417,7 @@ async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() 
                 &**node as *const Node,
                 node.udid.as_ptr(),
                 host(&node.row).as_ptr(),
-                Arc::clone(&node.row.version),
+                node.row.version.clone(),
                 &**node.row.slot.as_ref().unwrap() as *const super::super::failure_slot::Slot,
             )
         })
@@ -440,7 +447,7 @@ async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() 
         assert_eq!(&**node as *const Node, original.0);
         assert_eq!(node.udid.as_ptr(), original.1);
         assert_eq!(host(&node.row).as_ptr(), original.2);
-        assert!(Arc::ptr_eq(&node.row.version, &original.3));
+        assert!(FailureVersion::ptr_eq(&node.row.version, &original.3));
         assert_eq!(
             &**node.row.slot.as_ref().unwrap() as *const super::super::failure_slot::Slot,
             original.4

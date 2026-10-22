@@ -116,7 +116,7 @@ async fn discovery_future_usb_scan_constructor_refusal_preserves_old_publication
     assert!(state.inner.tunnels.read().await[A]
         .publication
         .ptr_eq(&publication));
-    assert!(Arc::ptr_eq(
+    assert!(FailureVersion::ptr_eq(
         &state.inner.failed_attempts.read().await[B].version,
         &previous.version
     ));
@@ -157,7 +157,7 @@ async fn discovery_future_paired_constructor_refusal_keeps_paid_usb_window_and_u
         ios_core::ErrorClass::ResourceLimit
     );
     assert!(state.get_record(A).await.unwrap().is_some());
-    assert!(Arc::ptr_eq(
+    assert!(FailureVersion::ptr_eq(
         &state.inner.failed_attempts.read().await[B].version,
         &previous.version
     ));

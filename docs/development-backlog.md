@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-22：L02 [retry/failure generation 完整根](validation/tunnel-failure-version-root-2026-10-22.md)
+失败版本由原bank按实际完整根预付，原retry/receipt/manual-success/rollback共享同一身份和费用；
+closed0/最后Weak实际free后退款/foreign与N-1拒绝/原deadline计数及IO不变已验；
+15命令通过，完整CLI1770/0FAIL/13原ignored；25处仅CLI源码变化，Core沿用846c533已验且全量哈希未变。
+全部Cargo/build由主控执行；global/device/intent等原边界继续，主项23/6/L02待全审计、有效30/Q04全部排除不变。
+
+
 2026-10-22：L02 [私有 runtime unit-stop 完整根](validation/tunnel-runtime-unit-watch-2026-10-22.md)
 将通知协议放入原已预付 Ledger 完整根，保留 Tokio 版本/关闭/取消/cooperative、原 cause/偏序/实际 joins；
 差分watch10/无mDNS10、tunnel159、owner42/无mDNS37、完整CLI1765/0FAIL/13原ignored及29命令通过，

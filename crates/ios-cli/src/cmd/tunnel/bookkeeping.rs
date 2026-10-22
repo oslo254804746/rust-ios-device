@@ -1,6 +1,6 @@
 //! Bounded failure writes and contested success cleanup after the scan window.
 use super::failure_table::{Destination, OwnedNode, RemovedBatch, Table};
-use super::{Ticket, TunnelAgentState};
+use super::{FailureVersion, Ticket, TunnelAgentState};
 use std::sync::Arc;
 
 use super::metadata_vec::KnownVec;
@@ -26,7 +26,7 @@ pub(super) struct FailureIntent {
 pub(super) struct DeferredSuccess {
     // This identifies the exact failure row observed before the successful
     // connection, independently of its timestamp, count and shared permit.
-    pub(super) version: Arc<()>,
+    pub(super) version: FailureVersion,
 }
 
 pub(super) enum ScanAttemptOutcome {
@@ -470,7 +470,7 @@ impl TunnelAgentState {
     ) -> Result<Option<OwnedNode>> {
         if !failed
             .get(udid)
-            .is_some_and(|old| Arc::ptr_eq(&old.version, &success.version))
+            .is_some_and(|old| FailureVersion::ptr_eq(&old.version, &success.version))
         {
             return Ok(None);
         }

@@ -8,6 +8,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use super::candidate_input::RouteRef;
 #[cfg(test)]
 use super::source::Route;
+use super::FailureVersion;
 use crate::access::DeviceAuthority;
 
 #[cfg(test)]
@@ -168,8 +169,8 @@ pub(super) struct Cell {
     changes: watch::Sender<Arc<()>>,
     // Mirrors the existing FailedTunnelAttempt.version; never an independent
     // failure history/permit. Updated by its original commit and rollback.
-    failure: Mutex<Option<(Arc<()>, Arc<()>)>>,
-    pending_success: Mutex<Option<(Arc<()>, Arc<()>)>>,
+    failure: Mutex<Option<(FailureVersion, Arc<()>)>>,
+    pending_success: Mutex<Option<(Arc<()>, FailureVersion)>>,
     metadata_bytes: Arc<Semaphore>,
     #[cfg(test)]
     before_checked_replace: Mutex<Option<ReplaceCallback>>,
@@ -258,7 +259,7 @@ impl Cell {
     pub(super) fn checked_replace(
         &self,
         desired: impl FnOnce() -> anyhow::Result<Desired>,
-        failure: Option<Arc<()>>,
+        failure: Option<FailureVersion>,
         check: impl Fn() -> anyhow::Result<()>,
     ) -> anyhow::Result<Arc<()>> {
         #[cfg(test)]
@@ -351,18 +352,18 @@ impl Cell {
         self.changes.subscribe()
     }
 
-    pub(super) fn failure(&self) -> Option<(Arc<()>, Arc<()>)> {
+    pub(super) fn failure(&self) -> Option<(FailureVersion, Arc<()>)> {
         self.failure
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
     }
 
-    pub(super) fn set_failure(&self, failure: Option<(Arc<()>, Arc<()>)>) {
+    pub(super) fn set_failure(&self, failure: Option<(FailureVersion, Arc<()>)>) {
         *self.failure.lock().unwrap_or_else(|p| p.into_inner()) = failure;
     }
 
-    pub(super) fn pending_success(&self) -> Option<(Arc<()>, Arc<()>)> {
+    pub(super) fn pending_success(&self) -> Option<(Arc<()>, FailureVersion)> {
         self.pending_success
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -374,7 +375,7 @@ impl Cell {
     pub(super) fn manual_success(
         &self,
         epoch: &Arc<()>,
-    ) -> Option<(Arc<()>, Arc<()>, DeviceAuthority)> {
+    ) -> Option<(Arc<()>, FailureVersion, DeviceAuthority)> {
         let state = self.lock();
         if !Arc::ptr_eq(&state.epoch, epoch) {
             return None;
@@ -390,16 +391,16 @@ impl Cell {
         if !Arc::ptr_eq(desired, &state.version) {
             return None;
         }
-        Some((Arc::clone(desired), Arc::clone(failure), authority.clone()))
+        Some((Arc::clone(desired), failure.clone(), authority.clone()))
     }
 
-    pub(super) fn clear_success(&self, desired: &Arc<()>, failure: &Arc<()>) {
+    pub(super) fn clear_success(&self, desired: &Arc<()>, failure: &FailureVersion) {
         let mut pending = self
             .pending_success
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         if pending.as_ref().is_some_and(|(current, row)| {
-            Arc::ptr_eq(current, desired) && Arc::ptr_eq(row, failure)
+            Arc::ptr_eq(current, desired) && FailureVersion::ptr_eq(row, failure)
         }) {
             *pending = None;
         }
@@ -408,7 +409,7 @@ impl Cell {
     pub(super) fn clear_success_checked(
         &self,
         desired: &Arc<()>,
-        failure: &Arc<()>,
+        failure: &FailureVersion,
         check: impl Fn() -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
         let mut pending = self
@@ -417,7 +418,7 @@ impl Cell {
             .unwrap_or_else(|p| p.into_inner());
         check()?;
         if pending.as_ref().is_some_and(|(current, row)| {
-            Arc::ptr_eq(current, desired) && Arc::ptr_eq(row, failure)
+            Arc::ptr_eq(current, desired) && FailureVersion::ptr_eq(row, failure)
         }) {
             let original = pending.take();
             if let Err(error) = check() {

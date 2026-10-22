@@ -127,18 +127,21 @@ impl Source for PublicationSource {
     }
 }
 
-fn same_pair(left: &Option<(Arc<()>, Arc<()>)>, right: &Option<(Arc<()>, Arc<()>)>) -> bool {
+fn same_pair(
+    left: &Option<(FailureVersion, Arc<()>)>,
+    right: &Option<(FailureVersion, Arc<()>)>,
+) -> bool {
     match (left, right) {
-        (Some((a, b)), Some((c, d))) => Arc::ptr_eq(a, c) && Arc::ptr_eq(b, d),
+        (Some((a, b)), Some((c, d))) => FailureVersion::ptr_eq(a, c) && Arc::ptr_eq(b, d),
         (None, None) => true,
         _ => false,
     }
 }
 
-fn pending(ticket: &Ticket) -> Option<(Arc<()>, Arc<()>)> {
+fn pending(ticket: &Ticket) -> Option<(FailureVersion, Arc<()>)> {
     ticket
         .pending_success()
-        .map(|(desired, success)| (desired, success.version))
+        .map(|(desired, success)| (success.version, desired))
 }
 
 async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
@@ -299,7 +302,7 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
     let after_calls = base_source.a.connect_calls.load(Ordering::SeqCst);
     let after_routes = base_source.routes.lock().unwrap().clone();
     let preserved_failure = held_failure.get(AUTH_DEVICE).is_some_and(|row| {
-        Arc::ptr_eq(&row.version, &old_failure.version)
+        FailureVersion::ptr_eq(&row.version, &old_failure.version)
             && row.last_attempt == old_failure.last_attempt
             && row.fail_count == old_failure.fail_count
             && row.identity == old_failure.identity
