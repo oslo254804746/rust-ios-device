@@ -735,4 +735,5 @@ async fn native_cli_clear_and_stop_fence_unpublished_real_runtime_before_query_r
     }
 }
 
+mod connection_ticket_tests;
 mod resource_baseline_tests;

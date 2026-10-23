@@ -23,13 +23,22 @@ impl TicketOwner {
         global: &Arc<Semaphore>,
         published: &Arc<Semaphore>,
     ) -> Result<Self> {
-        Self::admit(ticket, global, published).map_err(|error| error.context(Admission))
+        Self::admit(ticket, global, published, false).map_err(|error| error.context(Admission))
+    }
+
+    pub(super) fn connection(
+        &self,
+        global: &Arc<Semaphore>,
+        published: &Arc<Semaphore>,
+    ) -> Result<Self> {
+        Self::admit(self, global, published, true).map_err(|error| error.context(Admission))
     }
 
     fn admit(
         ticket: &super::Ticket,
         global: &Arc<Semaphore>,
         published: &Arc<Semaphore>,
+        connection: bool,
     ) -> Result<Self> {
         let bytes = Self::body_bytes();
         let global_storage = super::admission::known_metadata_charge(global, bytes)?;
@@ -43,9 +52,18 @@ impl TicketOwner {
             })?;
         // Both original banks already cover the whole actual allocation. An
         // identity from P must not be charged a duplicate origin mirror in P.
-        let origins = ticket.origin_grants_with_covered(global, Some(&published_storage), bytes)?;
+        let origins = if connection {
+            ticket.connection_origin_grants(global, &published_storage, bytes)?
+        } else {
+            ticket.origin_grants_with_covered(global, Some(&published_storage), bytes)?
+        };
+        let ticket = if connection {
+            ticket.for_connection()
+        } else {
+            ticket.clone()
+        };
         Ok(Self(super::shared_weak_allocation::Strong::new(
-            ticket.clone(),
+            ticket,
             global,
             global_storage,
             (published_storage, origins),
@@ -198,6 +216,8 @@ fn on_created(hook: impl FnMut(usize) + 'static) -> HookGuard {
     HookGuard
 }
 
+#[cfg(test)]
+mod connection_ticket_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

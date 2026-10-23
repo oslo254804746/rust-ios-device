@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-23：L02 [LocalTarget连接Ticket实际根](validation/tunnel-local-target-ticket-root-2026-10-23.md)
+lookup先PaidRecord、后实际G/P/origin Ticket root、最后Life；同根move至原callback/F，最后free后退费。
+连接projection保持原device/global、去掉desired且不瞬时clone其foreign身份，manual-live语义不变。
+39门禁通过，新增6/native110+1原ignored/lifecycle335/完整CLI1867/0FAIL/13原ignored，718源码9处仅CLI。
+HTTP503拒绝无dial/额外Source，真实native joins/严格EOF不被root延迟；主控review九SHA一致，全部Cargo/build主控。
+原arena/TOTAL/all-retainer/opaque/endpoint继续；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-23：L02 [publication实际Ticket独立根](validation/tunnel-publication-ticket-root-2026-10-23.md)
 ManagedTunnel/Change/Retired持实际Ticket backing，G/P与真实captured origin整费预付，最终free后退款。
 实际P permit及准确body数目证明覆盖，原Source/native/rollback/clock不变；LocalTarget raw Ticket仍待收口。
