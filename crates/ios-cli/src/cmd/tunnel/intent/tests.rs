@@ -6,8 +6,9 @@ fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
     let host = "manual-filter-雪";
     let bytes = RetainedRoute::body_bytes() + host.len();
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank = Arc::new(Semaphore::new(bytes + watch_bytes));
-    let cell = Cell::new(ControlIdentity::new(&bank), bank.clone()).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + watch_bytes);
+    let bank = bank_birth.raw().clone();
+    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
     let charged = bank.clone();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let captured = observed.clone();
@@ -76,7 +77,8 @@ fn shared_route_body_and_text_last_byte_refusal_refund_without_destination_alloc
     let host = "selected-host";
     let body = RetainedRoute::body_bytes();
     for limit in [body - 1, body + host.len() - 1] {
-        let bank = Arc::new(Semaphore::new(limit));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(limit);
+        let bank = bank_birth.raw().clone();
         let error = super::super::metadata_vec::with_allocation_hook(
             |_, _| panic!("route refusal allocated destination text"),
             || {
@@ -92,7 +94,8 @@ fn shared_route_body_and_text_last_byte_refusal_refund_without_destination_alloc
         );
         assert_eq!(bank.available_permits(), limit);
     }
-    let bank = Arc::new(Semaphore::new(2 * body));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(2 * body);
+    let bank = bank_birth.raw().clone();
     let absent =
         RetainedRoute::established(&Route::Wifi(None), Some("ignored-filter"), &bank).unwrap();
     let empty = RetainedRoute::established(&Route::Usb(Some(String::new())), None, &bank).unwrap();
@@ -112,8 +115,9 @@ fn shared_route_foreign_bank_rejection_keeps_original_version_watch_and_fees() {
             .unwrap();
     let before = original_bank.available_permits();
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank = Arc::new(Semaphore::new(watch_bytes));
-    let cell = Cell::new(ControlIdentity::new(&bank), bank.clone()).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(watch_bytes);
+    let bank = bank_birth.raw().clone();
+    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
     let version = cell.snapshot().version;
     let watch = cell.changes.subscribe();
     let error = cell
@@ -172,8 +176,9 @@ fn manual_route_bytes_capacity_shared_snapshots_and_last_owner_after_stop() {
     let original = host.as_ptr();
     let bytes = RetainedRoute::bytes(&route);
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank = Arc::new(Semaphore::new(bytes + watch_bytes));
-    let cell = Cell::new(ControlIdentity::new(&bank), Arc::clone(&bank)).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + watch_bytes);
+    let bank = bank_birth.raw().clone();
+    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
     let version = manual(&cell, route).unwrap();
     assert_eq!(bank.available_permits(), 0);
     let snapshot = cell.snapshot();
@@ -217,8 +222,9 @@ fn manual_route_bytes_rejected_replacement_preserves_original_version_watch_and_
     let original = route(4096, "original-private-host");
     let bytes = RetainedRoute::bytes(&original);
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank = Arc::new(Semaphore::new(bytes + watch_bytes));
-    let cell = Cell::new(ControlIdentity::new(&bank), Arc::clone(&bank)).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + watch_bytes);
+    let bank = bank_birth.raw().clone();
+    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
     manual(&cell, original).unwrap();
     let before = cell.snapshot();
     let watch = cell.changes.subscribe();
@@ -257,10 +263,11 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
     let new_bytes = RetainedRoute::bytes(&new);
     let version_bytes = FailureVersion::body_bytes();
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank = Arc::new(Semaphore::new(
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(
         old_bytes + new_bytes + version_bytes + watch_bytes,
-    ));
-    let cell = Cell::new(ControlIdentity::new(&bank), Arc::clone(&bank)).unwrap();
+    );
+    let bank = bank_birth.raw().clone();
+    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
     manual(&cell, old).unwrap();
     let before = cell.snapshot();
     let calls = AtomicUsize::new(0);
@@ -306,16 +313,17 @@ fn manual_route_bytes_clear_keeps_original_epoch_snapshot_and_zero_bank_stop_wor
     let selected = route(2048, "selected-host");
     let bytes = RetainedRoute::bytes(&selected);
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank = Arc::new(Semaphore::new(bytes + watch_bytes));
-    let epoch = ControlIdentity::new(&bank);
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + watch_bytes);
+    let bank = bank_birth.raw().clone();
+    let epoch = ControlIdentity::new(&bank_birth);
     let cell = Cell::new(
         crate::cmd::tunnel::ControlIdentity::clone(&epoch),
-        Arc::clone(&bank),
+        bank_birth.clone(),
     )
     .unwrap();
     manual(&cell, selected).unwrap();
     let before = cell.snapshot();
-    cell.reset(ControlIdentity::new(&bank));
+    cell.reset(ControlIdentity::new(&bank_birth));
     assert!(matches!(cell.snapshot().desired, Desired::Automatic));
     assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &before.epoch,
@@ -328,15 +336,20 @@ fn manual_route_bytes_clear_keeps_original_epoch_snapshot_and_zero_bank_stop_wor
     assert_eq!(bank.available_permits(), bytes);
     drop(cell);
     assert_eq!(bank.available_permits(), bytes + watch_bytes);
-    let zero_bank = Arc::new(Semaphore::new(watch_bytes));
-    let zero = Cell::new(ControlIdentity::new(&zero_bank), zero_bank.clone()).unwrap();
+    let zero_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(watch_bytes);
+    let zero_bank = zero_bank_birth.raw().clone();
+    let zero = Cell::new(
+        ControlIdentity::new(&zero_bank_birth),
+        zero_bank_birth.clone(),
+    )
+    .unwrap();
     assert_eq!(zero_bank.available_permits(), 0);
     zero_bank.close();
     super::super::metadata_vec::with_allocation_hook(
         |_, _| panic!("zero-pool stop/reset allocated a controlled watch backing"),
         || {
             zero.replace(Desired::Stopped);
-            zero.reset(ControlIdentity::new(&zero_bank));
+            zero.reset(ControlIdentity::new(&zero_bank_birth));
             assert!(matches!(zero.snapshot().desired, Desired::Automatic));
             assert_eq!(zero_bank.available_permits(), 0);
         },

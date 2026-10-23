@@ -13,7 +13,8 @@ fn prepaid_selector_original_grant_supports_high_alignment_at_zero_free_bytes() 
         }
     }
     let bytes = Layout::array::<Element>(2).unwrap().size();
-    let bank = Arc::new(Semaphore::new(bytes));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+    let bank = bank_birth.raw().clone();
     let fee = super::super::admission::known_metadata_charge(&bank, bytes).unwrap();
     let pointer = Arc::new(AtomicUsize::new(0));
     let captured = pointer.clone();
@@ -47,7 +48,8 @@ fn prepaid_selector_foreign_short_long_overflow_grants_refuse_before_allocation_
         (8, true, 1),
         (0, false, usize::MAX),
     ] {
-        let bank = Arc::new(Semaphore::new(16));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(16);
+        let bank = bank_birth.raw().clone();
         let other = Arc::new(Semaphore::new(16));
         let funded = if foreign { &other } else { &bank };
         let fee = super::super::admission::known_metadata_charge(funded, amount).unwrap();
@@ -62,7 +64,8 @@ fn prepaid_selector_foreign_short_long_overflow_grants_refuse_before_allocation_
         assert_eq!(bank.available_permits(), 16);
         assert_eq!(other.available_permits(), 16);
     }
-    let bank = Arc::new(Semaphore::new(0));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(0);
+    let bank = bank_birth.raw().clone();
     let fee = super::super::admission::known_metadata_charge(&bank, 0).unwrap();
     let empty = with_allocation_hook(
         |_, _| panic!("empty grant allocated"),
@@ -77,7 +80,8 @@ fn prepaid_selector_foreign_short_long_overflow_grants_refuse_before_allocation_
 #[test]
 fn metadata_vector_refusal_precedes_actual_allocation_and_keeps_original_growth_owner() {
     let width = std::mem::size_of::<usize>();
-    let bank = Arc::new(Semaphore::new(3 * width));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(3 * width);
+    let bank = bank_birth.raw().clone();
     let mut rows = KnownVec::new(Arc::clone(&bank), 8);
     rows.push(11_usize).unwrap();
     rows.push(22).unwrap();
@@ -103,7 +107,8 @@ fn metadata_vector_refusal_precedes_actual_allocation_and_keeps_original_growth_
 #[test]
 fn metadata_vector_actual_allocation_observes_full_new_and_old_layout_grants() {
     let width = std::mem::size_of::<usize>();
-    let bank = Arc::new(Semaphore::new(32 * width));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(32 * width);
+    let bank = bank_birth.raw().clone();
     let mut rows = KnownVec::new(Arc::clone(&bank), 8);
     rows.push(11_usize).unwrap();
     rows.push(22).unwrap();
@@ -134,7 +139,8 @@ fn metadata_vector_actual_allocation_observes_full_new_and_old_layout_grants() {
 
 #[test]
 fn metadata_vector_layout_overflow_and_empty_bank_allocate_nothing() {
-    let bank = Arc::new(Semaphore::new(0));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(0);
+    let bank = bank_birth.raw().clone();
     let allocated = Arc::new(AtomicUsize::new(0));
     let seen = Arc::clone(&allocated);
     with_allocation_hook(
@@ -161,7 +167,8 @@ fn metadata_vector_alignment_and_element_drop_precede_last_backing_refund() {
         }
     }
     let width = std::mem::size_of::<Element>();
-    let bank = Arc::new(Semaphore::new(3 * width));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(3 * width);
+    let bank = bank_birth.raw().clone();
     let drops = Arc::new(AtomicUsize::new(0));
     let mut allocation = exact_backing::<Element>(&bank, 3).unwrap();
     assert_eq!(allocation.values.capacity(), 3);
@@ -178,7 +185,8 @@ fn metadata_vector_alignment_and_element_drop_precede_last_backing_refund() {
 
 #[test]
 fn metadata_vector_zero_size_elements_keep_logical_ceiling_without_allocation() {
-    let bank = Arc::new(Semaphore::new(0));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(0);
+    let bank = bank_birth.raw().clone();
     let allocated = Arc::new(AtomicUsize::new(0));
     let seen = Arc::clone(&allocated);
     with_allocation_hook(
@@ -202,21 +210,22 @@ fn metadata_vector_zero_size_elements_keep_logical_ceiling_without_allocation() 
 #[test]
 fn native_registry_backing_refusal_precedes_slot_allocation_and_refunds_body() {
     use super::super::retirement::{NativeReport, Registry};
-    let full = Arc::new(Semaphore::new(128 * 1024 * 1024));
+    let full_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(128 * 1024 * 1024);
     let slot_bytes = Arc::new(AtomicUsize::new(0));
     let captured = Arc::clone(&slot_bytes);
     let native = with_allocation_hook(
         move |layout, _| {
             captured.store(layout.size(), Ordering::SeqCst);
         },
-        || Registry::with_metadata(&full).unwrap(),
+        || Registry::with_metadata(&full_birth).unwrap(),
     );
     drop(native);
     let bytes = std::mem::size_of::<Registry>()
         + 2 * NativeReport::body_bytes()
         + slot_bytes.load(Ordering::SeqCst)
         - 1;
-    let bank = Arc::new(Semaphore::new(bytes));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+    let bank = bank_birth.raw().clone();
     let allocated = Arc::new(AtomicUsize::new(0));
     let captured = Arc::clone(&allocated);
     with_allocation_hook(
@@ -224,7 +233,7 @@ fn native_registry_backing_refusal_precedes_slot_allocation_and_refunds_body() {
             captured.fetch_add(1, Ordering::SeqCst);
         },
         || {
-            assert!(Registry::with_metadata(&bank).is_err());
+            assert!(Registry::with_metadata(&bank_birth).is_err());
         },
     );
     assert_eq!(allocated.load(Ordering::SeqCst), 0);
@@ -233,7 +242,9 @@ fn native_registry_backing_refusal_precedes_slot_allocation_and_refunds_body() {
 
 #[test]
 fn metadata_vec_growth_refusal_preserves_original_rows_and_last_iterator_release() {
-    let bank = Arc::new(Semaphore::new(3 * std::mem::size_of::<usize>()));
+    let bank_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(3 * std::mem::size_of::<usize>());
+    let bank = bank_birth.raw().clone();
     let mut rows = KnownVec::new(Arc::clone(&bank), 8);
     rows.push(1_usize).unwrap();
     rows.push(2).unwrap();
@@ -251,7 +262,8 @@ fn metadata_vec_growth_refusal_preserves_original_rows_and_last_iterator_release
 
 #[test]
 fn metadata_vec_actual_capacity_and_count_ceiling_refund_all_storage() {
-    let bank = Arc::new(Semaphore::new(1024));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(1024);
+    let bank = bank_birth.raw().clone();
     let mut rows = KnownVec::new(Arc::clone(&bank), 3);
     for index in 0..3_u64 {
         rows.push(index).unwrap();

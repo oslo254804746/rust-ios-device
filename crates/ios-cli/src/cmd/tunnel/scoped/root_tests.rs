@@ -11,8 +11,9 @@ const OBSERVE: Duration = Duration::from_secs(2);
 #[test]
 fn foreground_root_short_and_closed_refusal_precedes_scope_allocation_or_registry_close() {
     for closed in [false, true] {
-        let bank = Arc::new(Semaphore::new(TOTAL));
-        let registry = Registry::with_metadata(&bank).unwrap();
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+        let bank = bank_birth.raw().clone();
+        let registry = Registry::with_metadata(&bank_birth).unwrap();
         let leave = if closed {
             0
         } else {
@@ -47,8 +48,9 @@ fn foreground_root_short_and_closed_refusal_precedes_scope_allocation_or_registr
 
 #[test]
 fn foreground_root_exact_original_bank_and_same_shared_body_survive_clones_until_last_free() {
-    let bank = Arc::new(Semaphore::new(TOTAL));
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let before = bank.available_permits();
     let inner_bytes = InnerOwner::allocation_bytes();
     let slots_bytes = SlotsOwner::allocation_bytes();
@@ -116,8 +118,9 @@ async fn foreground_root_actual_cleanup_failure_retains_scope_and_original_nativ
     let expected = tokio::runtime::Handle::current()
         .metrics()
         .num_alive_tasks();
-    let bank = Arc::new(Semaphore::new(TOTAL));
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let scope = NativeScope::from_registry(registry.clone()).unwrap();
     let ownership = Ownership::standalone(registry.clone()).unwrap();
     let mut reservation = ownership.reserve_owned().unwrap();

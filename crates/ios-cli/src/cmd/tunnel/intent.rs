@@ -172,7 +172,7 @@ pub(super) struct Cell {
     // failure history/permit. Updated by its original commit and rollback.
     failure: Mutex<Option<(FailureVersion, ControlIdentity)>>,
     pending_success: Mutex<Option<(ControlIdentity, FailureVersion)>>,
-    metadata_bytes: Arc<Semaphore>,
+    metadata_bytes: super::birth_bank::BirthBank,
     #[cfg(test)]
     before_checked_replace: Mutex<Option<ReplaceCallback>>,
     #[cfg(test)]
@@ -183,7 +183,7 @@ impl Cell {
     #[cfg(test)]
     pub(super) fn new(
         epoch: ControlIdentity,
-        metadata_bytes: Arc<Semaphore>,
+        metadata_bytes: super::birth_bank::BirthBank,
     ) -> anyhow::Result<Self> {
         let storage = super::admission::known_metadata_charge(
             &metadata_bytes,
@@ -193,7 +193,7 @@ impl Cell {
     }
     pub(super) fn from_grant(
         epoch: ControlIdentity,
-        metadata_bytes: Arc<Semaphore>,
+        metadata_bytes: super::birth_bank::BirthBank,
         storage: OwnedSemaphorePermit,
     ) -> anyhow::Result<Self> {
         let version = ControlIdentity::new(&metadata_bytes);

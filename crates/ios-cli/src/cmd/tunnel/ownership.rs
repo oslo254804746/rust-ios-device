@@ -292,7 +292,6 @@ mod attempt_storage_tests;
 mod buffer_bank_tests {
     use super::*;
     use std::error::Error;
-    use tokio::sync::Semaphore;
 
     #[test]
     fn native_reservation_core_error_keeps_original_typed_root_deep_io_and_resource_class() {
@@ -382,10 +381,11 @@ mod buffer_bank_tests {
 
     #[test]
     fn native_runtime_bank_is_the_original_registry_bank_before_attachment() {
-        let bank = Arc::new(Semaphore::new(
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(
             super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
-        ));
-        let registry = Registry::with_metadata(&bank).unwrap();
+        );
+        let bank = bank_birth.raw().clone();
+        let registry = Registry::with_metadata(&bank_birth).unwrap();
         let baseline = bank.available_permits();
         let owner = Ownership::standalone(registry.clone()).unwrap();
         let reservation = owner.reserve_owned().unwrap();

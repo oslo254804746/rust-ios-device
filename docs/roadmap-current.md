@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-23：L02 [marker真实出生bank不可变TOTAL](validation/tunnel-birth-bank-authority-2026-10-23.md)
+BirthBank唯一factory真实创建原raw semaphore与immutable TOTAL，State/Lifecycle/Cell/Registry/standalone全部出生消费。
+Ticket/native proof/catalogue真实origin收费使用captured authority；原u32溢出/Resource顺序和控制/joins/clock保持。
+40门禁首轮通过，新增3/完整CLI1870/0FAIL/13原ignored，720源码33处仅CLI；主控全部Cargo/build。
+N−1→N用完整TOTAL+真实held1释放，原断言投影guard保持；未实现physical arena/全retainer/同步峰值。
+23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-23：L02 [LocalTarget连接Ticket实际根](validation/tunnel-local-target-ticket-root-2026-10-23.md)
 lookup先PaidRecord、后实际G/P/origin Ticket root、最后Life；同根move至原callback/F，最后free后退费。
 连接projection保持原device/global、去掉desired且不瞬时clone其foreign身份，manual-live语义不变。

@@ -12,7 +12,8 @@ fn outcome_key_usb_last_byte_refusal_leaves_original_raw_snapshot_grant_unsplit(
     uid.push_str("original-usb-key");
     let raw_bytes = 128 + uid.capacity();
     let remaining = Input::body_bytes() + uid.len() - 1;
-    let bank = Arc::new(Semaphore::new(raw_bytes + remaining));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(raw_bytes + remaining);
+    let bank = bank_birth.raw().clone();
     let mut raw = super::super::admission::known_metadata_charge(&bank, raw_bytes).unwrap();
     let error = metadata_vec::with_allocation_hook(
         |_, _| panic!("refused USB key destination allocated"),
@@ -32,7 +33,8 @@ fn outcome_key_usb_last_byte_refusal_leaves_original_raw_snapshot_grant_unsplit(
 fn outcome_key_original_empty_destination_fills_at_zero_quota_once_and_outlives_input() {
     for uid in ["", "原-key-identity"] {
         let total = Input::bytes(uid, &Route::Usbmux);
-        let bank = Arc::new(Semaphore::new(total));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+        let bank = bank_birth.raw().clone();
         let input = Input::copied(uid, RouteRef::Usbmux, &bank).unwrap();
         let pointer = input
             .outcome
@@ -75,7 +77,8 @@ fn outcome_key_original_empty_destination_fills_at_zero_quota_once_and_outlives_
 #[test]
 fn outcome_key_node_uses_original_destination_and_duplicate_refusal_keeps_original_node() {
     let total = 8192;
-    let bank = Arc::new(Semaphore::new(total));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
     let input = Input::copied("original-node-key", RouteRef::Usbmux, &bank).unwrap();
     let pointer = input
         .outcome
@@ -149,8 +152,9 @@ fn outcome_key_node_uses_original_destination_and_duplicate_refusal_keeps_origin
 async fn outcome_key_actual_success_intent_keeps_original_key_fee_after_input_and_node_drop() {
     let total = 32 * 1024;
     let uid = "success-key-identity";
-    let bank = Arc::new(Semaphore::new(total));
-    let lifecycle = Lifecycle::with_metadata(bank.clone()).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let ticket = lifecycle.ticket(uid).await.unwrap();
     let input = Input::copied(uid, RouteRef::Usbmux, &bank).unwrap();
     let weak = input.downgrade();

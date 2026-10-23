@@ -7,8 +7,9 @@ const TOTAL: usize = 128 * 1024;
 
 #[tokio::test]
 async fn episode_ticket_actual_root_refusal_and_one_allocation_keep_original_captured_data() {
-    let origin = Arc::new(Semaphore::new(TOTAL));
-    let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
+    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let origin = origin_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
     let ticket = lifecycle.ticket(A).await.unwrap().fenced();
     let bytes = TicketOwner::body_bytes();
     let before = origin.available_permits();
@@ -88,8 +89,9 @@ async fn episode_ticket_actual_root_refusal_and_one_allocation_keep_original_cap
 
 #[tokio::test]
 async fn episode_ticket_into_inner_keeps_real_root_after_outer_box_free_without_new_allocation() {
-    let origin = Arc::new(Semaphore::new(TOTAL));
-    let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
+    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let origin = origin_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
     let ticket = lifecycle.ticket(A).await.unwrap().fenced();
     let bank = Arc::new(Semaphore::new(TOTAL));
     let owner = TicketOwner::new(&ticket, &bank).unwrap();
@@ -163,8 +165,9 @@ impl Drop for Work {
 #[tokio::test(start_paused = true)]
 async fn episode_ticket_shares_first_receipt_root_without_retaining_receipt_or_original_io() {
     let bank = Arc::new(Semaphore::new(TOTAL));
-    let origin = Arc::new(Semaphore::new(TOTAL));
-    let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
+    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let origin = origin_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
     let ticket = lifecycle.ticket(A).await.unwrap().fenced();
     let policy = RetryPolicy::new(
         Duration::from_secs(1),

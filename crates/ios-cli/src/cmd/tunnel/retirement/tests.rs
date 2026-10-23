@@ -749,8 +749,9 @@ async fn marker_origin_foreign_registries_keep_whole_backing_paid_after_producer
     let mirror = destinations[0]._slots_storage.num_permits();
     let structural = Lifecycle::watch_bytes() + Lifecycle::initial_metadata_bytes(KEY);
     let total = structural + destinations.len() * mirror;
-    let origin = Arc::new(Semaphore::new(total));
-    let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
+    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let origin = origin_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
     drop(lifecycle.ticket(KEY).await.unwrap());
     assert_eq!(origin.available_permits(), 4 * mirror);
     let mut keepers = Vec::new();
@@ -852,12 +853,15 @@ fn marker_origin_new_foreign_keeper_denial_rolls_back_original_slot_ordinal_and_
         let bank = destination.byte_bank();
         let before = bank.available_permits();
         let mirror = destination._slots_storage.num_permits();
-        let origin = Arc::new(Semaphore::new(mirror - 1));
+        let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror - 1);
+        let origin = origin_birth.raw().clone();
         if closed {
             origin.close();
         }
-        let stamp =
-            OwnershipStamp::new(ControlIdentity::new(&origin), ControlIdentity::new(&origin));
+        let stamp = OwnershipStamp::new(
+            ControlIdentity::new(&origin_birth),
+            ControlIdentity::new(&origin_birth),
+        );
         let error = destination.reserve(stamp).err().unwrap();
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
@@ -877,14 +881,18 @@ fn marker_origin_catalogue_backing_denial_returns_staged_origin_and_original_inc
     let destination = registry(1);
     let bank = destination.byte_bank();
     let mirror = destination._slots_storage.num_permits();
-    let origin = Arc::new(Semaphore::new(mirror));
+    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let origin = origin_birth.raw().clone();
     let catalogue = 2 * std::mem::size_of::<OwnedSemaphorePermit>();
     let leave = Registry::incarnation_bytes() + catalogue - 1;
     let held = bank
         .clone()
         .try_acquire_many_owned((bank.available_permits() - leave) as u32)
         .unwrap();
-    let stamp = OwnershipStamp::new(ControlIdentity::new(&origin), ControlIdentity::new(&origin));
+    let stamp = OwnershipStamp::new(
+        ControlIdentity::new(&origin_birth),
+        ControlIdentity::new(&origin_birth),
+    );
     let error = destination.reserve(stamp).err().unwrap();
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),

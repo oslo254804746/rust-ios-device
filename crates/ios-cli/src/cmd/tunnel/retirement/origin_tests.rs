@@ -8,7 +8,7 @@ const OBSERVE: Duration = Duration::from_secs(2);
 fn registry() -> RegistryOwner {
     Registry::small(NonZeroUsize::new(1).unwrap())
 }
-fn stamp(bank: &Arc<Semaphore>) -> OwnershipStamp {
+fn stamp(bank: &crate::cmd::tunnel::birth_bank::BirthBank) -> OwnershipStamp {
     OwnershipStamp::new(ControlIdentity::new(bank), ControlIdentity::new(bank))
 }
 
@@ -20,14 +20,15 @@ fn native_origin_historical_producers_outnumber_current_slots_and_reuse_keeps_wh
     let before = bank.available_permits();
     let mut producers = Vec::new();
     for _ in 0..3 {
-        let producer = Arc::new(Semaphore::new(mirror));
-        drop(registry.reserve(stamp(&producer)).unwrap());
+        let producer_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+        let producer = producer_birth.raw().clone();
+        drop(registry.reserve(stamp(&producer_birth)).unwrap());
         assert_eq!(registry.snapshot().occupied(), 0);
         assert_eq!(producer.available_permits(), 0);
         producer.close();
         // The original whole-backing mirror is already funded, even though
         // this different actual epoch is created after producer bank closure.
-        drop(registry.reserve(stamp(&producer)).unwrap());
+        drop(registry.reserve(stamp(&producer_birth)).unwrap());
         assert_eq!(producer.available_permits(), 0);
         producers.push(producer);
     }
@@ -48,20 +49,23 @@ fn native_origin_growth_refusal_keeps_old_catalogue_and_success_pays_both_actual
     let registry = registry();
     let bank = registry.byte_bank();
     let mirror = registry._slots_storage.num_permits();
-    let first = Arc::new(Semaphore::new(mirror));
-    let second = Arc::new(Semaphore::new(mirror));
-    drop(registry.reserve(stamp(&first)).unwrap());
-    drop(registry.reserve(stamp(&second)).unwrap());
+    let first_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let first = first_birth.raw().clone();
+    let second_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let second = second_birth.raw().clone();
+    drop(registry.reserve(stamp(&first_birth)).unwrap());
+    drop(registry.reserve(stamp(&second_birth)).unwrap());
     let old_bytes = 2 * std::mem::size_of::<OwnedSemaphorePermit>();
     let next_bytes = 2 * old_bytes;
     assert_eq!(registry.origins.lock().unwrap().backing_bytes(), old_bytes);
-    let third = Arc::new(Semaphore::new(mirror));
+    let third_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let third = third_birth.raw().clone();
     let leave = Registry::incarnation_bytes() + next_bytes - 1;
     let held = bank
         .clone()
         .try_acquire_many_owned((bank.available_permits() - leave) as u32)
         .unwrap();
-    let error = registry.reserve(stamp(&third)).err().unwrap();
+    let error = registry.reserve(stamp(&third_birth)).err().unwrap();
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
@@ -102,7 +106,7 @@ fn native_origin_growth_refusal_keeps_old_catalogue_and_success_pays_both_actual
         assert_eq!(old_first.available_permits(), 0);
         assert_eq!(old_second.available_permits(), 0);
     });
-    let reservation = registry.reserve(stamp(&third)).unwrap();
+    let reservation = registry.reserve(stamp(&third_birth)).unwrap();
     drop(hook);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -131,10 +135,17 @@ fn native_origin_mixed_two_producers_roll_back_together_and_original_capacity_st
     let bank = registry.byte_bank();
     let before = bank.available_permits();
     let mirror = registry._slots_storage.num_permits();
-    let first = Arc::new(Semaphore::new(mirror));
-    let second = Arc::new(Semaphore::new(mirror));
+    let first_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let first = first_birth.raw().clone();
+    let second_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let second = second_birth.raw().clone();
     let held = second.clone().try_acquire_owned().unwrap();
-    let mixed = || OwnershipStamp::new(ControlIdentity::new(&first), ControlIdentity::new(&second));
+    let mixed = || {
+        OwnershipStamp::new(
+            ControlIdentity::new(&first_birth),
+            ControlIdentity::new(&second_birth),
+        )
+    };
     assert!(registry.reserve(mixed()).is_err());
     assert_eq!(first.available_permits(), mirror);
     assert_eq!(second.available_permits(), mirror - 1);
@@ -147,12 +158,13 @@ fn native_origin_mixed_two_producers_roll_back_together_and_original_capacity_st
         (first.available_permits(), second.available_permits()),
         (0, 0)
     );
-    let denied = Arc::new(Semaphore::new(0));
+    let denied_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(0);
+    let denied = denied_birth.raw().clone();
     denied.close();
     let hook = super::super::metadata_vec::on_allocation(|_, _| {
         panic!("capacity refusal allocated a new owner")
     });
-    let error = registry.reserve(stamp(&denied)).err().unwrap();
+    let error = registry.reserve(stamp(&denied_birth)).err().unwrap();
     drop(hook);
     assert_eq!(error.to_string(), "native tunnel owner capacity exhausted");
     assert_eq!(registry.lock().issued, 1);
@@ -240,14 +252,20 @@ async fn native_origin_foreign_proofs_pay_independently_after_slot_reuse_and_ori
         let mirror = registry._slots_storage.num_permits();
         let proof_bytes = std::mem::size_of::<RefreshProof>();
         let total = mirror + 2 * proof_bytes;
-        let origin = Arc::new(Semaphore::new(total));
-        let other = if distinct {
-            Arc::new(Semaphore::new(total))
+        let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+        let origin = origin_birth.raw().clone();
+        let other_birth = if distinct {
+            crate::cmd::tunnel::birth_bank::BirthBank::new(total)
         } else {
-            origin.clone()
+            origin_birth.clone()
         };
-        let make_stamp =
-            || OwnershipStamp::new(ControlIdentity::new(&origin), ControlIdentity::new(&other));
+        let other = other_birth.raw().clone();
+        let make_stamp = || {
+            OwnershipStamp::new(
+                ControlIdentity::new(&origin_birth),
+                ControlIdentity::new(&other_birth),
+            )
+        };
         let destination = Arc::new(Semaphore::new(2 * proof_bytes));
         let publication = Arc::new(Semaphore::new(65536));
         let first_stamp = make_stamp();

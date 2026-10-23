@@ -22,7 +22,7 @@ pub(super) struct Lifecycle {
     // Idle Automatic entries are pruned exactly as expired Weak entries were;
     // published owners/tickets and persistent desired states retain their gate.
     devices: Mutex<DeviceTable>,
-    metadata_bytes: Arc<Semaphore>,
+    metadata_bytes: super::birth_bank::BirthBank,
     pub(super) connects: Semaphore,
     // Some is a reusable clear epoch; None is terminal server shutdown.
     shutdown: watch::Sender<Option<ControlIdentity>>,
@@ -353,13 +353,13 @@ impl ConnectionDeadline {
 impl Lifecycle {
     #[cfg(test)]
     pub(super) fn new() -> Self {
-        Self::with_metadata(Arc::new(Semaphore::new(
+        Self::with_metadata(super::birth_bank::BirthBank::new(
             super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
-        )))
+        ))
         .expect("prepaid lifecycle fixture watch roots")
     }
 
-    pub(super) fn with_metadata(metadata_bytes: Arc<Semaphore>) -> Result<Self> {
+    pub(super) fn with_metadata(metadata_bytes: super::birth_bank::BirthBank) -> Result<Self> {
         let mut storage =
             super::admission::known_metadata_charge(&metadata_bytes, Self::watch_bytes())?;
         let shutdown = watch::from_grant(
@@ -472,7 +472,7 @@ impl Lifecycle {
                         .0,
                         intent: super::intent::Cell::from_grant(
                             shutdown_generation.clone(),
-                            Arc::clone(&self.metadata_bytes),
+                            self.metadata_bytes.clone(),
                             intent_storage,
                         )?,
                     },
@@ -826,7 +826,7 @@ impl Ticket {
             {
                 continue;
             }
-            grants[index] = Some(super::admission::known_metadata_charge(origin, body_bytes)?);
+            grants[index] = Some(identity.origin_charge(body_bytes)?);
         }
         Ok(grants)
     }
@@ -1133,7 +1133,10 @@ mod tests {
     #[test]
     fn coordinator_vector_refusal_precedes_allocation_without_changing_backing() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let bank = Arc::new(Semaphore::new(2 * std::mem::size_of::<DeviceRow>() - 1));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(
+            2 * std::mem::size_of::<DeviceRow>() - 1,
+        );
+        let bank = bank_birth.raw().clone();
         let mut table = DeviceTable::default();
         let allocated = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&allocated);
@@ -1159,8 +1162,10 @@ mod tests {
         use futures_util::FutureExt;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let bytes = DeviceGate::body_bytes() + DeviceGate::watch_bytes();
-        let bank = Arc::new(Semaphore::new(bytes + Lifecycle::watch_bytes()));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
+        let bank_birth =
+            crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + Lifecycle::watch_bytes());
+        let bank = bank_birth.raw().clone();
+        let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
         let allocated = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&allocated);
         let result = super::super::metadata_vec::with_allocation_hook(
@@ -1186,8 +1191,9 @@ mod tests {
     async fn coordinator_metadata_exact_capacity_shared_tickets_and_last_owner_release() {
         let key = "synthetic-byte-owner";
         let bytes = Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes();
-        let bank = Arc::new(Semaphore::new(bytes));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+        let bank = bank_birth.raw().clone();
+        let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
         let original = lifecycle.ticket(key).await.unwrap();
         assert_eq!(bank.available_permits(), 0);
         let repeated = lifecycle.ticket(key).await.unwrap();
@@ -1226,8 +1232,9 @@ mod tests {
     async fn coordinator_metadata_failed_backing_admission_rolls_back_original_storage() {
         let key = "synthetic-backing";
         let bytes = Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes() - 1;
-        let bank = Arc::new(Semaphore::new(bytes));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+        let bank = bank_birth.raw().clone();
+        let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
         resource(&lifecycle.ticket(key).await.err().unwrap());
         let devices = lifecycle.devices.lock().await;
         assert!(devices.rows.is_empty());
@@ -1249,8 +1256,9 @@ mod tests {
         let backing = 2 * std::mem::size_of::<DeviceRow>();
         // Two original rows plus a third gate fit, but old+new backing do not.
         let bytes = 3 * key_bytes + backing + Lifecycle::watch_bytes();
-        let bank = Arc::new(Semaphore::new(bytes));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+        let bank = bank_birth.raw().clone();
+        let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
         let first = lifecycle.ticket("a").await.unwrap();
         let second = lifecycle.ticket("b").await.unwrap();
         assert_eq!(bank.available_permits(), key_bytes);
@@ -1274,8 +1282,9 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_metadata_growth_charges_actual_vec_capacity_and_releases_old_backing() {
-        let bank = Arc::new(Semaphore::new(64 * 1024));
-        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(64 * 1024);
+        let bank = bank_birth.raw().clone();
+        let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
         let mut tickets = Vec::new();
         for key in ["a", "b", "c", "d", "e"] {
             tickets.push(lifecycle.ticket(key).await.unwrap());

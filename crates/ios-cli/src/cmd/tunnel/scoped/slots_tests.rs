@@ -8,8 +8,9 @@ const TOTAL: usize = super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES;
 
 #[test]
 fn foreground_slots_original_four_owned_permits_return_to_same_semaphore_without_allocation() {
-    let bank = Arc::new(Semaphore::new(TOTAL));
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let scope = NativeScope::from_registry(registry.clone()).unwrap();
     let slots = scope.0.connections.clone();
     let pointer = &*slots.0 as *const Semaphore as usize;
@@ -48,8 +49,9 @@ fn foreground_slots_original_four_owned_permits_return_to_same_semaphore_without
 
 #[test]
 fn foreground_slots_live_owned_permit_keeps_only_its_paid_root_after_last_scope_closes_registry() {
-    let bank = Arc::new(Semaphore::new(TOTAL));
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let before = bank.available_permits();
     let scope = NativeScope::from_registry(registry.clone()).unwrap();
     let slots = scope.0.connections.clone();
@@ -127,7 +129,8 @@ fn foreground_slots_empty_shared_destinations_validate_grants_and_keep_exact_ori
     use super::super::shared_allocation::{Destination, Shared};
     let bytes = Shared::<[u64; 17]>::allocation_bytes();
     for foreign in [false, true] {
-        let bank = Arc::new(Semaphore::new(bytes));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+        let bank = bank_birth.raw().clone();
         let other = Arc::new(Semaphore::new(bytes));
         let source = if foreign { &other } else { &bank };
         let count = if foreign { bytes } else { bytes - 1 };
@@ -139,7 +142,8 @@ fn foreground_slots_empty_shared_destinations_validate_grants_and_keep_exact_ori
         assert_eq!(bank.available_permits(), bytes);
         assert_eq!(other.available_permits(), bytes);
     }
-    let bank = Arc::new(Semaphore::new(bytes));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+    let bank = bank_birth.raw().clone();
     let seen = Arc::new(StdMutex::new(Vec::new()));
     let observed = seen.clone();
     let charged = bank.clone();
@@ -169,8 +173,9 @@ fn foreground_slots_empty_shared_destinations_validate_grants_and_keep_exact_ori
 #[test]
 fn foreground_slots_second_destination_refusal_frees_first_without_constructing_inner_or_sealing_registry(
 ) {
-    let bank = Arc::new(Semaphore::new(TOTAL));
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let before = bank.available_permits();
     let whole = InnerOwner::allocation_bytes() + SlotsOwner::allocation_bytes();
     let held = bank
@@ -230,8 +235,9 @@ fn foreground_slots_second_destination_refusal_frees_first_without_constructing_
 
 #[test]
 fn foreground_slots_whole_paid_roots_place_after_bank_closes_during_second_allocation() {
-    let bank = Arc::new(Semaphore::new(TOTAL));
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let before = bank.available_permits();
     let whole = InnerOwner::allocation_bytes() + SlotsOwner::allocation_bytes();
     let held = bank
