@@ -76,7 +76,7 @@ impl<T, F: Future> Prepared<T, F> {
 }
 
 pub(super) struct Local {
-    pub(super) ticket: super::Ticket,
+    pub(super) ticket: super::publication::TicketOwner,
     pub(super) publication: super::publication::LifeOwner,
     pub(super) stream: TcpStream,
     pub(super) payload_bytes: Arc<Semaphore>,

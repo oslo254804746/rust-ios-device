@@ -451,7 +451,7 @@ struct ManagedTunnel {
 
 struct LocalTarget {
     record: PaidRecord,
-    ticket: Ticket,
+    ticket: publication::TicketOwner,
     publication: publication::LifeOwner,
 }
 
@@ -1116,7 +1116,10 @@ impl TunnelAgentState {
         self.with_record(udid, |tunnel| {
             Ok(LocalTarget {
                 record: tunnel.record(&self.inner.global_metadata_bytes)?,
-                ticket: tunnel._ticket.for_connection(),
+                ticket: tunnel._ticket.connection(
+                    &self.inner.global_metadata_bytes,
+                    &self.inner.metadata_bytes,
+                )?,
                 publication: tunnel.publication.clone(),
             })
         })

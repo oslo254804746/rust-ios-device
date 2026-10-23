@@ -785,6 +785,25 @@ impl Ticket {
         covered: Option<&OwnedSemaphorePermit>,
         body_bytes: usize,
     ) -> Result<TicketOriginGrants> {
+        self.origin_grants_for_fields(bank, covered, body_bytes, self.intent_version.as_ref())
+    }
+
+    pub(super) fn connection_origin_grants(
+        &self,
+        bank: &Arc<Semaphore>,
+        covered: &OwnedSemaphorePermit,
+        body_bytes: usize,
+    ) -> Result<TicketOriginGrants> {
+        self.origin_grants_for_fields(bank, Some(covered), body_bytes, None)
+    }
+
+    fn origin_grants_for_fields(
+        &self,
+        bank: &Arc<Semaphore>,
+        covered: Option<&OwnedSemaphorePermit>,
+        body_bytes: usize,
+        intent_version: Option<&ControlIdentity>,
+    ) -> Result<TicketOriginGrants> {
         anyhow::ensure!(
             covered.map_or(true, |grant| grant.num_permits() == body_bytes),
             crate::output::resource_decision("tunnel captured identity covering grant mismatch")
@@ -793,7 +812,7 @@ impl Ticket {
         let identities = [
             Some(&self.shutdown_generation),
             Some(&self.generation),
-            self.intent_version.as_ref(),
+            intent_version,
         ];
         for (index, identity) in identities.into_iter().enumerate() {
             let Some(identity) = identity else { continue };
@@ -816,9 +835,13 @@ impl Ticket {
     /// Desired-version changes can keep that same runtime alive (live manual
     /// shortcut); they must not revoke its existing data connections.
     pub(super) fn for_connection(&self) -> Self {
-        let mut connection = self.clone();
-        connection.intent_version = None;
-        connection
+        Self {
+            gate: self.gate.clone(),
+            generation: self.generation.clone(),
+            shutdown: self.shutdown.clone(),
+            shutdown_generation: self.shutdown_generation.clone(),
+            intent_version: None,
+        }
     }
 
     pub(super) fn udid(&self) -> &str {
