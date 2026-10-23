@@ -193,6 +193,16 @@ impl<T, F: Unpin> Deref for Strong<T, F> {
         &self.allocation().value
     }
 }
+impl<T: std::fmt::Debug, F: Unpin> std::fmt::Debug for Strong<T, F> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.deref().fmt(formatter)
+    }
+}
+impl<T: std::fmt::Display, F: Unpin> std::fmt::Display for Strong<T, F> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.deref().fmt(formatter)
+    }
+}
 impl<T, F: Unpin> Drop for Strong<T, F> {
     fn drop(&mut self) {
         if self.allocation().strong.fetch_sub(1, Ordering::Release) != 1 {

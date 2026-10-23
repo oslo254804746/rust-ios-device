@@ -104,6 +104,7 @@ async fn failure_version_last_byte_refusal_keeps_original_retry_clock_counters_r
 mod ledger_owner_tests;
 mod prepaid_tests;
 mod receipt_body_tests;
+mod receipt_origin_tests;
 mod removed_body_tests;
 
 const A: &str = "receipt-device-a";
