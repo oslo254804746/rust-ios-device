@@ -32,7 +32,42 @@ pub(super) struct Strong<T, F: Unpin> {
     pointer: NonNull<Allocation<T, F>>,
     _allocation: PhantomData<Allocation<T, F>>,
 }
-#[cfg(test)]
+
+/// The actual complete allocation, still empty until its original value exists.
+pub(super) struct Prepared<T, F: Unpin> {
+    values: Vec<Allocation<T, F>>,
+    // Unused empty storage is physically freed before this fee returns.
+    storage: OwnedSemaphorePermit,
+}
+
+impl<T, F: Unpin> Prepared<T, F> {
+    pub(super) fn from_grant(bank: &Arc<Semaphore>, first: OwnedSemaphorePermit) -> Result<Self> {
+        let AdmittedVec { values, storage } = from_grant::<Allocation<T, F>>(bank, 1, first)?;
+        Ok(Self { values, storage })
+    }
+
+    pub(super) fn place(self, value: T, extra: F) -> Strong<T, F> {
+        let Self {
+            mut values,
+            storage,
+        } = self;
+        values.push(Allocation {
+            strong: AtomicUsize::new(1),
+            weak: AtomicUsize::new(1),
+            fees: ManuallyDrop::new(Fees {
+                first: storage,
+                extra,
+            }),
+            value: ManuallyDrop::new(value),
+        });
+        let pointer = NonNull::from(&mut values[0]);
+        mem::forget(values);
+        Strong {
+            pointer,
+            _allocation: PhantomData,
+        }
+    }
+}
 pub(super) struct Weak<T, F: Unpin> {
     pointer: NonNull<Allocation<T, F>>,
     _allocation: PhantomData<Allocation<T, F>>,
@@ -41,9 +76,7 @@ pub(super) struct Weak<T, F: Unpin> {
 // while strong>0, and the implicit weak protects its in-place destructor.
 unsafe impl<T: Send + Sync, F: Send + Sync + Unpin> Send for Strong<T, F> {}
 unsafe impl<T: Send + Sync, F: Send + Sync + Unpin> Sync for Strong<T, F> {}
-#[cfg(test)]
 unsafe impl<T: Send + Sync, F: Send + Sync + Unpin> Send for Weak<T, F> {}
-#[cfg(test)]
 unsafe impl<T: Send + Sync, F: Send + Sync + Unpin> Sync for Weak<T, F> {}
 
 impl<T, F: Unpin> Strong<T, F> {
@@ -60,25 +93,8 @@ impl<T, F: Unpin> Strong<T, F> {
         // this exact first-bank allocator. Extra fees remain held on failure.
         let extra = extra;
         let value = value;
-        let AdmittedVec {
-            mut values,
-            storage,
-        } = from_grant::<Allocation<T, F>>(bank, 1, first)?;
-        values.push(Allocation {
-            strong: AtomicUsize::new(1),
-            weak: AtomicUsize::new(1),
-            fees: ManuallyDrop::new(Fees {
-                first: storage,
-                extra,
-            }),
-            value: ManuallyDrop::new(value),
-        });
-        let pointer = NonNull::from(&mut values[0]);
-        mem::forget(values);
-        Ok(Self {
-            pointer,
-            _allocation: PhantomData,
-        })
+        let prepared = Prepared::from_grant(bank, first)?;
+        Ok(prepared.place(value, extra))
     }
     fn allocation(&self) -> &Allocation<T, F> {
         // SAFETY: this strong reference keeps the whole allocation and T live.
@@ -97,7 +113,6 @@ impl<T, F: Unpin> Strong<T, F> {
     pub(super) fn strong_count(&self) -> usize {
         self.allocation().strong.load(Ordering::Acquire)
     }
-    #[cfg(test)]
     pub(super) fn downgrade(&self) -> Weak<T, F> {
         let mut count = self.allocation().weak.load(Ordering::Relaxed);
         loop {
@@ -298,7 +313,6 @@ impl<T, F: Unpin> Weak<T, F> {
         }
     }
 }
-#[cfg(test)]
 impl<T, F: Unpin> Clone for Weak<T, F> {
     fn clone(&self) -> Self {
         // SAFETY: explicit weak means weak>=2 or strong=0; get_mut cannot have
@@ -314,7 +328,6 @@ impl<T, F: Unpin> Clone for Weak<T, F> {
         }
     }
 }
-#[cfg(test)]
 impl<T, F: Unpin> Drop for Weak<T, F> {
     fn drop(&mut self) {
         release_weak(self.pointer);

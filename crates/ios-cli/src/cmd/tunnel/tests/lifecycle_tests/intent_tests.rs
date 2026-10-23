@@ -445,10 +445,7 @@ async fn intent_contested_manual_cleanup_never_removes_later_real_source_failure
         .await
         .unwrap();
     state
-        .flush_failure_intents(vec![FailureIntent {
-            ticket: ticket.clone(),
-            failed,
-        }])
+        .flush_failure_intents(vec![FailureIntent::new(failed)])
         .await
         .unwrap();
     let newer = state.inner.failed_attempts.read().await[A].clone();

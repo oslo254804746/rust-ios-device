@@ -1833,7 +1833,7 @@ impl TunnelAgentState {
             .await
         {
             ScanAttemptOutcome::Failure(failed) => Some(failed),
-            ScanAttemptOutcome::Success(success) => {
+            ScanAttemptOutcome::Success(success, ticket) => {
                 // Keep the original direct-attempt seam's completed cleanup.
                 // Production defers contested writers until the window ends.
                 if let Ok(deadline) = lifecycle::ConnectionDeadline::for_scan_bookkeeping(
@@ -1846,7 +1846,7 @@ impl TunnelAgentState {
                                 &mut failed,
                                 udid,
                                 &success,
-                                ticket,
+                                &ticket,
                                 &deadline,
                             );
                             drop(failed);
@@ -1882,12 +1882,14 @@ impl TunnelAgentState {
             &self.inner.global_metadata_bytes,
         )
         .expect("direct-attempt node admitted before Source");
+        let ticket = lifecycle::TicketOwner::new(ticket, &self.inner.global_metadata_bytes)
+            .expect("direct-attempt Ticket root admitted before Source");
         let mut prepared = Some(prepared_node);
         let mut outcome = self
             .refresh_connect_with_input(
                 udid,
                 (&route).into(),
-                ticket,
+                &ticket,
                 None,
                 &mut prepared,
                 RefreshContext {
@@ -1906,7 +1908,7 @@ impl TunnelAgentState {
         &self,
         udid: &str,
         route: RouteRef<'_>,
-        ticket: &Ticket,
+        ticket: &lifecycle::TicketOwner,
         input: Option<candidate_input::Owner>,
         prepared: &mut Option<failure_table::OwnedNode>,
         context: RefreshContext<'_, '_>,
@@ -2076,7 +2078,9 @@ impl TunnelAgentState {
             let _ = self.stop_tunnel_with_ticket(udid, ticket).await;
         }
         if established {
-            return success.map_or(ScanAttemptOutcome::NoChange, ScanAttemptOutcome::Success);
+            return success.map_or(ScanAttemptOutcome::NoChange, |success| {
+                ScanAttemptOutcome::Success(success, ticket.clone())
+            });
         }
         if let Err(error) = result {
             // A lifecycle cancellation is not a connection failure and must not restart backoff.
@@ -2100,6 +2104,7 @@ impl TunnelAgentState {
                         .downcast_ref::<reconnect::SourceFailure>()
                         .map(reconnect::SourceFailure::receipt);
                     return ScanAttemptOutcome::Failure(DeferredFailure {
+                        ticket: Some(ticket.clone()),
                         node: prepared
                             .take()
                             .expect("prepared failure node survives Source"),
@@ -2242,7 +2247,10 @@ impl TunnelAgentState {
 
         // Future manual gates may appear during discovery/connection waits.
         // Prepare the full bounded destinations before the FIRST Source poll.
-        let manual_success = manual_success::Preflight::new(&self.inner.global_metadata_bytes)?;
+        let manual_success = manual_success::Preflight::new(
+            &self.inner.global_metadata_bytes,
+            &self.inner.lifecycle,
+        )?;
         whole.check()?;
         #[cfg(test)]
         {
@@ -2447,8 +2455,10 @@ impl TunnelAgentState {
                 else {
                     return Ok(());
                 };
-                let ticket = match ticket {
-                    Ok(ticket) => ticket.fenced(),
+                let ticket = match ticket.and_then(|ticket| {
+                    lifecycle::TicketOwner::new(&ticket.fenced(), &self.inner.global_metadata_bytes)
+                }) {
+                    Ok(ticket) => ticket,
                     Err(error)
                         if crate::output::operation_error_class(error.as_ref())
                             == ios_core::ErrorClass::ResourceLimit =>
@@ -2670,26 +2680,46 @@ impl TunnelAgentState {
                             continue;
                         }
                         whole.check()?;
+                        // Coordinator admission can wait while permission is revoked.
+                        // Prepare the actual root only after that original recheck.
                         let ticket = match manual_ticket {
-                            Some(ticket) => ticket,
-                            None => match self.inner.lifecycle.ticket(&input.udid).await {
-                                Ok(ticket) => ticket.fenced(),
-                                Err(error)
-                                    if crate::output::operation_error_class(error.as_ref())
-                                        == ios_core::ErrorClass::ResourceLimit =>
-                                {
-                                    session.retain(scan::Source::Coordinator, error);
+                            Some(ticket) => {
+                                if !self.inner.access.permits_device(&input.udid) {
                                     continue;
                                 }
-                                Err(error) => return Err(error),
-                            },
+                                ticket
+                            }
+                            None => {
+                                let ticket = match self.inner.lifecycle.ticket(&input.udid).await {
+                                    Ok(ticket) => ticket.fenced(),
+                                    Err(error)
+                                        if crate::output::operation_error_class(error.as_ref())
+                                            == ios_core::ErrorClass::ResourceLimit =>
+                                    {
+                                        session.retain(scan::Source::Coordinator, error);
+                                        continue;
+                                    }
+                                    Err(error) => return Err(error),
+                                };
+                                if !self.inner.access.permits_device(&input.udid) {
+                                    continue;
+                                }
+                                match lifecycle::TicketOwner::new(
+                                    &ticket,
+                                    &self.inner.global_metadata_bytes,
+                                ) {
+                                    Ok(ticket) => ticket,
+                                    Err(error)
+                                        if crate::output::operation_error_class(error.as_ref())
+                                            == ios_core::ErrorClass::ResourceLimit =>
+                                    {
+                                        session.retain(scan::Source::Coordinator, error);
+                                        continue;
+                                    }
+                                    Err(error) => return Err(error),
+                                }
+                            }
                         };
-                        // Admission may have waited behind another coordinator
-                        // while authorization was revoked. Rechecks can remove
-                        // prepared inputs, never add an unplanned target.
-                        if !self.inner.access.permits_device(&input.udid) {
-                            continue;
-                        }
                         candidates.push(candidate_index::Candidate {
                             input,
                             ticket,
@@ -2804,9 +2834,9 @@ impl TunnelAgentState {
             .await
         {
             ScanAttemptOutcome::Failure(failed) => {
-                Ok(Some(ScanIntent::Failure(FailureIntent { ticket, failed })))
+                Ok(Some(ScanIntent::Failure(FailureIntent::new(failed))))
             }
-            ScanAttemptOutcome::Success(success) => {
+            ScanAttemptOutcome::Success(success, ticket) => {
                 let (udid, input, key_storage) = node
                     .take()
                     .expect("successful prepared key")
@@ -2830,7 +2860,7 @@ impl TunnelAgentState {
         whole: &scan::Deadline,
         session: &scan::Session<'_>,
         destination: Option<failure_table::Destination>,
-        manual_success: manual_success::Owner,
+        manual_success: manual_success::Owner<'_>,
         execution: (
             owned_window::Prepared<F>,
             impl FnMut(candidate_index::Candidate) -> F,
@@ -2882,7 +2912,10 @@ impl TunnelAgentState {
     async fn flush_manual_successes(&self, whole: &scan::Deadline) -> Result<()> {
         // External direct fixtures prepare their own owners before invoking
         // this cleanup seam; production carries its Source-before preflight.
-        let prepared = manual_success::Preflight::new(&self.inner.global_metadata_bytes)?;
+        let prepared = manual_success::Preflight::new(
+            &self.inner.global_metadata_bytes,
+            &self.inner.lifecycle,
+        )?;
         prepared.into_inner().flush(self, whole).await
     }
 

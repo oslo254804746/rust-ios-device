@@ -194,10 +194,7 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
         .await
         .unwrap();
     state
-        .flush_failure_intents(vec![FailureIntent {
-            ticket: failure_ticket,
-            failed,
-        }])
+        .flush_failure_intents(vec![FailureIntent::new(failed)])
         .await
         .unwrap();
     let held_failure = state.inner.failed_attempts.write().await;

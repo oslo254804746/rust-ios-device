@@ -95,6 +95,106 @@ fn weak_allocation_actual_one_layout_is_prepaid_in_both_pools_and_pinned_data_dr
     assert_eq!(first.available_permits(), size);
     assert_eq!(second.available_permits(), size);
 }
+#[test]
+fn weak_allocation_prepared_complete_layout_precedes_value_and_places_same_pinned_body_at_closed_zero(
+) {
+    let size = Strong::<PinnedValue, OwnedSemaphorePermit>::body_bytes();
+    let first = Arc::new(Semaphore::new(size));
+    let second = Arc::new(Semaphore::new(size));
+    let a = first.clone().try_acquire_many_owned(size as u32).unwrap();
+    let b = second.clone().try_acquire_many_owned(size as u32).unwrap();
+    let constructed = Arc::new(AtomicBool::new(false));
+    let observed = constructed.clone();
+    let prepared = super::super::metadata_vec::with_allocation_hook(
+        move |layout, _| {
+            assert_eq!(
+                layout,
+                std::alloc::Layout::new::<Allocation<PinnedValue, OwnedSemaphorePermit>>()
+            );
+            assert!(!observed.load(Ordering::SeqCst));
+        },
+        || Prepared::<PinnedValue, OwnedSemaphorePermit>::from_grant(&first, a).unwrap(),
+    );
+    assert_eq!(prepared.values.len(), 0);
+    assert_eq!(prepared.values.capacity(), 1);
+    let pointer = prepared.values.as_ptr() as usize;
+    let drops = Arc::new(AtomicUsize::new(0));
+    first.close();
+    second.close();
+    let root = super::super::metadata_vec::with_allocation_hook(
+        |_, _| panic!("late place allocated"),
+        || {
+            constructed.store(true, Ordering::SeqCst);
+            prepared.place(
+                PinnedValue {
+                    address: AtomicUsize::new(0),
+                    drops: drops.clone(),
+                    first: first.clone(),
+                    second: second.clone(),
+                    _pin: PhantomPinned,
+                },
+                b,
+            )
+        },
+    );
+    assert_eq!(root.pointer.as_ptr() as usize, pointer);
+    root.address
+        .store(std::ptr::from_ref(&*root) as usize, Ordering::SeqCst);
+    let weak = root.downgrade();
+    drop(root);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert!(weak.upgrade().is_none());
+    let a = first.clone();
+    let b = second.clone();
+    after_free(
+        move || {
+            assert_eq!(a.available_permits(), 0);
+            assert_eq!(b.available_permits(), 0);
+        },
+        || drop(weak),
+    );
+    assert_eq!(first.available_permits(), size);
+    assert_eq!(second.available_permits(), size);
+}
+
+#[test]
+fn weak_allocation_refused_preparation_drops_original_value_before_its_extra_fee() {
+    struct Original {
+        extra: Arc<Semaphore>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl Drop for Original {
+        fn drop(&mut self) {
+            assert_eq!(self.extra.available_permits(), 0);
+            assert_eq!(self.drops.fetch_add(1, Ordering::SeqCst), 0);
+        }
+    }
+    let bytes = Strong::<Original, OwnedSemaphorePermit>::body_bytes();
+    let first = Arc::new(Semaphore::new(bytes));
+    let second = Arc::new(Semaphore::new(bytes));
+    let a = first.clone().try_acquire_many_owned(bytes as u32).unwrap();
+    let b = second.clone().try_acquire_many_owned(bytes as u32).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let guard = super::super::metadata_vec::refuse_allocation(move |layout| {
+        assert_eq!(layout.size(), bytes);
+        true
+    });
+    assert!(Strong::new(
+        Original {
+            extra: second.clone(),
+            drops: drops.clone()
+        },
+        &first,
+        a,
+        b
+    )
+    .is_err());
+    drop(guard);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(first.available_permits(), bytes);
+    assert_eq!(second.available_permits(), bytes);
+}
+
 struct Panics(Arc<AtomicUsize>);
 impl Drop for Panics {
     fn drop(&mut self) {

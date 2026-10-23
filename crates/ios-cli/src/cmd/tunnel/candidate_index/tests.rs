@@ -1,3 +1,4 @@
+use super::super::Ticket;
 use super::*;
 
 fn admitted(data: (String, Route, Ticket, Option<u32>)) -> Candidate {
@@ -7,7 +8,7 @@ fn admitted(data: (String, Route, Ticket, Option<u32>)) -> Candidate {
     let node = super::super::failure_table::Node::input(input.clone(), native_id, &bank).unwrap();
     Candidate {
         input,
-        ticket,
+        ticket: TicketOwner::new(&ticket, &bank).unwrap(),
         native_id,
         node,
     }

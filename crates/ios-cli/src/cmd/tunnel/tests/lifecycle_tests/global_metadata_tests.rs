@@ -140,7 +140,7 @@ async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_wi
     let inputs = targets.len()
         * std::mem::size_of::<(
             candidate_input::Owner,
-            Option<Ticket>,
+            Option<lifecycle::TicketOwner>,
             failure_table::OwnedNode,
         )>();
     let owners = targets
@@ -273,6 +273,83 @@ async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_
     state.clear().await;
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
+}
+
+#[tokio::test]
+async fn candidate_ticket_actual_foreign_origin_last_byte_refusal_keeps_seen_and_never_starts_attempt(
+) {
+    let source = FakeSource::new();
+    source.usb.lock().unwrap().push(A.into());
+    source.paired.lock().unwrap().push(PairedMobdev2Device {
+        udid: A.into(),
+        host: "192.0.2.88".into(),
+    });
+    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let producer = birth_bank::BirthBank::new(MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    state.inner.get_mut().unwrap().lifecycle = Lifecycle::with_metadata(producer.clone()).unwrap();
+    let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
+    let global = state.inner.global_metadata_bytes.clone();
+    let held = Arc::new(StdMutex::new(None));
+    let retained = held.clone();
+    let origin = producer.clone();
+    let observed = source.clone();
+    let count = Arc::new(AtomicUsize::new(0));
+    let roots = count.clone();
+    let hook = metadata_vec::on_allocation(move |layout, _| {
+        if layout.size() != lifecycle::TicketOwner::body_bytes() {
+            return;
+        }
+        let number = roots.fetch_add(1, Ordering::SeqCst) + 1;
+        if number == lifecycle::MAX_DEVICE_GATES {
+            assert_eq!(observed.usb_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(observed.paired_calls.load(Ordering::SeqCst), 0);
+            let leave = lifecycle::TicketOwner::body_bytes() - 1;
+            *retained.lock().unwrap() = Some(
+                origin
+                    .raw()
+                    .clone()
+                    .try_acquire_many_owned((origin.available_permits() - leave) as u32)
+                    .unwrap(),
+            );
+            assert_eq!(origin.available_permits(), leave);
+        }
+    });
+    let error = state.refresh_once().await.unwrap_err();
+    drop(hook);
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        lifecycle::MAX_DEVICE_GATES,
+        "candidate root must refuse before allocation"
+    );
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        source.count(A),
+        0,
+        "paired duplicate must preserve seen coordinator refusal"
+    );
+    assert_eq!(
+        state.inner.failure_slots.available_permits(),
+        MAX_FAILURE_RECORDS
+    );
+    assert_eq!(state.inner.retry.receipt_count(), 0);
+    assert_eq!(state.inner.native.snapshot().occupied(), 0);
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    assert!(state.inner.tunnels.read().await.is_empty());
+    assert!(ticket.is_current());
+    drop((error, held.lock().unwrap().take()));
+    state.notify_shutdown();
+    state.clear().await;
+    drop((ticket, state));
+    assert_eq!(global.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    assert_eq!(
+        producer.available_permits(),
+        MAX_GLOBAL_KNOWN_METADATA_BYTES
+    );
 }
 
 #[tokio::test]
@@ -547,7 +624,8 @@ async fn scan_desired_manual_index_retains_original_snapshot_refs_and_exact_back
     let charged = manual.storage_bytes();
     assert_eq!(bank.available_permits(), before - charged);
     let (same_ticket, same_route) = manual.get(A).unwrap();
-    assert!(std::ptr::eq(same_ticket, &*row.ticket));
+    assert!(std::ptr::eq(&**same_ticket, &*row.ticket));
+    assert!(same_ticket.ptr_eq(&row.ticket));
     assert!(same_route.ptr_eq(route));
     assert!(std::ptr::eq(
         manual.iter().next().unwrap().0.as_ptr(),

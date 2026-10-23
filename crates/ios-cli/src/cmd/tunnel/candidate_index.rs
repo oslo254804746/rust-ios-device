@@ -5,11 +5,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::{Route, Ticket};
+use super::{lifecycle::TicketOwner, Route};
 
 pub(super) struct Candidate {
     pub(super) input: super::candidate_input::Owner,
-    pub(super) ticket: Ticket,
+    pub(super) ticket: TicketOwner,
     pub(super) native_id: Option<u32>,
     pub(super) node: super::failure_table::OwnedNode,
 }
@@ -21,6 +21,7 @@ impl Candidate {
             - udid.len()
             + super::scan_seen::Seen::first_bytes()
             + super::failure_table::Node::input_bytes(&Route::Usbmux)
+            + TicketOwner::body_bytes()
     }
 }
 

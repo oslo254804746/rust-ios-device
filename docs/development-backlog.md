@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-23：L02 [scan/writer/CURRENT manual Ticket实际根](validation/tunnel-scan-ticket-roots-2026-10-23.md)
+候选/结果/写回持同一实际根；manual index不再擦除根，USB/paired拒绝沿原Coordinator/seen路径。
+Preflight绑定真实Lifecycle，Source前准备原4096上限全部实际空根与G/A费用；晚CURRENT零quota只place。
+派生desired持原值+Weak，原Ticket/gate/watch按lastStrong销毁，实际backing费到最后物理free。
+新增6/定向及完整CLI1887/0FAIL/13原ignored、native110、8最终门禁+8定向证据通过，726源码21处仅CLI；全部Cargo/build主控。
+physical arena/all-retainer/同步峰值/endpoint原scope继续；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-23：L02 [desired listing独立实际根](validation/tunnel-desired-row-roots-2026-10-23.md)
 实际四轮空key fixture确认迭代器退款后旧行仍存；返回行Ticket/Snapshot现各持真实G/origin根到物理free。
 原key先准入/实际指针、control/Source/native/clock保持；未拒绝空key或增生产pool/arena cap。

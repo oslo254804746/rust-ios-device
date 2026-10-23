@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 #[test]
 fn preflight_body_original_empty_box_is_paid_first_and_body_ends_before_independent_batch() {
+    let lifecycle = Lifecycle::new();
     let total = Preflight::bytes();
     let bank = Arc::new(Semaphore::new(total));
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -18,7 +19,7 @@ fn preflight_body_original_empty_box_is_paid_first_and_body_ends_before_independ
             }
             seen.push((layout, pointer));
         },
-        || Preflight::new(&bank).unwrap(),
+        || Preflight::new(&bank, &lifecycle).unwrap(),
     );
     assert_eq!(
         &*plan as *const Preflight as usize,
@@ -41,11 +42,12 @@ fn preflight_body_original_empty_box_is_paid_first_and_body_ends_before_independ
 
 #[test]
 fn preflight_body_last_byte_refusal_and_later_batch_refusal_drop_original_empty_destination() {
+    let lifecycle = Lifecycle::new();
     let body = std::mem::size_of::<Preflight>();
     let bank = Arc::new(Semaphore::new(body - 1));
     let error = metadata_vec::with_allocation_hook(
         |_, _| panic!("refused Preflight body allocated"),
-        || Preflight::new(&bank).err().unwrap(),
+        || Preflight::new(&bank, &lifecycle).err().unwrap(),
     );
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
@@ -57,7 +59,7 @@ fn preflight_body_last_byte_refusal_and_later_batch_refusal_drop_original_empty_
     let captured = seen.clone();
     let error = metadata_vec::with_allocation_hook(
         move |layout, _| captured.lock().unwrap().push(layout),
-        || Preflight::new(&bank).err().unwrap(),
+        || Preflight::new(&bank, &lifecycle).err().unwrap(),
     );
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
@@ -72,9 +74,10 @@ fn preflight_body_last_byte_refusal_and_later_batch_refusal_drop_original_empty_
 
 #[tokio::test]
 async fn preflight_body_cancellation_drops_original_box_and_all_children_without_source_or_task() {
+    let lifecycle = Lifecycle::new();
     let total = Preflight::bytes();
     let bank = Arc::new(Semaphore::new(total));
-    let plan = Preflight::new(&bank).unwrap();
+    let plan = Preflight::new(&bank, &lifecycle).unwrap();
     let mut work = Box::pin(async move {
         // This future owns the original paid Box while it is pending. Its
         // concrete fixture frame is independent test observation storage.

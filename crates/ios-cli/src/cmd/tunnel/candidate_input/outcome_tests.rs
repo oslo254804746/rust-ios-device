@@ -172,7 +172,7 @@ async fn outcome_key_actual_success_intent_keeps_original_key_fee_after_input_an
     assert_eq!(key.as_ptr(), pointer);
     let mut success = SuccessIntent {
         udid: key.into(),
-        ticket: ticket.clone(),
+        ticket: super::super::lifecycle::TicketOwner::new(&ticket, &bank).unwrap(),
         success: DeferredSuccess { version },
         _input: input,
         _key_storage: key_storage,
@@ -201,7 +201,9 @@ async fn outcome_key_actual_success_intent_keeps_original_key_fee_after_input_an
     drop(success);
     assert_eq!(
         bank.available_permits(),
-        uid.len() + FailureVersion::body_bytes()
+        uid.len()
+            + FailureVersion::body_bytes()
+            + super::super::lifecycle::TicketOwner::body_bytes()
     );
     drop(weak);
     drop((other_usage, ticket, lifecycle));

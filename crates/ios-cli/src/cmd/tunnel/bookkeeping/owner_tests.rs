@@ -43,14 +43,14 @@ async fn fixture() -> (Arc<Semaphore>, WriteBatch, Receipt, usize) {
     node.prepare_global(&ticket, &bank).unwrap();
     let mut batch = WriteBatch::new(&bank, 1).unwrap();
     batch
-        .record(ScanIntent::Failure(super::FailureIntent {
-            ticket,
-            failed: DeferredFailure {
+        .record(ScanIntent::Failure(super::FailureIntent::new(
+            DeferredFailure {
+                ticket: Some(super::super::lifecycle::TicketOwner::new(&ticket, &bank).unwrap()),
                 node,
                 receipt: Some(receipt.clone()),
                 destination: None,
             },
-        }))
+        )))
         .unwrap();
     drop(ledger.remove_where(|_, _, _| true));
     drop(ledger);
