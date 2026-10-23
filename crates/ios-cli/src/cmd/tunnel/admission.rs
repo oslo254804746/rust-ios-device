@@ -52,7 +52,27 @@ pub(super) fn known_metadata_charge(
     bank: &Arc<Semaphore>,
     bytes: usize,
 ) -> Result<OwnedSemaphorePermit> {
+    charge_metadata(bank, bytes, None)
+}
+
+pub(super) fn known_metadata_charge_with_total(
+    bank: &Arc<Semaphore>,
+    bytes: usize,
+    total: usize,
+) -> Result<OwnedSemaphorePermit> {
+    charge_metadata(bank, bytes, Some(total))
+}
+
+fn charge_metadata(
+    bank: &Arc<Semaphore>,
+    bytes: usize,
+    total: Option<usize>,
+) -> Result<OwnedSemaphorePermit> {
     let count = u32::try_from(bytes).map_err(|_| snapshot_limit())?;
+    anyhow::ensure!(
+        total.map_or(true, |total| bytes <= total),
+        crate::output::resource_decision("tunnel global known metadata byte limit exceeded")
+    );
     bank.clone().try_acquire_many_owned(count).map_err(|_| {
         crate::output::resource_decision("tunnel global known metadata byte limit exceeded")
     })

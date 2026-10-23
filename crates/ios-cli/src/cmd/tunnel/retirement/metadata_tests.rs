@@ -3,8 +3,9 @@ use super::*;
 #[test]
 fn registry_owner_closed_pool_parallel_last_roots_keep_original_body_slots_and_refund_once() {
     let total = 65536;
-    let bank = Arc::new(Semaphore::new(total));
-    let mut registry = Registry::allocate(&bank, 3).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
+    let mut registry = Registry::allocate(&bank_birth, 3).unwrap();
     let bytes = registry.structural_bytes();
     assert_eq!(registry.storage().num_permits(), Registry::body_bytes());
     assert!(Arc::ptr_eq(registry.storage().semaphore(), &bank));
@@ -43,8 +44,9 @@ fn registry_owner_closed_pool_parallel_last_roots_keep_original_body_slots_and_r
 
 #[test]
 fn registry_metadata_exact_body_capacity_and_final_registry_owner_release() {
-    let bank = Arc::new(Semaphore::new(65536));
-    let registry = Registry::allocate(&bank, 3).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::allocate(&bank_birth, 3).unwrap();
     let state = registry.lock();
     let actual = Registry::body_bytes()
         + state.slots.capacity() * std::mem::size_of::<Option<Entry>>()
@@ -63,20 +65,23 @@ fn registry_metadata_exact_body_capacity_and_final_registry_owner_release() {
 
 #[test]
 fn registry_metadata_one_byte_refusal_refunds_body_and_every_partial_backing() {
-    let probe = Registry::allocate(&Arc::new(Semaphore::new(65536)), 2).unwrap();
+    let probe =
+        Registry::allocate(&crate::cmd::tunnel::birth_bank::BirthBank::new(65536), 2).unwrap();
     let bytes = probe.structural_bytes();
     drop(probe);
     for available in [Registry::body_bytes() - 1, bytes - 1] {
-        let bank = Arc::new(Semaphore::new(available));
-        let error = Registry::allocate(&bank, 2).err().unwrap();
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(available);
+        let bank = bank_birth.raw().clone();
+        let error = Registry::allocate(&bank_birth, 2).err().unwrap();
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
             ErrorClass::ResourceLimit
         );
         assert_eq!(bank.available_permits(), available);
     }
-    let bank = Arc::new(Semaphore::new(bytes));
-    let exact = Registry::allocate(&bank, 2).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+    let bank = bank_birth.raw().clone();
+    let exact = Registry::allocate(&bank_birth, 2).unwrap();
     assert_eq!(bank.available_permits(), 0);
     drop(exact);
     assert_eq!(bank.available_permits(), bytes);
@@ -84,8 +89,9 @@ fn registry_metadata_one_byte_refusal_refunds_body_and_every_partial_backing() {
 
 #[test]
 fn registry_metadata_original_reservation_keeps_structural_bytes_after_external_registry_drop() {
-    let bank = Arc::new(Semaphore::new(65536));
-    let registry = Registry::allocate(&bank, 1).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::allocate(&bank_birth, 1).unwrap();
     let bytes = registry.structural_bytes();
     let reservation = registry
         .reserve(OwnershipStamp::standalone(&registry))
@@ -102,22 +108,25 @@ fn registry_metadata_original_reservation_keeps_structural_bytes_after_external_
 
 #[test]
 fn registry_metadata_rebind_is_atomic_and_preserves_original_slots_and_namespace() {
-    let old_bank = Arc::new(Semaphore::new(65536));
-    let mut registry = Registry::allocate(&old_bank, 2).unwrap();
+    let old_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
+    let old_bank = old_bank_birth.raw().clone();
+    let mut registry = Registry::allocate(&old_bank_birth, 2).unwrap();
     let bytes = registry.structural_bytes();
     let pointer = registry.lock().slots.as_ptr();
-    let denied = Arc::new(Semaphore::new(bytes - 1));
-    assert!(registry.rebind_empty_metadata(&denied).is_err());
+    let denied_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes - 1);
+    let denied = denied_birth.raw().clone();
+    assert!(registry.rebind_empty_metadata(&denied_birth).is_err());
     assert_eq!(old_bank.available_permits(), 65536 - bytes);
     assert_eq!(denied.available_permits(), bytes - 1);
     assert_eq!(registry.lock().slots.as_ptr(), pointer);
-    let next = Arc::new(Semaphore::new(bytes));
-    registry.rebind_empty_metadata(&next).unwrap();
+    let next_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+    let next = next_birth.raw().clone();
+    registry.rebind_empty_metadata(&next_birth).unwrap();
     assert_eq!(old_bank.available_permits(), 65536);
     assert_eq!(next.available_permits(), 0);
     assert_eq!(registry.lock().slots.as_ptr(), pointer);
     registry.close_and_stop_all();
-    assert!(registry.rebind_empty_metadata(&old_bank).is_err());
+    assert!(registry.rebind_empty_metadata(&old_bank_birth).is_err());
     assert_eq!(next.available_permits(), 0);
     assert_eq!(old_bank.available_permits(), 65536);
     drop(registry);
@@ -127,8 +136,9 @@ fn registry_metadata_rebind_is_atomic_and_preserves_original_slots_and_namespace
 #[test]
 fn incarnation_whole_original_body_precedes_slot_and_ordinal_and_survives_empty_reservation() {
     let total = 65536;
-    let bank = Arc::new(Semaphore::new(total));
-    let registry = Registry::allocate(&bank, 1).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::allocate(&bank_birth, 1).unwrap();
     let structural = registry.structural_bytes();
     let before = bank.available_permits();
     let bytes = Registry::incarnation_bytes();
@@ -231,8 +241,9 @@ fn incarnation_whole_original_body_precedes_slot_and_ordinal_and_survives_empty_
 #[test]
 fn incarnation_closed_pool_parallel_last_keys_keep_original_body_and_refund_once() {
     let total = 65536;
-    let bank = Arc::new(Semaphore::new(total));
-    let registry = Registry::allocate(&bank, 1).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::allocate(&bank_birth, 1).unwrap();
     let structural = registry.structural_bytes();
     let reservation = registry
         .reserve(OwnershipStamp::standalone(&registry))

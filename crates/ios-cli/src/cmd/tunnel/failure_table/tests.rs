@@ -8,7 +8,8 @@ fn identity_full_allocation_parallel_last_clones_keep_original_host_and_refund_o
     let original = Route::Mobdev2("parallel-original-host".into());
     let length = super::super::candidate_input::route_length(&original);
     let total = Identity::allocation_bytes() + length;
-    let bank = Arc::new(Semaphore::new(total));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
     let identity = Identity::copied(&original, Some(19), &bank).unwrap();
     assert_eq!(
         std::mem::size_of::<Identity>(),
@@ -45,7 +46,8 @@ fn identity_full_allocation_parallel_last_clones_keep_original_host_and_refund_o
 
 #[test]
 fn node_body_original_pointer_and_outer_grant_survive_table_removal_until_last_owner() {
-    let bank = Arc::new(Semaphore::new(BANK));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(BANK);
+    let bank = bank_birth.raw().clone();
     let input = Input::copied("original-body-node", super::super::RouteRef::Usbmux, &bank).unwrap();
     let body = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = body.clone();
@@ -100,7 +102,8 @@ fn node_body_original_pointer_and_outer_grant_survive_table_removal_until_last_o
 
 #[test]
 fn node_body_last_byte_refusal_precedes_allocation_identity_and_original_key_claim() {
-    let bank = Arc::new(Semaphore::new(BANK));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(BANK);
+    let bank = bank_birth.raw().clone();
     let input = Input::copied("body-refusal-key", super::super::RouteRef::Usbmux, &bank).unwrap();
     let leave = std::mem::size_of::<Node>() - 1;
     let held = bank
@@ -124,7 +127,8 @@ fn node_body_last_byte_refusal_precedes_allocation_identity_and_original_key_cla
 
 #[test]
 fn node_body_empty_destination_refunds_after_identity_refusal_without_claiming_original_key() {
-    let bank = Arc::new(Semaphore::new(BANK));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(BANK);
+    let bank = bank_birth.raw().clone();
     let input = Input::copied(
         "identity-refusal-key",
         super::super::RouteRef::Usbmux,
@@ -162,7 +166,8 @@ fn prepaid_selector_actual_failure_identity_shares_original_buffer_through_last_
     let original = Route::Mobdev2("原-failure-host".into());
     let length = super::super::candidate_input::route_length(&original);
     let total = Identity::allocation_bytes() + length;
-    let bank = Arc::new(Semaphore::new(total));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = seen.clone();
     let charged = bank.clone();
@@ -225,14 +230,16 @@ fn host(row: &FailedTunnelAttempt) -> &str {
 #[test]
 fn failure_destination_one_byte_refusal_and_original_backing_refund() {
     let bytes = Destination::minimum_bytes();
-    let bank = Arc::new(Semaphore::new(bytes - 1));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+    let bank = bank_birth.raw().clone();
+    let last_byte = bank.clone().try_acquire_owned().unwrap();
     let error = Destination::new(&bank).err().unwrap();
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
     );
     assert_eq!(bank.available_permits(), bytes - 1);
-    bank.add_permits(1);
+    drop(last_byte);
     let destination = Destination::new(&bank).unwrap();
     assert_eq!(bank.available_permits(), 0);
     drop(destination);
@@ -241,7 +248,8 @@ fn failure_destination_one_byte_refusal_and_original_backing_refund() {
 
 #[test]
 fn failure_input_single_outcome_key_and_last_node_owner_retains_original_fee() {
-    let bank = Arc::new(Semaphore::new(BANK));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(BANK);
+    let bank = bank_birth.raw().clone();
     let input = Input::owned("key".into(), Route::Mobdev2("host".into()), &bank).unwrap();
     let weak = input.downgrade();
     let mut table = table(&bank);
@@ -277,7 +285,8 @@ fn failure_input_single_outcome_key_and_last_node_owner_retains_original_fee() {
 
 #[test]
 fn failure_row_snapshot_shares_route_and_refunds_identity_only_after_last_clone() {
-    let bank = Arc::new(Semaphore::new(BANK));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(BANK);
+    let bank = bank_birth.raw().clone();
     let node = Node::owned("key".into(), identity("retained-route"), &bank).unwrap();
     let snapshot = node.row.clone();
     assert_eq!(host(&snapshot).as_ptr(), host(&node.row).as_ptr());
@@ -291,7 +300,8 @@ fn failure_row_snapshot_shares_route_and_refunds_identity_only_after_last_clone(
 
 #[test]
 fn failure_late_replace_zero_quota_restores_exact_key_route_node_and_version() {
-    let bank = Arc::new(Semaphore::new(BANK));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(BANK);
+    let bank = bank_birth.raw().clone();
     let mut table = table(&bank);
     let mut old = Node::owned("key".into(), identity("original-host"), &bank).unwrap();
     old.row.fail_count = 7;
@@ -325,7 +335,8 @@ fn failure_late_replace_zero_quota_restores_exact_key_route_node_and_version() {
 
 #[test]
 fn failure_remove_batch_zero_quota_restores_original_nodes_keys_routes_and_order() {
-    let bank = Arc::new(Semaphore::new(BANK));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(BANK);
+    let bank = bank_birth.raw().clone();
     let mut table = table(&bank);
     for key in ["a", "b", "c"] {
         let node = Node::owned(key.into(), identity(key), &bank).unwrap();
@@ -378,7 +389,8 @@ fn failure_remove_batch_zero_quota_restores_original_nodes_keys_routes_and_order
 
 #[test]
 fn failure_destination_survives_clear_and_adopts_without_new_quota() {
-    let bank = Arc::new(Semaphore::new(BANK));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(BANK);
+    let bank = bank_birth.raw().clone();
     let mut table = table(&bank);
     let old = Node::owned("old".into(), identity("old-host"), &bank).unwrap();
     assert!(Table::commit(table.insert_reserved(old)).is_none());
@@ -400,7 +412,8 @@ fn failure_destination_survives_clear_and_adopts_without_new_quota() {
 
 #[tokio::test]
 async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() {
-    let bank = Arc::new(Semaphore::new(BANK));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(BANK);
+    let bank = bank_birth.raw().clone();
     let slots = super::super::failure_slot::Counts::fixture(3);
     let mut table = table(&bank);
     for key in ["a", "b", "c"] {
@@ -422,7 +435,7 @@ async fn failure_actual_retain_deadline_restores_original_nodes_at_zero_quota() 
             )
         })
         .collect::<Vec<_>>();
-    let lifecycle = super::super::Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
+    let lifecycle = super::super::Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let control = lifecycle
         .scan_control(std::time::Duration::from_secs(1))
         .unwrap();
@@ -494,7 +507,8 @@ fn identity_full_layout_short_refusal_precedes_copy_and_owned_capacity_follows_o
     let pointer = moved.as_ptr();
     let capacity = moved.capacity();
     let total = Identity::allocation_bytes() + capacity;
-    let bank = Arc::new(Semaphore::new(total));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
     let identity = Identity::owned(
         AttemptIdentity {
             route: Route::Mobdev2(moved),

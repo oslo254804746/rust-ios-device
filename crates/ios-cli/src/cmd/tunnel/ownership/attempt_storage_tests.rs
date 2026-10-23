@@ -1,18 +1,16 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::Semaphore;
 
-fn bank() -> Arc<Semaphore> {
-    Arc::new(Semaphore::new(
-        super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
-    ))
+fn bank() -> crate::cmd::tunnel::birth_bank::BirthBank {
+    crate::cmd::tunnel::birth_bank::BirthBank::new(super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES)
 }
 
 #[test]
 fn attempt_storage_first_short_and_closed_refuse_before_native_reservation_or_backing() {
     for closed in [false, true] {
-        let bank = bank();
-        let registry = Registry::with_metadata(&bank).unwrap();
+        let bank_birth = bank();
+        let bank = bank_birth.raw().clone();
+        let registry = Registry::with_metadata(&bank_birth).unwrap();
         let bytes = Ownership::attempt_bytes();
         let leave = if closed { 0 } else { bytes - 1 };
         let held = bank
@@ -48,8 +46,9 @@ fn attempt_storage_first_short_and_closed_refuse_before_native_reservation_or_ba
 
 #[test]
 fn attempt_storage_prepaid_first_uses_exact_original_box_at_closed_zero_then_refunds() {
-    let bank = bank();
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = bank();
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let scope = Ownership::standalone(registry.clone()).unwrap();
     let held = bank
         .clone()
@@ -93,8 +92,9 @@ fn attempt_storage_prepaid_first_uses_exact_original_box_at_closed_zero_then_ref
 
 #[test]
 fn attempt_storage_additional_short_refuses_before_slot_and_each_freed_box_refunds() {
-    let bank = bank();
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = bank();
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let scope = Ownership::standalone(registry.clone()).unwrap();
     let first = scope.reserve_owned().unwrap();
     let first_pointer = &*first as *const _ as *const () as usize;
@@ -142,8 +142,9 @@ fn attempt_storage_additional_short_refuses_before_slot_and_each_freed_box_refun
 
 #[test]
 fn attempt_storage_legacy_original_box_keeps_fee_in_borrowed_scope_until_scope_drop() {
-    let bank = bank();
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = bank();
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let baseline = bank.available_permits();
     let scope = Ownership::standalone(registry.clone()).unwrap();
     let first = scope.reserve().unwrap();
@@ -201,9 +202,10 @@ fn attempt_storage_legacy_original_box_keeps_fee_in_borrowed_scope_until_scope_d
 
 #[tokio::test]
 async fn attempt_storage_ticket_first_admission_and_stale_reserve_keep_original_fence() {
-    let bank = bank();
-    let lifecycle = super::super::lifecycle::Lifecycle::with_metadata(bank.clone()).unwrap();
-    let registry = Registry::with_metadata(&bank).unwrap();
+    let bank_birth = bank();
+    let bank = bank_birth.raw().clone();
+    let lifecycle = super::super::lifecycle::Lifecycle::with_metadata(bank_birth.clone()).unwrap();
+    let registry = Registry::with_metadata(&bank_birth).unwrap();
     let ticket = lifecycle.ticket("attempt-storage-fixture").await.unwrap();
     let leave = Ownership::attempt_bytes() - 1;
     let held = bank

@@ -11,8 +11,9 @@ async fn receipt_origin_refusal_precedes_capsule_or_selectors_and_refunds_origin
     for closed in [false, true] {
         let own = Lifecycle::watch_bytes() + Lifecycle::initial_metadata_bytes(A);
         let available = if closed { body } else { body - 1 };
-        let origin = Arc::new(Semaphore::new(own + available));
-        let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
+        let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(own + available);
+        let origin = origin_birth.raw().clone();
+        let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
         let ticket = lifecycle.ticket(A).await.unwrap().fenced();
         assert_eq!(origin.available_permits(), available);
         if closed {
@@ -45,11 +46,13 @@ async fn receipt_origin_optional_captured_desired_producer_rolls_back_then_survi
 {
     let body = FailureReceipt::body_bytes();
     let ticket_body = TicketOwner::body_bytes();
-    let origin = Arc::new(Semaphore::new(TOTAL));
-    let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
+    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let origin = origin_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
     let unfenced = lifecycle.ticket(A).await.unwrap();
-    let desired_bank = Arc::new(Semaphore::new(body + ticket_body));
-    let desired = ControlIdentity::new(&desired_bank);
+    let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(body + ticket_body);
+    let desired_bank = desired_bank_birth.raw().clone();
+    let desired = ControlIdentity::new(&desired_bank_birth);
     let observed = unfenced.observe_version(&desired);
     // The constructor must account for captured identities even for a stale
     // observational Ticket; it cannot replace its captured desired marker.
@@ -141,8 +144,9 @@ impl Error for Deep {
 #[tokio::test]
 async fn receipt_origin_actual_ledger_keeps_original_deep_io_at_closed_zero_until_last_physical_weak(
 ) {
-    let origin = Arc::new(Semaphore::new(TOTAL));
-    let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
+    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let origin = origin_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
     let ticket = lifecycle.ticket(A).await.unwrap().fenced();
     let bank = Arc::new(Semaphore::new(TOTAL));
     let ledger = Ledger::with_metadata(RetryPolicy::default(), bank.clone()).unwrap();

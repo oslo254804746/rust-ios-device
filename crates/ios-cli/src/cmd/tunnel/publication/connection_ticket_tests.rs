@@ -12,10 +12,12 @@ async fn connection_ticket_each_retained_bank_refuses_without_cloning_or_backing
         for closed in [false, true] {
             let global = Arc::new(Semaphore::new(TOTAL));
             let published = Arc::new(Semaphore::new(TOTAL));
-            let origin = Arc::new(Semaphore::new(TOTAL));
-            let desired_bank = Arc::new(Semaphore::new(TOTAL));
-            let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
-            let desired = Identity::new(&desired_bank);
+            let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+            let origin = origin_birth.raw().clone();
+            let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+            let desired_bank = desired_bank_birth.raw().clone();
+            let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
+            let desired = Identity::new(&desired_bank_birth);
             let ticket = lifecycle
                 .ticket(KEY)
                 .await
@@ -61,10 +63,12 @@ async fn connection_ticket_actual_projection_omits_closed_desired_and_keeps_paid
     let bytes = TicketOwner::body_bytes();
     let global = Arc::new(Semaphore::new(2 * bytes));
     let published = Arc::new(Semaphore::new(2 * bytes));
-    let origin = Arc::new(Semaphore::new(TOTAL));
-    let desired_bank = Arc::new(Semaphore::new(TOTAL));
-    let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
-    let desired = Identity::new(&desired_bank);
+    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let origin = origin_birth.raw().clone();
+    let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let desired_bank = desired_bank_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
+    let desired = Identity::new(&desired_bank_birth);
     let weak_desired = desired.downgrade();
     let ticket = lifecycle
         .ticket(KEY)

@@ -1,6 +1,9 @@
 use super::*;
 
-fn build(bank: Arc<Semaphore>, source: Arc<FakeSource>) -> Result<TunnelAgentState> {
+fn build(
+    bank: crate::cmd::tunnel::birth_bank::BirthBank,
+    source: Arc<FakeSource>,
+) -> Result<TunnelAgentState> {
     TunnelAgentState::with_source_retry_metadata(
         TunMode::Userspace,
         AccessControl::trusted_test_local(),
@@ -39,8 +42,9 @@ fn manager_init_body_and_children_short_refusal_refund_original_bank_before_sour
         TunnelAgentOwner::body_bytes(),
         total - 1,
     ] {
-        let bank = Arc::new(Semaphore::new(available));
-        let error = build(bank.clone(), source.clone()).err().unwrap();
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(available);
+        let bank = bank_birth.raw().clone();
+        let error = build(bank_birth.clone(), source.clone()).err().unwrap();
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
             ios_core::ErrorClass::ResourceLimit
@@ -48,8 +52,9 @@ fn manager_init_body_and_children_short_refusal_refund_original_bank_before_sour
         assert_eq!(bank.available_permits(), available);
         no_source_calls(&source);
     }
-    let bank = Arc::new(Semaphore::new(total));
-    let manager = build(bank.clone(), source.clone()).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
+    let manager = build(bank_birth.clone(), source.clone()).unwrap();
     assert_eq!(bank.available_permits(), 0);
     assert!(Arc::ptr_eq(&manager.inner.global_metadata_bytes, &bank));
     let retained = manager.clone();
@@ -65,8 +70,10 @@ fn manager_init_body_and_children_short_refusal_refund_original_bank_before_sour
 fn manager_init_last_strong_destroys_source_but_last_weak_retains_original_body() {
     let source = FakeSource::new();
     let source_weak = Arc::downgrade(&source);
-    let bank = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
-    let manager = build(bank.clone(), source.clone()).unwrap();
+    let bank_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    let bank = bank_birth.raw().clone();
+    let manager = build(bank_birth.clone(), source.clone()).unwrap();
     let weak = manager.inner.downgrade();
     let second_weak = weak.clone();
     let retained = weak.upgrade().unwrap();
@@ -98,8 +105,10 @@ fn manager_init_last_strong_destroys_source_but_last_weak_retains_original_body(
 fn manager_init_parallel_weak_upgrades_keep_same_root_bank_then_refund_once() {
     let source = FakeSource::new();
     let source_weak = Arc::downgrade(&source);
-    let bank = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
-    let manager = build(bank.clone(), source.clone()).unwrap();
+    let bank_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    let bank = bank_birth.raw().clone();
+    let manager = build(bank_birth.clone(), source.clone()).unwrap();
     let pointer = &*manager.inner as *const TunnelAgentInner as usize;
     let weak = manager.inner.downgrade();
     let barrier = Arc::new(std::sync::Barrier::new(9));

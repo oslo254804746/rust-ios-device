@@ -14,11 +14,14 @@ async fn publication_ticket_each_real_bank_refuses_before_backing_and_rolls_back
     for target in 0..4 {
         for closed in [false, true] {
             let global = Arc::new(Semaphore::new(TOTAL));
-            let published = Arc::new(Semaphore::new(TOTAL));
-            let origin = Arc::new(Semaphore::new(TOTAL));
-            let desired_bank = Arc::new(Semaphore::new(TOTAL));
-            let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
-            let desired = Identity::new(&desired_bank);
+            let published_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+            let published = published_birth.raw().clone();
+            let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+            let origin = origin_birth.raw().clone();
+            let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+            let desired_bank = desired_bank_birth.raw().clone();
+            let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
+            let desired = Identity::new(&desired_bank_birth);
             let ticket = lifecycle
                 .ticket(KEY)
                 .await
@@ -51,9 +54,10 @@ async fn publication_ticket_each_real_bank_refuses_before_backing_and_rolls_back
             drop(held);
         }
     }
-    let bank = Arc::new(Semaphore::new(TOTAL));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let bank = bank_birth.raw().clone();
     let global = Arc::new(Semaphore::new(bytes));
-    let lifecycle = Lifecycle::with_metadata(bank.clone()).unwrap();
+    let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let ticket = lifecycle.ticket(KEY).await.unwrap();
     let wrong = bank
         .clone()
@@ -77,12 +81,14 @@ async fn publication_ticket_actual_dual_root_deduplicates_published_origin_and_p
 ) {
     let bytes = TicketOwner::body_bytes();
     let global = Arc::new(Semaphore::new(bytes));
-    let published = Arc::new(Semaphore::new(TOTAL));
-    let desired_bank = Arc::new(Semaphore::new(bytes));
+    let published_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
+    let published = published_birth.raw().clone();
+    let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+    let desired_bank = desired_bank_birth.raw().clone();
     // Actual global/device producers are P. Both are already covered by P's
     // whole root grant and must not need another origin grant in that bank.
-    let lifecycle = Lifecycle::with_metadata(published.clone()).unwrap();
-    let desired = Identity::new(&desired_bank);
+    let lifecycle = Lifecycle::with_metadata(published_birth.clone()).unwrap();
+    let desired = Identity::new(&desired_bank_birth);
     let ticket = lifecycle
         .ticket(KEY)
         .await
@@ -160,9 +166,11 @@ async fn publication_ticket_replacement_rollback_and_retired_values_keep_origina
     // root-only fixture bank. Fund that actual table without changing its cap.
     let total = 2 * 1024 * 1024;
     let global = Arc::new(Semaphore::new(total));
-    let published = Arc::new(Semaphore::new(total));
-    let origin = Arc::new(Semaphore::new(total));
-    let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
+    let published_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let published = published_birth.raw().clone();
+    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let origin = origin_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
     let old = TicketOwner::new(&lifecycle.ticket(KEY).await.unwrap(), &global, &published).unwrap();
     let pointer = &*old as *const super::super::Ticket as usize;
     let key_pointer = old.udid().as_ptr();

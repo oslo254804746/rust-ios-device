@@ -4,17 +4,19 @@ use super::*;
 fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_views_hold_original_fees(
 ) {
     let total = Lifecycle::watch_bytes();
-    let short = Arc::new(Semaphore::new(total - 1));
+    let short_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total - 1);
+    let short = short_birth.raw().clone();
     let error = super::super::metadata_vec::with_allocation_hook(
         |_, _| panic!("partial lifecycle watch prefix allocated"),
-        || Lifecycle::with_metadata(short.clone()).err().unwrap(),
+        || Lifecycle::with_metadata(short_birth.clone()).err().unwrap(),
     );
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
     );
     assert_eq!(short.available_permits(), total - 1);
-    let bank = Arc::new(Semaphore::new(total));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
     let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = observed.clone();
     let credit = bank.clone();
@@ -23,7 +25,7 @@ fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_view
             assert_eq!(credit.available_permits(), 0);
             seen.lock().unwrap().push((layout.size(), pointer));
         },
-        || Lifecycle::with_metadata(bank.clone()).unwrap(),
+        || Lifecycle::with_metadata(bank_birth.clone()).unwrap(),
     );
     let observed = observed.lock().unwrap();
     assert_eq!(observed.len(), 2);
@@ -73,8 +75,9 @@ fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_view
 async fn coordinator_gate_owner_parallel_old_tickets_keep_original_key_and_closed_pool_body() {
     let key = "original-gate-key";
     let total = Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes();
-    let bank = Arc::new(Semaphore::new(total));
-    let lifecycle = Lifecycle::with_metadata(bank.clone()).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     use futures_util::FutureExt;
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = seen.clone();
@@ -177,8 +180,9 @@ async fn coordinator_gate_owner_parallel_old_tickets_keep_original_key_and_close
 async fn coordinator_gate_owner_original_live_and_stopped_roots_survive_capacity_pruning_and_clear()
 {
     let total = super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES;
-    let bank = Arc::new(Semaphore::new(total));
-    let lifecycle = Lifecycle::with_metadata(bank.clone()).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let live = lifecycle.ticket("retained-live-gate").await.unwrap();
     drop(lifecycle.ticket("persistent-stopped-gate").await.unwrap());
     lifecycle.stop("persistent-stopped-gate").await;

@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn native_report_preflight_bodies_and_slots_refuse_before_backing_then_empty_roots_refund_independently(
 ) {
-    let bank = Arc::new(Semaphore::new(65536));
-    let probe = Registry::allocate(&bank, 1).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
+    let probe = Registry::allocate(&bank_birth, 1).unwrap();
     let total = probe.structural_bytes();
     drop(probe);
     let reports = 2 * NativeReport::body_bytes();
@@ -14,10 +14,11 @@ fn native_report_preflight_bodies_and_slots_refuse_before_backing_then_empty_roo
         Registry::body_bytes() + reports - 1,
         total - 1,
     ] {
-        let bank = Arc::new(Semaphore::new(available));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(available);
+        let bank = bank_birth.raw().clone();
         let error = super::super::metadata_vec::with_allocation_hook(
             |_, _| panic!("native report preflight refusal allocated slot backing"),
-            || Registry::allocate(&bank, 1).err().unwrap(),
+            || Registry::allocate(&bank_birth, 1).err().unwrap(),
         );
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
@@ -25,7 +26,8 @@ fn native_report_preflight_bodies_and_slots_refuse_before_backing_then_empty_roo
         );
         assert_eq!(bank.available_permits(), available);
     }
-    let bank = Arc::new(Semaphore::new(total));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
     let allocations = Arc::new(StdMutex::new(Vec::new()));
     let captured = allocations.clone();
     let charged = bank.clone();
@@ -34,7 +36,7 @@ fn native_report_preflight_bodies_and_slots_refuse_before_backing_then_empty_roo
             assert_eq!(charged.available_permits(), 0);
             captured.lock().unwrap().push((layout, pointer));
         },
-        || Registry::allocate(&bank, 1).unwrap(),
+        || Registry::allocate(&bank_birth, 1).unwrap(),
     );
     let observed = allocations.lock().unwrap();
     assert_eq!(observed.len(), 4);
@@ -73,8 +75,9 @@ fn native_report_preflight_bodies_and_slots_refuse_before_backing_then_empty_roo
 #[test]
 fn native_report_captured_history_parallel_last_roots_keep_original_io_and_body_after_registry_drop(
 ) {
-    let bank = Arc::new(Semaphore::new(65536));
-    let registry = Registry::allocate(&bank, 1).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
+    let bank = bank_birth.raw().clone();
+    let registry = Registry::allocate(&bank_birth, 1).unwrap();
     let lease = registry
         .reserve(OwnershipStamp::standalone(&registry))
         .unwrap();

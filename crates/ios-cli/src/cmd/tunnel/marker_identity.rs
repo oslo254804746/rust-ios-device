@@ -4,16 +4,17 @@
 //! This type prevents a foreign keeper from relabelling an existing identity.
 use std::sync::Arc;
 
+use super::birth_bank::BirthBank;
 use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub(super) struct Identity {
     value: Arc<()>,
-    bank: Arc<Semaphore>,
+    bank: BirthBank,
 }
 
 impl Identity {
-    pub(super) fn new(bank: &Arc<Semaphore>) -> Self {
+    pub(super) fn new(bank: &BirthBank) -> Self {
         Self {
             value: Arc::new(()),
             bank: bank.clone(),
@@ -25,7 +26,14 @@ impl Identity {
     }
 
     pub(super) fn bank(&self) -> &Arc<Semaphore> {
-        &self.bank
+        self.bank.raw()
+    }
+
+    pub(super) fn origin_charge(
+        &self,
+        bytes: usize,
+    ) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
+        self.bank.origin_charge(bytes)
     }
 
     #[cfg(test)]
@@ -52,7 +60,7 @@ impl std::fmt::Debug for Identity {
 #[derive(Clone)]
 pub(super) struct Weak {
     value: std::sync::Weak<()>,
-    bank: Arc<Semaphore>,
+    bank: BirthBank,
 }
 
 #[cfg(test)]
@@ -71,13 +79,15 @@ mod tests {
 
     #[test]
     fn producer_identity_preserves_actual_value_and_bank_through_clone_and_weak_upgrade() {
-        let bank = Arc::new(Semaphore::new(0));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(0);
+        let bank = bank_birth.raw().clone();
         bank.close();
-        let foreign = Arc::new(Semaphore::new(0));
-        let original = Identity::new(&bank);
+        let foreign_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(0);
+        let foreign = foreign_birth.raw().clone();
+        let original = Identity::new(&bank_birth);
         let cloned = original.clone();
-        let other = Identity::new(&foreign);
-        let fresh = Identity::new(&bank);
+        let other = Identity::new(&foreign_birth);
+        let fresh = Identity::new(&bank_birth);
         assert!(original.ptr_eq(&cloned));
         assert!(!original.ptr_eq(&other) && !original.ptr_eq(&fresh));
         assert!(Arc::ptr_eq(original.bank(), &bank));

@@ -33,6 +33,7 @@ use crate::access::{
 
 mod admission;
 mod authorization;
+mod birth_bank;
 mod bookkeeping;
 mod candidate_index;
 mod candidate_input;
@@ -798,7 +799,7 @@ impl TunnelAgentState {
         connect_timeout: Duration,
         retry: reconnect::RetryPolicy,
     ) -> Result<Self> {
-        let global_metadata_bytes = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+        let global_metadata_bytes = birth_bank::BirthBank::new(MAX_GLOBAL_KNOWN_METADATA_BYTES);
         Self::with_source_retry_metadata(
             tun_mode,
             access,
@@ -817,14 +818,15 @@ impl TunnelAgentState {
         source: Arc<dyn Source>,
         connect_timeout: Duration,
         retry: reconnect::RetryPolicy,
-        global_metadata_bytes: Arc<Semaphore>,
+        birth_bank: birth_bank::BirthBank,
     ) -> Result<Self> {
+        let global_metadata_bytes = birth_bank.raw().clone();
         let storage = admission::known_metadata_charge(
             &global_metadata_bytes,
             TunnelAgentOwner::body_bytes(),
         )?;
         let metadata_bytes = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
-        let native = retirement::Registry::with_metadata(&global_metadata_bytes)?;
+        let native = retirement::Registry::with_metadata(&birth_bank)?;
         let upstreams =
             upstream_registry::Registry::from_urls(&global_metadata_bytes, upstream_access.urls())?;
         Ok(Self {
@@ -850,7 +852,7 @@ impl TunnelAgentState {
                     metadata_bytes,
                     global_metadata_bytes: Arc::clone(&global_metadata_bytes),
                     ready: RwLock::new(false),
-                    lifecycle: Lifecycle::with_metadata(Arc::clone(&global_metadata_bytes))?,
+                    lifecycle: Lifecycle::with_metadata(birth_bank.clone())?,
                     scan_lock: Mutex::new(()),
                     scan_outcomes: scan::Outcomes::with_metadata(Arc::clone(
                         &global_metadata_bytes,
@@ -890,15 +892,16 @@ impl TunnelAgentState {
 
     #[cfg(test)]
     fn set_global_metadata_limit(&mut self, bytes: usize) {
-        let bank = Arc::new(Semaphore::new(bytes));
+        let birth_bank = birth_bank::BirthBank::new(bytes);
+        let bank = birth_bank.raw().clone();
         self.inner.rebind_body(&bank).unwrap();
         let inner = self
             .inner
             .get_mut()
             .expect("configure before sharing state");
-        inner.native.rebind_empty_metadata(&bank).unwrap();
+        inner.native.rebind_empty_metadata(&birth_bank).unwrap();
         inner.failure_slots.rebind_empty_metadata(&bank).unwrap();
-        inner.lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
+        inner.lifecycle = Lifecycle::with_metadata(birth_bank).unwrap();
         assert!(inner.shutdown.is_unique_initial());
         let shutdown = *inner.shutdown.borrow();
         assert!(!shutdown, "configure original, unobserved shutdown root");

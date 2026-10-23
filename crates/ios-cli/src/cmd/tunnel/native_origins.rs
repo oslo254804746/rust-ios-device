@@ -5,7 +5,6 @@ use anyhow::Result;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
-    admission::known_metadata_charge,
     marker_identity::Identity,
     metadata_vec::{exact_backing, AdmittedVec},
 };
@@ -30,7 +29,7 @@ pub(super) fn proof_grants(
         {
             continue;
         }
-        grants[index] = Some(known_metadata_charge(origin, bytes)?);
+        grants[index] = Some(identity.origin_charge(bytes)?);
     }
     Ok(grants)
 }
@@ -65,7 +64,7 @@ impl Catalogue {
             {
                 continue;
             }
-            grants[index] = Some(known_metadata_charge(origin, backing_bytes)?);
+            grants[index] = Some(identity.origin_charge(backing_bytes)?);
         }
         let additional = grants.iter().flatten().count();
         let required = self.grants.len().checked_add(additional).ok_or_else(|| {

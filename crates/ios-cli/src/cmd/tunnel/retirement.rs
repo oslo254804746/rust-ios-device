@@ -118,8 +118,10 @@ impl OwnershipStamp {
     }
 
     pub(super) fn standalone(registry: &RegistryOwner) -> Self {
-        let bank = registry.byte_bank();
-        Self::new(ControlIdentity::new(&bank), ControlIdentity::new(&bank))
+        Self::new(
+            ControlIdentity::new(&registry.byte_bank),
+            ControlIdentity::new(&registry.byte_bank),
+        )
     }
 }
 
@@ -295,7 +297,7 @@ pub(super) struct Registry {
     state: StdMutex<State>,
     drains: Mutex<()>,
     changed: Notify,
-    byte_bank: Arc<Semaphore>,
+    byte_bank: super::birth_bank::BirthBank,
     // The only two immutable historical snapshots are paid before ownership.
     // Current per-attempt snapshots live inline and never reuse these values.
     error_stock: NativeReportOwner,
@@ -318,16 +320,16 @@ impl Registry {
         RegistryOwner::allocation_bytes()
     }
     pub(super) fn new() -> Result<RegistryOwner> {
-        Self::with_metadata(&Arc::new(Semaphore::new(
+        Self::with_metadata(&super::birth_bank::BirthBank::new(
             super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
-        )))
+        ))
     }
 
-    pub(super) fn with_metadata(bank: &Arc<Semaphore>) -> Result<RegistryOwner> {
+    pub(super) fn with_metadata(bank: &super::birth_bank::BirthBank) -> Result<RegistryOwner> {
         Self::allocate(bank, MAX_NATIVE_OWNERS)
     }
 
-    fn allocate(bank: &Arc<Semaphore>, capacity: usize) -> Result<RegistryOwner> {
+    fn allocate(bank: &super::birth_bank::BirthBank, capacity: usize) -> Result<RegistryOwner> {
         let body_storage = super::admission::known_metadata_charge(bank, Self::body_bytes())?;
         let mut reports_storage =
             super::admission::known_metadata_charge(bank, 2 * NativeReport::body_bytes())?;
@@ -354,7 +356,7 @@ impl Registry {
                 }),
                 drains: Mutex::new(()),
                 changed: Notify::new(),
-                byte_bank: Arc::clone(bank),
+                byte_bank: bank.clone(),
                 error_stock,
                 expiry_stock,
                 _slots_storage: slots_storage,
@@ -369,7 +371,7 @@ impl Registry {
     fn small(capacity: NonZeroUsize) -> RegistryOwner {
         assert!(capacity.get() <= MAX_NATIVE_OWNERS);
         Self::allocate(
-            &Arc::new(Semaphore::new(super::MAX_GLOBAL_KNOWN_METADATA_BYTES)),
+            &super::birth_bank::BirthBank::new(super::MAX_GLOBAL_KNOWN_METADATA_BYTES),
             capacity.get(),
         )
         .unwrap()
@@ -397,7 +399,10 @@ impl Registry {
 
 impl RegistryOwner {
     #[cfg(test)]
-    pub(super) fn rebind_empty_metadata(&mut self, bank: &Arc<Semaphore>) -> Result<()> {
+    pub(super) fn rebind_empty_metadata(
+        &mut self,
+        bank: &super::birth_bank::BirthBank,
+    ) -> Result<()> {
         let current = self
             .get_mut()
             .ok_or_else(|| crate::output::resource_decision("configure registry before sharing"))?;

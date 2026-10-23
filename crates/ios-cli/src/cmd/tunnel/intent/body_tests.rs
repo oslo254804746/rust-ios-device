@@ -6,7 +6,8 @@ fn route_body_original_filter_snapshot_replacement_releases_text_before_last_wea
     let filter = "原-manual-filter";
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
     let total = RetainedRoute::body_bytes() + filter.len() + watch_bytes;
-    let bank = Arc::new(Semaphore::new(total));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
     let route = RetainedRoute::established(
         RouteRef::Mobdev2("actual-discovered-address"),
         Some(filter),
@@ -19,7 +20,7 @@ fn route_body_original_filter_snapshot_replacement_releases_text_before_last_wea
     assert_eq!(host, filter);
     let pointer = host.as_ptr();
     let weak = route.downgrade();
-    let cell = Cell::new(ControlIdentity::new(&bank), bank.clone()).unwrap();
+    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
     let authority = crate::access::AccessControl::trusted_test_local()
         .authenticate(&axum::http::HeaderMap::new())
         .unwrap()
@@ -62,7 +63,8 @@ fn route_body_original_filter_snapshot_replacement_releases_text_before_last_wea
 fn route_body_parallel_last_clones_keep_original_host_and_independent_weak_body_fee() {
     let host = "original-route-host";
     let total = RetainedRoute::body_bytes() + host.len();
-    let bank = Arc::new(Semaphore::new(total));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = bank_birth.raw().clone();
     let route = RetainedRoute::established(RouteRef::Wifi(Some(host)), None, &bank).unwrap();
     let pointer = match &route.route {
         RouteIntent::Wifi(Some(host)) => host.as_ptr() as usize,
@@ -99,7 +101,8 @@ fn route_body_guard_preflight_short_and_partial_text_refusal_keep_original_quota
         RetainedRoute::body_bytes() - 1,
         RetainedRoute::body_bytes() + host.len() - 1,
     ] {
-        let bank = Arc::new(Semaphore::new(available));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(available);
+        let bank = bank_birth.raw().clone();
         let error = super::super::metadata_vec::with_allocation_hook(
             |_, _| panic!("refused route allocated host"),
             || {
@@ -115,7 +118,8 @@ fn route_body_guard_preflight_short_and_partial_text_refusal_keep_original_quota
         );
         assert_eq!(bank.available_permits(), available);
     }
-    let bank = Arc::new(Semaphore::new(RetainedRoute::body_bytes()));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(RetainedRoute::body_bytes());
+    let bank = bank_birth.raw().clone();
     let route =
         RetainedRoute::established(RouteRef::Wifi(None), Some("ignored-filter"), &bank).unwrap();
     assert!(matches!(route.route, RouteIntent::Wifi(None)));

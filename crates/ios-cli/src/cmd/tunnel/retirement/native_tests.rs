@@ -15,7 +15,7 @@ async fn native_report_prepaid_history_and_current_join_snapshots_survive_closed
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
     let structural = registry.structural_bytes();
-    let bank = registry.byte_bank.clone();
+    let bank = registry.byte_bank.raw().clone();
     let (stream, peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
@@ -116,7 +116,7 @@ async fn native_census_current_snapshot_is_inside_prepaid_backing_and_stays_froz
     assert!(inactive(&native).await);
     let original = native.shutdown_status().unwrap_err();
     let original_pointer = work(&original) as *const TunnelError;
-    let bank = registry.byte_bank.clone();
+    let bank = registry.byte_bank.raw().clone();
     let before = bank.available_permits();
     let layouts = Arc::new(StdMutex::new(Vec::new()));
     let seen = layouts.clone();
@@ -213,7 +213,7 @@ async fn registry_owner_original_native_lease_outlives_caller_and_joins_at_close
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
-    let bank = registry.byte_bank.clone();
+    let bank = registry.byte_bank.raw().clone();
     let total = super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES;
     let structural = registry.structural_bytes();
     let pointer = &*registry as *const Registry;

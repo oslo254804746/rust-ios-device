@@ -3,7 +3,7 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 fn epoch(
-    bank: &Arc<Semaphore>,
+    bank: &crate::cmd::tunnel::birth_bank::BirthBank,
 ) -> (
     Epoch,
     watch::Sender<Option<crate::cmd::tunnel::ControlIdentity>>,
@@ -29,8 +29,9 @@ fn entries(bank: &Arc<Semaphore>) -> Table<Box<u8>> {
 }
 #[test]
 fn publication_retain_original_paid_nodes_remove_with_depleted_quota_and_last_owner_release() {
-    let bank = Arc::new(Semaphore::new(2 * 1024 * 1024));
-    let (epoch, _sender) = epoch(&bank);
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(2 * 1024 * 1024);
+    let bank = bank_birth.raw().clone();
+    let (epoch, _sender) = epoch(&bank_birth);
     let clock = Deadline::new(Duration::from_secs(1)).unwrap();
     let mut table = entries(&bank);
     let (key, value) = table.get_key_value("a").unwrap();
@@ -51,14 +52,15 @@ fn publication_retain_original_paid_nodes_remove_with_depleted_quota_and_last_ow
 }
 #[test]
 fn publication_retain_actual_late_clock_zero_quota_restores_original_nodes_keys_and_slots() {
-    let bank = Arc::new(Semaphore::new(2 * 1024 * 1024));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(2 * 1024 * 1024);
+    let bank = bank_birth.raw().clone();
     let mut table = entries(&bank);
     let before = [table.proof("a"), table.proof("b")];
     let before_keys = [
         table.get_key_value("a").unwrap().0.as_ptr(),
         table.get_key_value("b").unwrap().0.as_ptr(),
     ];
-    let (epoch, _sender) = epoch(&bank);
+    let (epoch, _sender) = epoch(&bank_birth);
     let clock = Deadline::new(Duration::from_millis(20)).unwrap();
     let held = bank
         .clone()
@@ -84,10 +86,11 @@ fn publication_retain_actual_late_clock_zero_quota_restores_original_nodes_keys_
 #[test]
 fn publication_retain_stale_epoch_and_predicate_unwind_restore_each_original_slot() {
     for unwind in [false, true] {
-        let bank = Arc::new(Semaphore::new(2 * 1024 * 1024));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(2 * 1024 * 1024);
+        let bank = bank_birth.raw().clone();
         let mut table = entries(&bank);
         let before = [table.proof("a"), table.proof("b")];
-        let (epoch, sender) = epoch(&bank);
+        let (epoch, sender) = epoch(&bank_birth);
         let clock = Deadline::new(Duration::from_secs(1)).unwrap();
         let calls = AtomicUsize::new(0);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -96,7 +99,8 @@ fn publication_retain_stale_epoch_and_predicate_unwind_restore_each_original_slo
                     if unwind {
                         panic!("synthetic predicate unwind");
                     }
-                    sender.send_replace(Some(crate::cmd::tunnel::ControlIdentity::new(&bank)));
+                    sender
+                        .send_replace(Some(crate::cmd::tunnel::ControlIdentity::new(&bank_birth)));
                 }
                 false
             })

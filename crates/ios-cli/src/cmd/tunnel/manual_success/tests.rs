@@ -68,8 +68,9 @@ async fn manual_authorized(
 
 #[tokio::test]
 async fn canonical_coordinator_key_buffer_and_fee_follow_last_ticket_after_table_drop() {
-    let bank = Arc::new(Semaphore::new(65536));
-    let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank)).unwrap();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
+    let bank = bank_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let ticket = lifecycle.ticket("original-canonical-key").await.unwrap();
     let pointer = ticket.udid().as_ptr();
     let same = lifecycle.ticket(ticket.udid()).await.unwrap();
@@ -235,7 +236,8 @@ async fn actual_pending_clear_late_clock_restores_same_desired_and_failure_arcs(
 fn manual_preflight_actual_maximum_backings_exact_and_one_byte_refusal_refund() {
     let bytes = Preflight::bytes();
     for limit in [bytes - 1, bytes] {
-        let bank = Arc::new(Semaphore::new(limit));
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(limit);
+        let bank = bank_birth.raw().clone();
         match Preflight::new(&bank) {
             Ok(plan) => {
                 assert_eq!(limit, bytes);
@@ -312,7 +314,8 @@ async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at
 #[tokio::test]
 async fn manual_preflight_does_not_pin_idle_automatic_namespace() {
     let lifecycle = Lifecycle::new();
-    let bank = Arc::new(Semaphore::new(Preflight::bytes()));
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(Preflight::bytes());
+    let bank = bank_birth.raw().clone();
     let plan = Preflight::new(&bank).unwrap();
     for index in 0..super::super::lifecycle::MAX_DEVICE_GATES {
         drop(lifecycle.ticket(&format!("idle-{index}")).await.unwrap());

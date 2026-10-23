@@ -122,9 +122,9 @@ fn identity() -> AttemptIdentity {
     }
 }
 fn lifecycle() -> Lifecycle {
-    Lifecycle::with_metadata(Arc::new(Semaphore::new(
+    Lifecycle::with_metadata(crate::cmd::tunnel::birth_bank::BirthBank::new(
         super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
-    )))
+    ))
     .unwrap()
 }
 fn slot(bank: &Arc<Semaphore>) -> super::super::failure_slot::Owner {
