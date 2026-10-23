@@ -56,8 +56,8 @@ impl DeviceGate {
 
 pub(super) struct DesiredRow {
     pub(super) udid: String,
-    pub(super) ticket: Ticket,
-    pub(super) snapshot: super::intent::Snapshot,
+    pub(super) ticket: TicketOwner,
+    pub(super) snapshot: super::intent::SnapshotOwner,
     // This exact copied key can move into the manual-success writer. Keep its
     // permit with that owner, independently of this listing's backing.
     pub(super) _key_storage: OwnedSemaphorePermit,
@@ -520,14 +520,17 @@ impl Lifecycle {
             let udid = String::from_utf8(key).expect("copied canonical key remains UTF-8");
             rows.push(DesiredRow {
                 udid,
-                ticket: Ticket {
-                    gate: gate.clone(),
-                    generation: gate.generation.borrow().clone(),
-                    shutdown: shutdown.clone(),
-                    shutdown_generation: epoch.clone(),
-                    intent_version: Some(snapshot.version.clone()),
-                },
-                snapshot,
+                ticket: TicketOwner::new(
+                    &Ticket {
+                        gate: gate.clone(),
+                        generation: gate.generation.borrow().clone(),
+                        shutdown: shutdown.clone(),
+                        shutdown_generation: epoch.clone(),
+                        intent_version: Some(snapshot.version.clone()),
+                    },
+                    &self.metadata_bytes,
+                )?,
+                snapshot: super::intent::SnapshotOwner::new(&snapshot, &self.metadata_bytes)?,
                 _key_storage: key_storage,
             })?;
         }

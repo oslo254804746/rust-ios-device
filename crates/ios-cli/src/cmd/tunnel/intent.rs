@@ -165,6 +165,55 @@ pub(super) struct Snapshot {
     pub(super) desired: Desired,
 }
 
+type SnapshotOrigins = [Option<OwnedSemaphorePermit>; 2];
+
+/// Independent actual listing snapshot, including both captured origins.
+pub(super) struct SnapshotOwner(super::shared_weak_allocation::Strong<Snapshot, SnapshotOrigins>);
+
+impl SnapshotOwner {
+    pub(super) fn body_bytes() -> usize {
+        super::shared_weak_allocation::Strong::<Snapshot, SnapshotOrigins>::body_bytes()
+    }
+
+    pub(super) fn new(snapshot: &Snapshot, bank: &Arc<Semaphore>) -> anyhow::Result<Self> {
+        let bytes = Self::body_bytes();
+        let storage = super::admission::known_metadata_charge(bank, bytes)?;
+        let mut origins: SnapshotOrigins = [None, None];
+        for (index, identity) in [&snapshot.epoch, &snapshot.version].into_iter().enumerate() {
+            let origin = identity.bank();
+            if Arc::ptr_eq(origin, bank)
+                || origins
+                    .iter()
+                    .flatten()
+                    .any(|grant| Arc::ptr_eq(grant.semaphore(), origin))
+            {
+                continue;
+            }
+            origins[index] = Some(identity.origin_charge(bytes)?);
+        }
+        Ok(Self(super::shared_weak_allocation::Strong::new(
+            snapshot.clone(),
+            bank,
+            storage,
+            origins,
+        )?))
+    }
+}
+
+impl Clone for SnapshotOwner {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl std::ops::Deref for SnapshotOwner {
+    type Target = Snapshot;
+
+    fn deref(&self) -> &Snapshot {
+        &self.0
+    }
+}
+
 pub(super) struct Cell {
     state: Mutex<Snapshot>,
     changes: watch::Sender<ControlIdentity>,
@@ -463,5 +512,7 @@ pub(super) struct ManualRequest<'a> {
 
 #[cfg(test)]
 mod body_tests;
+#[cfg(test)]
+mod snapshot_owner_tests;
 #[cfg(test)]
 mod tests;

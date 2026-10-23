@@ -1,5 +1,11 @@
 # 当前待开发清单
 
+2026-10-23：L02 [desired listing独立实际根](validation/tunnel-desired-row-roots-2026-10-23.md)
+实际四轮空key fixture确认迭代器退款后旧行仍存；返回行Ticket/Snapshot现各持真实G/origin根到物理free。
+原key先准入/实际指针、control/Source/native/clock保持；未拒绝空key或增生产pool/arena cap。
+Snapshot2/listing6及完整CLI1881/0FAIL/13原ignored通过，725源码6处仅CLI；10命令含0筛选不计功能覆盖。
+完整CLI实际manual index及native110通过；全部Cargo/build主控。all-retainer/arena/endpoint仍待收口，23/6/L02/Q04保持。
+
 2026-10-23：L02 [native RefreshProof实际根](validation/tunnel-refresh-proof-root-2026-10-23.md)
 原inline逻辑sizeof费用迁移到完整实际Strong<Data,Origins2>，G/origin fees保持到root物理free后。
 原capture checks/field pointers/metadata swap/history/native Drop/joins保持，不新增NativeLease或停止动作。
