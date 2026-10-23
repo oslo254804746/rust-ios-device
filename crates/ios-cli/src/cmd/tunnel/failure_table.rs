@@ -115,6 +115,7 @@ pub(super) type OwnedNode = super::owned_box::Owner<Node>;
 pub(super) struct Node {
     pub(super) udid: String,
     pub(super) row: FailedTunnelAttempt,
+    prepared_global: Option<super::marker_identity::Owner>,
     input: Option<super::candidate_input::Owner>,
     _key_storage: Option<OwnedSemaphorePermit>,
     selected: bool,
@@ -148,6 +149,7 @@ impl Node {
                 slot: None,
             },
             input: Some(input),
+            prepared_global: None,
             _key_storage: Some(key_storage),
             selected: false,
             position: 0,
@@ -177,11 +179,31 @@ impl Node {
                 slot: None,
             },
             input: None,
+            prepared_global: None,
             _key_storage: Some(key_storage),
             selected: false,
             position: 0,
             next: None,
         }))
+    }
+
+    pub(super) fn prepare_global(
+        &mut self,
+        ticket: &super::Ticket,
+        bank: &Arc<Semaphore>,
+    ) -> Result<()> {
+        if self.prepared_global.is_none() {
+            self.prepared_global = Some(ticket.global_owner(bank)?);
+        }
+        Ok(())
+    }
+
+    pub(super) fn commit_global(&mut self) {
+        self.row.global = Some(
+            self.prepared_global
+                .take()
+                .expect("original global identity admitted before Source"),
+        );
     }
 
     /// Success reuses the single prepared UID copy. Never clone another outcome key.
@@ -477,5 +499,7 @@ impl Drop for RemovedBatch {
     }
 }
 
+#[cfg(test)]
+mod global_tests;
 #[cfg(test)]
 mod tests;

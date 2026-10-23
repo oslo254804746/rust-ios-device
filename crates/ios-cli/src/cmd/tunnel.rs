@@ -520,7 +520,7 @@ struct FailedTunnelAttempt {
     version: FailureVersion,
     // Set under the committing ticket fence; pending/test-only rows may be
     // unbound. Device stop/manual generations do not change this global owner.
-    global: Option<ControlIdentity>,
+    global: Option<marker_identity::Owner>,
     last_attempt: Instant,
     fail_count: u32,
     identity: failure_table::Identity,
@@ -2011,6 +2011,10 @@ impl TunnelAgentState {
                     if skip {
                         return Ok(());
                     }
+                    prepared
+                        .as_mut()
+                        .expect("pre-Source failure node")
+                        .prepare_global(ticket, &self.inner.global_metadata_bytes)?;
                     let slot = self.reserve_failure_slot(udid).await?;
                     failure_slot = Some(slot.clone());
                     prepared.as_mut().expect("pre-Source failure node").row.slot =
@@ -2968,6 +2972,8 @@ impl TunnelAgentState {
         )
         .expect("test seed node admission");
         node.row.slot = Some(slot);
+        node.prepare_global(ticket, &self.inner.global_metadata_bytes)
+            .expect("test seed global identity admitted before failure writer");
         self.record_prepared_failure(node, destination, ticket)
             .await;
     }
@@ -2994,7 +3000,7 @@ impl TunnelAgentState {
         let mut prepared = Some(node);
         let old = ticket.commit(|| {
             let mut node = prepared.take().expect("prepared seed node");
-            node.row.global = Some(ticket.global_epoch());
+            node.commit_global();
             node.row.last_attempt = Instant::now();
             node.row.fail_count = failed
                 .get(&node.udid)

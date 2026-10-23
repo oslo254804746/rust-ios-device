@@ -1,5 +1,11 @@
 # 当前待开发清单
 
+2026-10-23：L02 [failed row global身份实际根](validation/tunnel-failure-global-root-2026-10-23.md)
+候选skip后/slot与Source前准备真实G/origin根，原failure commit仅move同一root，晚writer不取quota。
+根独立于原Node/Ticket/receipt/IO，最后actualfree后退款；原身份/clock/counter/native/rollback保持。
+41门禁通过，新增5/完整CLI1875/0FAIL/13原ignored，723源码11处仅CLI；主控全部Cargo/build。
+physical arena/Weak/同步峰值/all-retainer及endpoint原scope继续；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-23：L02 [marker真实出生bank不可变TOTAL](validation/tunnel-birth-bank-authority-2026-10-23.md)
 BirthBank唯一factory真实创建原raw semaphore与immutable TOTAL，State/Lifecycle/Cell/Registry/standalone全部出生消费。
 Ticket/native proof/catalogue真实origin收费使用captured authority；原u32溢出/Resource顺序和控制/joins/clock保持。

@@ -63,6 +63,7 @@ mod discovery_tests;
 mod ensure_frame_tests;
 mod failure_cause_tests;
 mod failure_commit_tests;
+mod failure_global_tests;
 mod freshness_tests;
 mod global_metadata_tests;
 mod http_control_tests;

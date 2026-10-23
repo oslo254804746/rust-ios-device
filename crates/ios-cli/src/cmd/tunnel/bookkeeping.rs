@@ -641,7 +641,7 @@ impl TunnelAgentState {
                                     let failure_stamp = intent.ticket.failure_stamp();
                                     let mut next =
                                         prepared.take().expect("one pre-Source failure node");
-                                    next.row.global = Some(intent.ticket.global_epoch());
+                                    next.commit_global();
                                     let previous = failed.get(&next.udid);
                                     next.row.last_attempt = Instant::now();
                                     next.row.fail_count = previous
