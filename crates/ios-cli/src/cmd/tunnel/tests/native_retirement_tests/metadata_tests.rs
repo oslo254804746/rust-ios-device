@@ -44,22 +44,30 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     );
     assert_eq!(
         bank.available_permits(),
-        before + actual_publication_destination_bytes(),
+        before + actual_publication_destination_bytes() + publication::TicketOwner::body_bytes(),
         "publication Weak still owns the original body in the global pool"
     );
     assert_eq!(
         published.available_permits(),
-        published_before + actual_publication_destination_bytes(),
+        published_before
+            + actual_publication_destination_bytes()
+            + publication::TicketOwner::body_bytes(),
         "publication Weak still owns the original body in the publication pool"
     );
     drop(publication);
     assert_eq!(
         published.available_permits(),
-        published_before + actual_publication_destination_bytes() + publication::Life::bytes()
+        published_before
+            + actual_publication_destination_bytes()
+            + publication::Life::bytes()
+            + publication::TicketOwner::body_bytes()
     );
     assert_eq!(
         bank.available_permits(),
-        before + actual_publication_destination_bytes() + publication::Life::bytes()
+        before
+            + actual_publication_destination_bytes()
+            + publication::Life::bytes()
+            + publication::TicketOwner::body_bytes()
     );
     drop(route);
     assert_eq!(
@@ -68,6 +76,7 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
             + actual_publication_destination_bytes()
             + route_body_bytes()
             + publication::Life::bytes()
+            + publication::TicketOwner::body_bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert!(input.upgrade().is_none());
@@ -210,6 +219,7 @@ fn configured_with_discovery(
     let charged = std::mem::size_of::<NativeDevice>()
         + actual_publication_destination_bytes()
         + publication::Life::bytes()
+        + publication::TicketOwner::body_bytes()
         + metadata_lease::Lease::pair_bytes();
     state.inner.get_mut().unwrap().metadata_bytes = Arc::new(Semaphore::new(charged));
     let native_bytes = state.inner.native.structural_bytes()
@@ -264,7 +274,9 @@ async fn metadata_lease_original_roots_survive_table_removal_and_native_joins_wi
     );
     assert_eq!(
         publication.available_permits(),
-        actual_publication_destination_bytes() + publication::Life::bytes()
+        actual_publication_destination_bytes()
+            + publication::Life::bytes()
+            + publication::TicketOwner::body_bytes()
     );
     let before_g = global.available_permits();
     let before_p = publication.available_permits();
@@ -308,11 +320,16 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
     assert_eq!(state.inner.native.snapshot().retired, 1);
     assert_eq!(
         state.inner.metadata_bytes.available_permits(),
-        actual_publication_destination_bytes() + publication::Life::bytes()
+        actual_publication_destination_bytes()
+            + publication::Life::bytes()
+            + publication::TicketOwner::body_bytes()
     );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        actual_publication_destination_bytes() + route_body_bytes() + publication::Life::bytes()
+        actual_publication_destination_bytes()
+            + route_body_bytes()
+            + publication::Life::bytes()
+            + publication::TicketOwner::body_bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
@@ -391,7 +408,7 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     let node_bytes = actual_publication_destination_bytes() - backing;
     assert_eq!(
         state.inner.metadata_bytes.available_permits(),
-        node_bytes + publication::Life::bytes()
+        node_bytes + publication::Life::bytes() + publication::TicketOwner::body_bytes()
     );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
@@ -399,6 +416,7 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
             + record_copy_bytes()
             + route_body_bytes()
             + publication::Life::bytes()
+            + publication::TicketOwner::body_bytes()
             + discovery
     );
     state.drain_native(OBSERVE).await.unwrap();

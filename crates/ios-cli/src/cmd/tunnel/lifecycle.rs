@@ -776,6 +776,19 @@ impl Ticket {
         bank: &Arc<Semaphore>,
         body_bytes: usize,
     ) -> Result<TicketOriginGrants> {
+        self.origin_grants_with_covered(bank, None, body_bytes)
+    }
+
+    pub(super) fn origin_grants_with_covered(
+        &self,
+        bank: &Arc<Semaphore>,
+        covered: Option<&OwnedSemaphorePermit>,
+        body_bytes: usize,
+    ) -> Result<TicketOriginGrants> {
+        anyhow::ensure!(
+            covered.map_or(true, |grant| grant.num_permits() == body_bytes),
+            crate::output::resource_decision("tunnel captured identity covering grant mismatch")
+        );
         let mut grants: TicketOriginGrants = [None, None, None];
         let identities = [
             Some(&self.shutdown_generation),
@@ -786,6 +799,7 @@ impl Ticket {
             let Some(identity) = identity else { continue };
             let origin = identity.bank();
             if Arc::ptr_eq(origin, bank)
+                || covered.is_some_and(|grant| Arc::ptr_eq(origin, grant.semaphore()))
                 || grants
                     .iter()
                     .flatten()

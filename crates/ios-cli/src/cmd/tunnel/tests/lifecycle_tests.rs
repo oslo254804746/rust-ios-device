@@ -27,6 +27,7 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
     let charged = std::mem::size_of::<OwnedDevice>()
         + destination
         + publication::Life::bytes()
+        + publication::TicketOwner::body_bytes()
         + metadata_lease::Lease::pair_bytes();
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let inner = state.inner.get_mut().unwrap();
@@ -74,6 +75,7 @@ mod metadata_lease_tests;
 mod parallel_tests;
 mod publication_commit_tests;
 mod publication_tests;
+mod publication_ticket_tests;
 mod reconnect_tests;
 mod record_owner_tests;
 mod remote_json_tests;

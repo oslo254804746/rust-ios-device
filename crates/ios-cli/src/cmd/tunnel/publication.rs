@@ -5,7 +5,70 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use anyhow::Result;
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+
+type TicketFees = (OwnedSemaphorePermit, super::lifecycle::TicketOriginGrants);
+
+/// Independent actual Ticket allocation, counted in both publication banks.
+/// Displaced/retired values retain it without relying on an old Node's Box.
+pub(super) struct TicketOwner(super::shared_weak_allocation::Strong<super::Ticket, TicketFees>);
+
+impl TicketOwner {
+    pub(super) fn body_bytes() -> usize {
+        super::shared_weak_allocation::Strong::<super::Ticket, TicketFees>::body_bytes()
+    }
+
+    pub(super) fn new(
+        ticket: &super::Ticket,
+        global: &Arc<Semaphore>,
+        published: &Arc<Semaphore>,
+    ) -> Result<Self> {
+        Self::admit(ticket, global, published).map_err(|error| error.context(Admission))
+    }
+
+    fn admit(
+        ticket: &super::Ticket,
+        global: &Arc<Semaphore>,
+        published: &Arc<Semaphore>,
+    ) -> Result<Self> {
+        let bytes = Self::body_bytes();
+        let global_storage = super::admission::known_metadata_charge(global, bytes)?;
+        let published_storage = published
+            .clone()
+            .try_acquire_many_owned(u32::try_from(bytes).map_err(|_| {
+                crate::output::resource_decision("tunnel publication Ticket layout overflow")
+            })?)
+            .map_err(|_| {
+                crate::output::resource_decision("tunnel published metadata byte limit exceeded")
+            })?;
+        // Both original banks already cover the whole actual allocation. An
+        // identity from P must not be charged a duplicate origin mirror in P.
+        let origins = ticket.origin_grants_with_covered(global, Some(&published_storage), bytes)?;
+        Ok(Self(super::shared_weak_allocation::Strong::new(
+            ticket.clone(),
+            global,
+            global_storage,
+            (published_storage, origins),
+        )?))
+    }
+
+    #[cfg(test)]
+    fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+impl Clone for TicketOwner {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl std::ops::Deref for TicketOwner {
+    type Target = super::Ticket;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct Life {
@@ -137,3 +200,5 @@ fn on_created(hook: impl FnMut(usize) + 'static) -> HookGuard {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod ticket_tests;
