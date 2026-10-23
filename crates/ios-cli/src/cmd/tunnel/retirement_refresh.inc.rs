@@ -1,5 +1,10 @@
 // This fragment is appended inside retirement.rs's module (not a new lease).
-pub(super) struct RefreshProof {
+type RefreshAllocation =
+    super::shared_weak_allocation::Strong<RefreshProofData, super::native_origins::Grants>;
+
+pub(super) struct RefreshProof(RefreshAllocation);
+
+pub(super) struct RefreshProofData {
     registry: RegistryOwner,
     key: Key,
     stamp: OwnershipStamp,
@@ -7,10 +12,14 @@ pub(super) struct RefreshProof {
     metadata: super::metadata_lease::Owner,
     global_metadata: super::metadata_lease::Owner,
     previous: Option<super::freshness::MetadataOwner>,
-    _storage: OwnedSemaphorePermit,
-    // A foreign proof can outlive/reuse its original native slot. These own
-    // origin grants, separate from B's catalogue, end AFTER the stamp fields.
-    _origin_storage: super::native_origins::Grants,
+}
+
+impl std::ops::Deref for RefreshProof {
+    type Target = RefreshProofData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 type RefreshSwap<T> = (
     T,
@@ -76,26 +85,33 @@ impl NativeLease {
             super::lifecycle::cancelled()
         );
         let storage =
-            super::admission::known_metadata_charge(bank, std::mem::size_of::<RefreshProof>())?;
+            super::admission::known_metadata_charge(bank, RefreshProof::body_bytes())?;
         let origin_storage = super::native_origins::proof_grants(
             bank,
-            std::mem::size_of::<RefreshProof>(),
+            RefreshProof::body_bytes(),
             [&stamp.global, &stamp.device],
         )?;
-        Ok(RefreshProof {
-            registry: self.registry.clone(),
-            key: self.key.clone(),
-            stamp,
-            handle: Arc::clone(handle),
-            metadata: metadata.clone(),
-            global_metadata: global_metadata.clone(),
-            previous: previous.cloned(),
-            _storage: storage,
-            _origin_storage: origin_storage,
-        })
+        Ok(RefreshProof(RefreshAllocation::new(
+            RefreshProofData {
+                registry: self.registry.clone(),
+                key: self.key.clone(),
+                stamp,
+                handle: Arc::clone(handle),
+                metadata: metadata.clone(),
+                global_metadata: global_metadata.clone(),
+                previous: previous.cloned(),
+            },
+            bank,
+            storage,
+            origin_storage,
+        )?))
     }
 }
 impl RefreshProof {
+    pub(super) fn body_bytes() -> usize {
+        RefreshAllocation::body_bytes()
+    }
+
     pub(super) fn previous(&self) -> Option<&super::freshness::MetadataOwner> {
         self.previous.as_ref()
     }
