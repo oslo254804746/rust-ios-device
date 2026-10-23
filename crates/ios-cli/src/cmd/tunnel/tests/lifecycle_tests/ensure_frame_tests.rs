@@ -137,7 +137,7 @@ async fn ensure_frame_distinct_precoordinator_epochs_keep_each_exact_fee_through
         .try_acquire_many_owned((before - 2 * frame) as u32)
         .unwrap();
     let probe = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
-    let old = Arc::downgrade(&probe.epoch.generation);
+    let old = crate::cmd::tunnel::ControlIdentity::downgrade(&probe.epoch.generation);
     drop(probe);
     let coordinator = state.inner.lifecycle.hold_coordinator().await;
     let pointers = Arc::new(StdMutex::new(Vec::new()));
@@ -156,9 +156,9 @@ async fn ensure_frame_distinct_precoordinator_epochs_keep_each_exact_fee_through
     assert!(futures_util::poll!(&mut first).is_pending());
     state.inner.lifecycle.clear();
     let probe = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
-    let next = Arc::downgrade(&probe.epoch.generation);
+    let next = crate::cmd::tunnel::ControlIdentity::downgrade(&probe.epoch.generation);
     drop(probe);
-    assert!(!Arc::ptr_eq(
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &old.upgrade().unwrap(),
         &next.upgrade().unwrap()
     ));

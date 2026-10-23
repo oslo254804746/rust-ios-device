@@ -88,7 +88,7 @@ fn registry_metadata_original_reservation_keeps_structural_bytes_after_external_
     let registry = Registry::allocate(&bank, 1).unwrap();
     let bytes = registry.structural_bytes();
     let reservation = registry
-        .reserve(OwnershipStamp::new(Arc::new(()), Arc::new(())))
+        .reserve(OwnershipStamp::standalone(&registry))
         .unwrap();
     assert_eq!(registry.snapshot().reserved, 1);
     drop(registry);
@@ -148,7 +148,7 @@ fn incarnation_whole_original_body_precedes_slot_and_ordinal_and_survives_empty_
             |_, _| panic!("incarnation quota refusal allocated a backing"),
             || {
                 registry
-                    .reserve(OwnershipStamp::new(Arc::new(()), Arc::new(())))
+                    .reserve(OwnershipStamp::standalone(&registry))
                     .err()
                     .unwrap()
             },
@@ -180,7 +180,7 @@ fn incarnation_whole_original_body_precedes_slot_and_ordinal_and_survives_empty_
         },
         || {
             registry
-                .reserve(OwnershipStamp::new(Arc::new(()), Arc::new(())))
+                .reserve(OwnershipStamp::standalone(&registry))
                 .unwrap()
         },
     );
@@ -235,7 +235,7 @@ fn incarnation_closed_pool_parallel_last_keys_keep_original_body_and_refund_once
     let registry = Registry::allocate(&bank, 1).unwrap();
     let structural = registry.structural_bytes();
     let reservation = registry
-        .reserve(OwnershipStamp::new(Arc::new(()), Arc::new(())))
+        .reserve(OwnershipStamp::standalone(&registry))
         .unwrap();
     let key = reservation.key.as_ref().unwrap().clone();
     let bytes = Registry::incarnation_bytes();

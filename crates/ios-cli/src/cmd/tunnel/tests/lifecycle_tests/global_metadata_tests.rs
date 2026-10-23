@@ -409,7 +409,10 @@ async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
     assert_eq!(source.count(A), 2);
-    assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &original.version,
+        &ticket.desired().version
+    ));
     assert!(publication.ptr_eq(&state.inner.tunnels.read().await[A].publication));
     drop(error);
     assert_eq!(bank.available_permits(), admitted);
@@ -462,7 +465,10 @@ async fn manual_paired_plan_one_byte_refusal_is_incomplete_and_preserves_both_or
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
     assert_eq!(source.count(A), 2);
     assert_eq!(source.count(B), 1);
-    assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &original.version,
+        &ticket.desired().version
+    ));
     {
         let tunnels = state.inner.tunnels.read().await;
         assert!(a.ptr_eq(&tunnels[A].publication));
@@ -505,7 +511,10 @@ async fn scan_desired_suppressed_index_quota_refusal_precedes_source_and_keeps_s
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
     assert!(source.calls.lock().unwrap().is_empty());
-    assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &original.version,
+        &ticket.desired().version
+    ));
     assert!(matches!(ticket.desired().desired, intent::Desired::Stopped));
     drop(error);
     drop(held);
@@ -627,7 +636,10 @@ async fn desired_listing_bytes_refusal_is_before_discovery_and_preserves_stop() 
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
     assert!(source.calls.lock().unwrap().is_empty());
-    assert!(Arc::ptr_eq(&before.version, &ticket.desired().version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &before.version,
+        &ticket.desired().version
+    ));
     assert!(matches!(ticket.desired().desired, intent::Desired::Stopped));
     assert!(!state.is_ready().await);
     assert_eq!(bank.available_permits(), reserve);

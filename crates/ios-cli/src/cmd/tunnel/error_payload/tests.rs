@@ -357,9 +357,8 @@ async fn payload_census_native_join_exposes_original_and_history_retains_same_pa
     let lease = state
         .inner
         .native
-        .reserve(crate::cmd::tunnel::retirement::OwnershipStamp::new(
-            Arc::new(()),
-            Arc::new(()),
+        .reserve(crate::cmd::tunnel::retirement::OwnershipStamp::standalone(
+            &state.inner.native,
         ))
         .unwrap()
         .attach(native.clone());

@@ -2,9 +2,14 @@ use super::super::paid_watch as watch;
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-fn epoch(bank: &Arc<Semaphore>) -> (Epoch, watch::Sender<Option<Arc<()>>>) {
-    let generation = Arc::new(());
-    let (sender, changes) = watch::channel(Some(Arc::clone(&generation)), bank).unwrap();
+fn epoch(
+    bank: &Arc<Semaphore>,
+) -> (
+    Epoch,
+    watch::Sender<Option<crate::cmd::tunnel::ControlIdentity>>,
+) {
+    let generation = crate::cmd::tunnel::ControlIdentity::new(bank);
+    let (sender, changes) = watch::channel(Some(generation.clone()), bank).unwrap();
     (
         Epoch {
             changes,
@@ -91,7 +96,7 @@ fn publication_retain_stale_epoch_and_predicate_unwind_restore_each_original_slo
                     if unwind {
                         panic!("synthetic predicate unwind");
                     }
-                    sender.send_replace(Some(Arc::new(())));
+                    sender.send_replace(Some(crate::cmd::tunnel::ControlIdentity::new(&bank)));
                 }
                 false
             })

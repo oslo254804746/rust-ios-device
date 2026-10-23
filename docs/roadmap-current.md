@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-23：L02 [native marker出生bank与keeper准入](validation/tunnel-native-marker-origin-2026-10-23.md)
+实际身份出生时保留原producer bank；funded foreign Entry按原B slots整backing支付A并保持到实际free。
+历史目录实际B backing准入、增长/拒绝回滚，不用当前slot数充当origin cap；已付origin closed0可重用。
+独立RefreshProof另持A逻辑费用到stamp Drop之后，原registry/key/handle清理次序保持。
+30门禁全过，identity1/origin3+4/完整CLI1850/0FAIL/13原ignored，711源码30处仅CLI，全部Cargo/build主控。
+原Arc physical arena/all-retainer/Weak/总容量/opaque/endpoint scope仍待收口；23/6/L02/Q04口径不变。
+
 2026-10-23：L02 [失败记录计数Semaphore完整共享根](validation/tunnel-failure-count-root-2026-10-23.md)
 原G支付Counts实际根，私有owned单许可仅持独立Counts，不延长State/native寿命。
 原count优先/Slot重用/退款、容量与清理路径保持；根直到最后实际free后退款。

@@ -4,7 +4,7 @@ use std::sync::Barrier;
 #[test]
 fn route_body_original_filter_snapshot_replacement_releases_text_before_last_weak_body() {
     let filter = "原-manual-filter";
-    let watch_bytes = watch::body_bytes::<Arc<()>>();
+    let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
     let total = RetainedRoute::body_bytes() + filter.len() + watch_bytes;
     let bank = Arc::new(Semaphore::new(total));
     let route = RetainedRoute::established(
@@ -19,7 +19,7 @@ fn route_body_original_filter_snapshot_replacement_releases_text_before_last_wea
     assert_eq!(host, filter);
     let pointer = host.as_ptr();
     let weak = route.downgrade();
-    let cell = Cell::new(Arc::new(()), bank.clone()).unwrap();
+    let cell = Cell::new(ControlIdentity::new(&bank), bank.clone()).unwrap();
     let authority = crate::access::AccessControl::trusted_test_local()
         .authenticate(&axum::http::HeaderMap::new())
         .unwrap()

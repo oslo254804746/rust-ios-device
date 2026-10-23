@@ -48,8 +48,11 @@ mod http_control;
 mod intent;
 mod lifecycle;
 mod manual_success;
+mod marker_identity;
+use marker_identity::Identity as ControlIdentity;
 mod metadata_lease;
 mod metadata_vec;
+mod native_origins;
 mod observed_route;
 mod owned_box;
 mod owned_join;
@@ -516,7 +519,7 @@ struct FailedTunnelAttempt {
     version: FailureVersion,
     // Set under the committing ticket fence; pending/test-only rows may be
     // unbound. Device stop/manual generations do not change this global owner.
-    global: Option<Arc<()>>,
+    global: Option<ControlIdentity>,
     last_attempt: Instant,
     fail_count: u32,
     identity: failure_table::Identity,
@@ -590,12 +593,12 @@ impl std::fmt::Debug for AttemptIdentity {
 }
 
 impl FailedTunnelAttempt {
-    fn matches_global(&self, epoch: &Arc<()>) -> bool {
+    fn matches_global(&self, epoch: &ControlIdentity) -> bool {
         // Unbound rows only exist in private table fixtures. Committed rows
         // always carry the original ticket's admitted, shared epoch owner.
         self.global
             .as_ref()
-            .map_or(true, |global| Arc::ptr_eq(global, epoch))
+            .map_or(true, |global| ControlIdentity::ptr_eq(global, epoch))
     }
 
     #[cfg(test)]

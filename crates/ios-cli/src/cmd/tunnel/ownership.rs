@@ -70,7 +70,7 @@ impl<'a> Ownership<'a> {
     }
 
     pub(super) fn standalone(registry: RegistryOwner) -> Result<Self> {
-        let stamp = OwnershipStamp::new(Arc::new(()), Arc::new(()));
+        let stamp = OwnershipStamp::standalone(&registry);
         let storage = Self::attempt_backing(&registry)?;
         let reservation = registry.reserve(stamp.clone())?;
         Ok(Self {

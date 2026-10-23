@@ -1,4 +1,5 @@
 //! Whole-scan control and bounded ownership of errors acquired before cancellation.
+use super::ControlIdentity;
 use std::error::Error;
 use std::future::Future;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -554,8 +555,8 @@ impl Error for AbandonedScan {
 
 #[derive(Clone)]
 pub(super) struct Epoch {
-    pub(super) changes: watch::Receiver<Option<Arc<()>>>,
-    pub(super) generation: Arc<()>,
+    pub(super) changes: watch::Receiver<Option<ControlIdentity>>,
+    pub(super) generation: ControlIdentity,
 }
 
 impl Epoch {
@@ -563,7 +564,7 @@ impl Epoch {
         self.changes
             .borrow()
             .as_ref()
-            .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.generation))
+            .is_some_and(|epoch| ControlIdentity::ptr_eq(epoch, &self.generation))
     }
 
     pub(super) fn commit<T>(
@@ -574,7 +575,7 @@ impl Epoch {
         let epoch = self.changes.borrow();
         if !epoch
             .as_ref()
-            .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.generation))
+            .is_some_and(|epoch| ControlIdentity::ptr_eq(epoch, &self.generation))
         {
             return Err(super::lifecycle::cancelled());
         }

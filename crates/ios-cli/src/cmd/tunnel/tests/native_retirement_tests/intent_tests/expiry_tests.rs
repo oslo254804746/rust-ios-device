@@ -128,17 +128,19 @@ impl Source for PublicationSource {
 }
 
 fn same_pair(
-    left: &Option<(FailureVersion, Arc<()>)>,
-    right: &Option<(FailureVersion, Arc<()>)>,
+    left: &Option<(FailureVersion, crate::cmd::tunnel::ControlIdentity)>,
+    right: &Option<(FailureVersion, crate::cmd::tunnel::ControlIdentity)>,
 ) -> bool {
     match (left, right) {
-        (Some((a, b)), Some((c, d))) => FailureVersion::ptr_eq(a, c) && Arc::ptr_eq(b, d),
+        (Some((a, b)), Some((c, d))) => {
+            FailureVersion::ptr_eq(a, c) && crate::cmd::tunnel::ControlIdentity::ptr_eq(b, d)
+        }
         (None, None) => true,
         _ => false,
     }
 }
 
-fn pending(ticket: &Ticket) -> Option<(FailureVersion, Arc<()>)> {
+fn pending(ticket: &Ticket) -> Option<(FailureVersion, crate::cmd::tunnel::ControlIdentity)> {
     ticket
         .pending_success()
         .map(|(desired, success)| (success.version, desired))
@@ -275,8 +277,8 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
     let after_pending = pending(&ticket);
     let after_stamp = ticket.failure_stamp();
     let old_ticket_current = old_fenced.is_current();
-    let watch_unchanged =
-        !changes.has_changed().unwrap() && Arc::ptr_eq(&watched, &changes.borrow());
+    let watch_unchanged = !changes.has_changed().unwrap()
+        && crate::cmd::tunnel::ControlIdentity::ptr_eq(&watched, &changes.borrow());
     let table = state.inner.tunnels.read().await;
     let owner_preserved = table.get(AUTH_DEVICE).is_some_and(|row| {
         row.publication.ptr_eq(&old_publication)
@@ -354,7 +356,8 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
     let body = body.unwrap();
     assert!(!body.contains(TOKEN) && !body.contains(REPLACEMENT) && !body.contains(AUTH_DEVICE));
     assert!(
-        Arc::ptr_eq(&before.epoch, &after.epoch) && Arc::ptr_eq(&before.version, &after.version)
+        crate::cmd::tunnel::ControlIdentity::ptr_eq(&before.epoch, &after.epoch)
+            && crate::cmd::tunnel::ControlIdentity::ptr_eq(&before.version, &after.version)
     );
     assert!(
         matches!(after.desired, intent::Desired::Manual { route, authority } if route.ptr_eq(&old_route) && authority.current())

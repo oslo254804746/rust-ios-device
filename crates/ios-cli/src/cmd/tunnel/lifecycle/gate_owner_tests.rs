@@ -27,8 +27,14 @@ fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_view
     );
     let observed = observed.lock().unwrap();
     assert_eq!(observed.len(), 2);
-    assert_eq!(observed[0].0, watch::body_bytes::<Option<Arc<()>>>());
-    assert_eq!(observed[1].0, watch::body_bytes::<Arc<()>>());
+    assert_eq!(
+        observed[0].0,
+        watch::body_bytes::<Option<crate::cmd::tunnel::ControlIdentity>>()
+    );
+    assert_eq!(
+        observed[1].0,
+        watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>()
+    );
     let global_value = {
         let value = lifecycle.shutdown.borrow();
         std::ptr::from_ref(&*value) as usize
@@ -98,8 +104,14 @@ async fn coordinator_gate_owner_parallel_old_tickets_keep_original_key_and_close
         );
         assert_eq!(observed[1].2, 0);
         assert_eq!(observed[1].1, backing_pointer);
-        assert_eq!(observed[2].0.size(), watch::body_bytes::<Arc<()>>());
-        assert_eq!(observed[3].0.size(), watch::body_bytes::<Arc<()>>());
+        assert_eq!(
+            observed[2].0.size(),
+            watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>()
+        );
+        assert_eq!(
+            observed[3].0.size(),
+            watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>()
+        );
         assert_eq!(observed[4].0.size(), DeviceGate::body_bytes());
         for allocation in &observed[2..] {
             assert_eq!(allocation.2, 0);
@@ -137,7 +149,8 @@ async fn coordinator_gate_owner_parallel_old_tickets_keep_original_key_and_close
     lifecycle.clear();
     assert!(!ticket.is_current());
     drop(lifecycle);
-    let backing = 2 * std::mem::size_of::<DeviceRow>() + watch::body_bytes::<Arc<()>>();
+    let backing = 2 * std::mem::size_of::<DeviceRow>()
+        + watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
     assert_eq!(bank.available_permits(), backing);
     let barrier = Arc::new(std::sync::Barrier::new(8));
     std::thread::scope(|scope| {

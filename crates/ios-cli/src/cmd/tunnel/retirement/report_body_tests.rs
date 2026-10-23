@@ -76,7 +76,7 @@ fn native_report_captured_history_parallel_last_roots_keep_original_io_and_body_
     let bank = Arc::new(Semaphore::new(65536));
     let registry = Registry::allocate(&bank, 1).unwrap();
     let lease = registry
-        .reserve(OwnershipStamp::new(Arc::new(()), Arc::new(())))
+        .reserve(OwnershipStamp::standalone(&registry))
         .unwrap();
     let key = lease.key.as_ref().unwrap().clone();
     let original = TunnelError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset));

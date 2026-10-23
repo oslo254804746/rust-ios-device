@@ -381,7 +381,7 @@ async fn manual_success_preflight_real_source_new_gate_and_latest_pending_cleanu
         ),
         (1, 0, 0)
     );
-    assert!(!Arc::ptr_eq(
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &old,
         &state
             .inner
