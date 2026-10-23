@@ -1,5 +1,6 @@
 //! Bounded failure writes and contested success cleanup after the scan window.
 use super::failure_table::{Destination, OwnedNode, RemovedBatch, Table};
+use super::ControlIdentity;
 use super::{FailureVersion, Ticket, TunnelAgentState};
 use std::sync::Arc;
 
@@ -38,7 +39,7 @@ pub(super) enum ScanAttemptOutcome {
 pub(super) enum SuccessKey {
     Owned(String),
     Coordinator {
-        desired: Arc<()>,
+        desired: ControlIdentity,
         authority: crate::access::DeviceAuthority,
     },
 }
@@ -597,7 +598,7 @@ impl TunnelAgentState {
                                     ),
                                     SuccessKey::Coordinator { desired, authority } => {
                                         if !authority.current()
-                                            || !Arc::ptr_eq(
+                                            || !ControlIdentity::ptr_eq(
                                                 desired,
                                                 &intent.ticket.desired().version,
                                             )

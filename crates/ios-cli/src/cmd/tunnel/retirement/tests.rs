@@ -13,8 +13,8 @@ fn registry(capacity: usize) -> RegistryOwner {
     Registry::small(NonZeroUsize::new(capacity).unwrap())
 }
 
-fn stamp() -> OwnershipStamp {
-    OwnershipStamp::new(Arc::new(()), Arc::new(()))
+fn stamp(registry: &RegistryOwner) -> OwnershipStamp {
+    OwnershipStamp::standalone(registry)
 }
 
 fn handle() -> (Arc<TunnelHandle>, watch::Receiver<()>) {
@@ -34,7 +34,7 @@ fn handle() -> (Arc<TunnelHandle>, watch::Receiver<()>) {
 #[tokio::test]
 async fn combined_capacity_covers_every_phase_before_a_source_can_be_polled() {
     let registry = registry(5);
-    let stamp = stamp();
+    let stamp = stamp(&registry);
     let reserved = registry.reserve(stamp.clone()).unwrap();
     let inflight = registry.reserve(stamp.clone()).unwrap();
     inflight.start().unwrap();
@@ -103,7 +103,10 @@ async fn combined_capacity_covers_every_phase_before_a_source_can_be_polled() {
 async fn original_arc_survives_unpublished_guard_drop_and_is_the_joined_owner() {
     let registry = registry(1);
     let (native, _receiver) = handle();
-    let lease = registry.reserve(stamp()).unwrap().attach(native.clone());
+    let lease = registry
+        .reserve(stamp(&registry))
+        .unwrap()
+        .attach(native.clone());
     let key = lease.key.clone();
     drop(lease);
     assert!(!native.is_alive());
@@ -128,7 +131,10 @@ async fn original_arc_survives_unpublished_guard_drop_and_is_the_joined_owner() 
 async fn caller_cancelled_drain_keeps_original_arc_and_capacity_for_retry() {
     let registry = registry(1);
     let (native, _receiver) = handle();
-    let lease = registry.reserve(stamp()).unwrap().attach(native.clone());
+    let lease = registry
+        .reserve(stamp(&registry))
+        .unwrap()
+        .attach(native.clone());
     lease.retire();
     let serial = registry.drains.lock().await;
     let mut drain = Box::pin(registry.drain_retired(CleanupClock::new(OBSERVE).unwrap()));
@@ -139,7 +145,7 @@ async fn caller_cancelled_drain_keeps_original_arc_and_capacity_for_retry() {
     };
     assert!(Arc::ptr_eq(&retained, &native));
     assert_eq!(registry.snapshot().occupied(), 1);
-    assert!(registry.reserve(stamp()).is_err());
+    assert!(registry.reserve(stamp(&registry)).is_err());
     drop(serial);
     let report = registry
         .drain_retired(CleanupClock::new(OBSERVE).unwrap())
@@ -153,7 +159,10 @@ async fn caller_cancelled_drain_keeps_original_arc_and_capacity_for_retry() {
 async fn expired_clock_stops_synchronously_retains_actual_elapsed_and_retries_same_owner() {
     let registry = registry(1);
     let (native, _receiver) = handle();
-    let lease = registry.reserve(stamp()).unwrap().attach(native.clone());
+    let lease = registry
+        .reserve(stamp(&registry))
+        .unwrap()
+        .attach(native.clone());
     lease.retire();
     let drain = registry.drain_retired(CleanupClock::new(Duration::ZERO).unwrap());
     assert!(
@@ -188,7 +197,7 @@ async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
     let bank = registry.byte_bank.clone();
     let before = bank.available_permits();
     let bytes = Registry::incarnation_bytes();
-    let old_stamp = stamp();
+    let old_stamp = stamp(&registry);
     let (old, _old_rx) = handle();
     let delayed_old_lease = registry.reserve(old_stamp).unwrap().attach(old.clone());
     let old_pointer = &*delayed_old_lease.key.incarnation as *const () as usize;
@@ -208,7 +217,7 @@ async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
         old_pointer
     );
     assert_eq!(delayed_old_lease.key.incarnation.strong_count(), 1);
-    let fresh_stamp = stamp();
+    let fresh_stamp = stamp(&registry);
     let (fresh, _fresh_rx) = handle();
     let fresh_lease = registry
         .reserve(fresh_stamp.clone())
@@ -245,7 +254,7 @@ async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
 #[tokio::test]
 async fn terminal_close_stops_active_owner_independently_of_a_held_external_table() {
     let registry = registry(1);
-    let stamp = stamp();
+    let stamp = stamp(&registry);
     let (native, _receiver) = handle();
     let lease = registry
         .reserve(stamp.clone())
@@ -275,7 +284,7 @@ async fn terminal_close_stops_active_owner_independently_of_a_held_external_tabl
 #[tokio::test]
 async fn delayed_post_close_attachment_retains_and_stops_the_original_runtime() {
     let registry = registry(1);
-    let stamp = stamp();
+    let stamp = stamp(&registry);
     let reservation = registry.reserve(stamp.clone()).unwrap();
     reservation.start().unwrap();
     registry.close_and_stop_all();
@@ -294,7 +303,7 @@ async fn delayed_post_close_attachment_retains_and_stops_the_original_runtime() 
 #[tokio::test]
 async fn empty_retired_reservation_drop_wakes_drain_without_claiming_native_join() {
     let registry = registry(1);
-    let reservation = registry.reserve(stamp()).unwrap();
+    let reservation = registry.reserve(stamp(&registry)).unwrap();
     reservation.start().unwrap();
     registry.close_and_stop_all();
     let mut drain = Box::pin(registry.drain_retired(CleanupClock::new(OBSERVE).unwrap()));
@@ -482,13 +491,13 @@ async fn reservation_requires_the_same_ticket_commit_fence_as_publication() {
 #[tokio::test]
 async fn foreign_ticket_stamp_cannot_publish_an_acquired_owner() {
     let registry = registry(1);
-    let correct = stamp();
+    let correct = stamp(&registry);
     let (native, _receiver) = handle();
     let lease = registry
         .reserve(correct.clone())
         .unwrap()
         .attach(native.clone());
-    assert!(lease.publish(&stamp()).is_err());
+    assert!(lease.publish(&stamp(&registry)).is_err());
     assert_eq!(registry.snapshot().unpublished, 1);
     lease.publish(&correct).unwrap();
     assert_eq!(registry.snapshot().active, 1);
@@ -502,7 +511,7 @@ async fn foreign_ticket_stamp_cannot_publish_an_acquired_owner() {
 #[test]
 fn invalid_cleanup_horizon_has_no_retirement_side_effect_and_snapshot_is_secret_safe() {
     let registry = registry(1);
-    let stamp = stamp();
+    let stamp = stamp(&registry);
     let (native, _receiver) = handle();
     let lease = registry
         .reserve(stamp.clone())
@@ -541,8 +550,8 @@ async fn ordinal_selection_excludes_owners_retired_after_the_fixed_cutoff() {
     let registry = registry(2);
     let (a, _a_rx) = handle();
     let (b, _b_rx) = handle();
-    let a_lease = registry.reserve(stamp()).unwrap().attach(a);
-    let b_lease = registry.reserve(stamp()).unwrap().attach(b);
+    let a_lease = registry.reserve(stamp(&registry)).unwrap().attach(a);
+    let b_lease = registry.reserve(stamp(&registry)).unwrap().attach(b);
     drop(a_lease);
     let first = registry.drain_retired(CleanupClock::new(OBSERVE).unwrap());
     drop(b_lease);
@@ -565,7 +574,7 @@ async fn ordinal_selection_excludes_owners_retired_after_the_fixed_cutoff() {
 async fn ordinal_selection_preserves_count_and_never_joins_a_reused_slot() {
     let registry = registry(1);
     let (a, _a_rx) = handle();
-    let a_lease = registry.reserve(stamp()).unwrap().attach(a);
+    let a_lease = registry.reserve(stamp(&registry)).unwrap().attach(a);
     drop(a_lease);
     let old = registry.drain_retired(CleanupClock::new(OBSERVE).unwrap());
     let joined = registry
@@ -574,7 +583,10 @@ async fn ordinal_selection_preserves_count_and_never_joins_a_reused_slot() {
         .unwrap();
     assert_eq!(joined.joined, 1);
     let (b, _b_rx) = handle();
-    let b_lease = registry.reserve(stamp()).unwrap().attach(Arc::clone(&b));
+    let b_lease = registry
+        .reserve(stamp(&registry))
+        .unwrap()
+        .attach(Arc::clone(&b));
     drop(b_lease);
     let old = old.await.unwrap();
     assert_eq!((old.selected, old.joined, old.snapshot.retired), (1, 0, 1));
@@ -591,7 +603,7 @@ async fn ordinal_selection_preserves_count_and_never_joins_a_reused_slot() {
 #[tokio::test]
 async fn ordinal_repeated_retirement_and_late_attachment_keep_original_selection() {
     let registry = registry(1);
-    let owner = stamp();
+    let owner = stamp(&registry);
     let reserved = registry.reserve(owner.clone()).unwrap();
     reserved.start().unwrap();
     registry.retire_global(&owner.global);
@@ -622,7 +634,7 @@ async fn ordinal_admission_overflow_never_wraps_or_blocks_final_cleanup() {
         state.issued = u64::MAX - 1;
         state.retired = u64::MAX - 1;
     }
-    let owner = stamp();
+    let owner = stamp(&registry);
     let reserved = registry.reserve(owner.clone()).unwrap();
     let (native, _rx) = handle();
     let lease = reserved.attach(native);
@@ -641,7 +653,7 @@ async fn ordinal_admission_overflow_never_wraps_or_blocks_final_cleanup() {
         // would now fail; it never allocates a root or reaches the Source.
         let admission = super::super::metadata_vec::with_allocation_hook(
             |_, _| panic!("exhausted ordinal allocated an incarnation body"),
-            || registry.reserve(stamp()),
+            || registry.reserve(stamp(&registry)),
         )?;
         admission.start()?;
         polls.fetch_add(1, Ordering::SeqCst);
@@ -665,12 +677,12 @@ async fn ordinal_admission_overflow_never_wraps_or_blocks_final_cleanup() {
 #[test]
 fn ordinal_empty_reservation_release_does_not_refund_lifetime_admission() {
     let registry = registry(1);
-    drop(registry.reserve(stamp()).unwrap());
+    drop(registry.reserve(stamp(&registry)).unwrap());
     {
         let state = registry.lock();
         assert_eq!((state.issued, state.retired), (1, 0));
     }
-    let next = registry.reserve(stamp()).unwrap();
+    let next = registry.reserve(stamp(&registry)).unwrap();
     assert_eq!(registry.lock().issued, 2);
     drop(next);
     assert_eq!(registry.lock().issued, 2);
@@ -679,11 +691,11 @@ fn ordinal_empty_reservation_release_does_not_refund_lifetime_admission() {
 #[tokio::test]
 async fn ordinal_namespace_stop_does_not_repeat_stop_on_unrelated_retired_owner() {
     let registry = registry(2);
-    let target = stamp();
+    let target = stamp(&registry);
     let (a, mut a_rx) = handle();
     let a_lease = registry.reserve(target.clone()).unwrap().attach(a);
     let (b, mut b_rx) = handle();
-    let b_lease = registry.reserve(stamp()).unwrap().attach(b);
+    let b_lease = registry.reserve(stamp(&registry)).unwrap().attach(b);
     drop(b_lease);
     b_rx.borrow_and_update();
     registry.retire_global(&target.global);
@@ -731,34 +743,30 @@ fn native_census_backing_refusal_keeps_original_history_and_last_root_grant() {
 }
 
 #[tokio::test]
-async fn marker_census_foreign_registries_keep_distinct_old_stamps_after_origin_lifecycle_drop() {
-    // Audit the current raw Arc identities, not a future arena refund contract.
-    // Arena integration must replace the origin-credit assertions below with
-    // backing-fee retention while preserving independent Registry admission.
+async fn marker_origin_foreign_registries_keep_whole_backing_paid_after_producer_and_slot_drop() {
     const KEY: &str = "marker-cross-bank-census";
-    let bytes = Lifecycle::watch_bytes() + Lifecycle::initial_metadata_bytes(KEY);
-    let origin = Arc::new(Semaphore::new(bytes));
+    let destinations = (0..4).map(|_| registry(1)).collect::<Vec<_>>();
+    let mirror = destinations[0]._slots_storage.num_permits();
+    let structural = Lifecycle::watch_bytes() + Lifecycle::initial_metadata_bytes(KEY);
+    let total = structural + destinations.len() * mirror;
+    let origin = Arc::new(Semaphore::new(total));
     let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
     drop(lifecycle.ticket(KEY).await.unwrap());
-    assert_eq!(origin.available_permits(), 0);
-    origin.close(); // Keep the producer live; this is not Lifecycle::close.
-
-    // Finite external fixture bookkeeping is not charged to the origin pool.
-    // Every destination has its own finite bank and original paid backing.
+    assert_eq!(origin.available_permits(), 4 * mirror);
     let mut keepers = Vec::new();
-    for _ in 0..4 {
-        let destination = registry(1);
+    for destination in destinations {
         let bank = destination.byte_bank();
         assert!(!Arc::ptr_eq(&bank, &origin));
+        assert_eq!(destination._slots_storage.num_permits(), mirror);
         let before = bank.available_permits();
         let ticket = lifecycle.ticket(KEY).await.unwrap();
-        assert!(ticket.is_current());
         let reservation = ticket
             .commit(|| destination.reserve(ticket.ownership_stamp()))
             .unwrap();
+        let catalogue = destination.origins.lock().unwrap().backing_bytes();
         assert_eq!(
             bank.available_permits(),
-            before - Registry::incarnation_bytes()
+            before - Registry::incarnation_bytes() - catalogue
         );
         drop(ticket);
         let old = lifecycle.clear_owned().unwrap();
@@ -766,58 +774,126 @@ async fn marker_census_foreign_registries_keep_distinct_old_stamps_after_origin_
         drop(old);
         assert_eq!(destination.snapshot().retired, 1);
         assert_eq!(destination.snapshot().native_handles, 0);
-        assert_eq!(origin.available_permits(), 0);
+        assert_eq!(origin.available_permits(), (3 - keepers.len()) * mirror);
         assert_eq!(lifecycle.coordinator_count().await, 1);
-        keepers.push((destination, reservation, bank, before));
+        keepers.push((destination, reservation, bank, before, catalogue));
     }
-
-    // Replace the last Cell epoch and device watch value as well. The witness
-    // Ticket/stamp must not become another historical keeper in this census.
+    assert_eq!(origin.available_permits(), 0);
+    origin.close();
+    // Already funded native keepers do not make clear/lazy reset acquire quota.
     let witness = lifecycle.ticket(KEY).await.unwrap();
     assert!(witness.is_current());
     drop(witness);
     assert_eq!(origin.available_permits(), 0);
-
     let inspect = || {
-        for (index, (destination, _, _, _)) in keepers.iter().enumerate() {
+        for (index, (destination, _, _, _, _)) in keepers.iter().enumerate() {
             let state = destination.lock();
             let entry = state.slots[0].as_ref().unwrap();
-            assert_eq!(Arc::strong_count(&entry.stamp.global), 1);
-            assert_eq!(Arc::strong_count(&entry.stamp.device), 1);
-            assert!(!Arc::ptr_eq(&entry.stamp.global, &entry.stamp.device));
+            assert_eq!(entry.stamp.global.strong_count(), 1);
+            assert_eq!(entry.stamp.device.strong_count(), 1);
+            assert!(Arc::ptr_eq(entry.stamp.global.bank(), &origin));
+            assert!(Arc::ptr_eq(entry.stamp.device.bank(), &origin));
+            assert!(!entry.stamp.global.ptr_eq(&entry.stamp.device));
             assert!(entry.handle.is_none());
             assert!(entry.metadata.is_none() && entry.global_metadata.is_none());
             assert!(entry._input.is_none() && entry.fresh_metadata.is_none());
             assert!(entry.first_freshness.is_none() && entry.latest_freshness.is_none());
-            for (other, _, _, _) in keepers.iter().skip(index + 1) {
+            for (other, _, _, _, _) in keepers.iter().skip(index + 1) {
                 let other = other.lock();
                 let other = &other.slots[0].as_ref().unwrap().stamp;
                 for old in [&entry.stamp.global, &entry.stamp.device] {
-                    assert!(!Arc::ptr_eq(old, &other.global));
-                    assert!(!Arc::ptr_eq(old, &other.device));
+                    assert!(!old.ptr_eq(&other.global));
+                    assert!(!old.ptr_eq(&other.device));
                 }
             }
         }
     };
     inspect();
     drop(lifecycle);
-    // Current raw stamps contain no gate, watch, or origin permit. All origin
-    // fees have returned although the same eight physical old Arc values live.
-    assert_eq!(origin.available_permits(), bytes);
+    assert_eq!(origin.available_permits(), structural);
     inspect();
-
-    for (destination, reservation, bank, before) in keepers {
-        assert_eq!(
-            bank.available_permits(),
-            before - Registry::incarnation_bytes()
-        );
+    let mut returned = structural;
+    for (destination, reservation, bank, before, catalogue) in keepers {
         drop(reservation);
         assert_eq!(destination.snapshot().occupied(), 0);
-        assert_eq!(bank.available_permits(), before);
-        drop(destination);
+        assert_eq!(bank.available_permits(), before - catalogue);
+        assert_eq!(
+            origin.available_permits(),
+            returned,
+            "slot release refunded a whole-backing mirror"
+        );
+        let origin_observer = origin.clone();
+        let free_count = Arc::new(AtomicUsize::new(0));
+        let count = free_count.clone();
+        super::super::shared_allocation::after_free(
+            move || {
+                // Registry body, then its two report roots. State's slots Vec
+                // is already freed before the report roots, but A stays paid.
+                assert_eq!(origin_observer.available_permits(), returned);
+                count.fetch_add(1, Ordering::SeqCst);
+            },
+            || drop(destination),
+        );
+        assert_eq!(free_count.load(Ordering::SeqCst), 3);
+        returned += mirror;
+        assert_eq!(origin.available_permits(), returned);
         assert_eq!(
             bank.available_permits(),
             super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
         );
     }
+    assert_eq!(origin.available_permits(), total);
+}
+
+#[test]
+fn marker_origin_new_foreign_keeper_denial_rolls_back_original_slot_ordinal_and_both_banks() {
+    for closed in [false, true] {
+        let destination = registry(1);
+        let bank = destination.byte_bank();
+        let before = bank.available_permits();
+        let mirror = destination._slots_storage.num_permits();
+        let origin = Arc::new(Semaphore::new(mirror - 1));
+        if closed {
+            origin.close();
+        }
+        let stamp =
+            OwnershipStamp::new(ControlIdentity::new(&origin), ControlIdentity::new(&origin));
+        let error = destination.reserve(stamp).err().unwrap();
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+        assert_eq!(origin.available_permits(), mirror - 1);
+        assert_eq!(bank.available_permits(), before);
+        assert_eq!(destination.lock().issued, 0);
+        assert_eq!(destination.snapshot().occupied(), 0);
+        assert!(!destination.snapshot().sealed);
+        assert!(destination.origins.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn marker_origin_catalogue_backing_denial_returns_staged_origin_and_original_incarnation_fees() {
+    let destination = registry(1);
+    let bank = destination.byte_bank();
+    let mirror = destination._slots_storage.num_permits();
+    let origin = Arc::new(Semaphore::new(mirror));
+    let catalogue = 2 * std::mem::size_of::<OwnedSemaphorePermit>();
+    let leave = Registry::incarnation_bytes() + catalogue - 1;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((bank.available_permits() - leave) as u32)
+        .unwrap();
+    let stamp = OwnershipStamp::new(ControlIdentity::new(&origin), ControlIdentity::new(&origin));
+    let error = destination.reserve(stamp).err().unwrap();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(origin.available_permits(), mirror);
+    assert_eq!(bank.available_permits(), leave);
+    assert_eq!(destination.lock().issued, 0);
+    assert_eq!(destination.snapshot().occupied(), 0);
+    assert!(destination.origins.lock().unwrap().is_empty());
+    drop(held);
 }

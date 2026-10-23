@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
     let host = "manual-filter-雪";
     let bytes = RetainedRoute::body_bytes() + host.len();
-    let watch_bytes = watch::body_bytes::<Arc<()>>();
+    let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
     let bank = Arc::new(Semaphore::new(bytes + watch_bytes));
-    let cell = Cell::new(Arc::new(()), bank.clone()).unwrap();
+    let cell = Cell::new(ControlIdentity::new(&bank), bank.clone()).unwrap();
     let charged = bank.clone();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let captured = observed.clone();
@@ -111,9 +111,9 @@ fn shared_route_foreign_bank_rejection_keeps_original_version_watch_and_fees() {
         RetainedRoute::established(&Route::Wifi(Some("original".into())), None, &original_bank)
             .unwrap();
     let before = original_bank.available_permits();
-    let watch_bytes = watch::body_bytes::<Arc<()>>();
+    let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
     let bank = Arc::new(Semaphore::new(watch_bytes));
-    let cell = Cell::new(Arc::new(()), bank.clone()).unwrap();
+    let cell = Cell::new(ControlIdentity::new(&bank), bank.clone()).unwrap();
     let version = cell.snapshot().version;
     let watch = cell.changes.subscribe();
     let error = cell
@@ -128,7 +128,10 @@ fn shared_route_foreign_bank_rejection_keeps_original_version_watch_and_fees() {
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
     );
-    assert!(Arc::ptr_eq(&version, &cell.snapshot().version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &version,
+        &cell.snapshot().version
+    ));
     assert!(!watch.has_changed().unwrap());
     assert!(matches!(cell.snapshot().desired, Desired::Automatic));
     assert_eq!(original_bank.available_permits(), before);
@@ -156,7 +159,7 @@ fn route(capacity: usize, text: &str) -> RouteIntent {
     RouteIntent::Wifi(Some(host))
 }
 
-fn manual(cell: &Cell, route: RouteIntent) -> anyhow::Result<Arc<()>> {
+fn manual(cell: &Cell, route: RouteIntent) -> anyhow::Result<crate::cmd::tunnel::ControlIdentity> {
     cell.checked_replace(|| cell.manual(route, authority()), None, || Ok(()))
 }
 
@@ -168,9 +171,9 @@ fn manual_route_bytes_capacity_shared_snapshots_and_last_owner_after_stop() {
     };
     let original = host.as_ptr();
     let bytes = RetainedRoute::bytes(&route);
-    let watch_bytes = watch::body_bytes::<Arc<()>>();
+    let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
     let bank = Arc::new(Semaphore::new(bytes + watch_bytes));
-    let cell = Cell::new(Arc::new(()), Arc::clone(&bank)).unwrap();
+    let cell = Cell::new(ControlIdentity::new(&bank), Arc::clone(&bank)).unwrap();
     let version = manual(&cell, route).unwrap();
     assert_eq!(bank.available_permits(), 0);
     let snapshot = cell.snapshot();
@@ -192,7 +195,10 @@ fn manual_route_bytes_capacity_shared_snapshots_and_last_owner_after_stop() {
         0,
         "snapshot clones double charged"
     );
-    assert!(Arc::ptr_eq(&version, &snapshot.version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &version,
+        &snapshot.version
+    ));
     cell.replace(Desired::Stopped);
     assert_eq!(
         bank.available_permits(),
@@ -210,9 +216,9 @@ fn manual_route_bytes_capacity_shared_snapshots_and_last_owner_after_stop() {
 fn manual_route_bytes_rejected_replacement_preserves_original_version_watch_and_pending() {
     let original = route(4096, "original-private-host");
     let bytes = RetainedRoute::bytes(&original);
-    let watch_bytes = watch::body_bytes::<Arc<()>>();
+    let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
     let bank = Arc::new(Semaphore::new(bytes + watch_bytes));
-    let cell = Cell::new(Arc::new(()), Arc::clone(&bank)).unwrap();
+    let cell = Cell::new(ControlIdentity::new(&bank), Arc::clone(&bank)).unwrap();
     manual(&cell, original).unwrap();
     let before = cell.snapshot();
     let watch = cell.changes.subscribe();
@@ -222,7 +228,10 @@ fn manual_route_bytes_rejected_replacement_preserves_original_version_watch_and_
         ios_core::ErrorClass::ResourceLimit
     );
     let after = cell.snapshot();
-    assert!(Arc::ptr_eq(&before.version, &after.version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &before.version,
+        &after.version
+    ));
     let (Desired::Manual { route: old, .. }, Desired::Manual { route: current, .. }) =
         (&before.desired, &after.desired)
     else {
@@ -247,11 +256,11 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
     let old_bytes = RetainedRoute::bytes(&old);
     let new_bytes = RetainedRoute::bytes(&new);
     let version_bytes = FailureVersion::body_bytes();
-    let watch_bytes = watch::body_bytes::<Arc<()>>();
+    let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
     let bank = Arc::new(Semaphore::new(
         old_bytes + new_bytes + version_bytes + watch_bytes,
     ));
-    let cell = Cell::new(Arc::new(()), Arc::clone(&bank)).unwrap();
+    let cell = Cell::new(ControlIdentity::new(&bank), Arc::clone(&bank)).unwrap();
     manual(&cell, old).unwrap();
     let before = cell.snapshot();
     let calls = AtomicUsize::new(0);
@@ -271,7 +280,10 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
         .unwrap();
     assert!(error.is::<ios_core::OperationCancelled>());
     let after = cell.snapshot();
-    assert!(Arc::ptr_eq(&before.version, &after.version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &before.version,
+        &after.version
+    ));
     let (Desired::Manual { route: old, .. }, Desired::Manual { route: current, .. }) =
         (&before.desired, &after.desired)
     else {
@@ -293,15 +305,22 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
 fn manual_route_bytes_clear_keeps_original_epoch_snapshot_and_zero_bank_stop_works() {
     let selected = route(2048, "selected-host");
     let bytes = RetainedRoute::bytes(&selected);
-    let watch_bytes = watch::body_bytes::<Arc<()>>();
+    let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
     let bank = Arc::new(Semaphore::new(bytes + watch_bytes));
-    let epoch = Arc::new(());
-    let cell = Cell::new(Arc::clone(&epoch), Arc::clone(&bank)).unwrap();
+    let epoch = ControlIdentity::new(&bank);
+    let cell = Cell::new(
+        crate::cmd::tunnel::ControlIdentity::clone(&epoch),
+        Arc::clone(&bank),
+    )
+    .unwrap();
     manual(&cell, selected).unwrap();
     let before = cell.snapshot();
-    cell.reset(Arc::new(()));
+    cell.reset(ControlIdentity::new(&bank));
     assert!(matches!(cell.snapshot().desired, Desired::Automatic));
-    assert!(Arc::ptr_eq(&before.epoch, &epoch));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &before.epoch,
+        &epoch
+    ));
     assert_eq!(bank.available_permits(), 0);
     cell.replace(Desired::Stopped);
     assert_eq!(bank.available_permits(), 0);
@@ -310,14 +329,14 @@ fn manual_route_bytes_clear_keeps_original_epoch_snapshot_and_zero_bank_stop_wor
     drop(cell);
     assert_eq!(bank.available_permits(), bytes + watch_bytes);
     let zero_bank = Arc::new(Semaphore::new(watch_bytes));
-    let zero = Cell::new(Arc::new(()), zero_bank.clone()).unwrap();
+    let zero = Cell::new(ControlIdentity::new(&zero_bank), zero_bank.clone()).unwrap();
     assert_eq!(zero_bank.available_permits(), 0);
     zero_bank.close();
     super::super::metadata_vec::with_allocation_hook(
         |_, _| panic!("zero-pool stop/reset allocated a controlled watch backing"),
         || {
             zero.replace(Desired::Stopped);
-            zero.reset(Arc::new(()));
+            zero.reset(ControlIdentity::new(&zero_bank));
             assert!(matches!(zero.snapshot().desired, Desired::Automatic));
             assert_eq!(zero_bank.available_permits(), 0);
         },

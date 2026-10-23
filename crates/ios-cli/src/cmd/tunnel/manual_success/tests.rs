@@ -24,7 +24,10 @@ fn authority(state: &TunnelAgentState, key: &str) -> DeviceAuthority {
         .unwrap()
 }
 
-async fn manual(state: &TunnelAgentState, key: &str) -> (Ticket, Arc<()>, FailureVersion) {
+async fn manual(
+    state: &TunnelAgentState,
+    key: &str,
+) -> (Ticket, crate::cmd::tunnel::ControlIdentity, FailureVersion) {
     manual_authorized(state, key, authority(state, key)).await
 }
 
@@ -32,7 +35,7 @@ async fn manual_authorized(
     state: &TunnelAgentState,
     key: &str,
     authority: DeviceAuthority,
-) -> (Ticket, Arc<()>, FailureVersion) {
+) -> (Ticket, crate::cmd::tunnel::ControlIdentity, FailureVersion) {
     let ticket = state.inner.lifecycle.ticket(key).await.unwrap();
     let slot = state.reserve_failure_slot(key).await.unwrap();
     state
@@ -123,7 +126,8 @@ async fn manual_preflight_revoked_authority_keeps_original_failure_and_exact_pen
     ));
     let pending = ticket.pending_success().unwrap();
     assert!(
-        Arc::ptr_eq(&pending.0, &desired) && FailureVersion::ptr_eq(&pending.1.version, &failure)
+        crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
+            && FailureVersion::ptr_eq(&pending.1.version, &failure)
     );
     state.notify_shutdown();
     state.clear().await;
@@ -192,7 +196,8 @@ async fn manual_preflight_expired_authority_keeps_failure_and_unprocessed_pendin
     ));
     let pending = ticket.pending_success().unwrap();
     assert!(
-        Arc::ptr_eq(&pending.0, &desired) && FailureVersion::ptr_eq(&pending.1.version, &failure)
+        crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
+            && FailureVersion::ptr_eq(&pending.1.version, &failure)
     );
     state.notify_shutdown();
     state.clear().await;
@@ -219,7 +224,8 @@ async fn actual_pending_clear_late_clock_restores_same_desired_and_failure_arcs(
     assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 2);
     let pending = ticket.pending_success().unwrap();
     assert!(
-        Arc::ptr_eq(&pending.0, &desired) && FailureVersion::ptr_eq(&pending.1.version, &failure)
+        crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
+            && FailureVersion::ptr_eq(&pending.1.version, &failure)
     );
     state.notify_shutdown();
     state.clear().await;
@@ -266,14 +272,17 @@ async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at
         })
         .unwrap();
     let new_desired = ticket.desired().version;
-    assert!(!Arc::ptr_eq(&new_desired, &old_desired));
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &new_desired,
+        &old_desired
+    ));
     let held = bank
         .clone()
         .try_acquire_many_owned(bank.available_permits() as u32)
         .unwrap();
     state.inner.lifecycle.fill_manual_successes(&mut plan).await;
     assert_eq!(plan.selected(), 1);
-    assert!(Arc::ptr_eq(
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &plan.completed.as_slice()[0].desired,
         &new_desired
     ));
@@ -352,7 +361,10 @@ async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() 
         })
         .unwrap();
     let new_desired = ticket.desired().version;
-    assert!(!Arc::ptr_eq(&old_desired, &new_desired));
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &old_desired,
+        &new_desired
+    ));
     assert!(!FailureVersion::ptr_eq(&old_failure, &new_failure));
     plan.into_inner()
         .flush_collected(
@@ -366,7 +378,10 @@ async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() 
         &new_failure
     ));
     let (pending_desired, pending) = ticket.pending_success().unwrap();
-    assert!(Arc::ptr_eq(&pending_desired, &new_desired));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &pending_desired,
+        &new_desired
+    ));
     assert!(FailureVersion::ptr_eq(&pending.version, &new_failure));
     state.notify_shutdown();
     state.clear().await;
@@ -395,11 +410,12 @@ async fn manual_preflight_actual_late_writer_restores_failure_stamp_and_pending_
     let stamp = ticket.failure_stamp().unwrap();
     assert!(
         FailureVersion::ptr_eq(&stamp.0, &original_stamp.0)
-            && Arc::ptr_eq(&stamp.1, &original_stamp.1)
+            && crate::cmd::tunnel::ControlIdentity::ptr_eq(&stamp.1, &original_stamp.1)
     );
     let pending = ticket.pending_success().unwrap();
     assert!(
-        Arc::ptr_eq(&pending.0, &desired) && FailureVersion::ptr_eq(&pending.1.version, &failure)
+        crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
+            && FailureVersion::ptr_eq(&pending.1.version, &failure)
     );
     state.notify_shutdown();
     state.clear().await;

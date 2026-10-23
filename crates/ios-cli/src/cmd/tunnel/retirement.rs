@@ -3,6 +3,7 @@
 //! No task is spawned. Native shutdown never runs under the table,
 //! lifecycle watch borrows or this registry's synchronous mutex.
 
+use super::ControlIdentity;
 use std::error::Error;
 use std::future::{pending, poll_fn, Future};
 use std::num::NonZeroU64;
@@ -107,13 +108,18 @@ pub(super) fn shutdown_primary_is_elapsed(error: &TunnelError) -> bool {
 /// Opaque lifecycle identities, never a UDID, endpoint or runtime identity.
 #[derive(Clone)]
 pub(super) struct OwnershipStamp {
-    global: Arc<()>,
-    device: Arc<()>,
+    global: ControlIdentity,
+    device: ControlIdentity,
 }
 
 impl OwnershipStamp {
-    pub(super) fn new(global: Arc<()>, device: Arc<()>) -> Self {
+    pub(super) fn new(global: ControlIdentity, device: ControlIdentity) -> Self {
         Self { global, device }
+    }
+
+    pub(super) fn standalone(registry: &RegistryOwner) -> Self {
+        let bank = registry.byte_bank();
+        Self::new(ControlIdentity::new(&bank), ControlIdentity::new(&bank))
     }
 }
 
@@ -296,6 +302,9 @@ pub(super) struct Registry {
     expiry_stock: NativeReportOwner,
     // Backing and application-owned payload fees outlive the fields they own.
     _slots_storage: OwnedSemaphorePermit,
+    // Historical producer mirrors outlive the ACTUAL whole slots Vec and all
+    // earlier Registry fields. Individual slot release never refunds them.
+    origins: StdMutex<super::native_origins::Catalogue>,
 }
 
 pub(super) type RegistryOwner = super::shared_allocation::Shared<Registry>;
@@ -349,6 +358,7 @@ impl Registry {
                 error_stock,
                 expiry_stock,
                 _slots_storage: slots_storage,
+                origins: StdMutex::new(super::native_origins::Catalogue::default()),
             },
             bank,
             body_storage,
@@ -367,9 +377,15 @@ impl Registry {
 
     #[cfg(test)]
     pub(super) fn structural_bytes(&self) -> usize {
+        let state = self.lock();
         Self::body_bytes()
-            + self.lock().slots.capacity() * std::mem::size_of::<Option<Entry>>()
+            + state.slots.capacity() * std::mem::size_of::<Option<Entry>>()
             + 2 * NativeReport::body_bytes()
+            + self
+                .origins
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .backing_bytes()
     }
 
     fn lock(&self) -> StdMutexGuard<'_, State> {
@@ -388,6 +404,11 @@ impl RegistryOwner {
         let state = current.state.get_mut().unwrap_or_else(|p| p.into_inner());
         anyhow::ensure!(
             !state.sealed
+                && current
+                    .origins
+                    .get_mut()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .is_empty()
                 && state.slots.iter().all(Option::is_none)
                 && state.first_failure.is_none()
                 && state.first_expiry.is_none()
@@ -466,6 +487,18 @@ impl RegistryOwner {
             Registry::incarnation_bytes(),
         )?;
         let incarnation = Incarnation::from_grant((), &self.byte_bank, storage)?;
+        let mut origins = self
+            .origins
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let prepared = origins.prepare(
+            &self.byte_bank,
+            self._slots_storage.num_permits(),
+            [&stamp.global, &stamp.device],
+        )?;
+        // Every original/new grant and actual backing is ready. No failure or
+        // await separates catalogue commit, ordinal consumption and slot fill.
+        origins.commit(prepared);
         state.issued = issued;
         state.slots[slot] = Some(Entry {
             incarnation: incarnation.clone(),
@@ -535,13 +568,19 @@ impl Registry {
     }
 
     /// Use the exact OLD global identity returned by the reusable clear fence.
-    pub(super) fn retire_global(&self, old: &Arc<()>) {
-        self.retire_matching(|entry| Arc::ptr_eq(&entry.stamp.global, old), false);
+    pub(super) fn retire_global(&self, old: &ControlIdentity) {
+        self.retire_matching(
+            |entry| ControlIdentity::ptr_eq(&entry.stamp.global, old),
+            false,
+        );
     }
 
     /// Use the exact OLD device identity returned by targeted stop's fence.
-    pub(super) fn retire_device(&self, old: &Arc<()>) {
-        self.retire_matching(|entry| Arc::ptr_eq(&entry.stamp.device, old), false);
+    pub(super) fn retire_device(&self, old: &ControlIdentity) {
+        self.retire_matching(
+            |entry| ControlIdentity::ptr_eq(&entry.stamp.device, old),
+            false,
+        );
     }
 
     fn retire_key(&self, key: &Key, release_empty: bool) {
@@ -1045,8 +1084,8 @@ impl NativeLease {
             return Err(super::lifecycle::cancelled());
         };
         if entry.phase != Phase::Unpublished
-            || !Arc::ptr_eq(&entry.stamp.global, &stamp.global)
-            || !Arc::ptr_eq(&entry.stamp.device, &stamp.device)
+            || !ControlIdentity::ptr_eq(&entry.stamp.global, &stamp.global)
+            || !ControlIdentity::ptr_eq(&entry.stamp.device, &stamp.device)
         {
             return Err(super::lifecycle::cancelled());
         }
@@ -1208,6 +1247,8 @@ mod native_tests;
 #[path = "retirement/report_body_tests.rs"]
 mod report_body_tests;
 
+#[cfg(test)]
+mod origin_tests;
 #[cfg(test)]
 mod tests;
 

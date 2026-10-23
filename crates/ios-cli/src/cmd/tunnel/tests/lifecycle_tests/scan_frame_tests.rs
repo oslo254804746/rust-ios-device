@@ -89,8 +89,8 @@ async fn scan_frame_prelock_old_markers_and_exact_backings_live_until_each_actua
         .try_acquire_many_owned((before - 2 * frame) as u32)
         .unwrap();
     let control = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
-    let scan = Arc::downgrade(&control.generation);
-    let global = Arc::downgrade(&control.epoch.generation);
+    let scan = crate::cmd::tunnel::ControlIdentity::downgrade(&control.generation);
+    let global = crate::cmd::tunnel::ControlIdentity::downgrade(&control.epoch.generation);
     drop(control);
     let lock = state.inner.scan_lock.lock().await;
     let allocations = Arc::new(StdMutex::new(Vec::new()));
@@ -113,14 +113,14 @@ async fn scan_frame_prelock_old_markers_and_exact_backings_live_until_each_actua
     // DIFFERENT actual global/scan pair. Cancellation is not destruction.
     state.inner.lifecycle.clear();
     let control = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
-    let next_scan = Arc::downgrade(&control.generation);
-    let next_global = Arc::downgrade(&control.epoch.generation);
+    let next_scan = crate::cmd::tunnel::ControlIdentity::downgrade(&control.generation);
+    let next_global = crate::cmd::tunnel::ControlIdentity::downgrade(&control.epoch.generation);
     drop(control);
-    assert!(!Arc::ptr_eq(
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &global.upgrade().unwrap(),
         &next_global.upgrade().unwrap()
     ));
-    assert!(!Arc::ptr_eq(
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &scan.upgrade().unwrap(),
         &next_scan.upgrade().unwrap()
     ));

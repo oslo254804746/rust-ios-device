@@ -18,7 +18,10 @@ async fn native_report_prepaid_history_and_current_join_snapshots_survive_closed
     let bank = registry.byte_bank.clone();
     let (stream, peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
-    let lease = registry.reserve(stamp()).unwrap().attach(native.clone());
+    let lease = registry
+        .reserve(stamp(&registry))
+        .unwrap()
+        .attach(native.clone());
     drop(peer);
     assert!(inactive(&native).await);
     let original = native.shutdown_status().unwrap_err();
@@ -103,7 +106,7 @@ async fn native_census_current_snapshot_is_inside_prepaid_backing_and_stays_froz
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
     let (stream, peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
-    let owner = stamp();
+    let owner = stamp(&registry);
     let lease = registry
         .reserve(owner.clone())
         .unwrap()
@@ -216,7 +219,10 @@ async fn registry_owner_original_native_lease_outlives_caller_and_joins_at_close
     let pointer = &*registry as *const Registry;
     let (stream, mut peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
-    let lease = registry.reserve(stamp()).unwrap().attach(native.clone());
+    let lease = registry
+        .reserve(stamp(&registry))
+        .unwrap()
+        .attach(native.clone());
     assert!(lease.registry.ptr_eq(&registry));
     assert_eq!(
         bank.available_permits(),
@@ -278,7 +284,7 @@ async fn native_ordinal_cleanup_at_zero_pool_joins_original_workers_and_strict_e
     let (stream, mut peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
-        .reserve(stamp())
+        .reserve(stamp(&registry))
         .unwrap()
         .attach(Arc::clone(&native));
     let bank = Arc::clone(&registry.byte_bank);
@@ -321,7 +327,7 @@ async fn native_census_keeps_active_original_io_on_quota_refusal_and_last_root_d
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
-    let owner = stamp();
+    let owner = stamp(&registry);
     let (stream, peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
@@ -364,8 +370,8 @@ async fn native_census_keeps_active_original_io_on_quota_refusal_and_last_root_d
     assert_eq!(registry.snapshot().occupied(), 0);
 }
 
-fn stamp() -> OwnershipStamp {
-    OwnershipStamp::new(Arc::new(()), Arc::new(()))
+fn stamp(registry: &RegistryOwner) -> OwnershipStamp {
+    OwnershipStamp::standalone(registry)
 }
 
 async fn runtime<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
@@ -427,7 +433,7 @@ async fn native_retirement_joins_real_workers_with_another_handle_arc_held() {
     let (stream, mut peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
-        .reserve(stamp())
+        .reserve(stamp(&registry))
         .unwrap()
         .attach(Arc::clone(&native));
     let retained = Arc::clone(&native);
@@ -461,7 +467,7 @@ async fn native_retirement_fully_joined_eof_releases_slot_and_preserves_history_
     let (stream, peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
-        .reserve(stamp())
+        .reserve(stamp(&registry))
         .unwrap()
         .attach(Arc::clone(&native));
     drop(peer);
@@ -570,7 +576,10 @@ async fn native_retirement_later_join_panic_replaces_same_owner_pure_expiry_with
         gate: gate.clone(),
     })
     .await;
-    let lease = registry.reserve(stamp()).unwrap().attach(native.clone());
+    let lease = registry
+        .reserve(stamp(&registry))
+        .unwrap()
+        .attach(native.clone());
     let key = lease.key.clone();
     drop(lease);
     // Supply an actual independently returned Core expiry to the registry's
@@ -670,7 +679,7 @@ async fn native_retirement_outer_expiry_captures_acquired_io_before_internal_shu
     })
     .await;
     let lease = registry
-        .reserve(stamp())
+        .reserve(stamp(&registry))
         .unwrap()
         .attach(Arc::clone(&native));
     let finished = inactive(&native).await;
@@ -737,7 +746,7 @@ async fn native_retirement_false_outer_report_never_uses_completed_foreign_inner
     .await;
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
     let lease = registry
-        .reserve(stamp())
+        .reserve(stamp(&registry))
         .unwrap()
         .attach(Arc::clone(&native));
     let finished = inactive(&native).await;

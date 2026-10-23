@@ -2,6 +2,7 @@
 //! No retry history, failure permit or independent device task lives here.
 
 use super::paid_watch as watch;
+use super::ControlIdentity;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -159,18 +160,18 @@ pub(super) enum Desired {
 
 #[derive(Clone)]
 pub(super) struct Snapshot {
-    pub(super) epoch: Arc<()>,
-    pub(super) version: Arc<()>,
+    pub(super) epoch: ControlIdentity,
+    pub(super) version: ControlIdentity,
     pub(super) desired: Desired,
 }
 
 pub(super) struct Cell {
     state: Mutex<Snapshot>,
-    changes: watch::Sender<Arc<()>>,
+    changes: watch::Sender<ControlIdentity>,
     // Mirrors the existing FailedTunnelAttempt.version; never an independent
     // failure history/permit. Updated by its original commit and rollback.
-    failure: Mutex<Option<(FailureVersion, Arc<()>)>>,
-    pending_success: Mutex<Option<(Arc<()>, FailureVersion)>>,
+    failure: Mutex<Option<(FailureVersion, ControlIdentity)>>,
+    pending_success: Mutex<Option<(ControlIdentity, FailureVersion)>>,
     metadata_bytes: Arc<Semaphore>,
     #[cfg(test)]
     before_checked_replace: Mutex<Option<ReplaceCallback>>,
@@ -180,19 +181,22 @@ pub(super) struct Cell {
 
 impl Cell {
     #[cfg(test)]
-    pub(super) fn new(epoch: Arc<()>, metadata_bytes: Arc<Semaphore>) -> anyhow::Result<Self> {
+    pub(super) fn new(
+        epoch: ControlIdentity,
+        metadata_bytes: Arc<Semaphore>,
+    ) -> anyhow::Result<Self> {
         let storage = super::admission::known_metadata_charge(
             &metadata_bytes,
-            watch::body_bytes::<Arc<()>>(),
+            watch::body_bytes::<ControlIdentity>(),
         )?;
         Self::from_grant(epoch, metadata_bytes, storage)
     }
     pub(super) fn from_grant(
-        epoch: Arc<()>,
+        epoch: ControlIdentity,
         metadata_bytes: Arc<Semaphore>,
         storage: OwnedSemaphorePermit,
     ) -> anyhow::Result<Self> {
-        let version = Arc::new(());
+        let version = ControlIdentity::new(&metadata_bytes);
         let (changes, _) = watch::from_grant(version.clone(), &metadata_bytes, storage)?;
         Ok(Self {
             state: Mutex::new(Snapshot {
@@ -221,18 +225,18 @@ impl Cell {
         self.lock().clone()
     }
 
-    pub(super) fn is_epoch(&self, epoch: &Arc<()>) -> bool {
-        Arc::ptr_eq(&self.lock().epoch, epoch)
+    pub(super) fn is_epoch(&self, epoch: &ControlIdentity) -> bool {
+        ControlIdentity::ptr_eq(&self.lock().epoch, epoch)
     }
 
-    pub(super) fn reset(&self, epoch: Arc<()>) {
+    pub(super) fn reset(&self, epoch: ControlIdentity) {
         // Explicit global clear resets desired states, unlike durable per-device
         // stop across ordinary scans. Do this atomically with the new version.
         let version = {
             let mut state = self.lock();
             state.epoch = epoch;
             state.desired = Desired::Automatic;
-            state.version = Arc::new(());
+            state.version = ControlIdentity::new(&self.metadata_bytes);
             *self
                 .pending_success
                 .lock()
@@ -247,13 +251,13 @@ impl Cell {
         !matches!(self.lock().desired, Desired::Automatic)
     }
 
-    pub(super) fn matches(&self, version: &Arc<()>) -> bool {
-        Arc::ptr_eq(&self.lock().version, version)
+    pub(super) fn matches(&self, version: &ControlIdentity) -> bool {
+        ControlIdentity::ptr_eq(&self.lock().version, version)
     }
 
-    pub(super) fn replace(&self, desired: Desired) -> Arc<()> {
+    pub(super) fn replace(&self, desired: Desired) -> ControlIdentity {
         let mut state = self.lock();
-        state.version = Arc::new(());
+        state.version = ControlIdentity::new(&self.metadata_bytes);
         state.desired = desired;
         let version = state.version.clone();
         drop(state);
@@ -274,7 +278,7 @@ impl Cell {
         desired: impl FnOnce() -> anyhow::Result<Desired>,
         failure: Option<FailureVersion>,
         check: impl Fn() -> anyhow::Result<()>,
-    ) -> anyhow::Result<Arc<()>> {
+    ) -> anyhow::Result<ControlIdentity> {
         #[cfg(test)]
         Self::run_replace_callback(&self.before_checked_replace);
         let mut state = self.lock();
@@ -286,7 +290,7 @@ impl Cell {
         let desired = desired()?;
         let previous = state.clone();
         let previous_pending = pending.clone();
-        let version = Arc::new(());
+        let version = ControlIdentity::new(&self.metadata_bytes);
         state.version = version.clone();
         state.desired = desired;
         *pending = failure.map(|failure| (version.clone(), failure));
@@ -361,22 +365,22 @@ impl Cell {
     }
 
     #[cfg(test)]
-    pub(super) fn subscribe(&self) -> watch::Receiver<Arc<()>> {
+    pub(super) fn subscribe(&self) -> watch::Receiver<ControlIdentity> {
         self.changes.subscribe()
     }
 
-    pub(super) fn failure(&self) -> Option<(FailureVersion, Arc<()>)> {
+    pub(super) fn failure(&self) -> Option<(FailureVersion, ControlIdentity)> {
         self.failure
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
     }
 
-    pub(super) fn set_failure(&self, failure: Option<(FailureVersion, Arc<()>)>) {
+    pub(super) fn set_failure(&self, failure: Option<(FailureVersion, ControlIdentity)>) {
         *self.failure.lock().unwrap_or_else(|p| p.into_inner()) = failure;
     }
 
-    pub(super) fn pending_success(&self) -> Option<(Arc<()>, FailureVersion)> {
+    pub(super) fn pending_success(&self) -> Option<(ControlIdentity, FailureVersion)> {
         self.pending_success
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -387,10 +391,10 @@ impl Cell {
     /// Returning shared evidence makes latest-version collection allocation-free.
     pub(super) fn manual_success(
         &self,
-        epoch: &Arc<()>,
-    ) -> Option<(Arc<()>, FailureVersion, DeviceAuthority)> {
+        epoch: &ControlIdentity,
+    ) -> Option<(ControlIdentity, FailureVersion, DeviceAuthority)> {
         let state = self.lock();
-        if !Arc::ptr_eq(&state.epoch, epoch) {
+        if !ControlIdentity::ptr_eq(&state.epoch, epoch) {
             return None;
         }
         let Desired::Manual { authority, .. } = &state.desired else {
@@ -401,19 +405,19 @@ impl Cell {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let (desired, failure) = pending.as_ref()?;
-        if !Arc::ptr_eq(desired, &state.version) {
+        if !ControlIdentity::ptr_eq(desired, &state.version) {
             return None;
         }
-        Some((Arc::clone(desired), failure.clone(), authority.clone()))
+        Some((desired.clone(), failure.clone(), authority.clone()))
     }
 
-    pub(super) fn clear_success(&self, desired: &Arc<()>, failure: &FailureVersion) {
+    pub(super) fn clear_success(&self, desired: &ControlIdentity, failure: &FailureVersion) {
         let mut pending = self
             .pending_success
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         if pending.as_ref().is_some_and(|(current, row)| {
-            Arc::ptr_eq(current, desired) && FailureVersion::ptr_eq(row, failure)
+            ControlIdentity::ptr_eq(current, desired) && FailureVersion::ptr_eq(row, failure)
         }) {
             *pending = None;
         }
@@ -421,7 +425,7 @@ impl Cell {
 
     pub(super) fn clear_success_checked(
         &self,
-        desired: &Arc<()>,
+        desired: &ControlIdentity,
         failure: &FailureVersion,
         check: impl Fn() -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
@@ -431,7 +435,7 @@ impl Cell {
             .unwrap_or_else(|p| p.into_inner());
         check()?;
         if pending.as_ref().is_some_and(|(current, row)| {
-            Arc::ptr_eq(current, desired) && FailureVersion::ptr_eq(row, failure)
+            ControlIdentity::ptr_eq(current, desired) && FailureVersion::ptr_eq(row, failure)
         }) {
             let original = pending.take();
             if let Err(error) = check() {
@@ -442,7 +446,7 @@ impl Cell {
         Ok(())
     }
 
-    pub(super) async fn changed(&self, version: &Arc<()>) {
+    pub(super) async fn changed(&self, version: &ControlIdentity) {
         let mut changes = self.changes.subscribe();
         // Subscribe before checking the immutable version to close the race.
         if !self.matches(version) {

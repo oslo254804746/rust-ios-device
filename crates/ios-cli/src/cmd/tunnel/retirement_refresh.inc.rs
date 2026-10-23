@@ -8,6 +8,9 @@ pub(super) struct RefreshProof {
     global_metadata: super::metadata_lease::Owner,
     previous: Option<super::freshness::MetadataOwner>,
     _storage: OwnedSemaphorePermit,
+    // A foreign proof can outlive/reuse its original native slot. These own
+    // origin grants, separate from B's catalogue, end AFTER the stamp fields.
+    _origin_storage: super::native_origins::Grants,
 }
 type RefreshSwap<T> = (
     T,
@@ -54,8 +57,8 @@ impl NativeLease {
             !state.sealed
                 && entry.phase == Phase::Active
                 && entry.incarnation.ptr_eq(&self.key.incarnation)
-                && Arc::ptr_eq(&entry.stamp.global, &stamp.global)
-                && Arc::ptr_eq(&entry.stamp.device, &stamp.device)
+                && ControlIdentity::ptr_eq(&entry.stamp.global, &stamp.global)
+                && ControlIdentity::ptr_eq(&entry.stamp.device, &stamp.device)
                 && entry
                     .handle
                     .as_ref()
@@ -74,6 +77,11 @@ impl NativeLease {
         );
         let storage =
             super::admission::known_metadata_charge(bank, std::mem::size_of::<RefreshProof>())?;
+        let origin_storage = super::native_origins::proof_grants(
+            bank,
+            std::mem::size_of::<RefreshProof>(),
+            [&stamp.global, &stamp.device],
+        )?;
         Ok(RefreshProof {
             registry: self.registry.clone(),
             key: self.key.clone(),
@@ -83,6 +91,7 @@ impl NativeLease {
             global_metadata: global_metadata.clone(),
             previous: previous.cloned(),
             _storage: storage,
+            _origin_storage: origin_storage,
         })
     }
 }
@@ -101,8 +110,8 @@ impl RefreshProof {
             !state.sealed
                 && entry.phase == Phase::Active
                 && entry.incarnation.ptr_eq(&self.key.incarnation)
-                && Arc::ptr_eq(&entry.stamp.global, &self.stamp.global)
-                && Arc::ptr_eq(&entry.stamp.device, &self.stamp.device)
+                && ControlIdentity::ptr_eq(&entry.stamp.global, &self.stamp.global)
+                && ControlIdentity::ptr_eq(&entry.stamp.device, &self.stamp.device)
                 && entry
                     .handle
                     .as_ref()
@@ -132,8 +141,8 @@ impl RefreshProof {
                     .handle
                     .as_ref()
                     .is_some_and(|runtime| Arc::ptr_eq(runtime, &self.handle))
-                    && Arc::ptr_eq(&entry.stamp.global, &self.stamp.global)
-                    && Arc::ptr_eq(&entry.stamp.device, &self.stamp.device)
+                    && ControlIdentity::ptr_eq(&entry.stamp.global, &self.stamp.global)
+                    && ControlIdentity::ptr_eq(&entry.stamp.device, &self.stamp.device)
                     && same_metadata(entry.fresh_metadata.as_ref(), self.previous.as_ref()) =>
             {
                 if entry.first_freshness.is_none() {
@@ -166,8 +175,8 @@ impl RefreshProof {
             Registry::entry_mut(&mut state, &self.key).ok_or_else(super::lifecycle::cancelled)?;
         anyhow::ensure!(
             entry.phase == Phase::Active
-                && Arc::ptr_eq(&entry.stamp.global, &self.stamp.global)
-                && Arc::ptr_eq(&entry.stamp.device, &self.stamp.device)
+                && ControlIdentity::ptr_eq(&entry.stamp.global, &self.stamp.global)
+                && ControlIdentity::ptr_eq(&entry.stamp.device, &self.stamp.device)
                 && entry
                     .handle
                     .as_ref()

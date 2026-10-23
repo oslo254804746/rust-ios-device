@@ -1,4 +1,5 @@
 //! Late CURRENT manual proofs enter storage owned before any scan Source poll.
+use super::ControlIdentity;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -11,7 +12,7 @@ use crate::access::DeviceAuthority;
 
 struct Completed {
     ticket: Ticket,
-    desired: Arc<()>,
+    desired: ControlIdentity,
     failure: FailureVersion,
     authority: DeviceAuthority,
 }
@@ -36,13 +37,13 @@ impl Preflight {
     pub(super) fn record(
         &mut self,
         ticket: Ticket,
-        desired: Arc<()>,
+        desired: ControlIdentity,
         failure: FailureVersion,
         authority: DeviceAuthority,
     ) {
         self.completed.push_reserved(Completed {
             ticket: ticket.clone(),
-            desired: Arc::clone(&desired),
+            desired: desired.clone(),
             failure: failure.clone(),
             authority: authority.clone(),
         });

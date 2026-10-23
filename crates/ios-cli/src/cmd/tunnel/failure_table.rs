@@ -1,5 +1,6 @@
 //! Admitted failure nodes and allocation-free original-owner rollback.
 //! Arc/anyhow private allocations and arbitrary dyn Error remain separate.
+use super::ControlIdentity;
 use std::ops::Deref;
 #[cfg(test)]
 use std::ops::Index;
@@ -383,12 +384,12 @@ impl Table {
         removed
     }
 
-    pub(super) fn take_other_globals(&mut self, current: Option<&Arc<()>>) -> RemovedBatch {
+    pub(super) fn take_other_globals(&mut self, current: Option<&ControlIdentity>) -> RemovedBatch {
         self.select(&|_, row| {
             row.global
                 .as_ref()
                 .zip(current)
-                .is_some_and(|(row, current)| Arc::ptr_eq(row, current))
+                .is_some_and(|(row, current)| ControlIdentity::ptr_eq(row, current))
         });
         let removed = self.remove_selected();
         self.release_empty_backing();

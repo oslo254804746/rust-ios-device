@@ -1,5 +1,6 @@
 //! Private manager coordination. No network future runs under the device table lock.
 
+use super::ControlIdentity;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,8 +25,8 @@ pub(super) struct Lifecycle {
     metadata_bytes: Arc<Semaphore>,
     pub(super) connects: Semaphore,
     // Some is a reusable clear epoch; None is terminal server shutdown.
-    shutdown: watch::Sender<Option<Arc<()>>>,
-    scan: watch::Sender<Arc<()>>,
+    shutdown: watch::Sender<Option<ControlIdentity>>,
+    scan: watch::Sender<ControlIdentity>,
     #[cfg(test)]
     scan_after_open: std::sync::Mutex<Option<LifecycleCallback>>,
     #[cfg(test)]
@@ -39,7 +40,7 @@ struct DeviceGate {
     // Late success collection borrows it instead of creating another String.
     udid: String,
     serial: Mutex<()>,
-    generation: watch::Sender<Arc<()>>,
+    generation: watch::Sender<ControlIdentity>,
     intent: super::intent::Cell,
 }
 
@@ -49,7 +50,7 @@ impl DeviceGate {
         DeviceRow::allocation_bytes()
     }
     fn watch_bytes() -> usize {
-        2 * watch::body_bytes::<Arc<()>>()
+        2 * watch::body_bytes::<ControlIdentity>()
     }
 }
 
@@ -100,16 +101,16 @@ impl DeviceTable {
 #[derive(Clone)]
 pub(super) struct Ticket {
     gate: DeviceRow,
-    generation: Arc<()>,
-    shutdown: watch::Receiver<Option<Arc<()>>>,
-    shutdown_generation: Arc<()>,
-    intent_version: Option<Arc<()>>,
+    generation: ControlIdentity,
+    shutdown: watch::Receiver<Option<ControlIdentity>>,
+    shutdown_generation: ControlIdentity,
+    intent_version: Option<ControlIdentity>,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct GlobalEpoch {
-    changes: watch::Receiver<Option<Arc<()>>>,
-    generation: Arc<()>,
+    changes: watch::Receiver<Option<ControlIdentity>>,
+    generation: ControlIdentity,
 }
 
 impl GlobalEpoch {
@@ -119,7 +120,7 @@ impl GlobalEpoch {
                 .changes
                 .borrow()
                 .as_ref()
-                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.generation))
+                .is_some_and(|epoch| ControlIdentity::ptr_eq(epoch, &self.generation))
     }
 
     pub(super) fn check(&self) -> Result<()> {
@@ -136,7 +137,7 @@ impl GlobalEpoch {
         if self.changes.has_changed().is_err()
             || !current
                 .as_ref()
-                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.generation))
+                .is_some_and(|epoch| ControlIdentity::ptr_eq(epoch, &self.generation))
         {
             return Err(cancelled());
         }
@@ -167,8 +168,8 @@ impl GlobalEpoch {
 }
 
 pub(super) struct ScanControl {
-    changes: watch::Receiver<Arc<()>>,
-    pub(super) generation: Arc<()>,
+    changes: watch::Receiver<ControlIdentity>,
+    pub(super) generation: ControlIdentity,
     deadline: Instant,
     pub(super) epoch: super::scan::Epoch,
 }
@@ -320,14 +321,19 @@ impl Lifecycle {
         let mut storage =
             super::admission::known_metadata_charge(&metadata_bytes, Self::watch_bytes())?;
         let shutdown = watch::from_grant(
-            Some(Arc::new(())),
+            Some(ControlIdentity::new(&metadata_bytes)),
             &metadata_bytes,
             storage
-                .split(watch::body_bytes::<Option<Arc<()>>>())
+                .split(watch::body_bytes::<Option<ControlIdentity>>())
                 .expect("whole lifecycle watch grant"),
         )?
         .0;
-        let scan = watch::from_grant(Arc::new(()), &metadata_bytes, storage)?.0;
+        let scan = watch::from_grant(
+            ControlIdentity::new(&metadata_bytes),
+            &metadata_bytes,
+            storage,
+        )?
+        .0;
         Ok(Self {
             devices: Mutex::new(DeviceTable::default()),
             metadata_bytes,
@@ -369,7 +375,7 @@ impl Lifecycle {
         if !shutdown
             .borrow()
             .as_ref()
-            .is_some_and(|epoch| Arc::ptr_eq(epoch, &shutdown_generation))
+            .is_some_and(|epoch| ControlIdentity::ptr_eq(epoch, &shutdown_generation))
         {
             return Err(cancelled());
         }
@@ -379,7 +385,8 @@ impl Lifecycle {
         for gate in &devices.rows {
             if !gate.intent.is_epoch(&shutdown_generation) {
                 gate.intent.reset(shutdown_generation.clone());
-                gate.generation.send_replace(Arc::new(()));
+                gate.generation
+                    .send_replace(ControlIdentity::new(&self.metadata_bytes));
             }
         }
         let gate = match devices.get(udid).cloned() {
@@ -399,10 +406,10 @@ impl Lifecycle {
                     DeviceGate::body_bytes() + DeviceGate::watch_bytes(),
                 )?;
                 let generation_storage = metadata
-                    .split(watch::body_bytes::<Arc<()>>())
+                    .split(watch::body_bytes::<ControlIdentity>())
                     .expect("whole gate watch grant");
                 let intent_storage = metadata
-                    .split(watch::body_bytes::<Arc<()>>())
+                    .split(watch::body_bytes::<ControlIdentity>())
                     .expect("whole intent watch grant");
                 let key_allocation =
                     super::metadata_vec::exact_backing(&self.metadata_bytes, udid.len())?;
@@ -416,7 +423,7 @@ impl Lifecycle {
                         udid: key,
                         serial: Mutex::new(()),
                         generation: watch::from_grant(
-                            Arc::new(()),
+                            ControlIdentity::new(&self.metadata_bytes),
                             &self.metadata_bytes,
                             generation_storage,
                         )?
@@ -456,7 +463,7 @@ impl Lifecycle {
         for gate in &devices.rows {
             let udid = &gate.udid;
             let snapshot = gate.intent.snapshot();
-            if !Arc::ptr_eq(&snapshot.epoch, &epoch)
+            if !ControlIdentity::ptr_eq(&snapshot.epoch, &epoch)
                 || matches!(&snapshot.desired, super::intent::Desired::Automatic)
             {
                 continue;
@@ -509,8 +516,8 @@ impl Lifecycle {
                     gate: gate.clone(),
                     generation: gate.generation.borrow().clone(),
                     shutdown: shutdown.clone(),
-                    shutdown_generation: Arc::clone(&epoch),
-                    intent_version: Some(Arc::clone(&desired)),
+                    shutdown_generation: epoch.clone(),
+                    intent_version: Some(desired.clone()),
                 },
                 desired,
                 failure,
@@ -539,7 +546,7 @@ impl Lifecycle {
         DeviceGate::body_bytes() + udid.len() + DeviceGate::watch_bytes()
     }
     pub(super) fn watch_bytes() -> usize {
-        watch::body_bytes::<Option<Arc<()>>>() + watch::body_bytes::<Arc<()>>()
+        watch::body_bytes::<Option<ControlIdentity>>() + watch::body_bytes::<ControlIdentity>()
     }
 
     #[cfg(test)]
@@ -594,16 +601,18 @@ impl Lifecycle {
         let _ = self.stop_owned(udid).await;
     }
 
-    pub(super) async fn stop_owned(&self, udid: &str) -> Option<Arc<()>> {
+    pub(super) async fn stop_owned(&self, udid: &str) -> Option<ControlIdentity> {
         let gate = {
             let devices = self.devices.lock().await;
             devices.get(udid).cloned()
         };
         let previous = gate.map(|gate| {
             gate.intent.replace(super::intent::Desired::Stopped);
-            gate.generation.send_replace(Arc::new(()))
+            gate.generation
+                .send_replace(ControlIdentity::new(&self.metadata_bytes))
         });
-        self.scan.send_replace(Arc::new(()));
+        self.scan
+            .send_replace(ControlIdentity::new(&self.metadata_bytes));
         previous
     }
 
@@ -611,15 +620,16 @@ impl Lifecycle {
         let _ = self.clear_owned();
     }
 
-    pub(super) fn clear_owned(&self) -> Option<Arc<()>> {
+    pub(super) fn clear_owned(&self) -> Option<ControlIdentity> {
         let mut previous = None;
         self.shutdown.send_if_modified(|epoch| {
             let Some(current) = epoch else { return false };
-            previous = Some(Arc::clone(current));
-            *epoch = Some(Arc::new(()));
+            previous = Some(current.clone());
+            *epoch = Some(ControlIdentity::new(&self.metadata_bytes));
             true
         });
-        self.scan.send_replace(Arc::new(()));
+        self.scan
+            .send_replace(ControlIdentity::new(&self.metadata_bytes));
         previous
     }
 
@@ -635,7 +645,8 @@ impl Lifecycle {
 
     pub(super) fn close(&self) {
         self.shutdown.send_replace(None);
-        self.scan.send_replace(Arc::new(()));
+        self.scan
+            .send_replace(ControlIdentity::new(&self.metadata_bytes));
     }
 
     /// Original allocation-free prefix, before the scan frame's admission.
@@ -686,14 +697,14 @@ impl Lifecycle {
         })
     }
 
-    pub(super) fn scan_is_current(&self, generation: &Arc<()>) -> bool {
-        self.shutdown.borrow().is_some() && Arc::ptr_eq(&self.scan.borrow(), generation)
+    pub(super) fn scan_is_current(&self, generation: &ControlIdentity) -> bool {
+        self.shutdown.borrow().is_some() && ControlIdentity::ptr_eq(&self.scan.borrow(), generation)
     }
 }
 
 impl ScanControl {
     pub(super) async fn drive<T>(&mut self, work: impl Future<Output = T>) -> Result<Option<T>> {
-        if !Arc::ptr_eq(&self.changes.borrow(), &self.generation) {
+        if !ControlIdentity::ptr_eq(&self.changes.borrow(), &self.generation) {
             return Ok(None);
         }
         let deadline = self.deadline;
@@ -739,12 +750,12 @@ impl Ticket {
 
     /// Preserve an existing fence; otherwise bind the observation to the exact
     /// captured desired version, without reading or reviving a later selector.
-    pub(super) fn observe_version(&self, version: &Arc<()>) -> Self {
+    pub(super) fn observe_version(&self, version: &ControlIdentity) -> Self {
         let mut ticket = self.clone();
         ticket.intent_version = Some(
             self.intent_version
                 .clone()
-                .unwrap_or_else(|| Arc::clone(version)),
+                .unwrap_or_else(|| version.clone()),
         );
         ticket
     }
@@ -820,7 +831,7 @@ impl Ticket {
     }
 
     #[cfg(test)]
-    pub(super) fn subscribe_intent(&self) -> watch::Receiver<Arc<()>> {
+    pub(super) fn subscribe_intent(&self) -> watch::Receiver<ControlIdentity> {
         self.gate.intent.subscribe()
     }
 
@@ -828,11 +839,11 @@ impl Ticket {
         self.gate.intent.failure().map(|(row, _)| row)
     }
 
-    pub(super) fn failure_stamp(&self) -> Option<(FailureVersion, Arc<()>)> {
+    pub(super) fn failure_stamp(&self) -> Option<(FailureVersion, ControlIdentity)> {
         self.gate.intent.failure()
     }
 
-    pub(super) fn restore_failure_stamp(&self, stamp: Option<(FailureVersion, Arc<()>)>) {
+    pub(super) fn restore_failure_stamp(&self, stamp: Option<(FailureVersion, ControlIdentity)>) {
         self.gate.intent.set_failure(stamp);
     }
 
@@ -861,11 +872,14 @@ impl Ticket {
         let desired = self.desired();
         matches!(desired.desired, super::intent::Desired::Automatic)
             || self.gate.intent.failure().is_some_and(|(row, intent)| {
-                FailureVersion::ptr_eq(&row, version) && Arc::ptr_eq(&intent, &desired.version)
+                FailureVersion::ptr_eq(&row, version)
+                    && ControlIdentity::ptr_eq(&intent, &desired.version)
             })
     }
 
-    pub(super) fn pending_success(&self) -> Option<(Arc<()>, super::bookkeeping::DeferredSuccess)> {
+    pub(super) fn pending_success(
+        &self,
+    ) -> Option<(ControlIdentity, super::bookkeeping::DeferredSuccess)> {
         self.gate
             .intent
             .pending_success()
@@ -873,13 +887,13 @@ impl Ticket {
             .map(|(desired, version)| (desired, super::bookkeeping::DeferredSuccess { version }))
     }
 
-    pub(super) fn clear_success(&self, desired: &Arc<()>, failure: &FailureVersion) {
+    pub(super) fn clear_success(&self, desired: &ControlIdentity, failure: &FailureVersion) {
         self.gate.intent.clear_success(desired, failure);
     }
 
     pub(super) fn clear_success_checked(
         &self,
-        desired: &Arc<()>,
+        desired: &ControlIdentity,
         failure: &FailureVersion,
         check: impl Fn() -> Result<()>,
     ) -> Result<()> {
@@ -892,26 +906,26 @@ impl Ticket {
     /// inside a commit. A ledger row holds this coordinator across scan windows.
     pub(super) fn same_incarnation(&self, other: &Self) -> bool {
         self.gate.ptr_eq(&other.gate)
-            && Arc::ptr_eq(&self.generation, &other.generation)
-            && Arc::ptr_eq(&self.shutdown_generation, &other.shutdown_generation)
+            && ControlIdentity::ptr_eq(&self.generation, &other.generation)
+            && ControlIdentity::ptr_eq(&self.shutdown_generation, &other.shutdown_generation)
     }
 
-    pub(super) fn global_epoch(&self) -> Arc<()> {
-        Arc::clone(&self.shutdown_generation)
+    pub(super) fn global_epoch(&self) -> ControlIdentity {
+        self.shutdown_generation.clone()
     }
 
-    pub(super) fn belongs_to_global(&self, old: &Arc<()>) -> bool {
-        Arc::ptr_eq(&self.shutdown_generation, old)
+    pub(super) fn belongs_to_global(&self, old: &ControlIdentity) -> bool {
+        ControlIdentity::ptr_eq(&self.shutdown_generation, old)
     }
 
-    pub(super) fn belongs_to_device(&self, old: &Arc<()>) -> bool {
-        Arc::ptr_eq(&self.generation, old)
+    pub(super) fn belongs_to_device(&self, old: &ControlIdentity) -> bool {
+        ControlIdentity::ptr_eq(&self.generation, old)
     }
 
     pub(super) fn ownership_stamp(&self) -> super::retirement::OwnershipStamp {
         super::retirement::OwnershipStamp::new(
-            Arc::clone(&self.shutdown_generation),
-            Arc::clone(&self.generation),
+            self.shutdown_generation.clone(),
+            self.generation.clone(),
         )
     }
 
@@ -919,12 +933,12 @@ impl Ticket {
         self.intent_version
             .as_ref()
             .map_or(true, |version| self.gate.intent.matches(version))
-            && Arc::ptr_eq(&self.gate.generation.borrow(), &self.generation)
+            && ControlIdentity::ptr_eq(&self.gate.generation.borrow(), &self.generation)
             && self
                 .shutdown
                 .borrow()
                 .as_ref()
-                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.shutdown_generation))
+                .is_some_and(|epoch| ControlIdentity::ptr_eq(epoch, &self.shutdown_generation))
     }
 
     // The caller already owns its destination table guard. Keep both epoch
@@ -934,10 +948,10 @@ impl Ticket {
     pub(super) fn commit<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
         let generation = self.gate.generation.borrow();
         let shutdown = self.shutdown.borrow();
-        if !Arc::ptr_eq(&generation, &self.generation)
+        if !ControlIdentity::ptr_eq(&generation, &self.generation)
             || !shutdown
                 .as_ref()
-                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.shutdown_generation))
+                .is_some_and(|epoch| ControlIdentity::ptr_eq(epoch, &self.shutdown_generation))
         {
             return Err(cancelled());
         }
@@ -949,7 +963,7 @@ impl Ticket {
             .intent_version
             .as_ref()
             .zip(intent.as_ref())
-            .is_some_and(|(expected, current)| !Arc::ptr_eq(expected, &current.version))
+            .is_some_and(|(expected, current)| !ControlIdentity::ptr_eq(expected, &current.version))
         {
             return Err(cancelled());
         }
@@ -1089,7 +1103,7 @@ mod tests {
         );
         let clone = original.clone();
         drop(lifecycle);
-        let backing = 2 * std::mem::size_of::<DeviceRow>() + watch::body_bytes::<Arc<()>>();
+        let backing = 2 * std::mem::size_of::<DeviceRow>() + watch::body_bytes::<ControlIdentity>();
         assert_eq!(
             bank.available_permits(),
             backing,
@@ -1144,7 +1158,7 @@ mod tests {
         drop(lifecycle);
         assert_eq!(
             bank.available_permits(),
-            key_bytes + backing + watch::body_bytes::<Arc<()>>()
+            key_bytes + backing + watch::body_bytes::<ControlIdentity>()
         );
         drop(first);
         drop(second);
@@ -1176,7 +1190,7 @@ mod tests {
             bank.available_permits(),
             64 * 1024
                 - 5 * Lifecycle::additional_metadata_bytes("a")
-                - watch::body_bytes::<Option<Arc<()>>>()
+                - watch::body_bytes::<Option<ControlIdentity>>()
         );
         drop(tickets);
         assert_eq!(bank.available_permits(), 64 * 1024);
@@ -1205,8 +1219,8 @@ mod tests {
             after.desired,
             super::super::intent::Desired::Automatic
         ));
-        assert!(!Arc::ptr_eq(&before.epoch, &after.epoch));
-        assert!(!Arc::ptr_eq(&before.version, &after.version));
+        assert!(!ControlIdentity::ptr_eq(&before.epoch, &after.epoch));
+        assert!(!ControlIdentity::ptr_eq(&before.version, &after.version));
         assert!(old.gate.ptr_eq(&fresh.gate));
         lifecycle.close();
         assert!(lifecycle.ticket("synthetic-stopped").await.is_err());

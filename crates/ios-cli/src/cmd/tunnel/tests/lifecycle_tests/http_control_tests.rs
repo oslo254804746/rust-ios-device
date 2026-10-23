@@ -104,7 +104,10 @@ async fn http_control_actual_last_byte_refusal_precedes_locks_and_keeps_original
             assert!(actual.iter().all(|entry| entry.1 == 1));
         }
         assert!(ticket.is_current());
-        assert!(Arc::ptr_eq(&snapshot.version, &ticket.desired().version));
+        assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+            &snapshot.version,
+            &ticket.desired().version
+        ));
         assert_eq!(counts(&source, A), original_counts);
         drop(coordinator);
         drop(table);
@@ -143,7 +146,7 @@ async fn http_stop_two_actual_frames_keep_distinct_old_global_epochs_until_each_
         .try_acquire_many_owned((bank.available_permits() - 2 * frame) as u32)
         .unwrap();
     let control = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
-    let a = Arc::downgrade(&control.epoch.generation);
+    let a = crate::cmd::tunnel::ControlIdentity::downgrade(&control.epoch.generation);
     drop(control);
     let coordinator = state.inner.lifecycle.hold_coordinator().await;
     let observed_bank = bank.clone();
@@ -162,9 +165,12 @@ async fn http_stop_two_actual_frames_keep_distinct_old_global_epochs_until_each_
     assert!(futures_util::poll!(&mut first).is_pending());
     state.inner.lifecycle.clear();
     let control = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
-    let b = Arc::downgrade(&control.epoch.generation);
+    let b = crate::cmd::tunnel::ControlIdentity::downgrade(&control.epoch.generation);
     drop(control);
-    assert!(!Arc::ptr_eq(&a.upgrade().unwrap(), &b.upgrade().unwrap()));
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &a.upgrade().unwrap(),
+        &b.upgrade().unwrap()
+    ));
     let mut second = Box::pin(http_control::prepare_stop(&state, &principal, A).unwrap());
     assert!(futures_util::poll!(&mut second).is_pending());
     drop(hook);
@@ -258,7 +264,10 @@ async fn http_stop_frame_does_not_add_admission_to_core_stop_of_existing_closed_
     let hook = metadata_vec::on_allocation(|_, _| panic!("core known stop requested new backing"));
     assert!(state.stop_tunnel(A).await.unwrap());
     assert!(!ticket.is_current());
-    assert!(!Arc::ptr_eq(&snapshot.version, &ticket.desired().version));
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &snapshot.version,
+        &ticket.desired().version
+    ));
     assert!(matches!(ticket.desired().desired, intent::Desired::Stopped));
     assert!(!state.stop_tunnel(A).await.unwrap());
     drop(hook);
@@ -323,7 +332,10 @@ async fn http_stop_paid_frame_preserves_original_authorization_revocation_while_
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(bank.available_permits(), frame);
     assert!(ticket.is_current());
-    assert!(Arc::ptr_eq(&snapshot.version, &ticket.desired().version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &snapshot.version,
+        &ticket.desired().version
+    ));
     assert!(publication.ptr_eq(&state.inner.tunnels.read().await[DEVICE].publication));
     assert_eq!(source.count(DEVICE), 1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);

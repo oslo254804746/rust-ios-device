@@ -121,7 +121,10 @@ async fn desired_listing_one_byte_key_refusal_never_allocates_the_copy_or_change
     assert_eq!(allocated.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(bank.available_permits(), available);
     assert_eq!(ticket.gate.udid.as_ptr(), pointer);
-    assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &original.version,
+        &ticket.desired().version
+    ));
     assert!(matches!(
         ticket.desired().desired,
         super::super::intent::Desired::Stopped
@@ -160,8 +163,14 @@ async fn desired_listing_refused_key_restores_all_partial_rows_and_original_stat
         ios_core::ErrorClass::ResourceLimit
     );
     assert_eq!(bank.available_permits(), allowed);
-    assert!(Arc::ptr_eq(&old_a.version, &a.desired().version));
-    assert!(Arc::ptr_eq(&old_b.version, &b.desired().version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &old_a.version,
+        &a.desired().version
+    ));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &old_b.version,
+        &b.desired().version
+    ));
     assert_eq!(lifecycle.coordinator_count().await, 2);
     drop(held);
     assert_eq!(lifecycle.desired().await.unwrap().len(), 2);
@@ -181,7 +190,10 @@ async fn desired_listing_one_byte_backing_refusal_does_not_change_stopped_gate()
         .unwrap();
     assert!(lifecycle.desired().await.is_err());
     assert_eq!(bank.available_permits(), available);
-    assert!(Arc::ptr_eq(&old.version, &ticket.desired().version));
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &old.version,
+        &ticket.desired().version
+    ));
     assert!(matches!(
         ticket.desired().desired,
         super::super::intent::Desired::Stopped
