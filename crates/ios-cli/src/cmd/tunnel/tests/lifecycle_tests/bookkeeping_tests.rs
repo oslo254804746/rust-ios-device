@@ -23,6 +23,8 @@ async fn intent(state: &TunnelAgentState, udid: &str) -> FailureIntent {
     )
     .unwrap();
     node.row.slot = Some(slot);
+    node.prepare_global(&ticket, &state.inner.global_metadata_bytes)
+        .unwrap();
     FailureIntent {
         ticket,
         failed: DeferredFailure {

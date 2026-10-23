@@ -39,7 +39,8 @@ async fn fixture() -> (Arc<Semaphore>, WriteBatch, Receipt, usize) {
         .downcast_ref::<SourceFailure>()
         .unwrap()
         .receipt();
-    let node = Node::owned(UID.into(), identity, &bank).unwrap();
+    let mut node = Node::owned(UID.into(), identity, &bank).unwrap();
+    node.prepare_global(&ticket, &bank).unwrap();
     let mut batch = WriteBatch::new(&bank, 1).unwrap();
     batch
         .record(ScanIntent::Failure(super::FailureIntent {

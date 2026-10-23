@@ -771,6 +771,13 @@ impl ScanControl {
 }
 
 impl Ticket {
+    pub(super) fn global_owner(
+        &self,
+        bank: &Arc<Semaphore>,
+    ) -> Result<super::marker_identity::Owner> {
+        super::marker_identity::Owner::new(&self.shutdown_generation, bank)
+    }
+
     pub(super) fn origin_grants(
         &self,
         bank: &Arc<Semaphore>,

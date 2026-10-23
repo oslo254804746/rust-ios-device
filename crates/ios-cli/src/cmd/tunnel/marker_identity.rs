@@ -7,6 +7,56 @@ use std::sync::Arc;
 use super::birth_bank::BirthBank;
 use tokio::sync::Semaphore;
 
+/// Actual independent captured-identity allocation, without retaining a Ticket.
+pub(super) struct Owner(
+    super::shared_weak_allocation::Strong<Identity, Option<tokio::sync::OwnedSemaphorePermit>>,
+);
+
+impl Owner {
+    pub(super) fn body_bytes() -> usize {
+        super::shared_weak_allocation::Strong::<
+            Identity,
+            Option<tokio::sync::OwnedSemaphorePermit>,
+        >::body_bytes()
+    }
+
+    pub(super) fn new(identity: &Identity, bank: &Arc<Semaphore>) -> anyhow::Result<Self> {
+        let bytes = Self::body_bytes();
+        let storage = super::admission::known_metadata_charge(bank, bytes)?;
+        let origin = if Arc::ptr_eq(identity.bank(), bank) {
+            None
+        } else {
+            Some(identity.origin_charge(bytes)?)
+        };
+        Ok(Self(super::shared_weak_allocation::Strong::new(
+            identity.clone(),
+            bank,
+            storage,
+            origin,
+        )?))
+    }
+}
+
+impl Clone for Owner {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl std::ops::Deref for Owner {
+    type Target = Identity;
+
+    fn deref(&self) -> &Identity {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Owner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, formatter)
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Identity {
     value: Arc<()>,
@@ -108,3 +158,6 @@ mod tests {
         // This observes provenance/control semantics, not paid Arc allocation.
     }
 }
+
+#[cfg(test)]
+mod owner_tests;
