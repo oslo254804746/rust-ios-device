@@ -5,6 +5,8 @@ use tokio::io::{AsyncReadExt, DuplexStream};
 const TOTAL: usize = super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES;
 const OBSERVE: Duration = Duration::from_secs(2);
 
+mod proof_root_tests;
+
 fn registry() -> RegistryOwner {
     Registry::small(NonZeroUsize::new(1).unwrap())
 }
@@ -250,7 +252,7 @@ async fn native_origin_foreign_proofs_pay_independently_after_slot_reuse_and_ori
         let registry = registry();
         let bank = registry.byte_bank();
         let mirror = registry._slots_storage.num_permits();
-        let proof_bytes = std::mem::size_of::<RefreshProof>();
+        let proof_bytes = RefreshProof::body_bytes();
         let total = mirror + 2 * proof_bytes;
         let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
         let origin = origin_birth.raw().clone();

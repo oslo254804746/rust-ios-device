@@ -1,5 +1,11 @@
 # 当前待开发清单
 
+2026-10-23：L02 [native RefreshProof实际根](validation/tunnel-refresh-proof-root-2026-10-23.md)
+原inline逻辑sizeof费用迁移到完整实际Strong<Data,Origins2>，G/origin fees保持到root物理free后。
+原capture checks/field pointers/metadata swap/history/native Drop/joins保持，不新增NativeLease或停止动作。
+42门禁首轮通过，新增3/registry50/origin7/完整CLI1878/0FAIL/13原ignored，724源码3处仅CLI；全部Cargo/build主控。
+physical marker arena/all-retainer/Weak/同步峰值与endpoint原scope继续；23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-23：L02 [failed row global身份实际根](validation/tunnel-failure-global-root-2026-10-23.md)
 候选skip后/slot与Source前准备真实G/origin根，原failure commit仅move同一root，晚writer不取quota。
 根独立于原Node/Ticket/receipt/IO，最后actualfree后退款；原身份/clock/counter/native/rollback保持。
