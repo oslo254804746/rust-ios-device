@@ -40,7 +40,7 @@ pub(in super::super) type Receipt = super::super::shared_weak_allocation::Strong
 pub(in super::super) struct FailureReceipt {
     pub(super) udid: String,
     pub(super) identity: AttemptIdentity,
-    pub(super) ticket: Ticket,
+    pub(super) ticket: super::super::lifecycle::TicketOwner,
     pub(super) slot: super::super::failure_slot::Owner,
     pub(super) version: FailureVersion,
     original: Shared<Original>,
@@ -89,6 +89,7 @@ impl FailureReceipt {
         // producer bank before selectors or Source. These grants live in the
         // existing allocator's extra fees, through the LAST physical Weak free.
         let origin_storage = ticket.origin_grants(bank, Self::body_bytes())?;
+        let ticket = super::super::lifecycle::TicketOwner::new(ticket, bank)?;
         // No copied selector exists while any required capsule is unadmitted.
         let mut copier = super::super::selector_copy::Copier::new(storage, 0)?;
         let udid = copier.text(udid)?;
@@ -98,7 +99,7 @@ impl FailureReceipt {
             Self {
                 udid,
                 identity,
-                ticket: ticket.clone(),
+                ticket,
                 slot,
                 version,
                 original: Shared::from_grant(
@@ -171,6 +172,7 @@ impl FailureReceipt {
     #[cfg(test)]
     pub(super) fn initial_bytes(udid: &str, identity: &AttemptIdentity) -> usize {
         Self::body_bytes()
+            + super::super::lifecycle::TicketOwner::body_bytes()
             + udid.len()
             + super::super::candidate_input::route_length(&identity.route)
             + Original::allocation_bytes()

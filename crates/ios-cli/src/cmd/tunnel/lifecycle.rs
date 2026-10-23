@@ -111,6 +111,44 @@ pub(super) struct Ticket {
 // This is not a producer, epoch, arena or live-retainer capacity limit.
 pub(super) type TicketOriginGrants = [Option<OwnedSemaphorePermit>; 3];
 
+/// A real admitted Ticket allocation shared by receipt and episode owners.
+/// It contains no receipt, error, retry row or ledger back-reference.
+pub(super) struct TicketOwner(super::shared_weak_allocation::Strong<Ticket, TicketOriginGrants>);
+
+impl TicketOwner {
+    pub(super) fn body_bytes() -> usize {
+        super::shared_weak_allocation::Strong::<Ticket, TicketOriginGrants>::body_bytes()
+    }
+
+    pub(super) fn new(ticket: &Ticket, bank: &Arc<Semaphore>) -> Result<Self> {
+        let body = super::admission::known_metadata_charge(bank, Self::body_bytes())?;
+        let origins = ticket.origin_grants(bank, Self::body_bytes())?;
+        Ok(Self(super::shared_weak_allocation::Strong::new(
+            ticket.clone(),
+            bank,
+            body,
+            origins,
+        )?))
+    }
+
+    #[cfg(test)]
+    pub(super) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+impl Clone for TicketOwner {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl std::ops::Deref for TicketOwner {
+    type Target = Ticket;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct GlobalEpoch {
     changes: watch::Receiver<Option<ControlIdentity>>,

@@ -171,7 +171,7 @@ pub(super) enum ScheduleProvenance {
 
 struct Episode {
     identity: AttemptIdentity,
-    ticket: Ticket,
+    ticket: super::lifecycle::TicketOwner,
     slot: super::failure_slot::Owner,
     version: FailureVersion,
     snapshot: Snapshot,
@@ -420,7 +420,7 @@ impl LedgerOwner {
                 identity,
                 |identity| Episode {
                     identity,
-                    ticket: ticket.clone(),
+                    ticket: receipt.ticket.clone(),
                     slot,
                     version: version.clone(),
                     snapshot: Snapshot {
