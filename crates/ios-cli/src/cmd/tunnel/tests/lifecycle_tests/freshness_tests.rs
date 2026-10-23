@@ -68,6 +68,7 @@ async fn observed_route_pre_source_last_byte_refusal_keeps_original_resource_and
             + ownership::Ownership::attempt_bytes()
             + retirement::Registry::incarnation_bytes()
             + metadata_lease::Lease::pair_bytes()
+            + publication::TicketOwner::body_bytes()
             + host.len()
             - 1;
         *captured.lock().unwrap() = Some(
@@ -82,7 +83,8 @@ async fn observed_route_pre_source_last_byte_refusal_keeps_original_resource_and
     let charged = bank.clone();
     let hook = metadata_vec::on_allocation(move |layout, _| {
         if layout.size() == metadata_lease::Lease::body_bytes()
-            && charged.available_permits() == host.len() - 1
+            && charged.available_permits()
+                == publication::TicketOwner::body_bytes() + host.len() - 1
         {
             captured.fetch_add(1, Ordering::SeqCst);
         }

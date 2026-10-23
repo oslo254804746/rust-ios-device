@@ -440,7 +440,7 @@ struct ManagedTunnel {
     route_intent: intent::RouteOwner,
     // Exact observed Source route, separate from a retained rediscovery filter.
     observed_route: observed_route::Observed,
-    _ticket: Ticket,
+    _ticket: publication::TicketOwner,
     // Table metadata and the original native retirement owner share one charge.
     // Only removal of both owners releases it; either may outlive the other.
     _metadata: metadata_lease::Owner,
@@ -1466,6 +1466,12 @@ impl TunnelAgentState {
                 &self.inner.metadata_bytes,
             )
             .map_err(ownership::before_source)?;
+            let publication_ticket = publication::TicketOwner::new(
+                ticket,
+                &self.inner.global_metadata_bytes,
+                &self.inner.metadata_bytes,
+            )
+            .map_err(ownership::before_source)?;
             let observed_route = observed_route::Observed::new(
                 route,
                 input.as_ref(),
@@ -1692,7 +1698,7 @@ impl TunnelAgentState {
                         native,
                         route_intent: route_intent.clone(),
                         observed_route,
-                        _ticket: ticket.clone(),
+                        _ticket: publication_ticket,
                         _metadata: metadata,
                         _global_metadata: global_metadata,
                         _input: input.clone(),

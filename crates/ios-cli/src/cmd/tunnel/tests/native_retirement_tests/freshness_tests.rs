@@ -878,7 +878,10 @@ async fn freshness_current_owner_survives_either_table_removal_or_native_joins_u
             );
             assert_eq!(
                 publication.available_permits(),
-                charged + table_storage + super::super::super::publication::Life::bytes()
+                charged
+                    + table_storage
+                    + super::super::super::publication::Life::bytes()
+                    + super::super::super::publication::TicketOwner::body_bytes()
             );
             state.drain_native(OBSERVE).await.unwrap();
         } else {
