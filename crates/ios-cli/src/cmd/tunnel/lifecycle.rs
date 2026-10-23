@@ -107,6 +107,10 @@ pub(super) struct Ticket {
     intent_version: Option<ControlIdentity>,
 }
 
+// Exactly the captured global/device/optional desired-version identity fields.
+// This is not a producer, epoch, arena or live-retainer capacity limit.
+pub(super) type TicketOriginGrants = [Option<OwnedSemaphorePermit>; 3];
+
 #[derive(Clone, Debug)]
 pub(super) struct GlobalEpoch {
     changes: watch::Receiver<Option<ControlIdentity>>,
@@ -729,6 +733,33 @@ impl ScanControl {
 }
 
 impl Ticket {
+    pub(super) fn origin_grants(
+        &self,
+        bank: &Arc<Semaphore>,
+        body_bytes: usize,
+    ) -> Result<TicketOriginGrants> {
+        let mut grants: TicketOriginGrants = [None, None, None];
+        let identities = [
+            Some(&self.shutdown_generation),
+            Some(&self.generation),
+            self.intent_version.as_ref(),
+        ];
+        for (index, identity) in identities.into_iter().enumerate() {
+            let Some(identity) = identity else { continue };
+            let origin = identity.bank();
+            if Arc::ptr_eq(origin, bank)
+                || grants
+                    .iter()
+                    .flatten()
+                    .any(|grant| Arc::ptr_eq(grant.semaphore(), origin))
+            {
+                continue;
+            }
+            grants[index] = Some(super::admission::known_metadata_charge(origin, body_bytes)?);
+        }
+        Ok(grants)
+    }
+
     /// A published transport belongs to its original device/global epochs.
     /// Desired-version changes can keep that same runtime alive (live manual
     /// shortcut); they must not revoke its existing data connections.

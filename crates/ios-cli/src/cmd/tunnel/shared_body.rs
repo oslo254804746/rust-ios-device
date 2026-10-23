@@ -26,6 +26,7 @@ impl<T> Strong<T> {
         );
         Ok(Self(allocation::Strong::new(value, bank, storage, ())?))
     }
+    #[cfg(test)]
     pub(super) fn ptr_eq(&self, other: &Self) -> bool {
         self.0.ptr_eq(&other.0)
     }

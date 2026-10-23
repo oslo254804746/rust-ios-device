@@ -1,5 +1,11 @@
 # 当前待开发清单
 
+2026-10-23：L02 [receipt捕获marker origin到最后Weak](validation/tunnel-receipt-marker-origin-2026-10-23.md)
+原Ticket最多3 captured字段实际bank去重准入，foreign origin支付完整实际receipt根，直到最终Weak free后退款。
+原分配器unsafe/strong/weak/Drop协议、IO/history/counter/clock保持，funded A/B兼容；无late cleanup quota。
+32门禁全过，新增3/reconnect50/完整CLI1853/0FAIL/13原ignored，712源码6处仅CLI，全部Cargo/build主控。
+Episode/Removed实际值逃逸寿命与arena/all-retainer原scope仍需收口；23/6/L02/Q04口径保持。
+
 2026-10-23：L02 [native marker出生bank与keeper准入](validation/tunnel-native-marker-origin-2026-10-23.md)
 实际身份出生时保留原producer bank；funded foreign Entry按原B slots整backing支付A并保持到实际free。
 历史目录实际B backing准入、增长/拒绝回滚，不用当前slot数充当origin cap；已付origin closed0可重用。

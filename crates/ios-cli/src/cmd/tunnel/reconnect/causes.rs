@@ -32,7 +32,10 @@ struct History {
     failures: u64,
 }
 
-pub(in super::super) type Receipt = super::super::shared_body::Strong<FailureReceipt>;
+pub(in super::super) type Receipt = super::super::shared_weak_allocation::Strong<
+    FailureReceipt,
+    super::super::lifecycle::TicketOriginGrants,
+>;
 
 pub(in super::super) struct FailureReceipt {
     pub(super) udid: String,
@@ -82,6 +85,10 @@ impl FailureReceipt {
             bank,
             std::mem::size_of::<SourceFailure>(),
         )?;
+        // Pay the complete actual receipt allocation in each foreign captured
+        // producer bank before selectors or Source. These grants live in the
+        // existing allocator's extra fees, through the LAST physical Weak free.
+        let origin_storage = ticket.origin_grants(bank, Self::body_bytes())?;
         // No copied selector exists while any required capsule is unadmitted.
         let mut copier = super::super::selector_copy::Copier::new(storage, 0)?;
         let udid = copier.text(udid)?;
@@ -108,6 +115,7 @@ impl FailureReceipt {
             },
             bank,
             body,
+            origin_storage,
         )
     }
     pub(in super::super) fn primary(&self) -> &anyhow::Error {
