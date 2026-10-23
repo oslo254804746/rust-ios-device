@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-23：L02 [episode与receipt实际Ticket共享分配](validation/tunnel-episode-ticket-root-2026-10-23.md)
+实际Ticket根在B与captured origin预付，episode共享首receipt准备的根，不持有receipt或IO反向引用。
+Removed.into_inner仅释放原Box，Ticket根/原key指针和费用继续到最后真实所有者；无逻辑占位费。
+33门禁通过，新增3/reconnect53/完整CLI1856/0FAIL/13原ignored，713源码8处仅CLI，全部Cargo/build主控。
+中断完整CLI经无存活进程/无源码漂移核查后只恢复未完成门禁；其它arena/all-retainer原scope继续。
+23/6/L02待全审计、有效30/Q04全部排除不变。
+
 2026-10-23：L02 [receipt捕获marker origin到最后Weak](validation/tunnel-receipt-marker-origin-2026-10-23.md)
 原Ticket最多3 captured字段实际bank去重准入，foreign origin支付完整实际receipt根，直到最终Weak free后退款。
 原分配器unsafe/strong/weak/Drop协议、IO/history/counter/clock保持，funded A/B兼容；无late cleanup quota。

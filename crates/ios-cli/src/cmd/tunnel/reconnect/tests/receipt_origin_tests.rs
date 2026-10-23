@@ -44,10 +44,11 @@ async fn receipt_origin_refusal_precedes_capsule_or_selectors_and_refunds_origin
 async fn receipt_origin_optional_captured_desired_producer_rolls_back_then_survives_last_weak_free()
 {
     let body = FailureReceipt::body_bytes();
+    let ticket_body = TicketOwner::body_bytes();
     let origin = Arc::new(Semaphore::new(TOTAL));
     let lifecycle = Lifecycle::with_metadata(origin.clone()).unwrap();
     let unfenced = lifecycle.ticket(A).await.unwrap();
-    let desired_bank = Arc::new(Semaphore::new(body));
+    let desired_bank = Arc::new(Semaphore::new(body + ticket_body));
     let desired = ControlIdentity::new(&desired_bank);
     let observed = unfenced.observe_version(&desired);
     // The constructor must account for captured identities even for a stale
@@ -70,7 +71,7 @@ async fn receipt_origin_optional_captured_desired_producer_rolls_back_then_survi
         ErrorClass::ResourceLimit
     );
     assert_eq!(origin.available_permits(), before);
-    assert_eq!(desired_bank.available_permits(), body - 1);
+    assert_eq!(desired_bank.available_permits(), body + ticket_body - 1);
     assert_eq!(bank.available_permits(), TOTAL);
     drop(held);
     let calls = Arc::new(AtomicUsize::new(0));
@@ -80,7 +81,7 @@ async fn receipt_origin_optional_captured_desired_producer_rolls_back_then_survi
     let admitted = slot(&bank);
     let version = FailureVersion::new(&bank).unwrap();
     let hook = metadata_vec::on_allocation(move |_, _| {
-        assert_eq!(primary.available_permits(), before - body);
+        assert_eq!(primary.available_permits(), before - body - ticket_body);
         assert_eq!(optional.available_permits(), 0);
         seen.fetch_add(1, Ordering::SeqCst);
     });
@@ -101,7 +102,7 @@ async fn receipt_origin_optional_captured_desired_producer_rolls_back_then_survi
     drop((upgraded, receipt));
     assert!(weak.upgrade().is_none());
     assert_eq!(origin.available_permits(), before - body);
-    assert_eq!(desired_bank.available_permits(), 0);
+    assert_eq!(desired_bank.available_permits(), ticket_body);
     assert_eq!(bank.available_permits(), TOTAL - body);
     drop(weak);
     let origin_observer = origin.clone();
@@ -112,7 +113,7 @@ async fn receipt_origin_optional_captured_desired_producer_rolls_back_then_survi
     shared_weak_allocation::after_free(
         move || {
             assert_eq!(origin_observer.available_permits(), before - body);
-            assert_eq!(desired_observer.available_permits(), 0);
+            assert_eq!(desired_observer.available_permits(), ticket_body);
             assert_eq!(destination_observer.available_permits(), TOTAL - body);
             seen.fetch_add(1, Ordering::SeqCst);
         },
@@ -120,7 +121,7 @@ async fn receipt_origin_optional_captured_desired_producer_rolls_back_then_survi
     );
     assert_eq!(freed.load(Ordering::SeqCst), 1);
     assert_eq!(origin.available_permits(), before);
-    assert_eq!(desired_bank.available_permits(), body);
+    assert_eq!(desired_bank.available_permits(), body + ticket_body);
     assert_eq!(bank.available_permits(), TOTAL);
 }
 

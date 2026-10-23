@@ -3,7 +3,7 @@ use crate::cmd::tunnel::metadata_vec;
 
 fn row(
     identity: AttemptIdentity,
-    ticket: Ticket,
+    ticket: TicketOwner,
     admitted: super::super::super::failure_slot::Owner,
     version: FailureVersion,
 ) -> Episode {
@@ -33,12 +33,13 @@ async fn removed_body_episode_into_inner_refunds_only_original_body_while_select
     let body = std::mem::size_of::<Removed>();
     let fields = A.len() + super::super::super::candidate_input::route_length(&identity.route);
     let bank = Arc::new(Semaphore::new(
-        body + fields + slot_bytes() + FailureVersion::body_bytes(),
+        body + fields + slot_bytes() + FailureVersion::body_bytes() + TicketOwner::body_bytes(),
     ));
     let admitted = slot(&bank);
     let version = FailureVersion::new(&bank).unwrap();
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
+    let ticket = TicketOwner::new(&ticket, &bank).unwrap();
     let node = Removed::episode(
         A,
         &identity,
@@ -77,7 +78,7 @@ async fn removed_body_episode_into_inner_refunds_only_original_body_while_select
     drop(value);
     assert_eq!(
         bank.available_permits(),
-        body + fields + slot_bytes() + FailureVersion::body_bytes()
+        body + fields + slot_bytes() + FailureVersion::body_bytes() + TicketOwner::body_bytes()
     );
 }
 

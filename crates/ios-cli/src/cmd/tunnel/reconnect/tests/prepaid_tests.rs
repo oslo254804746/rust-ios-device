@@ -42,9 +42,10 @@ async fn prepaid_selector_actual_receipt_all_capsules_precede_copy_and_last_owne
             .host()
             .unwrap();
         let allocations = seen.lock().unwrap();
-        assert_eq!(allocations.len(), 4);
+        assert_eq!(allocations.len(), 5);
+        assert_eq!(allocations[0].0, TicketOwner::body_bytes());
         assert_eq!(
-            &allocations[..2],
+            &allocations[1..3],
             &[
                 (A.len(), receipt.udid.as_ptr() as usize),
                 (host_length, host.as_ptr() as usize)
@@ -54,17 +55,18 @@ async fn prepaid_selector_actual_receipt_all_capsules_precede_copy_and_last_owne
         // observer too. Its whole allocation follows the same complete grant.
         let original_root = bytes
             - FailureReceipt::body_bytes()
+            - TicketOwner::body_bytes()
             - A.len()
             - host_length
             - std::mem::size_of::<SourceFailure>();
-        assert_eq!(allocations[2].0, original_root);
-        assert_ne!(allocations[2].1, 0);
-        assert_ne!(allocations[2].1, receipt.udid.as_ptr() as usize);
-        assert_ne!(allocations[2].1, host.as_ptr() as usize);
-        assert_eq!(allocations[3].0, FailureReceipt::body_bytes());
+        assert_eq!(allocations[3].0, original_root);
+        assert_ne!(allocations[3].1, 0);
+        assert_ne!(allocations[3].1, receipt.udid.as_ptr() as usize);
+        assert_ne!(allocations[3].1, host.as_ptr() as usize);
+        assert_eq!(allocations[4].0, FailureReceipt::body_bytes());
         let value = std::ptr::from_ref(&*receipt) as usize;
-        assert!(allocations[3].1 <= value && value < allocations[3].1 + allocations[3].0);
-        assert_ne!(allocations[3].1, allocations[2].1);
+        assert!(allocations[4].1 <= value && value < allocations[4].1 + allocations[4].0);
+        assert_ne!(allocations[4].1, allocations[3].1);
         drop(allocations);
         assert_eq!(receipt.udid.capacity(), A.len());
         assert_eq!(
@@ -88,12 +90,14 @@ async fn prepaid_selector_actual_retry_node_keys_and_route_use_original_exact_bu
         + A.len()
         + host_length
         + slot_bytes()
-        + FailureVersion::body_bytes();
+        + FailureVersion::body_bytes()
+        + TicketOwner::body_bytes();
     let bank = Arc::new(Semaphore::new(total));
     let admitted = slot(&bank);
     let version = FailureVersion::new(&bank).unwrap();
     let lifecycle = lifecycle();
     let ticket = lifecycle.ticket(A).await.unwrap();
+    let ticket = TicketOwner::new(&ticket, &bank).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let captured = seen.clone();
     let charged = bank.clone();

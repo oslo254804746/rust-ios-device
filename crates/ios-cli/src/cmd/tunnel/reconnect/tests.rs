@@ -1,5 +1,8 @@
 //! Exact owned-storage boundaries; no device discovery or native operations.
-use super::super::{lifecycle::Lifecycle, source::Route};
+use super::super::{
+    lifecycle::{Lifecycle, TicketOwner},
+    source::Route,
+};
 use super::*;
 
 #[tokio::test]
@@ -101,6 +104,7 @@ async fn failure_version_last_byte_refusal_keeps_original_retry_clock_counters_r
     assert_eq!(bank.available_permits(), bytes);
 }
 
+mod episode_ticket_tests;
 mod ledger_owner_tests;
 mod prepaid_tests;
 mod receipt_body_tests;
