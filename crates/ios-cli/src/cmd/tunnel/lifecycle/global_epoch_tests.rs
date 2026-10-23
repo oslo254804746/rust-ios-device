@@ -135,3 +135,56 @@ async fn remote_epoch_ready_success_crossing_clear_cannot_commit_a_retired_hando
     assert_eq!(commits.load(Ordering::SeqCst), 0);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn closed_zero_global_epoch_views_keep_eight_distinct_old_identities_at_constant_original_debit() {
+    const ROUNDS: usize = 8;
+    let bytes = Lifecycle::watch_bytes();
+    let authority = super::super::birth_bank::BirthBank::new(bytes);
+    let bank = authority.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(authority.clone()).unwrap();
+    assert_eq!(bank.available_permits(), 0);
+    bank.close();
+    let mut retained: [Option<GlobalEpoch>; ROUNDS] = std::array::from_fn(|_| None);
+    let hook = super::super::metadata_vec::on_allocation(|_, _| {
+        panic!("closed-zero view/control allocated admitted backing")
+    });
+    for index in 0..ROUNDS {
+        let current = lifecycle.global_epoch().unwrap();
+        assert!(current.check().is_ok());
+        assert!(Arc::ptr_eq(current.generation.bank(), &bank));
+        for old in retained[..index].iter().flatten() {
+            assert!(!ControlIdentity::ptr_eq(
+                &old.generation,
+                &current.generation
+            ));
+            assert!(old
+                .check()
+                .unwrap_err()
+                .is::<ios_core::OperationCancelled>());
+        }
+        retained[index] = Some(current);
+        lifecycle.clear();
+        assert_eq!(bank.available_permits(), 0);
+    }
+    drop(hook);
+    assert_eq!(lifecycle.devices.try_lock().unwrap().rows.len(), 0);
+    drop(lifecycle);
+    // All eight old generations are still physically owned by these views.
+    // Their shared shutdown watch stays charged; the independent scan watch ends.
+    assert_eq!(
+        bank.available_permits(),
+        watch::body_bytes::<ControlIdentity>()
+    );
+    for view in retained.iter().flatten() {
+        assert!(view
+            .check()
+            .unwrap_err()
+            .is::<ios_core::OperationCancelled>());
+        assert!(ControlIdentity::downgrade(&view.generation)
+            .upgrade()
+            .is_some());
+    }
+    drop(retained);
+    assert_eq!(bank.available_permits(), bytes);
+}
