@@ -1,5 +1,11 @@
 # 当前待开发清单
 
+2026-10-23：L02 [closed-zero raw getter有限census](validation/tunnel-closed-view-census-2026-10-23.md)
+两组固定栈8轮真实执行：GlobalEpoch跨clear保8个不同旧global且原扣费恒定；Cell销毁全watch费已退而8旧Snapshot仍活。
+仅新增2个cfg用例，原生产/旧断言不变；strict/global5/Cell8/fmt/diff共5门禁通过，726源码只2处测试变化。
+metadata hook只观测admitted backing，未声称stdArc无heap分配/无限生产轨迹/arena上界或生产修复。
+原fullCLI1887与host复用而未重跑；physical birth/全retainer/同步reentry仍需整体处理，23/6/L02/Q04口径保持。
+
 2026-10-23：L02 [scan/writer/CURRENT manual Ticket实际根](validation/tunnel-scan-ticket-roots-2026-10-23.md)
 候选/结果/写回持同一实际根；manual index不再擦除根，USB/paired拒绝沿原Coordinator/seen路径。
 Preflight绑定真实Lifecycle，Source前准备原4096上限全部实际空根与G/A费用；晚CURRENT零quota只place。

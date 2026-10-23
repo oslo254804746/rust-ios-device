@@ -2,6 +2,45 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
+fn closed_zero_raw_snapshots_keep_eight_distinct_versions_after_all_original_watch_fee_returns() {
+    const ROUNDS: usize = 8;
+    let bytes = watch::body_bytes::<ControlIdentity>();
+    let authority = super::super::birth_bank::BirthBank::new(bytes);
+    let bank = authority.raw().clone();
+    let cell = Cell::new(ControlIdentity::new(&authority), authority.clone()).unwrap();
+    assert_eq!(bank.available_permits(), 0);
+    bank.close();
+    let mut retained: [Option<Snapshot>; ROUNDS] = std::array::from_fn(|_| None);
+    let hook = super::super::metadata_vec::on_allocation(|_, _| {
+        panic!("closed-zero snapshot/control allocated admitted backing")
+    });
+    for index in 0..ROUNDS {
+        let current = cell.snapshot();
+        assert!(Arc::ptr_eq(current.version.bank(), &bank));
+        for old in retained[..index].iter().flatten() {
+            assert!(!ControlIdentity::ptr_eq(&old.version, &current.version));
+            assert!(ControlIdentity::ptr_eq(&old.epoch, &current.epoch));
+        }
+        retained[index] = Some(current);
+        cell.replace(Desired::Stopped);
+        assert_eq!(bank.available_permits(), 0);
+    }
+    drop(hook);
+    drop(cell);
+    assert_eq!(bank.available_permits(), bytes);
+    for snapshot in retained.iter().flatten() {
+        assert!(ControlIdentity::downgrade(&snapshot.version)
+            .upgrade()
+            .is_some());
+        assert!(ControlIdentity::downgrade(&snapshot.epoch)
+            .upgrade()
+            .is_some());
+    }
+    drop(retained);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[test]
 fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
     let host = "manual-filter-雪";
     let bytes = RetainedRoute::body_bytes() + host.len();
