@@ -4,9 +4,14 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::Semaphore;
 
-use super::{intent, lifecycle::DesiredRow, metadata_vec::KnownVec, Ticket, MAX_FAILURE_RECORDS};
+use super::{
+    intent,
+    lifecycle::{DesiredRow, TicketOwner},
+    metadata_vec::KnownVec,
+    MAX_FAILURE_RECORDS,
+};
 
-type ManualValue<'a> = (&'a Ticket, &'a intent::RouteOwner);
+type ManualValue<'a> = (&'a TicketOwner, &'a intent::RouteOwner);
 type ManualEntry<'a> = (&'a str, ManualValue<'a>);
 
 pub(super) struct Manual<'a> {
@@ -63,7 +68,7 @@ impl<'a> Manual<'a> {
             let intent::Desired::Manual { route, .. } = &row.snapshot.desired else {
                 unreachable!("manual scan row")
             };
-            (row.udid.as_str(), (&*row.ticket, route))
+            (row.udid.as_str(), (&row.ticket, route))
         })
     }
 

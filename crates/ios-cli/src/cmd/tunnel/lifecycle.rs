@@ -115,6 +115,48 @@ pub(super) type TicketOriginGrants = [Option<OwnedSemaphorePermit>; 3];
 /// It contains no receipt, error, retry row or ledger back-reference.
 pub(super) struct TicketOwner(super::shared_weak_allocation::Strong<Ticket, TicketOriginGrants>);
 
+/// Empty complete Ticket storage, paid before a CURRENT Ticket is captured.
+pub(super) struct PreparedTicket {
+    destination: super::shared_weak_allocation::Prepared<Ticket, TicketOriginGrants>,
+    origins: TicketOriginGrants,
+}
+
+impl PreparedTicket {
+    pub(super) fn place(self, ticket: Ticket) -> TicketOwner {
+        TicketOwner(self.destination.place(ticket, self.origins))
+    }
+}
+
+/// Preserve the original captured value through the root's physical free,
+/// without extending the lifetime of its Ticket/gate/watch payload.
+pub(super) struct CapturedVersion {
+    value: ControlIdentity,
+    keeper: super::shared_weak_allocation::Weak<Ticket, TicketOriginGrants>,
+}
+
+impl Clone for CapturedVersion {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            keeper: self.keeper.clone(),
+        }
+    }
+}
+
+impl std::ops::Deref for CapturedVersion {
+    type Target = ControlIdentity;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl std::fmt::Debug for CapturedVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.value.fmt(formatter)
+    }
+}
+
 impl TicketOwner {
     pub(super) fn body_bytes() -> usize {
         super::shared_weak_allocation::Strong::<Ticket, TicketOriginGrants>::body_bytes()
@@ -129,6 +171,17 @@ impl TicketOwner {
             body,
             origins,
         )?))
+    }
+
+    pub(super) fn captured_version(&self) -> CapturedVersion {
+        CapturedVersion {
+            value: self
+                .intent_version
+                .as_ref()
+                .expect("captured manual desired version")
+                .clone(),
+            keeper: self.0.downgrade(),
+        }
     }
 
     #[cfg(test)]
@@ -539,15 +592,15 @@ impl Lifecycle {
 
     /// Read CURRENT gates and one atomic desired/pending proof after Source.
     /// Every destination was allocated before Source; no key/body is cloned here.
-    pub(super) async fn fill_manual_successes(
-        &self,
-        prepared: &mut super::manual_success::Preflight,
-    ) {
-        let shutdown = self.shutdown.subscribe();
+    pub(super) async fn fill_manual_successes(prepared: &mut super::manual_success::Preflight<'_>) {
+        // The plan's immutable birth authority also owns the CURRENT gates.
+        // No caller can substitute a different Lifecycle at this late boundary.
+        let lifecycle = prepared.lifecycle();
+        let shutdown = lifecycle.shutdown.subscribe();
         let Some(epoch) = shutdown.borrow().clone() else {
             return;
         };
-        let devices = self.devices.lock().await;
+        let devices = lifecycle.devices.lock().await;
         for gate in &devices.rows {
             let Some((desired, failure, authority)) = gate.intent.manual_success(&epoch) else {
                 continue;
@@ -564,11 +617,28 @@ impl Lifecycle {
                     shutdown_generation: epoch.clone(),
                     intent_version: Some(desired.clone()),
                 },
-                desired,
                 failure,
                 authority,
             );
         }
+    }
+
+    pub(super) fn prepare_manual_ticket(&self, bank: &Arc<Semaphore>) -> Result<PreparedTicket> {
+        let body = super::admission::known_metadata_charge(bank, TicketOwner::body_bytes())?;
+        let mut origins = [None, None, None];
+        // All fields captured by fill_manual_successes are born from this
+        // same immutable authority, including after clear/reset/replace.
+        if !Arc::ptr_eq(bank, &self.metadata_bytes) {
+            origins[0] = Some(
+                self.metadata_bytes
+                    .origin_charge(TicketOwner::body_bytes())?,
+            );
+        }
+        let destination = super::shared_weak_allocation::Prepared::from_grant(bank, body)?;
+        Ok(PreparedTicket {
+            destination,
+            origins,
+        })
     }
 
     #[cfg(test)]
@@ -1123,6 +1193,10 @@ pub(super) fn cancelled() -> anyhow::Error {
 #[cfg(test)]
 #[path = "lifecycle/desired_tests.rs"]
 mod desired_tests;
+
+#[cfg(test)]
+#[path = "lifecycle/prepared_ticket_tests.rs"]
+mod prepared_ticket_tests;
 
 #[cfg(test)]
 #[path = "lifecycle/global_epoch_tests.rs"]

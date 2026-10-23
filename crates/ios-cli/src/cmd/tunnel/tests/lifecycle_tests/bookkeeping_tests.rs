@@ -25,14 +25,14 @@ async fn intent(state: &TunnelAgentState, udid: &str) -> FailureIntent {
     node.row.slot = Some(slot);
     node.prepare_global(&ticket, &state.inner.global_metadata_bytes)
         .unwrap();
-    FailureIntent {
-        ticket,
-        failed: DeferredFailure {
-            node,
-            receipt: None,
-            destination: None,
-        },
-    }
+    FailureIntent::new(DeferredFailure {
+        ticket: Some(
+            lifecycle::TicketOwner::new(&ticket, &state.inner.global_metadata_bytes).unwrap(),
+        ),
+        node,
+        receipt: None,
+        destination: None,
+    })
 }
 
 fn elapsed(error: &anyhow::Error) {

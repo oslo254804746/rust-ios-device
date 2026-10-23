@@ -10,6 +10,7 @@ async fn failure_global_root_actual_candidate_refusal_keeps_slot_source_and_fail
     let leave = failure_table::Destination::minimum_bytes()
         + failure_table::Node::input_bytes(&Route::Usbmux)
         + A.len()
+        + lifecycle::TicketOwner::body_bytes()
         + marker_identity::Owner::body_bytes()
         - 1;
     let held = bank

@@ -108,9 +108,10 @@ async fn manual_preflight_revoked_authority_keeps_original_failure_and_exact_pen
         Arc::new(super::super::source::NoDevices),
         Duration::from_secs(1),
     );
-    let mut plan = Preflight::new(&state.inner.global_metadata_bytes).unwrap();
+    let mut plan =
+        Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, desired, failure) = manual_authorized(&state, DEVICE, authorized).await;
-    state.inner.lifecycle.fill_manual_successes(&mut plan).await;
+    plan.collect().await;
     assert_eq!(plan.selected(), 1);
     policy.replace(vec![grant(TOKEN, vec![Permission::ManageServer])]);
     access.reload(&principal).await.unwrap();
@@ -137,9 +138,10 @@ async fn manual_preflight_revoked_authority_keeps_original_failure_and_exact_pen
 #[tokio::test]
 async fn manual_preflight_stop_skips_old_writer_without_restarting_backoff() {
     let state = state();
-    let mut plan = Preflight::new(&state.inner.global_metadata_bytes).unwrap();
+    let mut plan =
+        Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, _, failure) = manual(&state, "stopped-before-cleanup").await;
-    state.inner.lifecycle.fill_manual_successes(&mut plan).await;
+    plan.collect().await;
     state.inner.lifecycle.stop(ticket.udid()).await;
     plan.into_inner()
         .flush_collected(
@@ -179,9 +181,10 @@ async fn manual_preflight_expired_authority_keeps_failure_and_unprocessed_pendin
         Arc::new(super::super::source::NoDevices),
         Duration::from_secs(1),
     );
-    let mut plan = Preflight::new(&state.inner.global_metadata_bytes).unwrap();
+    let mut plan =
+        Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, desired, failure) = manual_authorized(&state, DEVICE, authorized).await;
-    state.inner.lifecycle.fill_manual_successes(&mut plan).await;
+    plan.collect().await;
     assert_eq!(plan.selected(), 1);
     tokio::time::advance(Duration::from_secs(3601)).await;
     plan.into_inner()
@@ -234,11 +237,12 @@ async fn actual_pending_clear_late_clock_restores_same_desired_and_failure_arcs(
 
 #[test]
 fn manual_preflight_actual_maximum_backings_exact_and_one_byte_refusal_refund() {
+    let lifecycle = Lifecycle::new();
     let bytes = Preflight::bytes();
     for limit in [bytes - 1, bytes] {
         let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(limit);
         let bank = bank_birth.raw().clone();
-        match Preflight::new(&bank) {
+        match Preflight::new(&bank, &lifecycle) {
             Ok(plan) => {
                 assert_eq!(limit, bytes);
                 assert_eq!(bank.available_permits(), 0);
@@ -257,11 +261,93 @@ fn manual_preflight_actual_maximum_backings_exact_and_one_byte_refusal_refund() 
 }
 
 #[tokio::test]
+async fn manual_preflight_actual_foreign_roots_collect_current_at_closed_zero_and_writer_reuses_them(
+) {
+    use super::super::{lifecycle::TicketOwner, metadata_vec};
+    use std::sync::Mutex;
+
+    let state = state();
+    let origin = state.inner.global_metadata_bytes.clone();
+    let before = origin.available_permits();
+    let bytes = Preflight::bytes();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let roots = Arc::new(Mutex::new(Vec::new()));
+    let seen = roots.clone();
+    let mut plan = metadata_vec::with_allocation_hook(
+        move |layout, pointer| {
+            if layout.size() == TicketOwner::body_bytes() {
+                seen.lock().unwrap().push(pointer);
+            }
+        },
+        || Preflight::new(&bank, &state.inner.lifecycle).unwrap(),
+    );
+    assert_eq!(
+        roots.lock().unwrap().len(),
+        super::super::lifecycle::MAX_DEVICE_GATES
+    );
+    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(
+        origin.available_permits(),
+        before - super::super::lifecycle::MAX_DEVICE_GATES * TicketOwner::body_bytes()
+    );
+    let (old, old_desired, _) = manual(&state, "late-foreign-current").await;
+    state.inner.lifecycle.clear();
+    let (ticket, desired, failure) = manual(&state, "late-foreign-current").await;
+    assert!(!super::super::ControlIdentity::ptr_eq(
+        &old_desired,
+        &desired
+    ));
+    assert!(!old.same_incarnation(&ticket));
+    let canonical = ticket.udid().as_ptr();
+    let held = origin
+        .clone()
+        .try_acquire_many_owned(origin.available_permits() as u32)
+        .unwrap();
+    origin.close();
+    bank.close();
+    let hook = metadata_vec::on_allocation(|_, _| {
+        panic!("CURRENT collector/writer allocated after Source")
+    });
+    plan.collect().await;
+    assert_eq!(plan.selected(), 1);
+    let completed = &plan.completed.as_slice()[0];
+    assert_eq!(completed.ticket.udid().as_ptr(), canonical);
+    assert!(completed.ticket.same_incarnation(&ticket));
+    assert!(super::super::ControlIdentity::ptr_eq(
+        &completed.desired,
+        &desired
+    ));
+    assert!(FailureVersion::ptr_eq(&completed.failure, &failure));
+    let value = &*completed.ticket as *const Ticket as usize;
+    assert!(roots.lock().unwrap().iter().any(|start| *start <= value
+        && value + std::mem::size_of::<Ticket>() <= *start + TicketOwner::body_bytes()));
+    plan.into_inner()
+        .flush_collected(
+            &state,
+            &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
+        )
+        .await
+        .unwrap();
+    drop(hook);
+    assert!(ticket.pending_success().is_none());
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    assert_eq!(bank.available_permits(), bytes);
+    drop((old, ticket, held, failure));
+    state.notify_shutdown();
+    state.clear().await;
+    drop(state);
+    assert_eq!(
+        origin.available_permits(),
+        super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
+    );
+}
+
+#[tokio::test]
 async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at_zero_quota() {
     let state = state();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     assert_eq!(state.inner.lifecycle.desired().await.unwrap().len(), 0);
-    let mut plan = Preflight::new(&bank).unwrap();
+    let mut plan = Preflight::new(&bank, &state.inner.lifecycle).unwrap();
     let (ticket, old_desired, failure) = manual(&state, "source-created-manual").await;
     ticket
         .commit(|| {
@@ -282,7 +368,7 @@ async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at
         .clone()
         .try_acquire_many_owned(bank.available_permits() as u32)
         .unwrap();
-    state.inner.lifecycle.fill_manual_successes(&mut plan).await;
+    plan.collect().await;
     assert_eq!(plan.selected(), 1);
     assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &plan.completed.as_slice()[0].desired,
@@ -316,7 +402,7 @@ async fn manual_preflight_does_not_pin_idle_automatic_namespace() {
     let lifecycle = Lifecycle::new();
     let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(Preflight::bytes());
     let bank = bank_birth.raw().clone();
-    let plan = Preflight::new(&bank).unwrap();
+    let plan = Preflight::new(&bank, &lifecycle).unwrap();
     for index in 0..super::super::lifecycle::MAX_DEVICE_GATES {
         drop(lifecycle.ticket(&format!("idle-{index}")).await.unwrap());
     }
@@ -335,9 +421,10 @@ async fn manual_preflight_does_not_pin_idle_automatic_namespace() {
 #[tokio::test]
 async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() {
     let state = state();
-    let mut plan = Preflight::new(&state.inner.global_metadata_bytes).unwrap();
+    let mut plan =
+        Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, old_desired, old_failure) = manual(&state, "changing-version").await;
-    state.inner.lifecycle.fill_manual_successes(&mut plan).await;
+    plan.collect().await;
     let slot = state.reserve_failure_slot(ticket.udid()).await.unwrap();
     state
         .record_failed_attempt(
@@ -393,7 +480,7 @@ async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() 
 #[tokio::test]
 async fn manual_preflight_actual_late_writer_restores_failure_stamp_and_pending_tuple() {
     let state = state();
-    let plan = Preflight::new(&state.inner.global_metadata_bytes).unwrap();
+    let plan = Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, desired, failure) = manual(&state, "late-manual-success").await;
     ticket.fenced().remember_failure(Some(failure.clone()));
     let original_stamp = ticket.failure_stamp().unwrap();

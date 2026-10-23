@@ -1,5 +1,6 @@
 //! Bounded failure writes and contested success cleanup after the scan window.
 use super::failure_table::{Destination, OwnedNode, RemovedBatch, Table};
+use super::lifecycle::{CapturedVersion, TicketOwner};
 use super::ControlIdentity;
 use super::{FailureVersion, Ticket, TunnelAgentState};
 use std::sync::Arc;
@@ -12,6 +13,8 @@ use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 pub(super) struct DeferredFailure {
+    // Moved to FailureIntent's original first field at the writer boundary.
+    pub(super) ticket: Option<TicketOwner>,
     pub(super) node: OwnedNode,
     pub(super) receipt: Option<super::reconnect::Receipt>,
     // Direct-attempt fixtures also reserve their destination before Source.
@@ -20,8 +23,20 @@ pub(super) struct DeferredFailure {
 }
 
 pub(super) struct FailureIntent {
-    pub(super) ticket: Ticket,
+    pub(super) ticket: TicketOwner,
     pub(super) failed: DeferredFailure,
+}
+
+impl FailureIntent {
+    pub(super) fn new(mut failed: DeferredFailure) -> Self {
+        Self {
+            ticket: failed
+                .ticket
+                .take()
+                .expect("pre-Source captured Ticket root"),
+            failed,
+        }
+    }
 }
 
 pub(super) struct DeferredSuccess {
@@ -33,13 +48,13 @@ pub(super) struct DeferredSuccess {
 pub(super) enum ScanAttemptOutcome {
     NoChange,
     Failure(DeferredFailure),
-    Success(DeferredSuccess),
+    Success(DeferredSuccess, TicketOwner),
 }
 
 pub(super) enum SuccessKey {
     Owned(String),
     Coordinator {
-        desired: ControlIdentity,
+        desired: CapturedVersion,
         authority: crate::access::DeviceAuthority,
     },
 }
@@ -56,7 +71,7 @@ impl From<&str> for SuccessKey {
 
 pub(super) struct SuccessIntent {
     pub(super) udid: SuccessKey,
-    pub(super) ticket: Ticket,
+    pub(super) ticket: TicketOwner,
     pub(super) success: DeferredSuccess,
     pub(super) _input: Option<super::candidate_input::Owner>,
     pub(super) _key_storage: Option<OwnedSemaphorePermit>,

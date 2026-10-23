@@ -436,10 +436,7 @@ async fn intent_native_manual_success_discards_old_deferred_failure_without_reti
         .publication
         .clone();
     state
-        .flush_failure_intents(vec![FailureIntent {
-            ticket: old_ticket.clone(),
-            failed: deferred,
-        }])
+        .flush_failure_intents(vec![FailureIntent::new(deferred)])
         .await
         .unwrap();
     let failed_empty = state.inner.failed_attempts.read().await.is_empty();
