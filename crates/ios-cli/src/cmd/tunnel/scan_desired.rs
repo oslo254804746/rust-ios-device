@@ -63,7 +63,7 @@ impl<'a> Manual<'a> {
             let intent::Desired::Manual { route, .. } = &row.snapshot.desired else {
                 unreachable!("manual scan row")
             };
-            (row.udid.as_str(), (&row.ticket, route))
+            (row.udid.as_str(), (&*row.ticket, route))
         })
     }
 

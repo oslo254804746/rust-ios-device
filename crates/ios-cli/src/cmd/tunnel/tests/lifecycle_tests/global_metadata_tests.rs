@@ -547,7 +547,7 @@ async fn scan_desired_manual_index_retains_original_snapshot_refs_and_exact_back
     let charged = manual.storage_bytes();
     assert_eq!(bank.available_permits(), before - charged);
     let (same_ticket, same_route) = manual.get(A).unwrap();
-    assert!(std::ptr::eq(same_ticket, &row.ticket));
+    assert!(std::ptr::eq(same_ticket, &*row.ticket));
     assert!(same_route.ptr_eq(route));
     assert!(std::ptr::eq(
         manual.iter().next().unwrap().0.as_ptr(),

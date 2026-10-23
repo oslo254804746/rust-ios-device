@@ -1,6 +1,77 @@
 use super::*;
 
 #[tokio::test]
+async fn desired_zero_key_escaped_rows_keep_distinct_old_versions_after_iterator_backing_refund() {
+    const ROUNDS: usize = 4;
+    let row_bytes = 2 * std::mem::size_of::<DesiredRow>();
+    let root_bytes = TicketOwner::body_bytes() + super::super::intent::SnapshotOwner::body_bytes();
+    let initial_free = row_bytes + ROUNDS * root_bytes;
+    let total = Lifecycle::watch_bytes() + Lifecycle::initial_metadata_bytes("") + initial_free;
+    let birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+    let bank = birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(birth).unwrap();
+    drop(lifecycle.ticket("").await.unwrap());
+    assert_eq!(bank.available_permits(), initial_free);
+    let mut escaped: [Option<DesiredRow>; ROUNDS] = std::array::from_fn(|_| None);
+    for (index, destination) in escaped.iter_mut().enumerate() {
+        lifecycle.stop("").await;
+        let rows = lifecycle.desired().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(bank.available_permits(), (ROUNDS - index - 1) * root_bytes);
+        let mut iterator = rows.into_iter();
+        let row = iterator.next().unwrap();
+        assert!(row.udid.is_empty());
+        assert_eq!(row._key_storage.num_permits(), 0);
+        assert!(row.ticket.is_current());
+        drop(iterator);
+        assert_eq!(
+            bank.available_permits(),
+            initial_free - (index + 1) * root_bytes
+        );
+        *destination = Some(row);
+        lifecycle.clear();
+        drop(lifecycle.ticket("").await.unwrap());
+        assert_eq!(
+            bank.available_permits(),
+            initial_free - (index + 1) * root_bytes
+        );
+        assert_eq!(lifecycle.coordinator_count().await, 1);
+    }
+    for (index, row) in escaped.iter().flatten().enumerate() {
+        assert!(!row.ticket.is_current());
+        assert!(ControlIdentity::ptr_eq(
+            &row.snapshot.epoch,
+            &row.ticket.shutdown_generation
+        ));
+        assert!(ControlIdentity::ptr_eq(
+            &row.snapshot.version,
+            row.ticket.intent_version.as_ref().unwrap()
+        ));
+        for other in escaped[..index].iter().flatten() {
+            assert!(!ControlIdentity::ptr_eq(
+                &row.ticket.shutdown_generation,
+                &other.ticket.shutdown_generation
+            ));
+            assert!(!ControlIdentity::ptr_eq(
+                &row.ticket.generation,
+                &other.ticket.generation
+            ));
+            assert!(!ControlIdentity::ptr_eq(
+                &row.snapshot.version,
+                &other.snapshot.version
+            ));
+        }
+    }
+    // The original iterator's actual backing refunds, but each escaped row
+    // keeps its independent real Ticket and Snapshot allocations paid.
+    assert_eq!(bank.available_permits(), row_bytes);
+    drop(escaped);
+    assert_eq!(bank.available_permits(), initial_free);
+    drop(lifecycle);
+    assert_eq!(bank.available_permits(), total);
+}
+
+#[tokio::test]
 async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner() {
     let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
     let bank = bank_birth.raw().clone();
@@ -9,7 +80,8 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
     let ticket = lifecycle.ticket(key).await.unwrap();
     lifecycle.stop(key).await;
     let row_bytes = 2 * std::mem::size_of::<DesiredRow>();
-    let before = row_bytes + key.len();
+    let root_bytes = TicketOwner::body_bytes() + super::super::intent::SnapshotOwner::body_bytes();
+    let before = row_bytes + key.len() + root_bytes;
     let held = bank
         .clone()
         .try_acquire_many_owned((bank.available_permits() - before) as u32)
@@ -21,16 +93,28 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
         let mut observed = observed.lock().unwrap();
         if observed.is_empty() {
             assert_eq!(layout.size(), row_bytes);
-            assert_eq!(observed_bank.available_permits(), key.len());
-        } else {
-            assert_eq!(observed.len(), 1);
+            assert_eq!(observed_bank.available_permits(), key.len() + root_bytes);
+        } else if observed.len() == 1 {
             assert_eq!(layout.size(), key.len());
             assert_eq!(layout.align(), 1);
             assert_eq!(
                 observed_bank.available_permits(),
-                0,
+                root_bytes,
                 "original key grant precedes allocation"
             );
+        } else if observed.len() == 2 {
+            assert_eq!(layout.size(), TicketOwner::body_bytes());
+            assert_eq!(
+                observed_bank.available_permits(),
+                super::super::intent::SnapshotOwner::body_bytes()
+            );
+        } else {
+            assert_eq!(observed.len(), 3);
+            assert_eq!(
+                layout.size(),
+                super::super::intent::SnapshotOwner::body_bytes()
+            );
+            assert_eq!(observed_bank.available_permits(), 0);
         }
         observed.push((layout.size(), pointer));
     });
@@ -49,15 +133,35 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
     assert_eq!(copied._key_storage.num_permits(), key_bytes);
     assert!(Arc::ptr_eq(copied._key_storage.semaphore(), &bank));
     assert_eq!(
-        *allocations.lock().unwrap(),
+        allocations.lock().unwrap()[..2],
         [
             (row_bytes, rows.as_slice().as_ptr() as usize),
             (key_bytes, copied.udid.as_ptr() as usize),
         ]
     );
+    let observed = allocations.lock().unwrap();
+    assert_eq!(observed.len(), 4);
+    for (value, value_bytes, allocation) in [
+        (
+            &*copied.ticket as *const Ticket as usize,
+            std::mem::size_of::<Ticket>(),
+            observed[2],
+        ),
+        (
+            &*copied.snapshot as *const super::super::intent::Snapshot as usize,
+            std::mem::size_of::<super::super::intent::Snapshot>(),
+            observed[3],
+        ),
+    ] {
+        assert!(allocation.1 <= value && value + value_bytes <= allocation.1 + allocation.0);
+    }
+    drop(observed);
     assert_ne!(copied.udid.as_ptr(), ticket.gate.udid.as_ptr());
     let key_pointer = copied.udid.as_ptr();
-    assert_eq!(bank.available_permits(), before - key_bytes - row_bytes);
+    assert_eq!(
+        bank.available_permits(),
+        before - key_bytes - row_bytes - root_bytes
+    );
     bank.close();
     let mut iterator = rows.into_iter();
     let DesiredRow {
@@ -156,7 +260,10 @@ async fn desired_listing_refused_key_restores_all_partial_rows_and_original_stat
     let old_b = b.desired();
     // Enough for two inline rows and only the first independent key: a
     // partially built batch must be dropped in full, with no intent mutation.
-    let allowed = 2 * std::mem::size_of::<DesiredRow>() + "synthetic-a".len();
+    let allowed = 2 * std::mem::size_of::<DesiredRow>()
+        + "synthetic-a".len()
+        + TicketOwner::body_bytes()
+        + super::super::intent::SnapshotOwner::body_bytes();
     let held = Arc::clone(&bank)
         .try_acquire_many_owned((bank.available_permits() - allowed) as u32)
         .unwrap();
