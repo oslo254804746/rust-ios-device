@@ -9,6 +9,8 @@ use tokio::sync::Notify;
 
 const OBSERVE: Duration = Duration::from_secs(2);
 
+mod launch_tests;
+
 struct Owner {
     handles: StdMutex<Vec<Arc<TunnelHandle>>>,
     attached: Notify,

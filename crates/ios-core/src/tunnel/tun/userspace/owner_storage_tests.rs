@@ -74,7 +74,7 @@ fn listener_limit_whole_original_root_admission_precedes_backing_and_native_capa
 
 #[tokio::test]
 async fn task_handle_real_backing_one_byte_refusal_and_original_joins_keep_fee_until_drop() {
-    let required = 4 * std::mem::size_of::<OwnedTask>();
+    let required = TaskHandles::body_bytes();
     let short = Arc::new(Semaphore::new(required - 1));
     assert!(runtime_storage::task_handles(Some(&short)).is_err());
     assert_eq!(short.available_permits(), required - 1);

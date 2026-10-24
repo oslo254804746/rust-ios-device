@@ -262,7 +262,7 @@ where
             {
                 let byte_bank = reservation.as_ref().and_then(|owner| owner.byte_bank());
                 connection.validate_initial_bank(byte_bank.as_ref())?;
-                let userspace = UserspaceTunDevice::start_validated_with_bank(
+                let (userspace, launch) = UserspaceTunDevice::prepare_validated_with_bank(
                     &tunnel_info.client_address,
                     &tunnel_info.server_address,
                     mtu,
@@ -286,6 +286,7 @@ where
                         return Err(error);
                     }
                 }
+                launch().map_err(CoreError::Tunnel)?;
                 let rsd = if let Some(bank) = connection.owned_initial_bank.as_ref() {
                     InitialProbe::Owned(
                         super::rsd_connect::attempt_owned_rsd_via_proxy(

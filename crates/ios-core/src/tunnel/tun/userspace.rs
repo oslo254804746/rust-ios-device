@@ -36,7 +36,9 @@ mod owned_channel;
 use owned_channel as mpsc;
 mod worker_future;
 use worker_future::PreparedWorker;
+mod launch;
 mod packet_link;
+use launch::{LaunchControl, LaunchGuard};
 #[cfg(test)]
 use packet_link::{read_ios_packets_owned, write_ios_packets_owned};
 
@@ -66,7 +68,8 @@ fn runtime_channel_bytes() -> usize {
 fn runtime_owner_bytes() -> usize {
     Ledger::reservation_bytes()
         + SharedChildTaskSet::body_bytes()
-        + 4 * std::mem::size_of::<OwnedTask>()
+        + TaskHandles::body_bytes()
+        + LaunchControl::body_bytes()
 }
 
 // ── smoltcp Device implementation ─────────────────────────────────────────────
@@ -232,6 +235,7 @@ pub struct UserspaceTunDevice {
     stop: watch::Sender,
     clients: SharedChildTaskSet,
     outcomes: Ledger,
+    launch: LaunchControl,
 }
 
 impl UserspaceTunDevice {
@@ -279,6 +283,36 @@ impl UserspaceTunDevice {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
+        let (runtime, launch) = Self::prepare_validated_with_bank(
+            client_address,
+            _server_address,
+            mtu,
+            ios_stream,
+            byte_bank,
+        )
+        .await?;
+        launch()?;
+        Ok(runtime)
+    }
+
+    /// Prepare the same original runtime without spawning or polling workers.
+    /// Activation attaches its exact handle before calling the returned launch.
+    pub(crate) async fn prepare_validated_with_bank<S>(
+        client_address: &str,
+        _server_address: &str,
+        mtu: ValidatedMtu,
+        ios_stream: S,
+        byte_bank: Option<Arc<Semaphore>>,
+    ) -> Result<
+        (
+            Self,
+            impl FnOnce() -> Result<(), TunnelError> + Send + 'static,
+        ),
+        TunnelError,
+    >
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let payload_capacity = mtu.ipv6_payload_capacity()?;
         let client_ipv6: Ipv6Address = client_address.parse().map_err(|_| {
             TunnelError::Protocol(format!("invalid client IPv6 address: {client_address}"))
@@ -295,7 +329,8 @@ impl UserspaceTunDevice {
             ChildRole::ProxyClient,
             byte_bank.as_ref(),
         )?;
-        let mut task_handles = runtime_storage::task_handles(byte_bank.as_ref())?;
+        let task_handles = runtime_storage::task_handles(byte_bank.as_ref())?;
+        let control = LaunchControl::prepare(byte_bank.as_ref(), &outcomes)?;
         let client_permits = ListenerSlots::new(MAX_LOCAL_PROXY_CLIENTS, byte_bank.as_ref())?;
 
         // All buffer/channel admission precedes listener setup and workers.
@@ -347,38 +382,60 @@ impl UserspaceTunDevice {
 
         // Every fallible payload admission completes before the first worker.
         // Legacy callers retain Tokio's original unboxed spawn path.
-        let reader = PreparedWorker::prepare(reader_future, future_bank.as_ref())?;
-        let writer = PreparedWorker::prepare(writer_future, future_bank.as_ref())?;
-        let smoltcp = PreparedWorker::prepare(smoltcp_future, future_bank.as_ref())?;
-        let listener = PreparedWorker::prepare(listener_future, future_bank.as_ref())?;
-        task_handles.initialize([
-            reader.spawn(ParentRole::ForwardOrReader, outcomes.clone()),
-            writer.spawn(ParentRole::Writer, outcomes.clone()),
-            smoltcp.spawn(ParentRole::Smoltcp, outcomes.clone()),
-            listener.spawn(ParentRole::Listener, outcomes.clone()),
-        ]);
-        tracing::info!("userspace TUN started on 127.0.0.1:{local_port}");
-        Ok(Self {
-            local_port,
-            task_handles,
-            stop,
-            clients,
-            outcomes,
-        })
+        let reader = PreparedWorker::prepare(
+            launch::gated(control.clone(), outcomes.clone(), reader_future),
+            future_bank.as_ref(),
+        )?;
+        let writer = PreparedWorker::prepare(
+            launch::gated(control.clone(), outcomes.clone(), writer_future),
+            future_bank.as_ref(),
+        )?;
+        let smoltcp = PreparedWorker::prepare(
+            launch::gated(control.clone(), outcomes.clone(), smoltcp_future),
+            future_bank.as_ref(),
+        )?;
+        let listener = PreparedWorker::prepare(
+            launch::gated(control.clone(), outcomes.clone(), listener_future),
+            future_bank.as_ref(),
+        )?;
+        let guard = LaunchGuard::new(
+            task_handles.clone(),
+            control.clone(),
+            outcomes.clone(),
+            stop.clone(),
+        );
+        let prepared = launch::PreparedLaunch::new(reader, writer, smoltcp, listener, guard);
+        let launch = move || {
+            prepared.run()?;
+            tracing::info!("userspace TUN started on 127.0.0.1:{local_port}");
+            Ok(())
+        };
+        Ok((
+            Self {
+                local_port,
+                task_handles,
+                stop,
+                clients,
+                outcomes,
+                launch: control,
+            },
+            launch,
+        ))
     }
 
     pub fn is_alive(&self) -> bool {
-        !self.outcomes.is_runtime_stopped()
+        self.launch.opened()
+            && self.task_handles.all_installed()
+            && !self.outcomes.is_runtime_stopped()
             && self.task_handles.iter().all(|handle| !handle.is_finished())
     }
 
     pub(crate) fn request_stop(&self) {
+        let _abort = launch::AbortInstalled::first_three(&self.task_handles);
         self.outcomes.request_runtime_stop();
         self.stop.send_replace(());
+        self.launch.cancel();
         // Listener remains owned/running long enough to drain its child set.
-        for task in self.task_handles.iter().take(3) {
-            task.abort();
-        }
     }
 
     /// Stop and join all four workers and proxy children under one cooperative
@@ -403,6 +460,7 @@ impl UserspaceTunDevice {
         deadline: Result<tokio::time::Instant, TunnelError>,
     ) -> impl std::future::Future<Output = Result<(), TunnelError>> + Send + '_ {
         owner::join_until(deadline, &self.outcomes, async {
+            self.launch.finished().await;
             for task in &self.task_handles {
                 task.join().await;
             }
@@ -419,9 +477,10 @@ impl UserspaceTunDevice {
 
 impl Drop for UserspaceTunDevice {
     fn drop(&mut self) {
-        for handle in self.task_handles.drain() {
+        for handle in self.task_handles.iter() {
             handle.abort();
         }
+        self.launch.cancel_state();
     }
 }
 
@@ -1136,6 +1195,9 @@ mod shutdown_tests;
 
 #[cfg(test)]
 mod owner_storage_tests;
+
+#[cfg(test)]
+mod launch_tests;
 
 #[cfg(test)]
 mod receive_storage_tests;
