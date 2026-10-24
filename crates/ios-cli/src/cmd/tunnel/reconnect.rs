@@ -576,6 +576,22 @@ impl Ledger {
                     Reason::Stopped,
                 )
             });
+            // Source Ready(Err) is captured before its future is destroyed.
+            // That Drop can invalidate the ticket after capture but before
+            // finish; retire only this exact acquired cause, never a new one
+            // for the same UDID. It cannot enter deferred failure bookkeeping.
+            for node in state.causes.as_mut_slice() {
+                if node.cause_state == CauseState::Active
+                    && node
+                        .cause
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.ptr_eq(&attempt.receipt))
+                {
+                    node.cause_state = CauseState::Retired;
+                }
+            }
+            drop(state);
+            attempt.receipt.complete(Completion::Abandoned);
         }
         if success && committed.is_ok() {
             if let Some(row) = &removed {

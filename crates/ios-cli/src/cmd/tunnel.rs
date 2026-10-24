@@ -1599,24 +1599,29 @@ impl TunnelAgentState {
                         attempt.emit_start();
                     }
                 }
-                result
+                // A ready Source error already exists. Commit its prepaid
+                // receipt in this poll, before Source Drop can change epochs
+                // or run arbitrary cleanup; neither step needs new quota.
+                result.map(|result| {
+                    result.map_err(|error| {
+                        let error = match &input {
+                            Some(input) => error.context(candidate_input::SourceInputContext {
+                                input: input.clone(),
+                            }),
+                            None => error,
+                        };
+                        match &attempt {
+                            Some(attempt) => attempt.source_failed(error),
+                            None => error,
+                        }
+                    })
+                })
             })
             .await;
             // Release the original finished Box and its fee before unrelated
             // device/output admission. Pending cancellation uses the same Drop.
             drop(source);
-            let device = completed.map_err(|error| {
-                let error = match &input {
-                    Some(input) => error.context(candidate_input::SourceInputContext {
-                        input: input.clone(),
-                    }),
-                    None => error,
-                };
-                match &attempt {
-                    Some(attempt) => attempt.source_failed(error),
-                    None => error,
-                }
-            })?;
+            let device = completed?;
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }

@@ -4,6 +4,8 @@ use super::*;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU32;
 
+mod source_drop_tests;
+
 const REFUSAL_BUDGET: Duration = Duration::from_secs(8);
 const PRIVATE_CONTEXT: &str = "synthetic-original-private-pair-token";
 
