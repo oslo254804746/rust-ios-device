@@ -33,7 +33,7 @@ async fn lifecycle_tunnel_discovery_scan_queue_counts_without_polling_device_sou
     assert!(!state.is_ready().await);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lifecycle_tunnel_discovery_usb_and_paired_wait_share_absolute_budget() {
     let source = FakeSource::new();
     let usb_gate = Arc::new(Semaphore::new(0));
@@ -41,6 +41,7 @@ async fn lifecycle_tunnel_discovery_usb_and_paired_wait_share_absolute_budget() 
     *source.usb_gate.lock().unwrap() = Some(usb_gate.clone());
     *source.paired_gate.lock().unwrap() = Some(paired_gate);
     let state = state(source.clone(), Duration::from_millis(80));
+    let started = tokio::time::Instant::now();
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     tokio::time::sleep(Duration::from_millis(65)).await;
@@ -56,6 +57,7 @@ async fn lifecycle_tunnel_discovery_usb_and_paired_wait_share_absolute_budget() 
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
     assert_eq!(source.paired_exited.load(Ordering::SeqCst), 1);
+    assert_eq!(started.elapsed(), Duration::from_millis(80));
 }
 
 #[tokio::test]
