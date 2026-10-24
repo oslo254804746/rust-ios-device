@@ -7,6 +7,9 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state.refresh_once().await.unwrap();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let input = {
@@ -28,7 +31,8 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     let published = state.inner.metadata_bytes.clone();
     let published_before = published.available_permits();
     let before = bank.available_permits();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(state.inner.native.snapshot().retired, 1);
     assert!(
         input.upgrade().is_some(),
@@ -44,7 +48,10 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     );
     assert_eq!(
         bank.available_permits(),
-        before + actual_publication_destination_bytes() + publication::TicketOwner::body_bytes(),
+        before
+            + actual_publication_destination_bytes()
+            + publication::TicketOwner::body_bytes()
+            + ControlIdentity::body_bytes(),
         "publication Weak still owns the original body in the global pool"
     );
     assert_eq!(
@@ -68,6 +75,7 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
             + actual_publication_destination_bytes()
             + publication::Life::bytes()
             + publication::TicketOwner::body_bytes()
+            + ControlIdentity::body_bytes()
     );
     drop(route);
     assert_eq!(
@@ -77,6 +85,7 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
             + route_body_bytes()
             + publication::Life::bytes()
             + publication::TicketOwner::body_bytes()
+            + ControlIdentity::body_bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert!(input.upgrade().is_none());
@@ -85,7 +94,8 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
         recovered(&source, expected).await,
         "original peer EOF/tasks did not recover"
     );
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_1);
+    drop(control_input_1);
     drop(state);
     assert_eq!(
         bank.available_permits(),
@@ -100,6 +110,9 @@ async fn candidate_input_native_original_joins_keep_input_while_table_still_owns
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state.refresh_once().await.unwrap();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let input = {
@@ -107,15 +120,20 @@ async fn candidate_input_native_original_joins_keep_input_while_table_still_owns
         table[DEVICE]._input.as_ref().unwrap().downgrade()
     };
     let before = bank.available_permits();
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
     state.drain_native(OBSERVE).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
     assert_eq!(state.inner.tunnels.read().await.len(), 1);
     assert!(input.upgrade().is_some());
-    assert_eq!(bank.available_permits(), before);
+    assert_eq!(
+        bank.available_permits(),
+        before + ControlIdentity::body_bytes()
+    );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(recovered(&source, expected).await);
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert!(input.upgrade().is_none());
     drop(state);
     assert_eq!(
@@ -206,13 +224,17 @@ impl SourcePeak {
     }
 }
 
-fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize, SourcePeak) {
-    configured_with_discovery(source, 0)
+fn configured(
+    source: Arc<LocalSource>,
+    control_births: usize,
+) -> (TunnelAgentState, usize, SourcePeak) {
+    configured_with_discovery(source, 0, control_births)
 }
 
 fn configured_with_discovery(
     source: Arc<LocalSource>,
     discovery: usize,
+    control_births: usize,
 ) -> (TunnelAgentState, usize, SourcePeak) {
     let temporary = source_future_bytes(&*source) + ownership::Ownership::attempt_bytes();
     let mut state = state(source);
@@ -236,7 +258,8 @@ fn configured_with_discovery(
             + record_copy_bytes()
             + route_body_bytes()
             + temporary
-            + discovery,
+            + discovery
+            + (4 + control_births) * ControlIdentity::body_bytes(),
     );
     let peak = SourcePeak::new(&state, temporary);
     (state, charged, peak)
@@ -247,7 +270,10 @@ async fn metadata_lease_original_roots_survive_table_removal_and_native_joins_wi
 ) {
     let expected = baseline();
     let source = LocalSource::new();
-    let (state, charged, peak) = configured(source.clone());
+    let (state, charged, peak) = configured(source.clone(), 3);
+    let mut prepared_direct_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     let record = publish(&state, Route::Wifi(None)).await.unwrap();
     peak.checked();
     let global = state.inner.global_metadata_bytes.clone();
@@ -265,7 +291,8 @@ async fn metadata_lease_original_roots_survive_table_removal_and_native_joins_wi
     let g_fee = global_fee.num_permits();
     assert_eq!(global.available_permits(), 0);
     assert_eq!(publication.available_permits(), 0);
-    state.clear().await;
+    state.clear(&mut prepared_direct_0).await;
+    drop(prepared_direct_0);
     state.drain_native(OBSERVE).await.unwrap();
     assert!(source.handle().shutdown_status().is_ok());
     assert!(
@@ -301,22 +328,30 @@ async fn metadata_lease_original_roots_survive_table_removal_and_native_joins_wi
     assert_eq!(publication.available_permits(), charged);
     assert_eq!(
         global.available_permits(),
-        charged + route_body_bytes() + retirement::Registry::incarnation_bytes()
+        charged
+            + route_body_bytes()
+            + retirement::Registry::incarnation_bytes()
+            + ControlIdentity::body_bytes()
     );
     drop(record);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_direct_1);
+    drop(prepared_direct_1);
 }
 
 #[tokio::test]
 async fn native_metadata_charge_survives_table_removal_until_original_joins_and_eof() {
     let expected = baseline();
     let source = LocalSource::new();
-    let (state, charged, peak) = configured(source.clone());
+    let (state, charged, peak) = configured(source.clone(), 3);
+    let mut prepared_direct_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     let record = publish(&state, Route::Wifi(None)).await.unwrap();
     peak.checked();
     assert_eq!(state.inner.metadata_bytes.available_permits(), 0);
     assert_eq!(state.inner.global_metadata_bytes.available_permits(), 0);
-    state.clear().await;
+    state.clear(&mut prepared_direct_0).await;
+    drop(prepared_direct_0);
     assert_eq!(state.inner.native.snapshot().retired, 1);
     assert_eq!(
         state.inner.metadata_bytes.available_permits(),
@@ -328,6 +363,7 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
         state.inner.global_metadata_bytes.available_permits(),
         actual_publication_destination_bytes()
             + route_body_bytes()
+            + ControlIdentity::body_bytes()
             + publication::Life::bytes()
             + publication::TicketOwner::body_bytes()
     );
@@ -335,14 +371,18 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged + route_body_bytes() + retirement::Registry::incarnation_bytes()
+        charged
+            + route_body_bytes()
+            + retirement::Registry::incarnation_bytes()
+            + ControlIdentity::body_bytes()
     );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(
         recovered(&source, expected).await,
         "native peer did not reach EOF or task baseline"
     );
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_direct_1);
+    drop(prepared_direct_1);
     drop(record);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
@@ -350,6 +390,7 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
             + route_body_bytes()
             + record_copy_bytes()
             + retirement::Registry::incarnation_bytes()
+            + 3 * ControlIdentity::body_bytes()
     );
 }
 
@@ -357,22 +398,33 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
 async fn native_metadata_charge_survives_certified_joins_while_table_still_owns_metadata() {
     let expected = baseline();
     let source = LocalSource::new();
-    let (state, charged, peak) = configured(source.clone());
+    let (state, charged, peak) = configured(source.clone(), 2);
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     let record = publish(&state, Route::Wifi(None)).await.unwrap();
     peak.checked();
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
     state.drain_native(OBSERVE).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
     assert_eq!(state.inner.tunnels.read().await.len(), 1);
     assert_eq!(state.inner.metadata_bytes.available_permits(), 0);
-    assert_eq!(state.inner.global_metadata_bytes.available_permits(), 0);
+    assert_eq!(
+        state.inner.global_metadata_bytes.available_permits(),
+        ControlIdentity::body_bytes()
+    );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(recovered(&source, expected).await);
-    state.clear().await;
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged + route_body_bytes() + retirement::Registry::incarnation_bytes()
+        charged
+            + route_body_bytes()
+            + retirement::Registry::incarnation_bytes()
+            + 2 * ControlIdentity::body_bytes()
     );
     drop(record);
     assert_eq!(
@@ -381,6 +433,7 @@ async fn native_metadata_charge_survives_certified_joins_while_table_still_owns_
             + route_body_bytes()
             + record_copy_bytes()
             + retirement::Registry::incarnation_bytes()
+            + 2 * ControlIdentity::body_bytes()
     );
 }
 
@@ -393,7 +446,10 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     let discovery = MAX_GLOBAL_KNOWN_METADATA_BYTES - probe.available_permits();
     drop(frame); // Actual local constructor only, no discovery poll.
     assert_eq!(probe.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
-    let (state, charged, peak) = configured_with_discovery(source.clone(), discovery);
+    let (state, charged, peak) = configured_with_discovery(source.clone(), discovery, 2);
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     *source.usb_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let mut connection = Box::pin(publish(&state, Route::Usbmux));
     assert!(futures_util::poll!(&mut connection).is_pending());
@@ -434,8 +490,10 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(recovered(&source, expected).await);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
 }
 
@@ -443,7 +501,7 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
 async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_joins_owner() {
     let expected = baseline();
     let source = LocalSource::new();
-    let (mut state, charged, old_peak) = configured(source.clone());
+    let (mut state, charged, old_peak) = configured(source.clone(), 0);
     drop(old_peak);
     let temporary = source_future_bytes(&*source) + ownership::Ownership::attempt_bytes();
     let devices = vec![source::UsbDevice {
@@ -464,8 +522,10 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
         native_bytes
             + retirement::Registry::incarnation_bytes()
             + (total + Lifecycle::initial_metadata_bytes(DEVICE))
-            + temporary,
+            + temporary
+            + 6 * ControlIdentity::body_bytes(),
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let peak = SourcePeak::new(&state, temporary);
     let snapshot =
         admission::retain_usb_snapshot(&state.inner.global_metadata_bytes, &devices).unwrap();
@@ -498,6 +558,7 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
         state.inner.global_metadata_bytes.available_permits(),
         total - backing + retirement::Registry::incarnation_bytes()
     );
-    state.notify_shutdown();
-    state.clear().await;
+    terminal_inputs.shutdown(&state);
+    terminal_inputs.clear(&state).await;
+    drop(terminal_inputs);
 }

@@ -164,6 +164,8 @@ async fn payload_census_scan_originals_and_independent_sources_survive_abandonme
 #[tokio::test]
 async fn payload_census_manager_marks_active_scan_unmeasured_and_retains_abandoned_root() {
     let state = TunnelAgentState::new(ios_core::TunMode::Userspace);
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     let session = state
         .inner
         .scan_outcomes
@@ -181,8 +183,9 @@ async fn payload_census_manager_marks_active_scan_unmeasured_and_retains_abandon
     assert_eq!(after.known_payload_capacity_bytes, expected);
     let again = state.retained_error_payloads();
     assert_eq!(again, after);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
     // Scan history is intentionally retained for the original terminal return.
     assert_eq!(
         state.retained_error_payloads().known_payload_capacity_bytes,
@@ -247,6 +250,8 @@ async fn payload_census_manager_first_latest_share_original_and_release_on_obser
         source.clone(),
         std::time::Duration::from_secs(1),
     );
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     state.refresh_once().await.unwrap();
     let first = state.inner.retry.receipt("payload-fixture").unwrap();
     let original = first.primary().downcast_ref::<CoreError>().unwrap() as *const CoreError;
@@ -282,8 +287,9 @@ async fn payload_census_manager_first_latest_share_original_and_release_on_obser
     source.attached.store(false, Ordering::SeqCst);
     state.refresh_once().await.unwrap();
     assert_eq!(state.retained_error_payloads(), Snapshot::default());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
 }
 
 struct NativeFault {
@@ -332,6 +338,13 @@ async fn payload_census_native_join_exposes_original_and_history_retains_same_pa
         .metrics()
         .num_alive_tasks();
     let state = TunnelAgentState::new(ios_core::TunMode::Userspace);
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let mut standalone = state
+        .inner
+        .native
+        .prepare_births::<2>(&state.inner.global_metadata_bytes)
+        .unwrap();
     let (stream, mut peer) = tokio::io::duplex(1280);
     let runtime = ios_core::UserspaceTunDevice::start(
         "fd00::2",
@@ -359,9 +372,11 @@ async fn payload_census_native_join_exposes_original_and_history_retains_same_pa
         .native
         .reserve(crate::cmd::tunnel::retirement::OwnershipStamp::standalone(
             &state.inner.native,
+            &mut standalone,
         ))
         .unwrap()
         .attach(native.clone());
+    drop(standalone);
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while native.is_alive() {
             tokio::task::yield_now().await;
@@ -422,8 +437,9 @@ async fn payload_census_native_join_exposes_original_and_history_retains_same_pa
     })
     .await
     .unwrap();
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
     drop(native);
 }
 
@@ -440,6 +456,8 @@ async fn payload_census_quota_refusal_marks_incomplete_without_losing_original_r
         source,
         std::time::Duration::from_secs(1),
     );
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     state.refresh_once().await.unwrap();
     let original = state.inner.retry.receipt("payload-fixture").unwrap();
     let pointer = original.primary().downcast_ref::<CoreError>().unwrap() as *const CoreError;
@@ -465,6 +483,7 @@ async fn payload_census_quota_refusal_marks_incomplete_without_losing_original_r
     assert_eq!(bank.available_permits(), 0);
     drop(held);
     assert_eq!(state.retained_error_payloads(), before);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
 }

@@ -1,5 +1,10 @@
 use super::*;
 
+fn stamp(registry: &RegistryOwner) -> OwnershipStamp {
+    let mut births = registry.prepare_births::<2>(&registry.byte_bank()).unwrap();
+    OwnershipStamp::standalone(registry, &mut births)
+}
+
 #[test]
 fn native_report_preflight_bodies_and_slots_refuse_before_backing_then_empty_roots_refund_independently(
 ) {
@@ -78,9 +83,8 @@ fn native_report_captured_history_parallel_last_roots_keep_original_io_and_body_
     let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
     let bank = bank_birth.raw().clone();
     let registry = Registry::allocate(&bank_birth, 1).unwrap();
-    let lease = registry
-        .reserve(OwnershipStamp::standalone(&registry))
-        .unwrap();
+    let prepared_stamp_0 = stamp(&registry);
+    let lease = registry.reserve(prepared_stamp_0).unwrap();
     let key = lease.key.as_ref().unwrap().clone();
     let original = TunnelError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
     let captured = registry.record_failure(&key, original);

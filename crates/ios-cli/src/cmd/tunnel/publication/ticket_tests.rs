@@ -21,7 +21,13 @@ async fn publication_ticket_each_real_bank_refuses_before_backing_and_rolls_back
             let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
             let desired_bank = desired_bank_birth.raw().clone();
             let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
-            let desired = Identity::new(&desired_bank_birth);
+            let mut desired_birth = crate::cmd::tunnel::marker_identity::Cutover::<1>::new(
+                &desired_bank_birth,
+                &desired_bank,
+            )
+            .unwrap();
+            let desired = desired_birth.place(&desired_bank_birth);
+            drop(desired_birth);
             let ticket = lifecycle
                 .ticket(KEY)
                 .await
@@ -83,12 +89,17 @@ async fn publication_ticket_actual_dual_root_deduplicates_published_origin_and_p
     let global = Arc::new(Semaphore::new(bytes));
     let published_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
     let published = published_birth.raw().clone();
-    let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
+    let desired_bank_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + Identity::body_bytes());
     let desired_bank = desired_bank_birth.raw().clone();
     // Actual global/device producers are P. Both are already covered by P's
     // whole root grant and must not need another origin grant in that bank.
     let lifecycle = Lifecycle::with_metadata(published_birth.clone()).unwrap();
-    let desired = Identity::new(&desired_bank_birth);
+    let mut desired_birth =
+        crate::cmd::tunnel::marker_identity::Cutover::<1>::new(&desired_bank_birth, &desired_bank)
+            .unwrap();
+    let desired = desired_birth.place(&desired_bank_birth);
+    drop(desired_birth);
     let ticket = lifecycle
         .ticket(KEY)
         .await
@@ -178,14 +189,18 @@ async fn publication_ticket_replacement_rollback_and_retired_values_keep_origina
     let destination = table.prepare(KEY).unwrap();
     let slot = table.destination(&destination).unwrap();
     drop(table.publish(slot, destination, old).finish());
-    lifecycle.clear();
+    let mut clear = lifecycle.prepare_cutover::<2>(&origin).unwrap();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     let late =
         TicketOwner::new(&lifecycle.ticket(KEY).await.unwrap(), &global, &published).unwrap();
     let late_marker = late.global_epoch().downgrade();
     let destination = table.prepare(KEY).unwrap();
     let slot = table.destination(&destination).unwrap();
     let change = table.publish(slot, destination, late);
-    lifecycle.clear();
+    let mut clear = lifecycle.prepare_cutover::<2>(&origin).unwrap();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     let held_g = global
         .clone()
         .try_acquire_many_owned(global.available_permits() as u32)
@@ -231,6 +246,12 @@ async fn publication_ticket_replacement_rollback_and_retired_values_keep_origina
             published.available_permits(),
             origin.available_permits()
         ),
-        (total, total, total)
+        (
+            total,
+            total,
+            total - super::super::ControlIdentity::body_bytes()
+        )
     );
+    drop(late_marker);
+    assert_eq!(origin.available_permits(), total);
 }

@@ -34,6 +34,8 @@ async fn lifecycle_tunnel_identity_replug_replaces_alive_old_native_id() {
     attached(&source, &[(A, 71, true)]);
     connected(&source, A, 71);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     start(state.clone(), A).await.unwrap();
     assert_eq!(id(&state, A).await, 71);
     attached(&source, &[(A, 72, true)]);
@@ -42,7 +44,8 @@ async fn lifecycle_tunnel_identity_replug_replaces_alive_old_native_id() {
     let observed = id(&state, A).await;
     let calls = source.count(A);
     let retired = source.drops.load(Ordering::SeqCst);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(
         observed, 72,
         "same UDID retained the disconnected native identity"
@@ -58,11 +61,15 @@ async fn lifecycle_tunnel_identity_stale_candidate_rejects_new_generation_withou
     attached(&source, &[(A, 71, true)]);
     connected(&source, A, 72);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     let published = state.get_record(A).await.unwrap().is_some();
     let failed = state.inner.failed_attempts.read().await.contains_key(A);
     let released = source.drops.load(Ordering::SeqCst);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(
         !published,
         "old snapshot admitted a different native device generation"
@@ -76,7 +83,8 @@ async fn lifecycle_tunnel_identity_stale_candidate_rejects_new_generation_withou
     state.refresh_once().await.unwrap();
     assert_eq!(id(&state, A).await, 72);
     assert_eq!(source.count(A), 2);
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
 }
 
@@ -86,6 +94,8 @@ async fn lifecycle_tunnel_identity_another_attached_transport_keeps_original_liv
     attached(&source, &[(A, 71, false)]);
     connected(&source, A, 71);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     start(state.clone(), A).await.unwrap();
     attached(&source, &[(A, 72, true), (A, 71, false)]);
     connected(&source, A, 72);
@@ -93,7 +103,8 @@ async fn lifecycle_tunnel_identity_another_attached_transport_keeps_original_liv
     assert_eq!(id(&state, A).await, 71);
     assert_eq!(source.count(A), 1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -103,11 +114,14 @@ async fn lifecycle_tunnel_identity_candidate_keeps_core_first_usb_preference() {
     attached(&source, &[(A, 71, false), (A, 72, true), (A, 73, true)]);
     connected(&source, A, 72);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     assert_eq!(id(&state, A).await, 72);
     assert_eq!(source.count(A), 1);
     assert!(!state.inner.failed_attempts.read().await.contains_key(A));
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -117,10 +131,13 @@ async fn lifecycle_tunnel_identity_candidate_keeps_core_last_non_usb_fallback() 
     attached(&source, &[(A, 71, false), (A, 72, false)]);
     connected(&source, A, 72);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     assert_eq!(id(&state, A).await, 72);
     assert_eq!(source.count(A), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -130,6 +147,8 @@ async fn lifecycle_tunnel_identity_old_snapshot_does_not_retire_concurrent_new_p
     attached(&source, &[(A, 71, true)]);
     connected(&source, A, 71);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     start(state.clone(), A).await.unwrap();
     let gate = Arc::new(Semaphore::new(0));
     *source.usb_gate.lock().unwrap() = Some(gate.clone());
@@ -147,7 +166,8 @@ async fn lifecycle_tunnel_identity_old_snapshot_does_not_retire_concurrent_new_p
     assert_eq!(id(&state, A).await, 72);
     assert_eq!(source.count(A), 2);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
 }
 

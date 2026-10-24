@@ -9,7 +9,9 @@ const TOTAL: usize = 128 * 1024;
 async fn receipt_origin_refusal_precedes_capsule_or_selectors_and_refunds_original_destination() {
     let body = FailureReceipt::body_bytes();
     for closed in [false, true] {
-        let own = Lifecycle::watch_bytes() + Lifecycle::initial_metadata_bytes(A);
+        let own = Lifecycle::watch_bytes()
+            + Lifecycle::initial_metadata_bytes(A)
+            + 4 * ControlIdentity::body_bytes();
         let available = if closed { body } else { body - 1 };
         let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(own + available);
         let origin = origin_birth.raw().clone();
@@ -50,9 +52,15 @@ async fn receipt_origin_optional_captured_desired_producer_rolls_back_then_survi
     let origin = origin_birth.raw().clone();
     let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
     let unfenced = lifecycle.ticket(A).await.unwrap();
-    let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(body + ticket_body);
+    let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(
+        body + ticket_body + ControlIdentity::body_bytes(),
+    );
     let desired_bank = desired_bank_birth.raw().clone();
-    let desired = ControlIdentity::new(&desired_bank_birth);
+    let mut desired_birth =
+        crate::cmd::tunnel::marker_identity::Cutover::<1>::new(&desired_bank_birth, &desired_bank)
+            .unwrap();
+    let desired = desired_birth.place(&desired_bank_birth);
+    drop(desired_birth);
     let observed = unfenced.observe_version(&desired);
     // The constructor must account for captured identities even for a stale
     // observational Ticket; it cannot replace its captured desired marker.
@@ -147,6 +155,7 @@ async fn receipt_origin_actual_ledger_keeps_original_deep_io_at_closed_zero_unti
     let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
     let origin = origin_birth.raw().clone();
     let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
+    let mut clear = lifecycle.prepare_cutover::<2>(&origin).unwrap();
     let ticket = lifecycle.ticket(A).await.unwrap().fenced();
     let bank = Arc::new(Semaphore::new(TOTAL));
     let ledger = Ledger::with_metadata(RetryPolicy::default(), bank.clone()).unwrap();
@@ -171,7 +180,8 @@ async fn receipt_origin_actual_ledger_keeps_original_deep_io_at_closed_zero_unti
         (origin.available_permits(), bank.available_permits()),
         (0, 0)
     );
-    lifecycle.clear();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     ledger.close();
     let original = anyhow::Error::new(Deep(std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,

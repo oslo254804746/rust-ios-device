@@ -15,6 +15,8 @@ async fn federation_join_late_future_refusal_precedes_both_production_http_and_s
         .await;
         let source = FakeSource::new();
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
         let url = format!("http://127.0.0.1:{port}/a");
         state
             .inner
@@ -76,7 +78,8 @@ async fn federation_join_late_future_refusal_precedes_both_production_http_and_s
         assert_eq!(requests.load(Ordering::SeqCst), 0);
         assert_eq!(source.count(A), 0);
         assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
-        state.clear().await;
+        state.clear(&mut control_input_0).await;
+        drop(control_input_0);
         state.drain_native(LOCAL_BUDGET).await.unwrap();
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
@@ -172,6 +175,9 @@ async fn remote_target_result_keeps_exact_text_fees_after_input_and_manager_drop
     }))).await;
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let url = format!("http://127.0.0.1:{port}/");
     state
         .inner
@@ -199,8 +205,10 @@ async fn remote_target_result_keeps_exact_text_fees_after_input_and_manager_drop
         before - bytes,
         "raw body/tree/source backing must already be released"
     );
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     drop(state);
     assert_eq!(

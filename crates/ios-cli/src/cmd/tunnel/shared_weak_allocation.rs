@@ -41,6 +41,15 @@ pub(super) struct Prepared<T, F: Unpin> {
 }
 
 impl<T, F: Unpin> Prepared<T, F> {
+    pub(super) fn from_borrowed_grant(
+        bank: &Arc<Semaphore>,
+        first: &mut Option<OwnedSemaphorePermit>,
+    ) -> Result<Self> {
+        let AdmittedVec { values, storage } =
+            super::metadata_vec::from_borrowed_grant::<Allocation<T, F>>(bank, 1, first)?;
+        Ok(Self { values, storage })
+    }
+
     pub(super) fn from_grant(bank: &Arc<Semaphore>, first: OwnedSemaphorePermit) -> Result<Self> {
         let AdmittedVec { values, storage } = from_grant::<Allocation<T, F>>(bank, 1, first)?;
         Ok(Self { values, storage })

@@ -146,11 +146,16 @@ async fn drive_until<F: std::future::Future>(
     .unwrap_or(false)
 }
 
-async fn recover(state: &TunnelAgentState, source: &OutcomeSource, expected: usize) {
+async fn recover(
+    state: &TunnelAgentState,
+    source: &OutcomeSource,
+    expected: usize,
+    input: &mut marker_identity::Cutover<2>,
+) {
     let handles = source.base.handles.lock().unwrap().clone();
     state.drain_native(OBSERVE).await.unwrap();
     let recovery = recovered(&source.base, expected).await;
-    state.clear().await;
+    state.clear(input).await;
     // Native certification remains independent of the preserved source cause.
     assert!(
         recovery
@@ -186,6 +191,7 @@ async fn native_scan_outcome_server_signal_keeps_original_paired_error_after_sca
     let expected = baseline();
     let source = OutcomeSource::new(Stage::Paired, 1).await;
     let state = manager(source.clone());
+    let mut recovery_input = state.prepare_cutover::<2>().unwrap();
     let signal = Semaphore::new(0);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut owner = Box::pin(
@@ -208,7 +214,8 @@ async fn native_scan_outcome_server_signal_keeps_original_paired_error_after_sca
     signal.add_permits(1);
     let result = tokio::time::timeout(OBSERVE, owner.as_mut()).await;
     drop(owner);
-    recover(&state, &source, expected).await;
+    recover(&state, &source, expected, &mut recovery_input).await;
+    drop(recovery_input);
     assert!(entered && !native.is_alive() && native.shutdown_status().is_ok());
     let error = result
         .unwrap()
@@ -225,6 +232,8 @@ async fn native_scan_outcome_list_error_survives_held_metadata_cleanup_expiry() 
     let expected = baseline();
     let source = OutcomeSource::new(Stage::List, 1).await;
     let state = manager(source.clone());
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let signal = Semaphore::new(0);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut owner = Box::pin(
@@ -256,7 +265,8 @@ async fn native_scan_outcome_list_error_survives_held_metadata_cleanup_expiry() 
     let joined_while_held = native.shutdown_status().is_ok();
     let recovery = recovered(&source.base, expected).await;
     drop(table);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     assert!(discovery && acquired && joined_while_held && recovery);
     assert!(state.inner.native.snapshot().closed_and_empty());
     let error = result.unwrap().unwrap_err();
@@ -272,12 +282,17 @@ async fn native_scan_outcome_eight_abandoned_errors_reject_ninth_before_source_p
     let expected = baseline();
     let source = OutcomeSource::new(Stage::Paired, 9).await;
     let state = manager(source.clone());
-    for count in 1..=8 {
+    let mut recovery_inputs: Vec<_> = (0..9)
+        .map(|_| state.prepare_cutover::<2>().unwrap())
+        .collect();
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+
+    for (count, recovery_input) in (1..=8).zip(recovery_inputs.iter_mut()) {
         let mut scan = Box::pin(state.refresh_once());
         let entered =
             drive_until(&mut scan, || source.entered.load(Ordering::SeqCst) == count).await;
         drop(scan);
-        recover(&state, &source, expected).await;
+        recover(&state, &source, expected, recovery_input).await;
         assert!(entered);
         let history = state
             .inner
@@ -293,8 +308,10 @@ async fn native_scan_outcome_eight_abandoned_errors_reject_ninth_before_source_p
     let mut ninth = Box::pin(state.refresh_once());
     let result = tokio::time::timeout(Duration::from_millis(100), ninth.as_mut()).await;
     drop(ninth);
-    recover(&state, &source, expected).await;
-    state.notify_shutdown();
+    recover(&state, &source, expected, &mut recovery_inputs[8]).await;
+    drop(recovery_inputs);
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
     assert_eq!(
         source.usb_calls.load(Ordering::SeqCst),
         before,
@@ -320,14 +337,21 @@ async fn native_scan_outcome_normal_return_preserves_direct_io_downcast_and_rele
     let source = OutcomeSource::new(Stage::Paired, 1).await;
     source.connection_gate.add_permits(1);
     let state = manager(source.clone());
+    let mut recovery_input = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     let error = state.refresh_once().await.unwrap_err();
     let direct = error.downcast_ref::<io::Error>().unwrap() as *const io::Error as usize;
     assert_eq!(direct, source.originals.lock().unwrap()[0]);
     assert!(state.inner.scan_outcomes.history().is_none());
     assert!(!state.is_ready().await);
-    state.clear().await;
-    recover(&state, &source, expected).await;
-    state.notify_shutdown();
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
+    recover(&state, &source, expected, &mut recovery_input).await;
+    drop(recovery_input);
+    state.notify_shutdown(&mut prepared_outer_1);
+    drop(prepared_outer_1);
 }
 
 #[tokio::test]
@@ -335,6 +359,7 @@ async fn native_scan_outcome_caller_drop_retains_history_after_clear_and_termina
     let expected = baseline();
     let source = OutcomeSource::new(Stage::Paired, 1).await;
     let state = manager(source.clone());
+    let mut recovery_input = state.prepare_cutover::<2>().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut owner = Box::pin(
         server::prepare(
@@ -354,7 +379,8 @@ async fn native_scan_outcome_caller_drop_retains_history_after_clear_and_termina
         .scan_outcomes
         .history()
         .expect("abandoned scan history");
-    recover(&state, &source, expected).await;
+    recover(&state, &source, expected, &mut recovery_input).await;
+    drop(recovery_input);
     let after = state
         .inner
         .scan_outcomes
@@ -379,9 +405,13 @@ async fn native_scan_outcome_whole_expiry_returns_original_io_and_secondary_elap
     let expected = baseline();
     let source = OutcomeSource::new(Stage::Paired, 1).await;
     let mut state = manager(source.clone());
+    let mut recovery_input = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+
     state.inner.get_mut().unwrap().scan_timeout = Duration::from_millis(40);
     let error = state.refresh_once().await.unwrap_err();
-    recover(&state, &source, expected).await;
+    recover(&state, &source, expected, &mut recovery_input).await;
+    drop(recovery_input);
     assert_eq!(
         error.downcast_ref::<io::Error>().unwrap() as *const io::Error as usize,
         source.originals.lock().unwrap()[0]
@@ -393,7 +423,8 @@ async fn native_scan_outcome_whole_expiry_returns_original_io_and_secondary_elap
         .is::<tokio::time::error::Elapsed>());
     assert!(state.inner.scan_outcomes.history().is_none());
     assert!(!state.is_ready().await);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
 }
 
 #[tokio::test]
@@ -401,6 +432,7 @@ async fn native_scan_outcome_repeated_terminal_reports_share_original_history() 
     let expected = baseline();
     let source = OutcomeSource::new(Stage::Paired, 1).await;
     let state = manager(source.clone());
+    let mut recovery_input = state.prepare_cutover::<2>().unwrap();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     // Both complete future allocations exist BEFORE the original paired
     // failure. Reporting that acquired history later requires no new grant.
@@ -423,7 +455,8 @@ async fn native_scan_outcome_repeated_terminal_reports_share_original_history() 
     let mut scan = Box::pin(state.refresh_once());
     assert!(drive_until(&mut scan, || source.entered.load(Ordering::SeqCst) == 1).await);
     drop(scan);
-    recover(&state, &source, expected).await;
+    recover(&state, &source, expected, &mut recovery_input).await;
+    drop(recovery_input);
     let history = state
         .inner
         .scan_outcomes
@@ -434,13 +467,15 @@ async fn native_scan_outcome_repeated_terminal_reports_share_original_history() 
         .unwrap();
     for (prepared, frame_bytes) in servers {
         assert_eq!(bank.available_permits(), 0);
+        let had_global = state.inner.lifecycle.global_epoch().is_ok();
+        let marker_refund = (4 + usize::from(had_global)) * ControlIdentity::body_bytes();
         let error = prepared.await.unwrap_err();
         // That actual F has now ended and its allocation was freed. Reapply
         // exactly its observed returned credit as pressure for the next report.
-        assert_eq!(bank.available_permits(), frame_bytes);
+        assert_eq!(bank.available_permits(), frame_bytes + marker_refund);
         held.merge(
             bank.clone()
-                .try_acquire_many_owned(frame_bytes.try_into().unwrap())
+                .try_acquire_many_owned((frame_bytes + marker_refund).try_into().unwrap())
                 .unwrap(),
         );
         let terminal = error

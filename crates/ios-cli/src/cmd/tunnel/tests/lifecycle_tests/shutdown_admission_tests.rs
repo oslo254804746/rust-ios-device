@@ -14,18 +14,28 @@ fn assert_cancelled(error: &anyhow::Error) {
 async fn lifecycle_tunnel_shutdown_admission_all_routes_and_scan_stay_closed_after_clear() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    state.notify_shutdown();
-    state.clear().await;
-    for route in [
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
+    let mut repeated_clear = state.prepare_cutover::<4>().unwrap().into_individual();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
+    for (route, clear) in [
         None,
         Some(StartTunnelConnectionType::Usbmux),
         Some(StartTunnelConnectionType::Usb),
         Some(StartTunnelConnectionType::Wifi),
-    ] {
+    ]
+    .into_iter()
+    .zip(&mut repeated_clear)
+    {
         let result = state.ensure_tunnel(A, None, route).await;
-        state.clear().await;
+        state.clear(clear).await;
         assert_cancelled(&result.unwrap_err());
     }
+    drop(repeated_clear);
     assert_cancelled(&state.refresh_once().await.unwrap_err());
     assert_eq!(source.count(A), 0);
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
@@ -42,14 +52,19 @@ async fn lifecycle_tunnel_shutdown_admission_cancels_connection_before_locked_ta
     let source = FakeSource::new();
     source.script(A, [Behavior::Pending]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let mut attempt = Box::pin(start(state.clone(), A));
     assert!(futures_util::poll!(&mut attempt).is_pending());
     source.entered(A, 1).await;
     let table = state.inner.tunnels.write().await;
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
     let outcome = tokio::time::timeout(LOCAL_BUDGET, attempt).await;
     drop(table);
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert_cancelled(
         &outcome
             .expect("shutdown waited for table cleanup")
@@ -73,13 +88,18 @@ async fn lifecycle_tunnel_shutdown_admission_drops_completed_device_during_attac
     let source = FakeSource::new();
     *source.usb_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let mut attempt = Box::pin(start(state.clone(), A));
     assert!(futures_util::poll!(&mut attempt).is_pending());
     assert_eq!(source.usb_active.load(Ordering::SeqCst), 1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
     let outcome = tokio::time::timeout(LOCAL_BUDGET, attempt).await;
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert_cancelled(
         &outcome
             .expect("attachment query ignored shutdown")
@@ -95,14 +115,19 @@ async fn lifecycle_tunnel_shutdown_admission_drops_completed_device_during_attac
 async fn lifecycle_tunnel_shutdown_admission_queued_same_device_never_polls_source() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let serial = ticket.serial().await;
     let mut queued = Box::pin(start(state.clone(), A));
     assert!(futures_util::poll!(&mut queued).is_pending());
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
     let outcome = tokio::time::timeout(LOCAL_BUDGET, queued).await;
     drop(serial);
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert_cancelled(&outcome.expect("serial queue ignored shutdown").unwrap_err());
     assert_eq!(source.count(A), 0);
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
@@ -112,11 +137,16 @@ async fn lifecycle_tunnel_shutdown_admission_queued_same_device_never_polls_sour
 async fn lifecycle_tunnel_shutdown_admission_plain_clear_allows_fresh_manual_start() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<2>().unwrap();
+
     start(state.clone(), A).await.unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     start(state.clone(), A).await.unwrap();
     assert_eq!(source.count(A), 2);
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
 }
 
@@ -125,10 +155,13 @@ async fn lifecycle_tunnel_shutdown_admission_discovery_cancel_drops_probe_withou
     let source = FakeSource::new();
     *source.usb_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     assert_eq!(source.usb_active.load(Ordering::SeqCst), 1);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
     tokio::time::timeout(LOCAL_BUDGET, scan)
         .await
         .unwrap()
@@ -145,6 +178,8 @@ async fn lifecycle_tunnel_shutdown_admission_server_caller_drop_rejects_retained
     let source = FakeSource::new();
     *source.usb_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut owner = Box::pin(
         server::prepare(
@@ -167,7 +202,8 @@ async fn lifecycle_tunnel_shutdown_admission_server_caller_drop_rejects_retained
     .unwrap();
     drop(owner);
     assert_eq!(source.usb_active.load(Ordering::SeqCst), 0);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_cancelled(&start(state.clone(), A).await.unwrap_err());
     assert_eq!(source.count(A), 0);
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);

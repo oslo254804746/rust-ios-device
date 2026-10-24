@@ -6,6 +6,9 @@ async fn connection_ticket_native_root_survives_row_clear_without_delaying_origi
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut repeat_shutdown = state.prepare_cutover::<1>().unwrap();
     drop(publish(&state, Route::Wifi(None)).await.unwrap());
     let global = state.inner.global_metadata_bytes.clone();
     let published = state.inner.metadata_bytes.clone();
@@ -17,10 +20,12 @@ async fn connection_ticket_native_root_survives_row_clear_without_delaying_origi
     let pointer = &*ticket as *const Ticket;
     let key = ticket.udid().as_ptr();
     let native = source.handle();
-    state.clear().await;
+    state.clear(&mut clear).await;
+    drop(clear);
     assert!(publication.check().is_err() && !ticket.is_current());
     assert_eq!(state.inner.native.snapshot().retired, 1);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut shutdown);
+    drop(shutdown);
     state.drain_native(OBSERVE).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
     assert!(native.shutdown_status().is_ok());
@@ -30,7 +35,8 @@ async fn connection_ticket_native_root_survives_row_clear_without_delaying_origi
     );
     assert_eq!(&*ticket as *const Ticket, pointer);
     assert_eq!(ticket.udid().as_ptr(), key);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut repeat_shutdown);
+    drop(repeat_shutdown);
     drop((state, source, record, publication));
     assert_eq!(
         published.available_permits(),

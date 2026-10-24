@@ -30,6 +30,9 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
         + publication::TicketOwner::body_bytes()
         + metadata_lease::Lease::pair_bytes();
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut prepared_setup_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_setup_1 = state.prepare_cutover::<2>().unwrap();
+
     let inner = state.inner.get_mut().unwrap();
     inner.metadata_bytes = Arc::new(Semaphore::new(charged));
     *inner.tunnels.get_mut() =
@@ -47,10 +50,12 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
         0,
         "pre-Source destination refusal creates no original owner"
     );
-    state.clear().await;
+    state.clear(&mut prepared_setup_0).await;
+    drop(prepared_setup_0);
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
     start(state.clone(), B).await.unwrap();
-    state.clear().await;
+    state.clear(&mut prepared_setup_1).await;
+    drop(prepared_setup_1);
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
 }
 
@@ -472,6 +477,8 @@ async fn lifecycle_tunnel_same_device_requests_publish_one_owned_tunnel() {
     let gate = Arc::new(Semaphore::new(0));
     source.script(A, [Behavior::Held(gate.clone())]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
     let first = spawn_start(&state, A);
     source.entered(A, 1).await;
     let second = spawn_start(&state, A);
@@ -484,7 +491,8 @@ async fn lifecycle_tunnel_same_device_requests_publish_one_owned_tunnel() {
     assert_eq!(third.await.unwrap().unwrap(), first);
     assert_eq!(source.count(A), 1);
     assert_eq!(state.list_records().await.unwrap().len(), 1);
-    assert!(state.remove_tunnel(A).await);
+    assert!(state.remove_tunnel(A, &mut stop_input_0).await);
+    drop(stop_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -493,12 +501,17 @@ async fn lifecycle_tunnel_stop_cancels_active_and_queued_generation_then_allows_
     let source = FakeSource::new();
     source.script(A, [Behavior::Pending, Behavior::Success]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let first = spawn_start(&state, A);
     source.entered(A, 1).await;
     let queued = state.ensure_tunnel(A, None, Some(StartTunnelConnectionType::Usbmux));
     tokio::pin!(queued);
     assert!(futures_util::poll!(&mut queued).is_pending());
-    assert!(!state.remove_tunnel(A).await);
+    assert!(!state.remove_tunnel(A, &mut stop_input_0).await);
+    drop(stop_input_0);
     assert!(first
         .await
         .unwrap()
@@ -513,7 +526,8 @@ async fn lifecycle_tunnel_stop_cancels_active_and_queued_generation_then_allows_
     assert!(state.get_record(A).await.unwrap().is_none());
     start(state.clone(), A).await.unwrap();
     assert_eq!(source.count(A), 2);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -521,6 +535,8 @@ async fn lifecycle_tunnel_stop_cancels_active_and_queued_generation_then_allows_
 async fn lifecycle_tunnel_global_connect_limit_and_clear_release_all_owned_futures() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut jobs = Vec::new();
     for i in 0..8 {
         let udid = format!("synthetic-limit-{i}");
@@ -542,7 +558,8 @@ async fn lifecycle_tunnel_global_connect_limit_and_clear_release_all_owned_futur
         lifecycle::MAX_CONNECTS
     );
     assert_eq!(source.peak.load(Ordering::SeqCst), lifecycle::MAX_CONNECTS);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     for job in jobs {
         assert!(job.await.unwrap_err().is::<ios_core::OperationCancelled>());
     }
@@ -558,6 +575,8 @@ async fn lifecycle_tunnel_global_connect_limit_and_clear_release_all_owned_futur
 async fn lifecycle_tunnel_queue_uses_original_whole_connect_deadline() {
     let source = FakeSource::new();
     let state = state(source.clone(), Duration::from_millis(80));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let serial = ticket.serial().await;
     let error = state
@@ -570,7 +589,8 @@ async fn lifecycle_tunnel_queue_uses_original_whole_connect_deadline() {
     drop(serial);
     start(state.clone(), A).await.unwrap();
     assert_eq!(source.count(A), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -600,7 +620,13 @@ async fn lifecycle_tunnel_http_preserves_native_failure_without_private_inputs()
 async fn lifecycle_tunnel_requested_routes_and_existing_trust_fallback_are_unchanged() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    for (requested, route) in [
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
+    let mut stop_groups: [_; 3] = std::array::from_fn(|_| {
+        // Three independent operation inputs, prepared before the first Source.
+        state.prepare_cutover::<3>().unwrap()
+    });
+    for ((requested, route), stop) in [
         (StartTunnelConnectionType::Usbmux, Route::Usbmux),
         (
             StartTunnelConnectionType::Usb,
@@ -610,14 +636,18 @@ async fn lifecycle_tunnel_requested_routes_and_existing_trust_fallback_are_uncha
             StartTunnelConnectionType::Wifi,
             Route::Wifi(Some("192.0.2.2".into())),
         ),
-    ] {
+    ]
+    .into_iter()
+    .zip(&mut stop_groups)
+    {
         state
             .ensure_tunnel(A, Some("192.0.2.2"), Some(requested))
             .await
             .unwrap();
         assert_eq!(source.calls.lock().unwrap().last().unwrap().1, route);
-        assert!(state.remove_tunnel(A).await);
+        assert!(state.remove_tunnel(A, stop).await);
     }
+    drop(stop_groups);
     source.script(
         A,
         [
@@ -637,7 +667,8 @@ async fn lifecycle_tunnel_requested_routes_and_existing_trust_fallback_are_uncha
         source.calls.lock().unwrap().last().unwrap().1,
         Route::Mobdev2("192.0.2.2".into())
     );
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 4);
 }
 
@@ -648,6 +679,8 @@ async fn lifecycle_tunnel_scan_and_explicit_start_share_same_device_owner() {
     let gate = Arc::new(Semaphore::new(0));
     source.script(A, [Behavior::Held(gate.clone())]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let scan_state = state.clone();
     let scan = tokio::spawn(async move { scan_state.refresh_once().await });
     source.entered(A, 1).await;
@@ -657,7 +690,8 @@ async fn lifecycle_tunnel_scan_and_explicit_start_share_same_device_owner() {
     manual.await.unwrap().unwrap();
     assert_eq!(source.count(A), 1);
     assert!(state.is_ready().await);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -677,22 +711,30 @@ async fn lifecycle_tunnel_stop_invalidates_device_queued_behind_stalled_scan() {
         source.script(udid, [Behavior::Held(gate.clone())]);
     }
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let scan_state = state.clone();
     let scan = tokio::spawn(async move { scan_state.refresh_once().await });
     source.entered(A, 1).await;
     for udid in ["synthetic-c", "synthetic-d", "synthetic-e"] {
         source.entered(udid, 1).await;
     }
-    assert!(!tokio::time::timeout(LOCAL_BUDGET, state.remove_tunnel(B))
-        .await
-        .unwrap());
+    assert!(
+        !tokio::time::timeout(LOCAL_BUDGET, state.remove_tunnel(B, &mut stop_input_0))
+            .await
+            .unwrap()
+    );
+    drop(stop_input_0);
     gate.add_permits(4);
     scan.await.unwrap().unwrap();
     assert_eq!(source.count(B), 0);
     assert!(state.get_record(B).await.unwrap().is_none());
     assert!(state.get_record(A).await.unwrap().is_some());
     assert!(!state.inner.failed_attempts.read().await.contains_key(B));
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }
 
 #[tokio::test]
@@ -702,10 +744,13 @@ async fn lifecycle_tunnel_stop_during_discovery_rejects_unpublished_snapshot() {
     let gate = Arc::new(Semaphore::new(0));
     *source.usb_gate.lock().unwrap() = Some(gate.clone());
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
     let scan = state.refresh_once();
     tokio::pin!(scan);
     assert!(futures_util::poll!(&mut scan).is_pending());
-    assert!(!state.remove_tunnel(A).await);
+    assert!(!state.remove_tunnel(A, &mut stop_input_0).await);
+    drop(stop_input_0);
     gate.add_permits(1);
     scan.await.unwrap();
     assert_eq!(source.count(A), 0);
@@ -751,6 +796,8 @@ async fn lifecycle_tunnel_stale_failed_scan_does_not_remove_new_publication() {
     let source = FakeSource::new();
     let gate = Arc::new(Semaphore::new(0));
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     start(state.clone(), A).await.unwrap();
     source.list_failure.store(true, Ordering::SeqCst);
     *source.usb_gate.lock().unwrap() = Some(gate.clone());
@@ -769,7 +816,8 @@ async fn lifecycle_tunnel_stale_failed_scan_does_not_remove_new_publication() {
     assert!(state.get_record(B).await.unwrap().is_some());
     assert!(state.get_record(A).await.unwrap().is_none());
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
 }
 
@@ -808,6 +856,8 @@ async fn lifecycle_tunnel_caller_drop_releases_completed_device_waiting_for_publ
     let gate = Arc::new(Semaphore::new(0));
     source.script(A, [Behavior::Held(gate.clone())]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut request =
         Box::pin(state.ensure_tunnel(A, None, Some(StartTunnelConnectionType::Usbmux)));
     assert!(futures_util::poll!(&mut request).is_pending());
@@ -825,7 +875,8 @@ async fn lifecycle_tunnel_caller_drop_releases_completed_device_waiting_for_publ
     drop(table);
     assert!(state.get_record(A).await.unwrap().is_none());
     start(state.clone(), A).await.unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
 }
 
@@ -833,10 +884,13 @@ async fn lifecycle_tunnel_caller_drop_releases_completed_device_waiting_for_publ
 async fn lifecycle_tunnel_dead_record_is_pruned_and_owned_device_released() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
     start(state.clone(), A).await.unwrap();
     source.alive.store(false, Ordering::SeqCst);
     assert!(state.get_record(A).await.unwrap().is_none());
     assert!(state.list_records().await.unwrap().as_slice().is_empty());
-    assert!(!state.remove_tunnel(A).await);
+    assert!(!state.remove_tunnel(A, &mut stop_input_0).await);
+    drop(stop_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }

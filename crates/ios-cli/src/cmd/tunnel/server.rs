@@ -8,25 +8,30 @@ use anyhow::{Context, Result};
 use axum::Router;
 use tokio::net::TcpListener;
 
+use super::marker_identity::Cutover;
 use super::retirement::{CleanupClock, Registry, Snapshot};
 use super::TunnelAgentState;
 
 pub(super) const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 
-struct Owner(TunnelAgentState);
+struct Owner {
+    state: TunnelAgentState,
+    shutdown: Cutover<1>,
+    clear: Cutover<1>,
+}
 
 impl Drop for Owner {
     fn drop(&mut self) {
         // Caller Drop cannot await. Signal HTTP shutdown and cancel pending
         // publication; release unlocked tables without spawning a cleanup task.
-        self.0.notify_shutdown();
-        self.0.inner.lifecycle.clear();
-        if let Ok(mut tunnels) = self.0.inner.tunnels.try_write() {
+        self.state.notify_shutdown(&mut self.shutdown);
+        self.state.inner.lifecycle.clear(&mut self.clear);
+        if let Ok(mut tunnels) = self.state.inner.tunnels.try_write() {
             let removed = tunnels.take_all();
             drop(tunnels);
             drop(removed);
         }
-        if let Ok(mut failed) = self.0.inner.failed_attempts.try_write() {
+        if let Ok(mut failed) = self.state.inner.failed_attempts.try_write() {
             let removed = failed.take_all();
             drop(failed);
             drop(removed);
@@ -45,16 +50,34 @@ pub(super) fn prepare<S: Future<Output = std::io::Result<()>>>(
     signal: S,
 ) -> Result<impl Future<Output = Result<()>>> {
     let bank = state.inner.global_metadata_bytes.clone();
-    super::future_storage::PaidFuture::new(
-        serve_admitted(listener, app, state, scan_interval, cleanup_timeout, signal),
-        &bank,
-    )
+    let backing = super::metadata_vec::exact_backing(&bank, 1)?;
+    let cutovers = state.prepare_cutover::<4>()?.into_individual();
+    Ok(super::future_storage::PaidFuture::from_backing(
+        serve_admitted(
+            listener,
+            app,
+            state,
+            scan_interval,
+            cleanup_timeout,
+            signal,
+            cutovers,
+        ),
+        backing,
+    ))
 }
 
 #[cfg(test)]
 pub(super) fn frame_bytes<S: Future<Output = std::io::Result<()>>>(_signal: &S) -> usize {
     fn size<S, F: Future>(
-        _create: impl FnOnce(TcpListener, Router, TunnelAgentState, Duration, Duration, S) -> F,
+        _create: impl FnOnce(
+            TcpListener,
+            Router,
+            TunnelAgentState,
+            Duration,
+            Duration,
+            S,
+            [Cutover<1>; 4],
+        ) -> F,
     ) -> usize {
         std::mem::size_of::<F>()
     }
@@ -68,8 +91,14 @@ async fn serve_admitted<S: Future<Output = std::io::Result<()>>>(
     scan_interval: Duration,
     cleanup_timeout: Duration,
     signal: S,
+    cutovers: [Cutover<1>; 4],
 ) -> Result<()> {
-    let _owner = Owner(state.clone());
+    let [mut shutdown, mut clear, owner_shutdown, owner_clear] = cutovers;
+    let _owner = Owner {
+        state: state.clone(),
+        shutdown: owner_shutdown,
+        clear: owner_clear,
+    };
     let shutdown_state = state.clone();
     let server = axum::serve(listener, app)
         .with_graceful_shutdown(async move { shutdown_state.wait_shutdown().await })
@@ -116,7 +145,7 @@ async fn serve_admitted<S: Future<Output = std::io::Result<()>>>(
         _ = async { monitor.as_mut().as_pin_mut().expect("live scanner").await } => Ok(()),
     };
     let clock = CleanupClock::new(cleanup_timeout);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut shutdown);
     // Drop the actual inline scanner, including all active candidates, in
     // place before reading history. Dropping only its Pin reference is not enough.
     monitor.set(None);
@@ -139,7 +168,7 @@ async fn serve_admitted<S: Future<Output = std::io::Result<()>>>(
                         }
                     },
                     async {
-                        state.clear().await;
+                        state.clear(&mut clear).await;
                         let result = if server_finished {
                             Ok(())
                         } else {

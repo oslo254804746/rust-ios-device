@@ -177,6 +177,7 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
         source.clone(),
         budget,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
 
     // Seed a real original failure, then establish a native manual owner while
     // its failure writer is held. This leaves a nonempty pending-success tuple
@@ -320,7 +321,8 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
     server.abort();
     let _ = server.await;
     let originals = base_source.a.handles.lock().unwrap().clone();
-    cleanup(&state, &base_source, expected).await;
+    cleanup(&state, &base_source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     // Certify the actual native peers' strict UnexpectedEof, original joins,
     // registry/permit release and exact Tokio task baseline before assertions
     // about desired state or preservation. cleanup uses the original IO peers.

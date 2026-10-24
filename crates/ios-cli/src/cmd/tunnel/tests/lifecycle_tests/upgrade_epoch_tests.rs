@@ -5,6 +5,9 @@ async fn publication_lifetime_pre_source_refusal_from_either_pool_never_browses_
     for global_short in [true, false] {
         let source = FakeSource::new();
         let mut state = state(source.clone(), LOCAL_BUDGET);
+        let mut prepared_setup_0 = state.prepare_cutover::<1>().unwrap();
+        let mut prepared_setup_1 = state.prepare_cutover::<1>().unwrap();
+
         if !global_short {
             state.inner.get_mut().unwrap().metadata_bytes =
                 Arc::new(Semaphore::new(publication::Life::bytes() - 1));
@@ -37,8 +40,10 @@ async fn publication_lifetime_pre_source_refusal_from_either_pool_never_browses_
         assert_eq!(state.inner.native.snapshot().occupied(), 0);
         drop(held);
         assert_eq!(bank.available_permits(), before);
-        state.notify_shutdown();
-        state.clear().await;
+        state.notify_shutdown(&mut prepared_setup_0);
+        drop(prepared_setup_0);
+        state.clear(&mut prepared_setup_1).await;
+        drop(prepared_setup_1);
         state.drain_native(LOCAL_BUDGET).await.unwrap();
         drop(state);
         assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
@@ -66,6 +71,9 @@ async fn publication_lifetime_late_replacement_rollback_keeps_original_open_and_
         .proxy_port
         .store(proxy_port as usize, Ordering::SeqCst);
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     drop(start(state.clone(), A).await.unwrap());
     let original = state.inner.tunnels.read().await[A].publication.clone();
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
@@ -96,7 +104,8 @@ async fn publication_lifetime_late_replacement_rollback_keeps_original_open_and_
     assert!(original.check().is_ok());
     echo(&mut websocket, b"same-original-after-rollback").await;
     assert_eq!(source.count(A), 2);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
     let terminal = tokio::time::timeout(LOCAL_BUDGET, websocket.next())
         .await
         .unwrap();
@@ -109,7 +118,8 @@ async fn publication_lifetime_late_replacement_rollback_keeps_original_open_and_
         .await
         .unwrap()
         .unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
@@ -135,6 +145,9 @@ async fn publication_lifetime_replacement_and_complete_prune_close_original_same
             .proxy_port
             .store(proxy_port as usize, Ordering::SeqCst);
         let state = state(source.clone(), LOCAL_BUDGET);
+        let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+        let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
         drop(start(state.clone(), A).await.unwrap());
         let (original, ticket) = {
             let table = state.inner.tunnels.read().await;
@@ -182,8 +195,10 @@ async fn publication_lifetime_replacement_and_complete_prune_close_original_same
         assert_eq!(source.count(A), if replacement { 2 } else { 1 });
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
-        state.notify_shutdown();
-        state.clear().await;
+        state.notify_shutdown(&mut control_input_0);
+        drop(control_input_0);
+        state.clear(&mut control_input_1).await;
+        drop(control_input_1);
         state.drain_native(LOCAL_BUDGET).await.unwrap();
     }
     assert_eq!(
@@ -197,10 +212,16 @@ async fn publication_lifetime_replacement_and_complete_prune_close_original_same
 async fn upgrade_epoch_captured_record_never_borrows_a_newer_restart_ticket() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     drop(start(state.clone(), A).await.unwrap());
     let captured = state.get_local_target(A).await.unwrap().unwrap();
     assert!(captured.ticket.is_current());
-    state.stop_tunnel(A).await.unwrap();
+    state.stop_tunnel(A, &mut stop_input_0).await.unwrap();
+    drop(stop_input_0);
     let newer = state.inner.lifecycle.ticket(A).await.unwrap();
     assert!(newer.is_current());
     assert!(!captured.ticket.same_incarnation(&newer));
@@ -220,8 +241,10 @@ async fn upgrade_epoch_captured_record_never_borrows_a_newer_restart_ticket() {
     assert!(restarted.ticket.same_incarnation(&newer));
     assert!(!captured.ticket.is_current());
     assert_eq!(source.count(A), 2);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
 }
 
@@ -278,6 +301,11 @@ async fn upgrade_epoch_manual_live_change_keeps_a_and_stop_a_keeps_b_original_co
         .store(proxy_port as usize, Ordering::SeqCst);
     source.usb.lock().unwrap().push(A.into());
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state.refresh_once().await.unwrap();
     let old_selection = state
         .inner
@@ -330,7 +358,8 @@ async fn upgrade_epoch_manual_live_change_keeps_a_and_stop_a_keeps_b_original_co
         "fixture must change the old desired fence"
     );
     echo(&mut a, b"same-runtime-after-manual").await;
-    state.stop_tunnel(A).await.unwrap();
+    state.stop_tunnel(A, &mut stop_input_0).await.unwrap();
+    drop(stop_input_0);
     let terminal = tokio::time::timeout(LOCAL_BUDGET, a.next()).await.unwrap();
     assert!(matches!(
         terminal,
@@ -339,7 +368,8 @@ async fn upgrade_epoch_manual_live_change_keeps_a_and_stop_a_keeps_b_original_co
     echo(&mut b, b"B-after-stop-A").await;
     assert_eq!(source.count(A), 1);
     assert_eq!(source.count(B), 1);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
     let terminal = tokio::time::timeout(LOCAL_BUDGET, b.next()).await.unwrap();
     assert!(matches!(
         terminal,
@@ -353,7 +383,8 @@ async fn upgrade_epoch_manual_live_change_keeps_a_and_stop_a_keeps_b_original_co
             .unwrap()
             .unwrap();
     }
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
@@ -385,6 +416,12 @@ async fn upgrade_epoch_local_stop_clear_shutdown_closes_idle_original_tcp() {
             .proxy_port
             .store(proxy_port as usize, Ordering::SeqCst);
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut stop_input = (action == 0).then(|| state.prepare_cutover::<3>().unwrap());
+        let mut clear_input = (action == 1).then(|| state.prepare_cutover::<2>().unwrap());
+        let mut shutdown_input = (action == 2).then(|| state.prepare_cutover::<1>().unwrap());
+        let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+        let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
         drop(start(state.clone(), A).await.unwrap());
         let (port, server) = spawn_test_router(agent_router(state.clone())).await;
         let (mut websocket, _) = tokio_tungstenite::connect_async(format!(
@@ -395,9 +432,12 @@ async fn upgrade_epoch_local_stop_clear_shutdown_closes_idle_original_tcp() {
         ready_rx.await.unwrap();
         let usb = source.usb_calls.load(Ordering::SeqCst);
         match action {
-            0 => assert!(state.stop_tunnel(A).await.unwrap()),
-            1 => state.clear().await,
-            _ => state.notify_shutdown(),
+            0 => assert!(state
+                .stop_tunnel(A, stop_input.as_mut().unwrap())
+                .await
+                .unwrap()),
+            1 => state.clear(clear_input.as_mut().unwrap()).await,
+            _ => state.notify_shutdown(shutdown_input.as_mut().unwrap()),
         }
         let terminal = tokio::time::timeout(Duration::from_millis(150), websocket.next()).await;
         closed.push(matches!(
@@ -414,8 +454,10 @@ async fn upgrade_epoch_local_stop_clear_shutdown_closes_idle_original_tcp() {
         assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
-        state.notify_shutdown();
-        state.clear().await;
+        state.notify_shutdown(&mut control_input_0);
+        drop(control_input_0);
+        state.clear(&mut control_input_1).await;
+        drop(control_input_1);
         state.drain_native(LOCAL_BUDGET).await.unwrap();
     }
     assert_eq!(

@@ -14,7 +14,8 @@ fn registry(capacity: usize) -> RegistryOwner {
 }
 
 fn stamp(registry: &RegistryOwner) -> OwnershipStamp {
-    OwnershipStamp::standalone(registry)
+    let mut births = registry.prepare_births::<2>(&registry.byte_bank()).unwrap();
+    OwnershipStamp::standalone(registry, &mut births)
 }
 
 fn handle() -> (Arc<TunnelHandle>, watch::Receiver<()>) {
@@ -34,7 +35,8 @@ fn handle() -> (Arc<TunnelHandle>, watch::Receiver<()>) {
 #[tokio::test]
 async fn combined_capacity_covers_every_phase_before_a_source_can_be_polled() {
     let registry = registry(5);
-    let stamp = stamp(&registry);
+    let prepared_stamp_0 = stamp(&registry);
+    let stamp = prepared_stamp_0;
     let reserved = registry.reserve(stamp.clone()).unwrap();
     let inflight = registry.reserve(stamp.clone()).unwrap();
     inflight.start().unwrap();
@@ -102,9 +104,10 @@ async fn combined_capacity_covers_every_phase_before_a_source_can_be_polled() {
 #[tokio::test]
 async fn original_arc_survives_unpublished_guard_drop_and_is_the_joined_owner() {
     let registry = registry(1);
+    let prepared_stamp_0 = stamp(&registry);
     let (native, _receiver) = handle();
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(native.clone());
     let key = lease.key.clone();
@@ -130,9 +133,11 @@ async fn original_arc_survives_unpublished_guard_drop_and_is_the_joined_owner() 
 #[tokio::test]
 async fn caller_cancelled_drain_keeps_original_arc_and_capacity_for_retry() {
     let registry = registry(1);
+    let prepared_stamp_0 = stamp(&registry);
+    let prepared_stamp_1 = stamp(&registry);
     let (native, _receiver) = handle();
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(native.clone());
     lease.retire();
@@ -145,7 +150,7 @@ async fn caller_cancelled_drain_keeps_original_arc_and_capacity_for_retry() {
     };
     assert!(Arc::ptr_eq(&retained, &native));
     assert_eq!(registry.snapshot().occupied(), 1);
-    assert!(registry.reserve(stamp(&registry)).is_err());
+    assert!(registry.reserve(prepared_stamp_1).is_err());
     drop(serial);
     let report = registry
         .drain_retired(CleanupClock::new(OBSERVE).unwrap())
@@ -158,9 +163,10 @@ async fn caller_cancelled_drain_keeps_original_arc_and_capacity_for_retry() {
 #[tokio::test]
 async fn expired_clock_stops_synchronously_retains_actual_elapsed_and_retries_same_owner() {
     let registry = registry(1);
+    let prepared_stamp_0 = stamp(&registry);
     let (native, _receiver) = handle();
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(native.clone());
     lease.retire();
@@ -194,10 +200,12 @@ async fn expired_clock_stops_synchronously_retains_actual_elapsed_and_retries_sa
 #[tokio::test]
 async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
     let registry = registry(1);
+    let prepared_stamp_0 = stamp(&registry);
+    let prepared_stamp_1 = stamp(&registry);
     let bank = registry.byte_bank.clone();
     let before = bank.available_permits();
     let bytes = Registry::incarnation_bytes();
-    let old_stamp = stamp(&registry);
+    let old_stamp = prepared_stamp_0;
     let (old, _old_rx) = handle();
     let delayed_old_lease = registry.reserve(old_stamp).unwrap().attach(old.clone());
     let old_pointer = &*delayed_old_lease.key.incarnation as *const () as usize;
@@ -209,7 +217,7 @@ async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
         .unwrap();
     assert_eq!(
         bank.available_permits(),
-        before - bytes,
+        before - bytes + 2 * ControlIdentity::body_bytes(),
         "stale original lease keeps its body after slot release"
     );
     assert_eq!(
@@ -217,7 +225,7 @@ async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
         old_pointer
     );
     assert_eq!(delayed_old_lease.key.incarnation.strong_count(), 1);
-    let fresh_stamp = stamp(&registry);
+    let fresh_stamp = prepared_stamp_1;
     let (fresh, _fresh_rx) = handle();
     let fresh_lease = registry
         .reserve(fresh_stamp.clone())
@@ -229,11 +237,14 @@ async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
         .key
         .incarnation
         .ptr_eq(&delayed_old_lease.key.incarnation));
-    assert_eq!(bank.available_permits(), before - 2 * bytes);
+    assert_eq!(
+        bank.available_permits(),
+        before - 2 * bytes + 2 * ControlIdentity::body_bytes()
+    );
     drop(delayed_old_lease);
     assert_eq!(
         bank.available_permits(),
-        before - bytes,
+        before - bytes + 2 * ControlIdentity::body_bytes(),
         "only the old incarnation ended"
     );
     assert!(fresh.is_alive());
@@ -241,20 +252,24 @@ async fn stale_lease_drop_cannot_retire_a_reused_slot_incarnation() {
     drop(fresh_lease);
     assert_eq!(
         bank.available_permits(),
-        before - bytes,
+        before - bytes + 2 * ControlIdentity::body_bytes(),
         "original Entry keeps its body until certified release"
     );
     registry
         .drain_retired(CleanupClock::new(OBSERVE).unwrap())
         .await
         .unwrap();
-    assert_eq!(bank.available_permits(), before);
+    assert_eq!(
+        bank.available_permits(),
+        before + 2 * ControlIdentity::body_bytes()
+    );
 }
 
 #[tokio::test]
 async fn terminal_close_stops_active_owner_independently_of_a_held_external_table() {
     let registry = registry(1);
-    let stamp = stamp(&registry);
+    let prepared_stamp_0 = stamp(&registry);
+    let stamp = prepared_stamp_0;
     let (native, _receiver) = handle();
     let lease = registry
         .reserve(stamp.clone())
@@ -284,7 +299,8 @@ async fn terminal_close_stops_active_owner_independently_of_a_held_external_tabl
 #[tokio::test]
 async fn delayed_post_close_attachment_retains_and_stops_the_original_runtime() {
     let registry = registry(1);
-    let stamp = stamp(&registry);
+    let prepared_stamp_0 = stamp(&registry);
+    let stamp = prepared_stamp_0;
     let reservation = registry.reserve(stamp.clone()).unwrap();
     reservation.start().unwrap();
     registry.close_and_stop_all();
@@ -303,7 +319,8 @@ async fn delayed_post_close_attachment_retains_and_stops_the_original_runtime() 
 #[tokio::test]
 async fn empty_retired_reservation_drop_wakes_drain_without_claiming_native_join() {
     let registry = registry(1);
-    let reservation = registry.reserve(stamp(&registry)).unwrap();
+    let prepared_stamp_0 = stamp(&registry);
+    let reservation = registry.reserve(prepared_stamp_0).unwrap();
     reservation.start().unwrap();
     registry.close_and_stop_all();
     let mut drain = Box::pin(registry.drain_retired(CleanupClock::new(OBSERVE).unwrap()));
@@ -320,6 +337,16 @@ async fn reusable_clear_and_targeted_stop_retire_old_exact_ticket_epochs() {
     for global_clear in [true, false] {
         let lifecycle = Lifecycle::new();
         let registry = registry(2);
+        let mut clear = global_clear.then(|| {
+            lifecycle
+                .prepare_cutover::<2>(lifecycle.byte_bank())
+                .unwrap()
+        });
+        let mut stop = (!global_clear).then(|| {
+            lifecycle
+                .prepare_cutover::<3>(lifecycle.byte_bank())
+                .unwrap()
+        });
         let old_ticket = lifecycle.ticket("synthetic-private-target").await.unwrap();
         let old_stamp = old_ticket.ownership_stamp();
         let old = old_ticket
@@ -327,10 +354,10 @@ async fn reusable_clear_and_targeted_stop_retire_old_exact_ticket_epochs() {
             .unwrap();
         old.start().unwrap();
         let old_epoch = if global_clear {
-            lifecycle.clear_owned().unwrap()
+            lifecycle.clear_owned(clear.as_mut().unwrap()).unwrap()
         } else {
             lifecycle
-                .stop_owned("synthetic-private-target")
+                .stop_owned("synthetic-private-target", stop.as_mut().unwrap())
                 .await
                 .unwrap()
         };
@@ -379,6 +406,16 @@ async fn cross_thread_clear_or_stop_fences_old_reservation_then_preserves_new_at
     for global_clear in [true, false] {
         let lifecycle = Arc::new(Lifecycle::new());
         let registry = registry(2);
+        let mut clear = global_clear.then(|| {
+            lifecycle
+                .prepare_cutover::<2>(lifecycle.byte_bank())
+                .unwrap()
+        });
+        let mut stop = (!global_clear).then(|| {
+            lifecycle
+                .prepare_cutover::<3>(lifecycle.byte_bank())
+                .unwrap()
+        });
         let old_ticket = lifecycle.ticket("synthetic-private-target").await.unwrap();
         let old_stamp = old_ticket.ownership_stamp();
         let (release_commit, released_commit) = std::sync::mpsc::channel();
@@ -404,10 +441,15 @@ async fn cross_thread_clear_or_stop_fences_old_reservation_then_preserves_new_at
         let fence = std::thread::spawn(move || {
             attempted_tx.send(()).unwrap();
             let old = if global_clear {
-                lifecycle_in_fence.clear_owned().unwrap()
+                lifecycle_in_fence
+                    .clear_owned(clear.as_mut().unwrap())
+                    .unwrap()
             } else {
                 runtime
-                    .block_on(lifecycle_in_fence.stop_owned("synthetic-private-target"))
+                    .block_on(
+                        lifecycle_in_fence
+                            .stop_owned("synthetic-private-target", stop.as_mut().unwrap()),
+                    )
                     .unwrap()
             };
             finished_in_fence.store(true, Ordering::SeqCst);
@@ -473,9 +515,13 @@ async fn cross_thread_clear_or_stop_fences_old_reservation_then_preserves_new_at
 async fn reservation_requires_the_same_ticket_commit_fence_as_publication() {
     let lifecycle = Lifecycle::new();
     let registry = registry(1);
+    let mut clear = lifecycle
+        .prepare_cutover::<2>(lifecycle.byte_bank())
+        .unwrap();
     let old = lifecycle.ticket("synthetic-private-target").await.unwrap();
     let old_stamp = old.ownership_stamp();
-    let old_global = lifecycle.clear_owned().unwrap();
+    let old_global = lifecycle.clear_owned(&mut clear).unwrap();
+    drop(clear);
     registry.retire_global(&old_global);
     let result = old.commit(|| registry.reserve(old_stamp.clone()));
     assert!(result.is_err());
@@ -491,13 +537,15 @@ async fn reservation_requires_the_same_ticket_commit_fence_as_publication() {
 #[tokio::test]
 async fn foreign_ticket_stamp_cannot_publish_an_acquired_owner() {
     let registry = registry(1);
-    let correct = stamp(&registry);
+    let prepared_stamp_0 = stamp(&registry);
+    let prepared_stamp_1 = stamp(&registry);
+    let correct = prepared_stamp_0;
     let (native, _receiver) = handle();
     let lease = registry
         .reserve(correct.clone())
         .unwrap()
         .attach(native.clone());
-    assert!(lease.publish(&stamp(&registry)).is_err());
+    assert!(lease.publish(&{ prepared_stamp_1 }).is_err());
     assert_eq!(registry.snapshot().unpublished, 1);
     lease.publish(&correct).unwrap();
     assert_eq!(registry.snapshot().active, 1);
@@ -511,7 +559,8 @@ async fn foreign_ticket_stamp_cannot_publish_an_acquired_owner() {
 #[test]
 fn invalid_cleanup_horizon_has_no_retirement_side_effect_and_snapshot_is_secret_safe() {
     let registry = registry(1);
-    let stamp = stamp(&registry);
+    let prepared_stamp_0 = stamp(&registry);
+    let stamp = prepared_stamp_0;
     let (native, _receiver) = handle();
     let lease = registry
         .reserve(stamp.clone())
@@ -548,10 +597,12 @@ fn message_only_or_unrecognized_native_failure_cannot_certify_a_join() {
 #[tokio::test]
 async fn ordinal_selection_excludes_owners_retired_after_the_fixed_cutoff() {
     let registry = registry(2);
+    let prepared_stamp_0 = stamp(&registry);
+    let prepared_stamp_1 = stamp(&registry);
     let (a, _a_rx) = handle();
     let (b, _b_rx) = handle();
-    let a_lease = registry.reserve(stamp(&registry)).unwrap().attach(a);
-    let b_lease = registry.reserve(stamp(&registry)).unwrap().attach(b);
+    let a_lease = registry.reserve(prepared_stamp_0).unwrap().attach(a);
+    let b_lease = registry.reserve(prepared_stamp_1).unwrap().attach(b);
     drop(a_lease);
     let first = registry.drain_retired(CleanupClock::new(OBSERVE).unwrap());
     drop(b_lease);
@@ -573,8 +624,10 @@ async fn ordinal_selection_excludes_owners_retired_after_the_fixed_cutoff() {
 #[tokio::test]
 async fn ordinal_selection_preserves_count_and_never_joins_a_reused_slot() {
     let registry = registry(1);
+    let prepared_stamp_0 = stamp(&registry);
+    let prepared_stamp_1 = stamp(&registry);
     let (a, _a_rx) = handle();
-    let a_lease = registry.reserve(stamp(&registry)).unwrap().attach(a);
+    let a_lease = registry.reserve(prepared_stamp_0).unwrap().attach(a);
     drop(a_lease);
     let old = registry.drain_retired(CleanupClock::new(OBSERVE).unwrap());
     let joined = registry
@@ -584,7 +637,7 @@ async fn ordinal_selection_preserves_count_and_never_joins_a_reused_slot() {
     assert_eq!(joined.joined, 1);
     let (b, _b_rx) = handle();
     let b_lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_1)
         .unwrap()
         .attach(Arc::clone(&b));
     drop(b_lease);
@@ -603,7 +656,8 @@ async fn ordinal_selection_preserves_count_and_never_joins_a_reused_slot() {
 #[tokio::test]
 async fn ordinal_repeated_retirement_and_late_attachment_keep_original_selection() {
     let registry = registry(1);
-    let owner = stamp(&registry);
+    let prepared_stamp_0 = stamp(&registry);
+    let owner = prepared_stamp_0;
     let reserved = registry.reserve(owner.clone()).unwrap();
     reserved.start().unwrap();
     registry.retire_global(&owner.global);
@@ -629,12 +683,14 @@ async fn ordinal_repeated_retirement_and_late_attachment_keep_original_selection
 #[tokio::test]
 async fn ordinal_admission_overflow_never_wraps_or_blocks_final_cleanup() {
     let registry = registry(1);
+    let prepared_stamp_0 = stamp(&registry);
+    let prepared_stamp_1 = stamp(&registry);
     {
         let mut state = registry.lock();
         state.issued = u64::MAX - 1;
         state.retired = u64::MAX - 1;
     }
-    let owner = stamp(&registry);
+    let owner = prepared_stamp_0;
     let reserved = registry.reserve(owner.clone()).unwrap();
     let (native, _rx) = handle();
     let lease = reserved.attach(native);
@@ -653,7 +709,7 @@ async fn ordinal_admission_overflow_never_wraps_or_blocks_final_cleanup() {
         // would now fail; it never allocates a root or reaches the Source.
         let admission = super::super::metadata_vec::with_allocation_hook(
             |_, _| panic!("exhausted ordinal allocated an incarnation body"),
-            || registry.reserve(stamp(&registry)),
+            || registry.reserve(prepared_stamp_1),
         )?;
         admission.start()?;
         polls.fetch_add(1, Ordering::SeqCst);
@@ -677,12 +733,14 @@ async fn ordinal_admission_overflow_never_wraps_or_blocks_final_cleanup() {
 #[test]
 fn ordinal_empty_reservation_release_does_not_refund_lifetime_admission() {
     let registry = registry(1);
-    drop(registry.reserve(stamp(&registry)).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
+    let prepared_stamp_1 = stamp(&registry);
+    drop(registry.reserve(prepared_stamp_0).unwrap());
     {
         let state = registry.lock();
         assert_eq!((state.issued, state.retired), (1, 0));
     }
-    let next = registry.reserve(stamp(&registry)).unwrap();
+    let next = registry.reserve(prepared_stamp_1).unwrap();
     assert_eq!(registry.lock().issued, 2);
     drop(next);
     assert_eq!(registry.lock().issued, 2);
@@ -691,11 +749,13 @@ fn ordinal_empty_reservation_release_does_not_refund_lifetime_admission() {
 #[tokio::test]
 async fn ordinal_namespace_stop_does_not_repeat_stop_on_unrelated_retired_owner() {
     let registry = registry(2);
-    let target = stamp(&registry);
+    let prepared_stamp_0 = stamp(&registry);
+    let prepared_stamp_1 = stamp(&registry);
+    let target = prepared_stamp_0;
     let (a, mut a_rx) = handle();
     let a_lease = registry.reserve(target.clone()).unwrap().attach(a);
     let (b, mut b_rx) = handle();
-    let b_lease = registry.reserve(stamp(&registry)).unwrap().attach(b);
+    let b_lease = registry.reserve(prepared_stamp_1).unwrap().attach(b);
     drop(b_lease);
     b_rx.borrow_and_update();
     registry.retire_global(&target.global);
@@ -748,19 +808,31 @@ async fn marker_origin_foreign_registries_keep_whole_backing_paid_after_producer
     let destinations = (0..4).map(|_| registry(1)).collect::<Vec<_>>();
     let mirror = destinations[0]._slots_storage.num_permits();
     let structural = Lifecycle::watch_bytes() + Lifecycle::initial_metadata_bytes(KEY);
-    let total = structural + destinations.len() * mirror;
+    let marker = ControlIdentity::body_bytes();
+    let reset_backing = super::super::marker_identity::BirthBatch::backing_bytes(2);
+    // Four historical global/device pairs and the current producer fields;
+    // the last clear overlaps its two actual witness reset destinations.
+    let total = structural + destinations.len() * mirror + 14 * marker + reset_backing;
     let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let origin = origin_birth.raw().clone();
     let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
     drop(lifecycle.ticket(KEY).await.unwrap());
-    assert_eq!(origin.available_permits(), 4 * mirror);
+    assert_eq!(
+        origin.available_permits(),
+        4 * mirror + 10 * marker + reset_backing
+    );
+    let mut witness_births = None;
     let mut keepers = Vec::new();
     for destination in destinations {
         let bank = destination.byte_bank();
         assert!(!Arc::ptr_eq(&bank, &origin));
         assert_eq!(destination._slots_storage.num_permits(), mirror);
         let before = bank.available_permits();
+        let mut clear = lifecycle.prepare_cutover::<2>(&origin).unwrap();
         let ticket = lifecycle.ticket(KEY).await.unwrap();
+        if keepers.len() == 3 {
+            witness_births = Some(lifecycle.prepare_reset_births(2).unwrap());
+        }
         let reservation = ticket
             .commit(|| destination.reserve(ticket.ownership_stamp()))
             .unwrap();
@@ -770,22 +842,40 @@ async fn marker_origin_foreign_registries_keep_whole_backing_paid_after_producer
             before - Registry::incarnation_bytes() - catalogue
         );
         drop(ticket);
-        let old = lifecycle.clear_owned().unwrap();
+        let old = lifecycle.clear_owned(&mut clear).unwrap();
         destination.retire_global(&old);
         drop(old);
+        drop(clear);
         assert_eq!(destination.snapshot().retired, 1);
         assert_eq!(destination.snapshot().native_handles, 0);
-        assert_eq!(origin.available_permits(), (3 - keepers.len()) * mirror);
+        let index = keepers.len();
+        let remaining_markers = if index == 3 {
+            marker
+        } else {
+            (9 - 2 * index) * marker + reset_backing
+        };
+        assert_eq!(
+            origin.available_permits(),
+            (3 - index) * mirror + remaining_markers
+        );
         assert_eq!(lifecycle.coordinator_count().await, 1);
         keepers.push((destination, reservation, bank, before, catalogue));
     }
-    assert_eq!(origin.available_permits(), 0);
+    assert_eq!(origin.available_permits(), marker);
+    let held = origin
+        .clone()
+        .try_acquire_many_owned(marker as u32)
+        .unwrap();
     origin.close();
+    assert_eq!(origin.available_permits(), 0);
     // Already funded native keepers do not make clear/lazy reset acquire quota.
-    let witness = lifecycle.ticket(KEY).await.unwrap();
+    let witness = lifecycle
+        .ticket_with_births(KEY, witness_births.take())
+        .await
+        .unwrap();
     assert!(witness.is_current());
     drop(witness);
-    assert_eq!(origin.available_permits(), 0);
+    assert_eq!(origin.available_permits(), marker + reset_backing);
     let inspect = || {
         for (index, (destination, _, _, _, _)) in keepers.iter().enumerate() {
             let state = destination.lock();
@@ -811,17 +901,21 @@ async fn marker_origin_foreign_registries_keep_whole_backing_paid_after_producer
     };
     inspect();
     drop(lifecycle);
-    assert_eq!(origin.available_permits(), structural);
+    assert_eq!(
+        origin.available_permits(),
+        structural + 5 * marker + reset_backing
+    );
     inspect();
-    let mut returned = structural;
+    let mut returned = structural + 5 * marker + reset_backing;
     for (destination, reservation, bank, before, catalogue) in keepers {
         drop(reservation);
+        returned += 2 * marker;
         assert_eq!(destination.snapshot().occupied(), 0);
         assert_eq!(bank.available_permits(), before - catalogue);
         assert_eq!(
             origin.available_permits(),
             returned,
-            "slot release refunded a whole-backing mirror"
+            "slot release refunds its two physical markers while retaining the whole-backing mirror"
         );
         let origin_observer = origin.clone();
         let free_count = Arc::new(AtomicUsize::new(0));
@@ -843,6 +937,8 @@ async fn marker_origin_foreign_registries_keep_whole_backing_paid_after_producer
             super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
         );
     }
+    assert_eq!(origin.available_permits(), total - marker);
+    drop(held);
     assert_eq!(origin.available_permits(), total);
 }
 
@@ -853,21 +949,26 @@ fn marker_origin_new_foreign_keeper_denial_rolls_back_original_slot_ordinal_and_
         let bank = destination.byte_bank();
         let before = bank.available_permits();
         let mirror = destination._slots_storage.num_permits();
-        let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror - 1);
+        let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(
+            mirror - 1 + 2 * ControlIdentity::body_bytes(),
+        );
         let origin = origin_birth.raw().clone();
+        let mut births =
+            super::super::marker_identity::Cutover::<2>::new(&origin_birth, &origin).unwrap();
+        let stamp = OwnershipStamp::new(births.place(&origin_birth), births.place(&origin_birth));
+        drop(births);
         if closed {
             origin.close();
         }
-        let stamp = OwnershipStamp::new(
-            ControlIdentity::new(&origin_birth),
-            ControlIdentity::new(&origin_birth),
-        );
         let error = destination.reserve(stamp).err().unwrap();
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
             ios_core::ErrorClass::ResourceLimit
         );
-        assert_eq!(origin.available_permits(), mirror - 1);
+        assert_eq!(
+            origin.available_permits(),
+            mirror - 1 + 2 * ControlIdentity::body_bytes()
+        );
         assert_eq!(bank.available_permits(), before);
         assert_eq!(destination.lock().issued, 0);
         assert_eq!(destination.snapshot().occupied(), 0);
@@ -881,24 +982,28 @@ fn marker_origin_catalogue_backing_denial_returns_staged_origin_and_original_inc
     let destination = registry(1);
     let bank = destination.byte_bank();
     let mirror = destination._slots_storage.num_permits();
-    let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let origin_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(mirror + 2 * ControlIdentity::body_bytes());
     let origin = origin_birth.raw().clone();
+    let mut births =
+        super::super::marker_identity::Cutover::<2>::new(&origin_birth, &origin).unwrap();
+    let stamp = OwnershipStamp::new(births.place(&origin_birth), births.place(&origin_birth));
+    drop(births);
     let catalogue = 2 * std::mem::size_of::<OwnedSemaphorePermit>();
     let leave = Registry::incarnation_bytes() + catalogue - 1;
     let held = bank
         .clone()
         .try_acquire_many_owned((bank.available_permits() - leave) as u32)
         .unwrap();
-    let stamp = OwnershipStamp::new(
-        ControlIdentity::new(&origin_birth),
-        ControlIdentity::new(&origin_birth),
-    );
     let error = destination.reserve(stamp).err().unwrap();
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
     );
-    assert_eq!(origin.available_permits(), mirror);
+    assert_eq!(
+        origin.available_permits(),
+        mirror + 2 * ControlIdentity::body_bytes()
+    );
     assert_eq!(bank.available_permits(), leave);
     assert_eq!(destination.lock().issued, 0);
     assert_eq!(destination.snapshot().occupied(), 0);

@@ -5,7 +5,8 @@ use std::sync::Barrier;
 fn route_body_original_filter_snapshot_replacement_releases_text_before_last_weak_body() {
     let filter = "原-manual-filter";
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let total = RetainedRoute::body_bytes() + filter.len() + watch_bytes;
+    let marker_bytes = ControlIdentity::body_bytes();
+    let total = RetainedRoute::body_bytes() + filter.len() + watch_bytes + 3 * marker_bytes;
     let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
     let route = RetainedRoute::established(
@@ -20,7 +21,11 @@ fn route_body_original_filter_snapshot_replacement_releases_text_before_last_wea
     assert_eq!(host, filter);
     let pointer = host.as_ptr();
     let weak = route.downgrade();
-    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
+    let mut epoch_context = Cutover::<1>::new(&bank_birth, &bank).unwrap();
+    let epoch = epoch_context.place(&bank_birth);
+    drop(epoch_context);
+    let cell = Cell::new(epoch, bank_birth.clone()).unwrap();
+    let mut manual_context = cell.prepare_births::<1>(&bank).unwrap();
     let authority = crate::access::AccessControl::trusted_test_local()
         .authenticate(&axum::http::HeaderMap::new())
         .unwrap()
@@ -34,6 +39,7 @@ fn route_body_original_filter_snapshot_replacement_releases_text_before_last_wea
         || cell.manual_shared(route.clone(), authority),
         None,
         || Ok(()),
+        &mut manual_context,
     )
     .unwrap();
     let snapshot = cell.snapshot();
@@ -48,13 +54,20 @@ fn route_body_original_filter_snapshot_replacement_releases_text_before_last_wea
         unreachable!()
     };
     assert_eq!(host.as_ptr(), pointer);
-    cell.replace(Desired::Stopped);
+    drop(manual_context);
+    let mut stop_context = cell.prepare_births::<1>(&bank).unwrap();
+    cell.replace(Desired::Stopped, &mut stop_context);
+    drop(stop_context);
     drop((cell, route));
     assert!(weak.upgrade().is_some());
-    assert_eq!(bank.available_permits(), watch_bytes);
+    // The retained Snapshot still owns BOTH its epoch and desired marker.
+    assert_eq!(bank.available_permits(), watch_bytes + marker_bytes);
     drop(snapshot);
     assert!(weak.upgrade().is_none());
-    assert_eq!(bank.available_permits(), filter.len() + watch_bytes);
+    assert_eq!(
+        bank.available_permits(),
+        filter.len() + watch_bytes + 3 * marker_bytes
+    );
     drop(weak);
     assert_eq!(bank.available_permits(), total);
 }

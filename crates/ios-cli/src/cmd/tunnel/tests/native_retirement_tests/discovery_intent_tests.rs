@@ -158,9 +158,14 @@ async fn start_manual(state: &TunnelAgentState) -> StatusCode {
     response.unwrap()
 }
 
-async fn finish_all(state: &TunnelAgentState, source: &DiscoverySource, expected: usize) {
-    state.notify_shutdown();
-    state.clear().await;
+async fn finish_all(
+    state: &TunnelAgentState,
+    source: &DiscoverySource,
+    expected: usize,
+    inputs: &mut PreparedTerminal,
+) {
+    inputs.shutdown(state);
+    inputs.clear(state).await;
     let drained = state.drain_native(OBSERVE).await;
     let eof = recovered(&source.base, expected).await;
     let originals = source.base.handles.lock().unwrap().clone();
@@ -229,6 +234,7 @@ async fn intent_discovery_two_original_tcp_causes_preserve_wifi_recovery_and_nat
     let expected = baseline();
     let source = DiscoverySource::new(2).await;
     let state = manager(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let started = start_manual(&state).await;
     let old = source.base.handle();
     let old_join = old.shutdown(OBSERVE).await;
@@ -237,7 +243,8 @@ async fn intent_discovery_two_original_tcp_causes_preserve_wifi_recovery_and_nat
     let fresh = source.base.handle();
     let live = fresh.is_alive();
     let routes = source.routes.lock().unwrap().clone();
-    finish_all(&state, &source, expected).await;
+    finish_all(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(started, StatusCode::OK);
     assert!(old_join.is_ok() && live && !Arc::ptr_eq(&old, &fresh));
     assert_eq!(
@@ -254,12 +261,16 @@ async fn intent_discovery_full_durable_gate_table_recovers_known_native_without_
     let expected = baseline();
     let source = DiscoverySource::new(0).await;
     let state = manager(source.clone());
+    let mut stop_inputs: Vec<_> = (0..4095)
+        .map(|_| state.prepare_cutover::<3>().unwrap())
+        .collect();
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let started = start_manual(&state).await;
     let old = source.base.handle();
     let old_join = old.shutdown(OBSERVE).await;
-    for index in 0..4095 {
+    for (index, input) in (0..4095).zip(&mut stop_inputs) {
         state
-            .stop_tunnel(&format!("intent-capacity-stopped-{index}"))
+            .stop_tunnel(&format!("intent-capacity-stopped-{index}"), input)
             .await
             .unwrap();
     }
@@ -283,7 +294,8 @@ async fn intent_discovery_full_durable_gate_table_recovers_known_native_without_
     let live = fresh.is_alive();
     let rows = state.inner.lifecycle.coordinator_count().await;
     let routes = source.routes.lock().unwrap().clone();
-    finish_all(&state, &source, expected).await;
+    finish_all(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(started, StatusCode::OK);
     assert!(old_join.is_ok() && live && !Arc::ptr_eq(&old, &fresh));
     assert_eq!(rows, 4096);
@@ -307,6 +319,7 @@ async fn intent_discovery_two_tcp_causes_and_actual_completion_elapsed_keep_all_
     let expected = baseline();
     let source = DiscoverySource::new(2).await;
     let mut state = manager(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     state.inner.get_mut().unwrap().scan_timeout = Duration::from_millis(250);
     let started = start_manual(&state).await;
     let old_join = source.base.handle().shutdown(OBSERVE).await;
@@ -314,7 +327,8 @@ async fn intent_discovery_two_tcp_causes_and_actual_completion_elapsed_keep_all_
     source.blocked.store(true, Ordering::SeqCst);
     let result = state.refresh_once().await;
     let calls = source.entered.load(Ordering::SeqCst);
-    finish_all(&state, &source, expected).await;
+    finish_all(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(started, StatusCode::OK);
     assert!(old_join.is_ok());
     assert_eq!(
@@ -337,6 +351,7 @@ async fn intent_discovery_eight_abandoned_two_source_errors_keep_originals_and_r
     let expected = baseline();
     let source = DiscoverySource::new(16).await;
     let state = manager(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let started = start_manual(&state).await;
     let old_join = source.base.handle().shutdown(OBSERVE).await;
     source.mode.store(1, Ordering::SeqCst);
@@ -363,7 +378,8 @@ async fn intent_discovery_eight_abandoned_two_source_errors_keep_originals_and_r
         .scan_outcomes
         .history()
         .expect("abandoned scan history");
-    finish_all(&state, &source, expected).await;
+    finish_all(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(started, StatusCode::OK);
     assert!(
         old_join.is_ok() && progress.iter().all(|value| *value) && eof.iter().all(|value| *value)
@@ -387,11 +403,15 @@ async fn intent_discovery_incomplete_paired_metadata_is_retained_before_owned_ca
     let expected = baseline();
     let source = DiscoverySource::new(0).await;
     let state = manager(source.clone());
+    let mut stop_inputs: Vec<_> = (0..4095)
+        .map(|_| state.prepare_cutover::<3>().unwrap())
+        .collect();
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let started = start_manual(&state).await;
     let old_join = source.base.handle().shutdown(OBSERVE).await;
-    for index in 0..4095 {
+    for (index, input) in (0..4095).zip(&mut stop_inputs) {
         state
-            .stop_tunnel(&format!("intent-incomplete-stopped-{index}"))
+            .stop_tunnel(&format!("intent-incomplete-stopped-{index}"), input)
             .await
             .unwrap();
     }
@@ -411,7 +431,8 @@ async fn intent_discovery_incomplete_paired_metadata_is_retained_before_owned_ca
         .history()
         .expect("abandoned scan history");
     let routes = source.routes.lock().unwrap().clone();
-    finish_all(&state, &source, expected).await;
+    finish_all(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(started, StatusCode::OK);
     assert!(old_join.is_ok() && progress);
     assert_eq!(routes.len(), 2);

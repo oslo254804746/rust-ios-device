@@ -1,5 +1,6 @@
 //! Successful publications must release the candidate window before bookkeeping.
 use super::*;
+use crate::cmd::tunnel::marker_identity::Cutover;
 use bookkeeping::{ScanAttemptOutcome, ScanIntent, SuccessIntent};
 use futures_util::FutureExt;
 
@@ -87,8 +88,8 @@ async fn drive_until(
     .unwrap_or(false)
 }
 
-async fn recover(state: &TunnelAgentState, source: &FakeSource) {
-    state.clear().await;
+async fn recover(state: &TunnelAgentState, source: &FakeSource, clear: &mut Cutover<2>) {
+    state.clear(clear).await;
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
@@ -113,6 +114,7 @@ fn elapsed(error: &anyhow::Error) {
 #[tokio::test]
 async fn lifecycle_tunnel_success_writers_do_not_occupy_later_candidate_window() {
     let (source, state, first, fifth) = fixture(WRITE_BUDGET, Duration::from_secs(5)).await;
+    let mut recover_input = state.prepare_cutover::<2>().unwrap();
     let mut scan = Box::pin(state.refresh_once());
     let initial = drive_until(&mut scan, &source, 4).await;
     let failed = state.inner.failed_attempts.read().await;
@@ -131,7 +133,8 @@ async fn lifecycle_tunnel_success_writers_do_not_occupy_later_candidate_window()
     let not_ready = !state.is_ready().await;
     drop(scan);
     drop(failed);
-    recover(&state, &source).await;
+    recover(&state, &source, &mut recover_input).await;
+    drop(recover_input);
 
     assert!(
         initial && later,
@@ -157,6 +160,7 @@ async fn lifecycle_tunnel_success_writers_do_not_occupy_later_candidate_window()
 async fn lifecycle_tunnel_success_flush_removes_old_rows_after_reader_releases() {
     let (source, state, first, fifth) =
         fixture(Duration::from_secs(1), Duration::from_secs(5)).await;
+    let mut recover_input = state.prepare_cutover::<2>().unwrap();
     let mut scan = Box::pin(state.refresh_once());
     let initial = drive_until(&mut scan, &source, 4).await;
     let failed = state.inner.failed_attempts.read().await;
@@ -170,7 +174,8 @@ async fn lifecycle_tunnel_success_flush_removes_old_rows_after_reader_releases()
     let slots = state.inner.failure_slots.available_permits();
     let ready = state.is_ready().await;
     let published = state.list_records().await.unwrap().len();
-    recover(&state, &source).await;
+    recover(&state, &source, &mut recover_input).await;
+    drop(recover_input);
 
     assert!(
         initial && later,
@@ -196,6 +201,9 @@ async fn lifecycle_tunnel_success_bookkeeping_whole_clear_and_close_never_mark_r
             },
         )
         .await;
+        let mut clear_input = (fence == 1).then(|| state.prepare_cutover::<2>().unwrap());
+        let mut close_input = (fence == 2).then(|| state.prepare_cutover::<1>().unwrap());
+        let mut recover_input = state.prepare_cutover::<2>().unwrap();
         let mut scan = Box::pin(state.refresh_once());
         let initial = drive_until(&mut scan, &source, 4).await;
         let failed = state.inner.failed_attempts.read().await;
@@ -206,9 +214,9 @@ async fn lifecycle_tunnel_success_bookkeeping_whole_clear_and_close_never_mark_r
         let pending = futures_util::poll!(scan.as_mut()).is_pending();
         let published = state.list_records().await.unwrap().len();
         if fence == 1 {
-            state.inner.lifecycle.clear();
+            state.inner.lifecycle.clear(clear_input.as_mut().unwrap());
         } else if fence == 2 {
-            state.notify_shutdown();
+            state.notify_shutdown(close_input.as_mut().unwrap());
         }
         let result = tokio::time::timeout(LOCAL_BUDGET, scan.as_mut()).await;
         let unchanged = failed.len() == 5 && failed.values().all(|row| row.fail_count == 1);
@@ -216,7 +224,8 @@ async fn lifecycle_tunnel_success_bookkeeping_whole_clear_and_close_never_mark_r
         drop(scan);
         drop(failed);
         let no_late_ready = !state.is_ready().await;
-        recover(&state, &source).await;
+        recover(&state, &source, &mut recover_input).await;
+        drop(recover_input);
 
         assert!(initial && later && pending);
         assert_eq!(published, 5);
@@ -259,6 +268,7 @@ async fn lifecycle_tunnel_old_success_intent_preserves_later_same_identity_failu
         Duration::from_secs(1),
         Duration::from_secs(5),
     );
+    let mut recover_input = state.prepare_cutover::<2>().unwrap();
     seed(&state, A).await;
     let original = {
         let failed = state.inner.failed_attempts.read().await;
@@ -306,7 +316,8 @@ async fn lifecycle_tunnel_old_success_intent_preserves_later_same_identity_failu
         })
     };
     let slots = state.inner.failure_slots.available_permits();
-    recover(&state, &source).await;
+    recover(&state, &source, &mut recover_input).await;
+    drop(recover_input);
 
     assert!(
         had_intent && preserved,
@@ -325,9 +336,13 @@ async fn lifecycle_tunnel_old_success_intent_preserves_new_clear_epoch_failure()
         Duration::from_secs(1),
         Duration::from_secs(5),
     );
+    let mut recover_input = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     seed(&state, A).await;
     let pending = deferred_success(&state, A).await;
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     seed(&state, A).await;
     let before = {
         let failed = state.inner.failed_attempts.read().await;
@@ -344,7 +359,8 @@ async fn lifecycle_tunnel_old_success_intent_preserves_new_clear_epoch_failure()
             .is_some_and(|row| (row.last_attempt, row.fail_count) == before)
     };
     let slots = state.inner.failure_slots.available_permits();
-    recover(&state, &source).await;
+    recover(&state, &source, &mut recover_input).await;
+    drop(recover_input);
 
     assert!(
         had_intent && preserved,
@@ -359,6 +375,7 @@ async fn lifecycle_tunnel_success_cleanup_deadline_crossing_restores_original_ro
     for after_remove in [false, true] {
         let source = FakeSource::new();
         let state = bounded(source.clone(), WRITE_BUDGET, Duration::from_secs(5));
+        let mut recover_input = state.prepare_cutover::<2>().unwrap();
         seed(&state, A).await;
         let pending = deferred_success(&state, A).await;
         let before = {
@@ -403,7 +420,8 @@ async fn lifecycle_tunnel_success_cleanup_deadline_crossing_restores_original_ro
         };
         let slots = state.inner.failure_slots.available_permits();
         let published = state.get_record(A).await.unwrap().is_some();
-        recover(&state, &source).await;
+        recover(&state, &source, &mut recover_input).await;
+        drop(recover_input);
 
         assert!(had_intent && restored && published);
         assert_eq!(slots, MAX_FAILURE_RECORDS - 1);
@@ -419,6 +437,7 @@ async fn lifecycle_tunnel_success_cleanup_timely_prefix_survives_shared_total_ex
         Duration::from_millis(80),
         Duration::from_secs(5),
     );
+    let mut recover_input = state.prepare_cutover::<2>().unwrap();
     seed(&state, A).await;
     seed(&state, B).await;
     let a = deferred_success(&state, A).await;
@@ -442,7 +461,8 @@ async fn lifecycle_tunnel_success_cleanup_timely_prefix_survives_shared_total_ex
         failed.len() == 1 && failed.contains_key(B)
     };
     let slots = state.inner.failure_slots.available_permits();
-    recover(&state, &source).await;
+    recover(&state, &source, &mut recover_input).await;
+    drop(recover_input);
 
     assert!(
         had_intents && prefix,
@@ -460,6 +480,9 @@ async fn lifecycle_tunnel_success_cleanup_stop_a_preserves_a_and_still_removes_b
         Duration::from_secs(1),
         Duration::from_secs(5),
     );
+    let retained_stop = Arc::new(StdMutex::new(state.prepare_cutover::<3>().unwrap()));
+    let callback_stop = retained_stop.clone();
+    let mut recover_input = state.prepare_cutover::<2>().unwrap();
     seed(&state, A).await;
     seed(&state, B).await;
     let a = deferred_success(&state, A).await;
@@ -470,7 +493,7 @@ async fn lifecycle_tunnel_success_cleanup_stop_a_preserves_a_and_still_removes_b
         weak.upgrade()
             .unwrap()
             .lifecycle
-            .stop(A)
+            .stop(A, &mut callback_stop.lock().unwrap())
             .now_or_never()
             .expect("uncontended stop must complete");
     }));
@@ -485,7 +508,8 @@ async fn lifecycle_tunnel_success_cleanup_stop_a_preserves_a_and_still_removes_b
         failed.len() == 1 && failed.contains_key(A)
     };
     let slots = state.inner.failure_slots.available_permits();
-    recover(&state, &source).await;
+    recover(&state, &source, &mut recover_input).await;
+    drop(recover_input);
 
     assert!(
         had_intents && only_a,
@@ -505,6 +529,7 @@ async fn lifecycle_tunnel_success_fast_cleanup_returns_full_cache_slot_to_next_c
         Duration::from_secs(1),
         Duration::from_secs(5),
     );
+    let mut recover_input = state.prepare_cutover::<2>().unwrap();
     seed(&state, A).await;
     for index in 0..MAX_FAILURE_RECORDS - 1 {
         let udid = format!("synthetic-success-full-cache-{index}");
@@ -537,7 +562,8 @@ async fn lifecycle_tunnel_success_fast_cleanup_returns_full_cache_slot_to_next_c
         && state.get_record(B).await.unwrap().is_some();
     let remaining = state.inner.failed_attempts.read().await.len();
     let slots = state.inner.failure_slots.available_permits();
-    recover(&state, &source).await;
+    recover(&state, &source, &mut recover_input).await;
+    drop(recover_input);
 
     assert!(
         full && immediate && published,
@@ -561,6 +587,7 @@ async fn lifecycle_tunnel_success_fast_cleanup_crossing_candidate_clock_defers_w
         Duration::from_secs(1),
         Duration::from_secs(5),
     );
+    let mut recover_input = state.prepare_cutover::<2>().unwrap();
     state.inner.get_mut().unwrap().connect_timeout = WRITE_BUDGET;
     seed(&state, A).await;
     let before = {
@@ -612,7 +639,8 @@ async fn lifecycle_tunnel_success_fast_cleanup_crossing_candidate_clock_defers_w
         .await;
     let cleaned = state.inner.failed_attempts.read().await.is_empty();
     let slots = state.inner.failure_slots.available_permits();
-    recover(&state, &source).await;
+    recover(&state, &source, &mut recover_input).await;
+    drop(recover_input);
 
     assert!(
         restored && published && had_intent,

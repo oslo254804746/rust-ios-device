@@ -21,6 +21,7 @@ fn minimum(state: &TunnelAgentState) -> usize {
         + reconnect::Ledger::structural_bytes()
         + scan::Outcomes::body_bytes()
         + TunnelAgentState::watch_bytes()
+        + 2 * ControlIdentity::body_bytes()
         + failure_slot::Counts::body_bytes()
 }
 

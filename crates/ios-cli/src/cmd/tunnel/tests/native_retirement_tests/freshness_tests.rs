@@ -345,9 +345,14 @@ async fn refresh(state: &TunnelAgentState, duration: Duration) -> Result<()> {
         .refresh_alive_rsd(UID, &ticket, &deadline, None, None)
         .await
 }
-async fn fresh_finish(state: &TunnelAgentState, source: &FreshSource, expected: usize) {
+async fn fresh_finish(
+    state: &TunnelAgentState,
+    source: &FreshSource,
+    expected: usize,
+    inputs: &mut PreparedTerminal,
+) {
     drop(source.held.lock().unwrap().take());
-    assert!(finish(state, &source.base, expected).await);
+    assert!(finish(state, &source.base, expected, inputs).await);
     assert!(source.base.handle().shutdown_status().is_ok());
 }
 
@@ -358,6 +363,7 @@ async fn freshness_production_alive_scan_changes_current_ports_without_new_lease
     let (route, peer) = directories(vec![10001, 10002]).await;
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     state.refresh_once().await.unwrap();
     let native = source.base.handle();
     let (key, publication, first_fee, second_fee) = {
@@ -398,7 +404,8 @@ async fn freshness_production_alive_scan_changes_current_ports_without_new_lease
     assert_eq!(state.inner.native.snapshot().active, 1);
     assert_eq!(old.catalogue.service_port(SERVICE), Some(10001));
     tokio::time::timeout(OBSERVE, peer).await.unwrap().unwrap();
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     drop((old, publication, first_fee, second_fee, native));
     let bank = state.inner.global_metadata_bytes.clone();
     drop(state);
@@ -412,6 +419,7 @@ async fn freshness_actual_late_swap_restores_old_catalogue_and_all_original_fee_
     let (route, peer) = directories(vec![10001, 10002]).await;
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     refresh(&state, OBSERVE).await.unwrap();
     let original = state.inner.tunnels.read().await[UID]
@@ -454,7 +462,8 @@ async fn freshness_actual_late_swap_restores_old_catalogue_and_all_original_fee_
     tokio::time::timeout(OBSERVE, peer).await.unwrap().unwrap();
     drop(error);
     drop(original);
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
@@ -464,6 +473,7 @@ async fn freshness_ready_error_at_zero_quota_and_crossed_clock_keeps_original_ty
         ExistingRsdRoute::direct(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 12345, 0, 0)).unwrap();
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     let marker = Arc::new(42);
     source.script(Refresh::Failure {
@@ -498,7 +508,8 @@ async fn freshness_ready_error_at_zero_quota_and_crossed_clock_keeps_original_ty
     assert!(state.inner.tunnels.read().await[UID].is_alive());
     drop(originals);
     drop(error);
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
@@ -508,6 +519,9 @@ async fn freshness_cancelled_permit_wait_has_source_zero_and_original_native_joi
         ExistingRsdRoute::direct(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 12345, 0, 0)).unwrap();
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+
     fresh_publish(&state).await;
     let held = state
         .inner
@@ -519,7 +533,8 @@ async fn freshness_cancelled_permit_wait_has_source_zero_and_original_native_joi
     let mut operation = Box::pin(refresh(&state, OBSERVE));
     assert!(futures_util::poll!(&mut operation).is_pending());
     assert_eq!(source.refresh_calls.load(Ordering::SeqCst), 0);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
     let error = tokio::time::timeout(OBSERVE, operation)
         .await
         .unwrap()
@@ -527,7 +542,8 @@ async fn freshness_cancelled_permit_wait_has_source_zero_and_original_native_joi
     assert!(error.is::<ios_core::OperationCancelled>());
     drop(error);
     drop(held);
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
@@ -538,11 +554,13 @@ async fn freshness_pending_source_device_epoch_stop_preserves_original_row_until
     let source = FreshSource::new(route);
     source.script(Refresh::Pending);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut stop_input = state.prepare_cutover::<3>().unwrap();
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     let mut operation = Box::pin(refresh(&state, OBSERVE));
     assert!(futures_util::poll!(&mut operation).is_pending());
     assert_eq!(source.refresh_calls.load(Ordering::SeqCst), 1);
-    state.inner.lifecycle.stop(UID).await;
+    state.inner.lifecycle.stop(UID, &mut stop_input).await;
     let error = tokio::time::timeout(OBSERVE, operation)
         .await
         .unwrap()
@@ -550,7 +568,8 @@ async fn freshness_pending_source_device_epoch_stop_preserves_original_row_until
     assert!(error.is::<ios_core::OperationCancelled>());
     assert!(state.inner.tunnels.read().await[UID].is_alive());
     drop(error);
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
@@ -560,6 +579,7 @@ async fn freshness_pre_source_zero_quota_preserves_publication_and_original_nati
         ExistingRsdRoute::direct(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 12345, 0, 0)).unwrap();
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     let bank = state.inner.global_metadata_bytes.clone();
     let held = bank
@@ -576,7 +596,8 @@ async fn freshness_pre_source_zero_quota_preserves_publication_and_original_nati
     assert!(state.inner.tunnels.read().await[UID].is_alive());
     drop(error);
     drop(held);
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
@@ -585,6 +606,7 @@ async fn refresh_future_last_byte_constructor_refusal_keeps_original_catalogue_a
     let (route, peer) = directories(vec![10203]).await;
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     refresh(&state, OBSERVE).await.unwrap();
     tokio::time::timeout(OBSERVE, peer).await.unwrap().unwrap();
@@ -639,7 +661,8 @@ async fn refresh_future_last_byte_constructor_refusal_keeps_original_catalogue_a
     held.lock().unwrap().take();
     assert_eq!(bank.available_permits(), before);
     drop((publication, previous, native));
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
@@ -649,6 +672,9 @@ async fn freshness_ready_error_crossing_clear_keeps_original_before_any_cancelle
         ExistingRsdRoute::direct(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 12345, 0, 0)).unwrap();
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
+    let retained_clear = Arc::new(StdMutex::new(state.prepare_cutover::<2>().unwrap()));
+    let callback_clear = retained_clear.clone();
     fresh_publish(&state).await;
     let marker = Arc::new(43);
     source.script(Refresh::Failure {
@@ -657,7 +683,12 @@ async fn freshness_ready_error_crossing_clear_keeps_original_before_any_cancelle
         zero: true,
     });
     let clear = state.clone();
-    *source.ready.lock().unwrap() = Some(Box::new(move || clear.inner.lifecycle.clear()));
+    *source.ready.lock().unwrap() = Some(Box::new(move || {
+        clear
+            .inner
+            .lifecycle
+            .clear(&mut *callback_clear.lock().unwrap())
+    }));
     let error = refresh(&state, OBSERVE).await.unwrap_err();
     let failure = error.downcast_ref::<freshness::Failure>().unwrap();
     assert!(Arc::ptr_eq(
@@ -687,7 +718,8 @@ async fn freshness_ready_error_crossing_clear_keeps_original_before_any_cancelle
         ._fresh_metadata
         .is_none());
     drop(error);
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
@@ -696,6 +728,7 @@ async fn freshness_new_publication_during_source_refuses_old_proof_without_stopp
     let (route, peer) = directories(vec![10001]).await;
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     let old_publication = state.inner.tunnels.read().await[UID].publication.clone();
     let replacement = publication::Life::new(
@@ -726,7 +759,8 @@ async fn freshness_new_publication_during_source_refuses_old_proof_without_stopp
     assert_eq!(state.inner.native.snapshot().active, 1);
     tokio::time::timeout(OBSERVE, peer).await.unwrap().unwrap();
     drop((error, old_publication));
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
@@ -764,6 +798,7 @@ async fn freshness_revoked_manual_authority_cancels_pending_source_and_preserves
         source.clone(),
         OBSERVE,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     let deadline = lifecycle::ConnectionDeadline::new(OBSERVE).unwrap();
     let ticket = state.inner.lifecycle.ticket(UID).await.unwrap();
@@ -785,7 +820,8 @@ async fn freshness_revoked_manual_authority_cancels_pending_source_and_preserves
     drop(error);
     drop(serial);
     drop(ticket);
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
@@ -795,6 +831,7 @@ async fn freshness_source_receives_original_min_retry_candidate_whole_deadline()
         ExistingRsdRoute::direct(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 12345, 0, 0)).unwrap();
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     for retry_shorter in [false, true] {
         source.script(Refresh::Pending);
@@ -832,7 +869,8 @@ async fn freshness_source_receives_original_min_retry_candidate_whole_deadline()
         drop(serial);
         drop((ticket, control));
     }
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 #[test]
@@ -858,6 +896,11 @@ async fn freshness_current_owner_survives_either_table_removal_or_native_joins_u
         let (route, peer) = directories(vec![10001]).await;
         let source = FreshSource::new(route);
         let state = fresh_state(source.clone(), OBSERVE);
+        let mut first_clear = clear_first.then(|| state.prepare_cutover::<2>().unwrap());
+        let mut shutdown = (!clear_first).then(|| state.prepare_cutover::<1>().unwrap());
+        let mut last_clear = (!clear_first).then(|| state.prepare_cutover::<1>().unwrap());
+        let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+
         fresh_publish(&state).await;
         refresh(&state, OBSERVE).await.unwrap();
         let owner = state.inner.tunnels.read().await[UID]
@@ -871,7 +914,7 @@ async fn freshness_current_owner_survives_either_table_removal_or_native_joins_u
         let charged = publication.available_permits();
         let table_storage = state.inner.tunnels.read().await.owned_publication_bytes();
         if clear_first {
-            state.clear().await;
+            state.clear(first_clear.as_mut().unwrap()).await;
             assert!(
                 owner.upgrade().is_some(),
                 "fresh cache fees released before original native joins"
@@ -885,19 +928,21 @@ async fn freshness_current_owner_survives_either_table_removal_or_native_joins_u
             );
             state.drain_native(OBSERVE).await.unwrap();
         } else {
-            state.notify_shutdown();
+            state.notify_shutdown(shutdown.as_mut().unwrap());
             state.drain_native(OBSERVE).await.unwrap();
             assert!(
                 owner.upgrade().is_some(),
                 "fresh cache fees released while table still owns cache"
             );
             assert_eq!(publication.available_permits(), charged);
-            state.clear().await;
+            state.clear(last_clear.as_mut().unwrap()).await;
         }
+        drop((first_clear, shutdown, last_clear));
         assert!(owner.upgrade().is_none());
         assert!(source.base.handle().shutdown_status().is_ok());
         assert!(recovered(&source.base, expected).await);
-        state.notify_shutdown();
+        state.notify_shutdown(&mut prepared_outer_0);
+        drop(prepared_outer_0);
         drop(state);
         drop(source);
         let body = freshness::MetadataOwner::body_bytes();
@@ -928,6 +973,7 @@ async fn freshness_census_backing_refusal_preserves_original_roots_and_marks_att
         ExistingRsdRoute::direct(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 12345, 0, 0)).unwrap();
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     let marker = Arc::new(44);
     source.script(Refresh::Failure {
@@ -972,7 +1018,8 @@ async fn freshness_census_backing_refusal_preserves_original_roots_and_marks_att
     )));
     assert!(bank.available_permits() > 0);
     drop((roots, error));
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 struct OriginalRefresh {
@@ -1099,6 +1146,7 @@ async fn freshness_successful_source_publication_peak_one_byte_refusal_preserves
     let (route, peer) = directories(vec![10001, 10002]).await;
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     refresh(&state, OBSERVE).await.unwrap();
     let original = OriginalRefresh::capture(&state).await;
@@ -1166,7 +1214,8 @@ async fn freshness_successful_source_publication_peak_one_byte_refusal_preserves
     assert_eq!(publication.available_permits(), before_publication);
     tokio::time::timeout(OBSERVE, peer).await.unwrap().unwrap();
     drop(original);
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     drop(state);
     drop(source);
     assert_eq!(global.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
@@ -1213,6 +1262,7 @@ async fn freshness_wrong_uid_and_missing_required_wire_fields_never_publish_part
         let (route, peer) = directory_messages(vec![directory(10001), invalid]).await;
         let source = FreshSource::new(route);
         let state = fresh_state(source.clone(), OBSERVE);
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         fresh_publish(&state).await;
         refresh(&state, OBSERVE).await.unwrap();
         let original = OriginalRefresh::capture(&state).await;
@@ -1284,7 +1334,8 @@ async fn freshness_wrong_uid_and_missing_required_wire_fields_never_publish_part
         tokio::time::timeout(OBSERVE, peer).await.unwrap().unwrap();
         drop(error);
         drop(original);
-        fresh_finish(&state, &source, expected).await;
+        fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+        drop(terminal_inputs);
         drop(state);
         drop(source);
         assert_eq!(global.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
@@ -1301,6 +1352,7 @@ async fn freshness_independent_first_latest_io_reports_survive_successful_regist
     let (route, peer) = directories(vec![10001, 10002]).await;
     let source = FreshSource::new(route);
     let state = fresh_state(source.clone(), OBSERVE);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     fresh_publish(&state).await;
     refresh(&state, OBSERVE).await.unwrap();
     let original = OriginalRefresh::capture(&state).await;
@@ -1439,7 +1491,8 @@ async fn freshness_independent_first_latest_io_reports_survive_successful_regist
     assert_eq!(source.refresh_calls.load(Ordering::SeqCst), 4);
     tokio::time::timeout(OBSERVE, peer).await.unwrap().unwrap();
     drop(original);
-    fresh_finish(&state, &source, expected).await;
+    fresh_finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     drop(state);
     drop(source);
     assert_eq!(global.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);

@@ -63,10 +63,13 @@ async fn lifecycle_tunnel_discovery_stop_cancels_old_usb_probe_before_reply() {
     let source = FakeSource::new();
     *source.usb_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     assert_eq!(source.usb_active.load(Ordering::SeqCst), 1);
-    assert!(!state.remove_tunnel(A).await);
+    assert!(!state.remove_tunnel(A, &mut stop_input_0).await);
+    drop(stop_input_0);
     let observed = tokio::time::timeout(Duration::from_millis(50), scan.as_mut()).await;
     drop(scan);
     assert_eq!(source.usb_active.load(Ordering::SeqCst), 0);
@@ -84,10 +87,13 @@ async fn lifecycle_tunnel_discovery_clear_cancels_old_paired_probe_and_retains_n
     let source = FakeSource::new();
     *source.paired_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     assert_eq!(source.paired_active.load(Ordering::SeqCst), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     let observed = tokio::time::timeout(Duration::from_millis(50), scan.as_mut()).await;
     drop(scan);
     assert_eq!(source.paired_active.load(Ordering::SeqCst), 0);
@@ -134,10 +140,13 @@ async fn lifecycle_tunnel_discovery_overflow_rejects_before_source_or_ready() {
 async fn lifecycle_tunnel_discovery_stop_cancels_queued_scan_without_source_poll() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
     let serial = state.inner.scan_lock.lock().await;
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
-    assert!(!state.remove_tunnel(A).await);
+    assert!(!state.remove_tunnel(A, &mut stop_input_0).await);
+    drop(stop_input_0);
     let observed = tokio::time::timeout(Duration::from_millis(50), scan.as_mut()).await;
     drop(scan);
     drop(serial);

@@ -64,6 +64,8 @@ fn failure_slot_body_exact_closed_pools_parallel_last_roots_return_one_count_and
 async fn failure_slot_body_actual_manager_reuses_original_receipt_slot_at_closed_zero_bytes() {
     use super::super::{reconnect::SourceFailure, AttemptIdentity, Route, TunnelAgentState};
     let state = TunnelAgentState::new(ios_core::TunMode::Userspace);
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     let bytes = state.inner.global_metadata_bytes.clone();
     let counts = state.inner.failure_slots.clone();
     let key = "original-count-slot-fixture";
@@ -105,8 +107,9 @@ async fn failure_slot_body_actual_manager_reuses_original_receipt_slot_at_closed
         counts.available_permits(),
         super::super::MAX_FAILURE_RECORDS - 1
     );
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
     assert_eq!(
         receipt.primary().downcast_ref::<std::io::Error>().unwrap() as *const _ as usize,
         pointer

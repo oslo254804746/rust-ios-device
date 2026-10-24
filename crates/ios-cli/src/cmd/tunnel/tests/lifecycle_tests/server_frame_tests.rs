@@ -135,18 +135,28 @@ async fn server_frame_exact_unpolled_original_signal_ends_before_fee_without_sta
     let polls = signal.polls.clone();
     let drops = signal.drops.clone();
     let frame = server::frame_bytes(&signal);
+    let markers = 4 * ControlIdentity::body_bytes();
     let held = bank
         .clone()
-        .try_acquire_many_owned((bank.available_permits() - frame) as u32)
+        .try_acquire_many_owned((bank.available_permits() - frame - markers) as u32)
         .unwrap();
     let observed_bank = bank.clone();
     let range = signal.range.clone();
+    let allocations = Arc::new(AtomicUsize::new(0));
+    let observed = allocations.clone();
     let hook = metadata_vec::on_allocation(move |layout, pointer| {
-        assert_eq!(layout.size(), frame);
-        assert_eq!(layout.align(), 64);
-        assert_eq!(pointer % 64, 0);
-        assert_eq!(observed_bank.available_permits(), 0);
-        *range.lock().unwrap() = (pointer, frame);
+        let allocation = observed.fetch_add(1, Ordering::SeqCst);
+        if allocation == 0 {
+            assert_eq!(layout.size(), frame);
+            assert_eq!(layout.align(), 64);
+            assert_eq!(pointer % 64, 0);
+            assert_eq!(observed_bank.available_permits(), markers);
+            *range.lock().unwrap() = (pointer, frame);
+        } else {
+            assert!(allocation <= 4);
+            assert_eq!(layout.size(), ControlIdentity::body_bytes());
+            assert_eq!(observed_bank.available_permits(), 0);
+        }
     });
     let (listener, port) = listener().await;
     let prepared = server::prepare(
@@ -159,12 +169,13 @@ async fn server_frame_exact_unpolled_original_signal_ends_before_fee_without_sta
     )
     .unwrap();
     drop(hook);
+    assert_eq!(allocations.load(Ordering::SeqCst), 5);
     bank.close();
     assert_eq!(bank.available_permits(), 0);
     drop(prepared);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     assert_eq!(polls.load(Ordering::SeqCst), 0);
-    assert_eq!(bank.available_permits(), frame);
+    assert_eq!(bank.available_permits(), frame + markers);
     assert!(!*state.inner.shutdown.borrow());
     assert!(state.inner.lifecycle.global_epoch().is_ok());
     no_source(&source);
@@ -183,15 +194,27 @@ async fn server_frame_pins_generic_signal_in_same_paid_allocation_at_closed_zero
     let polls = signal.polls.clone();
     let drops = signal.drops.clone();
     let frame = server::frame_bytes(&signal);
+    let markers = 4 * ControlIdentity::body_bytes();
     let held = bank
         .clone()
-        .try_acquire_many_owned((bank.available_permits() - frame) as u32)
+        .try_acquire_many_owned((bank.available_permits() - frame - markers) as u32)
         .unwrap();
     let range = signal.range.clone();
+    let allocations = Arc::new(AtomicUsize::new(0));
+    let observed = allocations.clone();
+    let observed_bank = bank.clone();
     let hook = metadata_vec::on_allocation(move |layout, pointer| {
-        assert_eq!(layout.size(), frame);
-        assert_eq!(layout.align(), 64);
-        *range.lock().unwrap() = (pointer, frame);
+        let allocation = observed.fetch_add(1, Ordering::SeqCst);
+        if allocation == 0 {
+            assert_eq!(layout.size(), frame);
+            assert_eq!(layout.align(), 64);
+            assert_eq!(observed_bank.available_permits(), markers);
+            *range.lock().unwrap() = (pointer, frame);
+        } else {
+            assert!(allocation <= 4);
+            assert_eq!(layout.size(), ControlIdentity::body_bytes());
+            assert_eq!(observed_bank.available_permits(), 0);
+        }
     });
     let (listener, port) = listener().await;
     let prepared = server::prepare(
@@ -204,6 +227,7 @@ async fn server_frame_pins_generic_signal_in_same_paid_allocation_at_closed_zero
     )
     .unwrap();
     drop(hook);
+    assert_eq!(allocations.load(Ordering::SeqCst), 5);
     bank.close();
     let hook = metadata_vec::on_allocation(|_, _| panic!("late allocation at closed zero"));
     let mut running = Box::pin(prepared);
@@ -215,7 +239,11 @@ async fn server_frame_pins_generic_signal_in_same_paid_allocation_at_closed_zero
     drop(running);
     drop(hook);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
-    assert_eq!(bank.available_permits(), frame);
+    // Initial global+scan (2M) end; terminal state retains one new scan (M).
+    assert_eq!(
+        bank.available_permits(),
+        frame + markers + ControlIdentity::body_bytes()
+    );
     assert!(*state.inner.shutdown.borrow());
     assert!(state.inner.lifecycle.global_epoch().is_err());
     assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err());
@@ -240,6 +268,7 @@ async fn server_frame_actual_active_scanner_drop_releases_nested_source_before_p
     let before = bank.available_permits();
     let signal = std::future::pending::<std::io::Result<()>>();
     let frame = server::frame_bytes(&signal);
+    let markers = 4 * ControlIdentity::body_bytes();
     let observed_bank = bank.clone();
     let first = Arc::new(AtomicBool::new(false));
     let observed = first.clone();
@@ -261,6 +290,7 @@ async fn server_frame_actual_active_scanner_drop_releases_nested_source_before_p
     .unwrap();
     drop(hook);
     assert!(first.load(Ordering::SeqCst));
+    assert_eq!(bank.available_permits(), before - frame - markers);
     let mut running = Box::pin(prepared);
     tokio::time::timeout(LOCAL_BUDGET, async {
         while source.active.load(Ordering::SeqCst) == 0 {
@@ -278,7 +308,7 @@ async fn server_frame_actual_active_scanner_drop_releases_nested_source_before_p
     assert!(state.inner.scan_lock.try_lock().is_ok());
     assert_eq!(
         bank.available_permits(),
-        before - Lifecycle::initial_metadata_bytes(A)
+        before - Lifecycle::initial_metadata_bytes(A) - 2 * ControlIdentity::body_bytes()
     );
     assert!(*state.inner.shutdown.borrow());
     drop(state);
@@ -305,6 +335,7 @@ async fn server_frame_signal_ready_original_io_survives_closed_zero_cleanup_and_
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
     let bank = state.inner.global_metadata_bytes.clone();
+    let before = bank.available_permits();
     let held = Arc::new(StdMutex::new(None));
     let observed = held.clone();
     let observed_bank = bank.clone();
@@ -329,6 +360,7 @@ async fn server_frame_signal_ready_original_io_survives_closed_zero_cleanup_and_
         Poll::Ready(Err(original.take().expect("one signal result")))
     });
     let frame = server::frame_bytes(&signal);
+    let markers = 4 * ControlIdentity::body_bytes();
     let (listener, _) = listener().await;
     let prepared = server::prepare(
         listener,
@@ -339,6 +371,7 @@ async fn server_frame_signal_ready_original_io_survives_closed_zero_cleanup_and_
         signal,
     )
     .unwrap();
+    assert_eq!(bank.available_permits(), before - frame - markers);
     let error = tokio::time::timeout(LOCAL_BUDGET, prepared)
         .await
         .unwrap()
@@ -348,7 +381,11 @@ async fn server_frame_signal_ready_original_io_survives_closed_zero_cleanup_and_
     let cause = io.get_ref().unwrap().downcast_ref::<SignalCause>().unwrap();
     assert_eq!(cause as *const SignalCause, pointer);
     assert_eq!(cause.0, [1, 2, 3]);
-    assert_eq!(bank.available_permits(), frame);
+    // The original two initial markers become the terminal one-scan state.
+    assert_eq!(
+        bank.available_permits(),
+        frame + markers + ControlIdentity::body_bytes()
+    );
     no_source(&source);
     drop(error);
     drop(held.lock().unwrap().take());

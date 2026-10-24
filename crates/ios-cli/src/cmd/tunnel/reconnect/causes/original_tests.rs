@@ -144,6 +144,9 @@ async fn original_capsule_real_ledger_prepays_whole_control_block_and_captures_s
     let bank = Arc::new(Semaphore::new(total));
     let ledger = Ledger::with_metadata(RetryPolicy::default(), bank.clone()).unwrap();
     let lifecycle = Lifecycle::new();
+    let mut clear = lifecycle
+        .prepare_cutover::<2>(lifecycle.byte_bank())
+        .unwrap();
     let ticket = lifecycle.ticket(key).await.unwrap();
     let admitted =
         Slot::reserve(&crate::cmd::tunnel::failure_slot::Counts::fixture(1), &bank).unwrap();
@@ -218,7 +221,8 @@ async fn original_capsule_real_ledger_prepays_whole_control_block_and_captures_s
     );
     attempt.finish(&result);
     ledger.close();
-    lifecycle.clear();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     drop(ledger.take_retired_causes());
     drop((ledger, ticket, lifecycle, result));
     assert!(bank.available_permits() < total);

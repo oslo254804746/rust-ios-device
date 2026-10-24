@@ -4,6 +4,9 @@ use super::*;
 async fn publication_ticket_actual_manager_refusal_is_before_source_and_keeps_original_empty_row() {
     let source = FakeSource::new();
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut prepared_setup_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_setup_1 = state.prepare_cutover::<1>().unwrap();
+
     let global = state.inner.global_metadata_bytes.clone();
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let probe_p = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
@@ -35,8 +38,10 @@ async fn publication_ticket_actual_manager_refusal_is_before_source_and_keeps_or
     assert!(state.inner.tunnels.read().await.is_empty());
     assert_eq!(state.inner.native.snapshot().occupied(), 0);
     assert_eq!(state.inner.retry.receipt_count(), 0);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_setup_0);
+    drop(prepared_setup_0);
+    state.clear(&mut prepared_setup_1).await;
+    drop(prepared_setup_1);
     drop((ticket, state));
     assert_eq!(published.available_permits(), total);
     assert_eq!(global.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
@@ -48,6 +53,9 @@ async fn publication_ticket_actual_manager_preserves_captured_ticket_through_cle
     let source = FakeSource::new();
     source.script(A, [Behavior::Success]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let global = state.inner.global_metadata_bytes.clone();
     let published = state.inner.metadata_bytes.clone();
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
@@ -62,11 +70,13 @@ async fn publication_ticket_actual_manager_preserves_captured_ticket_through_cle
         (row._ticket.clone(), row._ticket.udid().as_ptr())
     };
     assert_eq!(source.count(A), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     assert_eq!(root.udid().as_ptr(), key);
     assert!(!root.is_current());
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_1);
+    drop(control_input_1);
     drop((ticket, state));
     assert_eq!(
         published.available_permits(),

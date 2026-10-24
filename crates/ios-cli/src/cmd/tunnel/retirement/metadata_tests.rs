@@ -1,5 +1,10 @@
 use super::*;
 
+fn stamp(registry: &RegistryOwner) -> OwnershipStamp {
+    let mut births = registry.prepare_births::<2>(&registry.byte_bank()).unwrap();
+    OwnershipStamp::standalone(registry, &mut births)
+}
+
 #[test]
 fn registry_owner_closed_pool_parallel_last_roots_keep_original_body_slots_and_refund_once() {
     let total = 65536;
@@ -92,15 +97,14 @@ fn registry_metadata_original_reservation_keeps_structural_bytes_after_external_
     let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
     let bank = bank_birth.raw().clone();
     let registry = Registry::allocate(&bank_birth, 1).unwrap();
+    let prepared_stamp_0 = stamp(&registry);
     let bytes = registry.structural_bytes();
-    let reservation = registry
-        .reserve(OwnershipStamp::standalone(&registry))
-        .unwrap();
+    let reservation = registry.reserve(prepared_stamp_0).unwrap();
     assert_eq!(registry.snapshot().reserved, 1);
     drop(registry);
     assert_eq!(
         bank.available_permits(),
-        65536 - bytes - Registry::incarnation_bytes()
+        65536 - bytes - Registry::incarnation_bytes() - 2 * ControlIdentity::body_bytes()
     );
     drop(reservation);
     assert_eq!(bank.available_permits(), 65536);
@@ -139,6 +143,8 @@ fn incarnation_whole_original_body_precedes_slot_and_ordinal_and_survives_empty_
     let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
     let registry = Registry::allocate(&bank_birth, 1).unwrap();
+    let prepared_stamp_0 = stamp(&registry);
+    let prepared_stamp_1 = stamp(&registry);
     let structural = registry.structural_bytes();
     let before = bank.available_permits();
     let bytes = Registry::incarnation_bytes();
@@ -156,12 +162,7 @@ fn incarnation_whole_original_body_precedes_slot_and_ordinal_and_survives_empty_
             .unwrap();
         let error = super::super::metadata_vec::with_allocation_hook(
             |_, _| panic!("incarnation quota refusal allocated a backing"),
-            || {
-                registry
-                    .reserve(OwnershipStamp::standalone(&registry))
-                    .err()
-                    .unwrap()
-            },
+            || registry.reserve(prepared_stamp_0.clone()).err().unwrap(),
         );
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
@@ -188,11 +189,7 @@ fn incarnation_whole_original_body_precedes_slot_and_ordinal_and_survives_empty_
             assert_eq!(charged.available_permits(), 0);
             captured.lock().unwrap().push((layout, pointer));
         },
-        || {
-            registry
-                .reserve(OwnershipStamp::standalone(&registry))
-                .unwrap()
-        },
+        || registry.reserve(prepared_stamp_1.clone()).unwrap(),
     );
     let key = reservation.key.as_ref().unwrap().clone();
     let allocations = allocations.lock().unwrap();
@@ -232,6 +229,7 @@ fn incarnation_whole_original_body_precedes_slot_and_ordinal_and_survives_empty_
     );
     drop(key);
     assert_eq!(bank.available_permits(), bytes);
+    drop((prepared_stamp_0, prepared_stamp_1));
     drop(held);
     assert_eq!(bank.available_permits(), total - structural);
     drop(registry);
@@ -244,10 +242,9 @@ fn incarnation_closed_pool_parallel_last_keys_keep_original_body_and_refund_once
     let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
     let registry = Registry::allocate(&bank_birth, 1).unwrap();
+    let prepared_stamp_0 = stamp(&registry);
     let structural = registry.structural_bytes();
-    let reservation = registry
-        .reserve(OwnershipStamp::standalone(&registry))
-        .unwrap();
+    let reservation = registry.reserve(prepared_stamp_0).unwrap();
     let key = reservation.key.as_ref().unwrap().clone();
     let bytes = Registry::incarnation_bytes();
     let pointer = &*key.incarnation as *const () as usize;

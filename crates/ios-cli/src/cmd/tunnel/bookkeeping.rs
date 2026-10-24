@@ -1,6 +1,7 @@
 //! Bounded failure writes and contested success cleanup after the scan window.
 use super::failure_table::{Destination, OwnedNode, RemovedBatch, Table};
 use super::lifecycle::{CapturedVersion, TicketOwner};
+use super::marker_identity::{PhysicalKeepAlive, ReleaseMarkers};
 use super::ControlIdentity;
 use super::{FailureVersion, Ticket, TunnelAgentState};
 use std::sync::Arc;
@@ -237,6 +238,9 @@ pub(super) struct WriteBatch {
     intents: KnownVec<ScanIntent>,
     displaced: RemovedBatch,
     destination: Option<Destination>,
+    // Two stamp replacements plus the observed desired field in a failed
+    // insert/rollback. Actual backing is admitted before any Source result.
+    releases: KnownVec<PhysicalKeepAlive>,
 }
 
 impl WriteBatch {
@@ -293,6 +297,8 @@ impl WriteBatch {
         intents.reserve(capacity)?;
         let mut receipts = KnownVec::new(Arc::clone(bank), receipt_capacity);
         receipts.reserve(receipt_capacity)?;
+        let mut releases = KnownVec::new(Arc::clone(bank), 3 * super::MAX_FAILURE_RECORDS);
+        releases.reserve(3 * capacity)?;
         Ok(Self {
             owner: WriteOwner::from_grant(
                 FailureWriteOwner {
@@ -309,6 +315,7 @@ impl WriteBatch {
             intents,
             displaced: RemovedBatch::default(),
             destination,
+            releases,
         })
     }
 
@@ -343,6 +350,7 @@ impl WriteBatch {
         FailureWriteOwner::body_bytes()
             + std::mem::size_of::<ReceiptPayload>()
             + capacity * std::mem::size_of::<ScanIntent>()
+            + 3 * capacity * std::mem::size_of::<PhysicalKeepAlive>()
     }
 
     #[cfg(test)]
@@ -351,7 +359,8 @@ impl WriteBatch {
             + std::mem::size_of::<ReceiptPayload>()
             + capacity
                 * (std::mem::size_of::<ScanIntent>()
-                    + std::mem::size_of::<super::reconnect::Receipt>())
+                    + std::mem::size_of::<super::reconnect::Receipt>()
+                    + 3 * std::mem::size_of::<PhysicalKeepAlive>())
             + if capacity == 0 {
                 0
             } else {
@@ -471,8 +480,16 @@ impl TunnelAgentState {
         success: &DeferredSuccess,
         ticket: &Ticket,
         deadline: &super::lifecycle::ConnectionDeadline,
+        releases: &mut impl ReleaseMarkers,
     ) -> Result<Option<OwnedNode>> {
-        self.remove_success_row_authorized(failed, udid, success, ticket, deadline, None)
+        self.remove_success_row_authorized(
+            failed,
+            udid,
+            success,
+            ticket,
+            deadline,
+            (None, releases),
+        )
     }
 
     fn remove_success_row_authorized(
@@ -482,8 +499,12 @@ impl TunnelAgentState {
         success: &DeferredSuccess,
         ticket: &Ticket,
         deadline: &super::lifecycle::ConnectionDeadline,
-        authority: Option<&crate::access::DeviceAuthority>,
+        context: (
+            Option<&crate::access::DeviceAuthority>,
+            &mut impl ReleaseMarkers,
+        ),
     ) -> Result<Option<OwnedNode>> {
+        let (authority, releases) = context;
         if !failed
             .get(udid)
             .is_some_and(|old| FailureVersion::ptr_eq(&old.version, &success.version))
@@ -504,7 +525,7 @@ impl TunnelAgentState {
                 authority.check_clock()?;
             }
             let old = failed.remove(udid);
-            ticket.clear_failure_version(&success.version);
+            ticket.clear_failure_version(&success.version, releases);
             #[cfg(test)]
             {
                 let callback = self.inner.success_after_remove.lock().unwrap().take();
@@ -519,7 +540,7 @@ impl TunnelAgentState {
                 if let Some(old) = old {
                     failed.restore(old);
                 }
-                ticket.restore_failure_stamp(failure_stamp);
+                ticket.restore_failure_stamp(failure_stamp, releases);
                 return Err(error);
             }
             Ok(old)
@@ -574,6 +595,7 @@ impl TunnelAgentState {
             intents,
             mut displaced,
             destination,
+            mut releases,
         } = batch;
         if intents.len() == 0 {
             return owner.finish(Ok(()));
@@ -610,6 +632,7 @@ impl TunnelAgentState {
                                         &intent.success,
                                         &intent.ticket,
                                         &deadline,
+                                        &mut releases,
                                     ),
                                     SuccessKey::Coordinator { desired, authority } => {
                                         if !authority.current()
@@ -628,7 +651,7 @@ impl TunnelAgentState {
                                                 &intent.success,
                                                 &intent.ticket,
                                                 &deadline,
-                                                Some(authority),
+                                                (Some(authority), &mut releases),
                                             )
                                         })
                                     }
@@ -669,7 +692,7 @@ impl TunnelAgentState {
                                     }
                                     let version = next.row.version.clone();
                                     let change = failed.insert_reserved(next);
-                                    intent.ticket.remember_failure(Some(version));
+                                    intent.ticket.remember_failure(Some(version), &mut releases);
                                     #[cfg(test)]
                                     {
                                         let callback =
@@ -682,7 +705,9 @@ impl TunnelAgentState {
                                         // This row is unobserved under both table and
                                         // ticket guards. Restore the exact old value.
                                         displaced.push(failed.rollback(change));
-                                        intent.ticket.restore_failure_stamp(failure_stamp);
+                                        intent
+                                            .ticket
+                                            .restore_failure_stamp(failure_stamp, &mut releases);
                                         return Err(error);
                                     }
                                     if let Some(old) = Table::commit(change) {

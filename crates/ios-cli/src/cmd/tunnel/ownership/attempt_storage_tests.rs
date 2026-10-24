@@ -80,7 +80,7 @@ fn attempt_storage_prepaid_first_uses_exact_original_box_at_closed_zero_then_ref
     drop(scope);
     assert_eq!(
         bank.available_permits(),
-        bytes + Registry::incarnation_bytes()
+        bytes + Registry::incarnation_bytes() + 2 * super::super::ControlIdentity::body_bytes()
     );
     drop(held);
     drop(registry);
@@ -153,7 +153,10 @@ fn attempt_storage_legacy_original_box_keeps_fee_in_borrowed_scope_until_scope_d
     let root_bytes = LegacyStorageOwner::allocation_bytes();
     assert_eq!(
         bank.available_permits(),
-        baseline - 2 * (bytes + Registry::incarnation_bytes()) - root_bytes
+        baseline
+            - 2 * (bytes + Registry::incarnation_bytes())
+            - root_bytes
+            - 2 * super::super::ControlIdentity::body_bytes()
     );
     assert_eq!(
         scope
@@ -189,7 +192,10 @@ fn attempt_storage_legacy_original_box_keeps_fee_in_borrowed_scope_until_scope_d
         1
     );
     assert_eq!(registry.snapshot().occupied(), 0);
-    assert_eq!(bank.available_permits(), baseline - 2 * bytes - root_bytes);
+    assert_eq!(
+        bank.available_permits(),
+        baseline - 2 * bytes - root_bytes - 2 * super::super::ControlIdentity::body_bytes()
+    );
     bank.close();
     drop(scope);
     assert_eq!(bank.available_permits(), baseline);
@@ -228,6 +234,7 @@ async fn attempt_storage_ticket_first_admission_and_stale_reserve_keep_original_
     ticket.commit(|| Ok(())).unwrap();
     drop(_hook);
     drop(held);
+    let mut close = lifecycle.prepare_cutover::<1>(&bank).unwrap();
     let scope = Ownership::admitted(registry.clone(), &ticket).unwrap();
     let pointer = scope
         .initial_attempt
@@ -237,7 +244,8 @@ async fn attempt_storage_ticket_first_admission_and_stale_reserve_keep_original_
         .unwrap()
         .values
         .as_ptr() as usize;
-    lifecycle.close();
+    lifecycle.close(&mut close);
+    drop(close);
     let held = bank
         .clone()
         .try_acquire_many_owned(bank.available_permits() as u32)

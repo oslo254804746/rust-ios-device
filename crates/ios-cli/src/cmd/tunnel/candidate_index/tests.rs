@@ -4,6 +4,7 @@ use super::*;
 fn admitted(data: (String, Route, Ticket, Option<u32>)) -> Candidate {
     let (udid, route, ticket, native_id) = data;
     let bank = Arc::new(Semaphore::new(64 * 1024));
+    let control = ticket.prepare_manual_births::<3>(&bank).unwrap();
     let input = super::super::candidate_input::Input::owned(udid, route, &bank).unwrap();
     let node = super::super::failure_table::Node::input(input.clone(), native_id, &bank).unwrap();
     Candidate {
@@ -11,6 +12,7 @@ fn admitted(data: (String, Route, Ticket, Option<u32>)) -> Candidate {
         ticket: TicketOwner::new(&ticket, &bank).unwrap(),
         native_id,
         node,
+        control,
     }
 }
 

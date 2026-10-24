@@ -198,6 +198,15 @@ async fn upgrade_epoch_pending_original_sink_is_destroyed_and_refunded_on_stop_c
             .await
             .unwrap()
             .for_connection();
+        let mut stop = lifecycle
+            .prepare_cutover::<3>(lifecycle.byte_bank())
+            .unwrap();
+        let mut clear = lifecycle
+            .prepare_cutover::<2>(lifecycle.byte_bank())
+            .unwrap();
+        let mut close = lifecycle
+            .prepare_cutover::<1>(lifecycle.byte_bank())
+            .unwrap();
         let bank = Arc::new(Semaphore::new(4));
         let fixture = setup(Mode::Shared, &bank);
         let drops = fixture.drops.clone();
@@ -214,9 +223,9 @@ async fn upgrade_epoch_pending_original_sink_is_destroyed_and_refunded_on_stop_c
         assert!(poll(operation.as_mut()).is_pending());
         assert_eq!(bank.available_permits(), 0);
         match action {
-            0 => lifecycle.stop("original-A").await,
-            1 => lifecycle.clear(),
-            _ => lifecycle.close(),
+            0 => lifecycle.stop("original-A", &mut stop).await,
+            1 => lifecycle.clear(&mut clear),
+            _ => lifecycle.close(&mut close),
         }
         let error = operation.await.err().unwrap();
         assert!(error.is::<ios_core::OperationCancelled>());
@@ -236,6 +245,9 @@ async fn upgrade_epoch_original_ready_payload_error_crossing_clear_keeps_typed_p
         .unwrap()
         .for_connection();
     let bank = Arc::new(Semaphore::new(4));
+    let mut clear = lifecycle
+        .prepare_cutover::<2>(lifecycle.byte_bank())
+        .unwrap();
     let fixture = setup(Mode::FlushError, &bank);
     let pointer = fixture.error_pointer.clone();
     let drops = fixture.drops.clone();
@@ -247,7 +259,7 @@ async fn upgrade_epoch_original_ready_payload_error_crossing_clear_keeps_typed_p
                 binary(sink, pending, b"data", &bank).await
             };
             let completion = endpoints.finish(result);
-            lifecycle.clear();
+            lifecycle.clear(&mut clear);
             Ok(completion)
         })
         .await

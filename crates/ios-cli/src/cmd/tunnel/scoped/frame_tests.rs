@@ -294,11 +294,16 @@ async fn foreground_frame_concrete_aligned_pending_connector_stays_inside_same_p
     );
     assert!(
         probe.drop_credit.load(Ordering::SeqCst)
-            <= Ownership::attempt_bytes() + Registry::incarnation_bytes()
+            <= Ownership::attempt_bytes()
+                + Registry::incarnation_bytes()
+                + 2 * super::super::ControlIdentity::body_bytes()
     );
     assert_eq!(
         probe.bank.available_permits(),
-        bytes + Ownership::attempt_bytes() + Registry::incarnation_bytes()
+        bytes
+            + Ownership::attempt_bytes()
+            + Registry::incarnation_bytes()
+            + 2 * super::super::ControlIdentity::body_bytes()
     );
     assert_eq!(scope.0.connections.available_permits(), 4);
     assert_eq!(scope.0.registry.snapshot().occupied(), 0);
@@ -349,7 +354,10 @@ async fn foreground_frame_caller_drop_retires_original_native_at_closed_zero_bef
     strict_eof_and_baseline(&mut peer, expected).await;
     assert_eq!(
         probe.bank.available_permits(),
-        bytes + Ownership::attempt_bytes() + Registry::incarnation_bytes()
+        bytes
+            + Ownership::attempt_bytes()
+            + Registry::incarnation_bytes()
+            + 2 * super::super::ControlIdentity::body_bytes()
     );
     drop(held);
     drop(scope);
@@ -378,7 +386,7 @@ async fn foreground_frame_success_keeps_exact_runtime_lease_and_output_permit_un
     assert_eq!(scope.0.connections.available_permits(), 3);
     assert_eq!(
         probe.bank.available_permits(),
-        before - Registry::incarnation_bytes()
+        before - Registry::incarnation_bytes() - 2 * super::super::ControlIdentity::body_bytes()
     );
     assert_eq!(scope.0.registry.snapshot().unpublished, 1);
     scope.close(OBSERVE).await.unwrap();

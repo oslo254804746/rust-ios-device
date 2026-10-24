@@ -15,6 +15,9 @@ async fn websocket_owner_one_byte_refusal_precedes_locked_local_lookup_and_remot
     for remote in [false, true] {
         let source = FakeSource::new();
         let state = state(source.clone(), LOCAL_BUDGET);
+        let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+        let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
         let url = format!("http://127.0.0.1:{leaf_port}/");
         state
             .inner
@@ -94,8 +97,10 @@ async fn websocket_owner_one_byte_refusal_precedes_locked_local_lookup_and_remot
         .unwrap();
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
-        state.notify_shutdown();
-        state.clear().await;
+        state.notify_shutdown(&mut control_input_0);
+        drop(control_input_0);
+        state.clear(&mut control_input_1).await;
+        drop(control_input_1);
         state.drain_native(LOCAL_BUDGET).await.unwrap();
         drop(state);
         // Aborting the listener is not a join of Hyper's accepted connection.

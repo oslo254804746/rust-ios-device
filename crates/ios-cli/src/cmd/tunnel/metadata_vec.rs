@@ -34,11 +34,37 @@ pub(super) fn from_grant<T>(
     allocate_backing(capacity, layout, storage)
 }
 
+/// The caller retains the authentic grant across allocation refusal/unwind.
+/// This lets an outer transaction refund only after its enclosing guards end.
+pub(super) fn from_borrowed_grant<T>(
+    bank: &Arc<Semaphore>,
+    capacity: usize,
+    storage: &mut Option<OwnedSemaphorePermit>,
+) -> Result<AdmittedVec<T>> {
+    let layout = Layout::array::<T>(capacity)
+        .map_err(|_| crate::output::resource_decision("tunnel owned vector layout overflow"))?;
+    let grant = storage.as_ref().expect("original pending vector grant");
+    anyhow::ensure!(
+        Arc::ptr_eq(grant.semaphore(), bank) && grant.num_permits() == layout.size(),
+        crate::output::resource_decision("tunnel prepaid vector grant mismatch")
+    );
+    let values = allocate_values(capacity, layout)?;
+    Ok(AdmittedVec {
+        values,
+        storage: storage.take().expect("successful original vector grant"),
+    })
+}
+
 fn allocate_backing<T>(
     capacity: usize,
     layout: Layout,
     storage: OwnedSemaphorePermit,
 ) -> Result<AdmittedVec<T>> {
+    let values = allocate_values(capacity, layout)?;
+    Ok(AdmittedVec { values, storage })
+}
+
+fn allocate_values<T>(capacity: usize, layout: Layout) -> Result<Vec<T>> {
     #[cfg(test)]
     if layout.size() != 0
         && REFUSE_ALLOCATION.with(|hook| {
@@ -69,7 +95,7 @@ fn allocate_backing<T>(
             }
         });
     }
-    Ok(AdmittedVec { values, storage })
+    Ok(values)
 }
 
 #[cfg(test)]

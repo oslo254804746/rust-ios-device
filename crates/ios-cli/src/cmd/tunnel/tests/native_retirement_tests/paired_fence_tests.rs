@@ -72,6 +72,8 @@ async fn exercise(terminal: bool, failure: bool) -> Result<()> {
         source.clone(),
         OBSERVE,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
+    let mut signal_input = PreparedSignal::new(&state, terminal);
     publish(&state, Route::Wifi(None)).await.unwrap();
     let native = base.handle();
     let control = state.clone();
@@ -81,14 +83,10 @@ async fn exercise(terminal: bool, failure: bool) -> Result<()> {
         // The first epoch check has passed and no watch/table/hook guard is held.
         // Poll actual clear to completion on these uncontended metadata locks.
         // No alternative clear implementation or synthetic error is used.
-        if terminal {
-            control.notify_shutdown();
-        } else {
-            control
-                .clear()
-                .now_or_never()
-                .expect("actual clear completes without a held metadata lock");
-        }
+        signal_input
+            .notify_or_clear(&control)
+            .now_or_never()
+            .expect("actual clear completes without a held metadata lock");
         observed.fetch_add(1, Ordering::SeqCst);
     }));
     let result = state.refresh_once().await;
@@ -102,7 +100,8 @@ async fn exercise(terminal: bool, failure: bool) -> Result<()> {
     // Break the test-only one-shot state cycle even on unexpected early return.
     let unused = state.inner.paired_after_first_check.lock().unwrap().take();
     drop(unused);
-    let recovery = finish(&state, &base, expected).await;
+    let recovery = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(recovery && native.shutdown_status().is_ok());
     assert!(stopped && not_ready);
     assert_eq!(fired.load(Ordering::SeqCst), 1);

@@ -29,6 +29,8 @@ async fn lifecycle_tunnel_backoff_new_native_id_does_not_inherit_old_failure() {
         ],
     );
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 1);
     state.refresh_once().await.unwrap();
@@ -38,7 +40,8 @@ async fn lifecycle_tunnel_backoff_new_native_id_does_not_inherit_old_failure() {
     let published = state.get_record(A).await.unwrap().is_some();
     let failed = state.inner.failed_attempts.read().await.contains_key(A);
     let calls = source.count(A);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(
         published,
         "new native ID inherited previous attachment backoff"
@@ -60,6 +63,8 @@ async fn lifecycle_tunnel_backoff_changed_paired_host_retries_without_new_pairin
         ],
     );
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 1);
@@ -67,7 +72,8 @@ async fn lifecycle_tunnel_backoff_changed_paired_host_retries_without_new_pairin
     state.refresh_once().await.unwrap();
     let published = state.get_record(A).await.unwrap().is_some();
     let calls = source.calls.lock().unwrap().clone();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(
         published,
         "known paired host change inherited old host backoff"
@@ -131,12 +137,15 @@ async fn lifecycle_tunnel_backoff_known_route_change_does_not_inherit_usb_failur
         ],
     );
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     paired(&source, "192.0.2.3");
     state.refresh_once().await.unwrap();
     let published = state.get_record(A).await.unwrap().is_some();
     let calls = source.calls.lock().unwrap().clone();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(published, "known route change inherited USB backoff");
     assert_eq!(
         calls,

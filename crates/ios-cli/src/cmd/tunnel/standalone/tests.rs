@@ -399,11 +399,16 @@ async fn standalone_aligned_pending_source_and_signal_live_inside_same_paid_fram
     assert_eq!(probe.signal_drops.load(Ordering::SeqCst), old_signal + 1);
     assert!(
         probe.drop_credit.load(Ordering::SeqCst)
-            <= ownership::Ownership::attempt_bytes() + retirement::Registry::incarnation_bytes()
+            <= ownership::Ownership::attempt_bytes()
+                + retirement::Registry::incarnation_bytes()
+                + 2 * super::super::ControlIdentity::body_bytes()
     );
     assert_eq!(
         probe.bank.available_permits(),
-        bytes + ownership::Ownership::attempt_bytes() + retirement::Registry::incarnation_bytes()
+        bytes
+            + ownership::Ownership::attempt_bytes()
+            + retirement::Registry::incarnation_bytes()
+            + 2 * super::super::ControlIdentity::body_bytes()
     );
     assert!(registry.snapshot().closed_and_empty());
     drop(held);
@@ -450,7 +455,9 @@ async fn standalone_caller_drop_at_source_or_signal_retires_original_native_and_
         strict_eof(&mut peer, expected).await;
         assert_eq!(
             probe.bank.available_permits(),
-            refunded + retirement::Registry::incarnation_bytes()
+            refunded
+                + retirement::Registry::incarnation_bytes()
+                + 2 * super::super::ControlIdentity::body_bytes()
         );
         drop(held);
         drop(registry);
@@ -499,7 +506,9 @@ async fn standalone_success_preserves_report_signal_and_lease_before_device_drop
     strict_eof(&mut peer, expected).await;
     assert_eq!(
         probe.bank.available_permits(),
-        bytes + retirement::Registry::incarnation_bytes()
+        bytes
+            + retirement::Registry::incarnation_bytes()
+            + 2 * super::super::ControlIdentity::body_bytes()
     );
     drop(held);
     drop(registry);

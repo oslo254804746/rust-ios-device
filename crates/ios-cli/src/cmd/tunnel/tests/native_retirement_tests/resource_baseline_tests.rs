@@ -889,6 +889,9 @@ async fn manager_native_resource_baseline() {
         source.clone(),
         CLEANUP,
     );
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = crate::access::HttpBoundaryArgs::default()
@@ -931,9 +934,11 @@ async fn manager_native_resource_baseline() {
 
     // Cleanup is unconditional after measurement failure/timeout. No original
     // runtime is replaced with AbortHandle/is_alive-only recovery evidence.
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
     let final_drain = state.drain_native(CLEANUP).await;
-    state.clear().await;
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
     let mut held = HeldOriginals::take(&source);
     let final_originals = collect_originals(held.originals.as_mut().unwrap()).await;
     drop(held.originals.take());

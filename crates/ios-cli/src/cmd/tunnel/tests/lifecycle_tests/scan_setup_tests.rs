@@ -68,6 +68,7 @@ async fn held_table_cancels(post_snapshot: bool) {
             *source.usb_gate.lock().unwrap() = Some(usb_gate.clone());
         }
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut cancel_input = PreparedSignal::new(&state, terminal);
         let mut scan = Box::pin(state.refresh_once());
         let table = if post_snapshot {
             assert!(futures_util::poll!(&mut scan).is_pending());
@@ -80,13 +81,7 @@ async fn held_table_cancels(post_snapshot: bool) {
             usb_gate.add_permits(1);
         }
         assert!(futures_util::poll!(&mut scan).is_pending());
-        if terminal {
-            state.notify_shutdown();
-        } else {
-            // Exercise the epoch signal while the table is still held. The
-            // ordinary clear operation also waits for this table to remove rows.
-            state.inner.lifecycle.clear();
-        }
+        cancel_input.notify_or_clear_epoch(&state);
         tokio::time::timeout(LOCAL_BUDGET, scan)
             .await
             .expect("setup table wait ignored its epoch cancellation")
@@ -133,6 +128,8 @@ async fn lifecycle_tunnel_scan_setup_usb_coordinator_expires_before_release() {
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
     let state = state(source.clone(), Duration::from_millis(80));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     // Enter USB discovery before holding its later coordinator admission.
     // Initial desired-state capture has its own separate regression below.
     let usb_gate = Arc::new(Semaphore::new(0));
@@ -156,7 +153,8 @@ async fn lifecycle_tunnel_scan_setup_usb_coordinator_expires_before_release() {
     drop(coordinator);
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }
 
 #[tokio::test]
@@ -165,6 +163,9 @@ async fn lifecycle_tunnel_scan_setup_usb_coordinator_clear_and_shutdown_cancel_b
         let source = FakeSource::new();
         source.usb.lock().unwrap().push(A.into());
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut cancel_input = PreparedSignal::new(&state, terminal);
+        let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
         // Enter USB discovery before holding its later coordinator admission.
         // Initial desired-state capture has its own separate regression below.
         let usb_gate = Arc::new(Semaphore::new(0));
@@ -176,11 +177,7 @@ async fn lifecycle_tunnel_scan_setup_usb_coordinator_clear_and_shutdown_cancel_b
         usb_gate.add_permits(1);
         assert!(futures_util::poll!(&mut scan).is_pending());
         *source.usb_gate.lock().unwrap() = None;
-        if terminal {
-            state.notify_shutdown();
-        } else {
-            state.inner.lifecycle.clear();
-        }
+        cancel_input.notify_or_clear_epoch(&state);
         tokio::time::timeout(LOCAL_BUDGET, scan)
             .await
             .expect("USB coordinator wait ignored setup cancellation")
@@ -199,7 +196,8 @@ async fn lifecycle_tunnel_scan_setup_usb_coordinator_clear_and_shutdown_cancel_b
             state.refresh_once().await.unwrap();
             assert_eq!(source.count(A), 1);
         }
-        state.clear().await;
+        state.clear(&mut control_input_0).await;
+        drop(control_input_0);
     }
 }
 
@@ -208,6 +206,8 @@ async fn lifecycle_tunnel_scan_setup_late_usb_coordinator_unlock_does_not_insert
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
     let state = state(source.clone(), Duration::from_millis(80));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
     // Enter USB discovery before holding its later coordinator admission.
     // Initial desired-state capture has its own separate regression below.
@@ -235,7 +235,8 @@ async fn lifecycle_tunnel_scan_setup_late_usb_coordinator_unlock_does_not_insert
     state.refresh_once().await.unwrap();
     assert!(state.is_ready().await);
     assert_eq!(source.count(A), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }
 
 async fn denied_state(
@@ -287,6 +288,11 @@ async fn denied_wait_ends(wait_failures: bool, end: SetupEnd) {
         Duration::from_millis(80)
     };
     let (_policy, state) = denied_state(source.clone(), timeout).await;
+    let mut clear_input =
+        matches!(end, SetupEnd::Clear).then(|| state.prepare_cutover::<2>().unwrap());
+    let mut shutdown_input =
+        matches!(end, SetupEnd::Shutdown).then(|| state.prepare_cutover::<1>().unwrap());
+    let mut cleanup_input = state.prepare_cutover::<2>().unwrap();
     let mut failed = if wait_failures {
         Some(state.inner.failed_attempts.write().await)
     } else {
@@ -300,8 +306,8 @@ async fn denied_wait_ends(wait_failures: bool, end: SetupEnd) {
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     match end {
-        SetupEnd::Clear => state.inner.lifecycle.clear(),
-        SetupEnd::Shutdown => state.notify_shutdown(),
+        SetupEnd::Clear => state.inner.lifecycle.clear(clear_input.as_mut().unwrap()),
+        SetupEnd::Shutdown => state.notify_shutdown(shutdown_input.as_mut().unwrap()),
         SetupEnd::Expiry => {}
         SetupEnd::LateExpiry => {
             // Stop polling the scan until both its lock and expired timer are
@@ -351,7 +357,7 @@ async fn denied_wait_ends(wait_failures: bool, end: SetupEnd) {
         assert!(state.is_ready().await);
         assert!(state.inner.failed_attempts.read().await.is_empty());
     }
-    state.clear().await;
+    state.clear(&mut cleanup_input).await;
     assert_eq!(
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
@@ -425,6 +431,8 @@ async fn lifecycle_tunnel_scan_setup_initial_snapshot_and_ticket_share_one_budge
     let usb_gate = Arc::new(Semaphore::new(0));
     *source.usb_gate.lock().unwrap() = Some(usb_gate.clone());
     let state = state(source.clone(), Duration::from_millis(1000));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let initial_table = state.inner.tunnels.write().await;
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
@@ -452,13 +460,16 @@ async fn lifecycle_tunnel_scan_setup_initial_snapshot_and_ticket_share_one_budge
     *source.usb_gate.lock().unwrap() = None;
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }
 
 #[tokio::test]
 async fn lifecycle_tunnel_scan_setup_list_error_keeps_primary_and_cleanup_elapsed() {
     let source = FakeSource::new();
     let state = state(source.clone(), Duration::from_millis(80));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     start(state.clone(), B).await.unwrap();
     source.list_failure.store(true, Ordering::SeqCst);
     let usb_gate = Arc::new(Semaphore::new(0));
@@ -519,7 +530,8 @@ async fn lifecycle_tunnel_scan_setup_list_error_keeps_primary_and_cleanup_elapse
     *source.usb_gate.lock().unwrap() = None;
     state.refresh_once().await.unwrap();
     assert!(state.is_ready().await);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }
 
 #[tokio::test]
@@ -527,6 +539,9 @@ async fn lifecycle_tunnel_scan_setup_list_error_cancel_keeps_primary_without_old
     for terminal in [false, true] {
         let source = FakeSource::new();
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut cancel_input = PreparedSignal::new(&state, terminal);
+        let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
         start(state.clone(), B).await.unwrap();
         source.list_failure.store(true, Ordering::SeqCst);
         let usb_gate = Arc::new(Semaphore::new(0));
@@ -536,11 +551,7 @@ async fn lifecycle_tunnel_scan_setup_list_error_cancel_keeps_primary_without_old
         let table = state.inner.tunnels.write().await;
         usb_gate.add_permits(1);
         assert!(futures_util::poll!(&mut scan).is_pending());
-        if terminal {
-            state.notify_shutdown();
-        } else {
-            state.inner.lifecycle.clear();
-        }
+        cancel_input.notify_or_clear_epoch(&state);
         let error = tokio::time::timeout(LOCAL_BUDGET, scan)
             .await
             .expect("list-error cleanup ignored cancellation")
@@ -563,11 +574,13 @@ async fn lifecycle_tunnel_scan_setup_list_error_cancel_keeps_primary_without_old
             state.refresh_once().await.unwrap();
             assert!(state.is_ready().await);
         }
-        state.clear().await;
+        state.clear(&mut control_input_0).await;
+        drop(control_input_0);
     }
 }
 
 struct EpochErrorSource {
+    prepared: StdMutex<Option<PreparedSignal>>,
     source: Arc<FakeSource>,
     state: StdMutex<Option<shared_body::Weak<TunnelAgentInner>>>,
     connect_error: bool,
@@ -597,11 +610,11 @@ impl Source for EpochErrorSource {
                     .upgrade()
                     .unwrap(),
             };
-            if self.terminal {
-                state.notify_shutdown();
-            } else {
-                state.inner.lifecycle.clear();
-            }
+            let mut prepared = self.prepared.lock().unwrap();
+            let input = prepared.as_mut().unwrap();
+            assert_eq!(matches!(input, PreparedSignal::Shutdown(_)), self.terminal);
+            input.notify_or_clear_epoch(&state);
+            drop(prepared);
             if self.connect_error {
                 match snapshot {
                     UsbSnapshot::ListError(error) => UsbSnapshot::ConnectError(error),
@@ -627,6 +640,7 @@ async fn lifecycle_tunnel_scan_setup_returned_usb_errors_survive_same_poll_epoch
             let wrapper = Arc::new(EpochErrorSource {
                 source: source.clone(),
                 state: StdMutex::new(None),
+                prepared: StdMutex::new(None),
                 connect_error,
                 terminal,
             });
@@ -638,6 +652,7 @@ async fn lifecycle_tunnel_scan_setup_returned_usb_errors_survive_same_poll_epoch
                 TUNNEL_CONNECT_TIMEOUT,
             );
             *wrapper.state.lock().unwrap() = Some(state.inner.downgrade());
+            *wrapper.prepared.lock().unwrap() = Some(PreparedSignal::new(&state, terminal));
             let error = state.refresh_once().await.unwrap_err();
             assert_eq!(
                 error.downcast_ref::<std::io::Error>().unwrap().kind(),
@@ -662,6 +677,8 @@ async fn lifecycle_tunnel_scan_setup_initial_intent_coordinator_expires_before_r
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
     let state = state(source.clone(), Duration::from_millis(80));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let coordinator = state.inner.lifecycle.hold_coordinator().await;
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
@@ -677,7 +694,8 @@ async fn lifecycle_tunnel_scan_setup_initial_intent_coordinator_expires_before_r
     drop(coordinator);
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }
 
 #[tokio::test]
@@ -687,14 +705,13 @@ async fn lifecycle_tunnel_scan_setup_initial_intent_coordinator_clear_and_shutdo
         let source = FakeSource::new();
         source.usb.lock().unwrap().push(A.into());
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut cancel_input = PreparedSignal::new(&state, terminal);
+        let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
         let coordinator = state.inner.lifecycle.hold_coordinator().await;
         let mut scan = Box::pin(state.refresh_once());
         assert!(futures_util::poll!(&mut scan).is_pending());
-        if terminal {
-            state.notify_shutdown();
-        } else {
-            state.inner.lifecycle.clear();
-        }
+        cancel_input.notify_or_clear_epoch(&state);
         tokio::time::timeout(LOCAL_BUDGET, scan)
             .await
             .expect("initial intent coordinator wait ignored setup cancellation")
@@ -713,7 +730,8 @@ async fn lifecycle_tunnel_scan_setup_initial_intent_coordinator_clear_and_shutdo
             state.refresh_once().await.unwrap();
             assert_eq!(source.count(A), 1);
         }
-        state.clear().await;
+        state.clear(&mut control_input_0).await;
+        drop(control_input_0);
     }
 }
 
@@ -722,6 +740,8 @@ async fn lifecycle_tunnel_scan_setup_late_initial_intent_coordinator_unlock_does
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
     let state = state(source.clone(), Duration::from_millis(80));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
     let coordinator = state.inner.lifecycle.hold_coordinator().await;
     let mut scan = Box::pin(state.refresh_once());
@@ -741,5 +761,6 @@ async fn lifecycle_tunnel_scan_setup_late_initial_intent_coordinator_unlock_does
     state.refresh_once().await.unwrap();
     assert!(state.is_ready().await);
     assert_eq!(source.count(A), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }

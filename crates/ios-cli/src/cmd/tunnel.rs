@@ -422,6 +422,28 @@ struct TunnelAgentInner {
 struct RefreshContext<'a, 's> {
     whole: Option<&'a scan::Deadline>,
     session: Option<&'a scan::Session<'s>>,
+    control: &'a mut marker_identity::Cutover<3>,
+}
+
+enum ManualBirths {
+    One(marker_identity::Cutover<1>),
+    Fallback(marker_identity::Cutover<2>),
+}
+impl marker_identity::ReleaseMarkers for ManualBirths {
+    fn keep(&mut self, identity: &ControlIdentity) {
+        match self {
+            Self::One(context) => marker_identity::ReleaseMarkers::keep(context, identity),
+            Self::Fallback(context) => marker_identity::ReleaseMarkers::keep(context, identity),
+        }
+    }
+}
+impl marker_identity::BirthContext for ManualBirths {
+    fn place(&mut self, origin: &birth_bank::BirthBank) -> ControlIdentity {
+        match self {
+            Self::One(context) => context.place(origin),
+            Self::Fallback(context) => context.place(origin),
+        }
+    }
 }
 
 struct ConnectionContext<'a> {
@@ -429,6 +451,8 @@ struct ConnectionContext<'a> {
     deadline: Option<&'a lifecycle::ConnectionDeadline>,
     retry: Option<(failure_table::Identity, failure_slot::Owner)>,
     manual: Option<&'a intent::ManualRequest<'a>>,
+    manual_births: Option<&'a mut ManualBirths>,
+    releases: &'a mut marker_identity::ReleaseFence<2>,
     input: Option<candidate_input::Owner>,
 }
 
@@ -924,9 +948,15 @@ impl TunnelAgentState {
         watch::body_bytes::<bool>() + Lifecycle::watch_bytes()
     }
 
-    fn notify_shutdown(&self) {
+    fn prepare_cutover<const N: usize>(&self) -> Result<marker_identity::Cutover<N>> {
+        self.inner
+            .lifecycle
+            .prepare_cutover(&self.inner.global_metadata_bytes)
+    }
+
+    fn notify_shutdown(&self, context: &mut marker_identity::Cutover<1>) {
         // Fence both existing and future starts before any async table cleanup.
-        self.inner.lifecycle.close();
+        self.inner.lifecycle.close(context);
         self.inner.retry.close();
         self.inner.scan_outcomes.close();
         self.inner.native.close_and_stop_all();
@@ -955,12 +985,12 @@ impl TunnelAgentState {
         Ok(())
     }
 
-    async fn clear(&self) {
+    async fn clear<const N: usize>(&self, context: &mut marker_identity::Cutover<N>) {
         let mut tunnels = self.inner.tunnels.write().await;
         // Detach pre-cutover history without running its arbitrary destructors
         // under table guards. Pending Sources keep their original nodes.
         let retired_causes = self.inner.retry.take_retired_causes();
-        let old_epoch = self.inner.lifecycle.clear_owned();
+        let old_epoch = self.inner.lifecycle.clear_owned(context);
         let old = tunnels.take_all();
         drop(tunnels);
         #[cfg(test)]
@@ -1155,23 +1185,32 @@ impl TunnelAgentState {
     }
 
     #[cfg(test)]
-    async fn remove_tunnel(&self, udid: &str) -> bool {
-        self.stop_tunnel(udid).await.unwrap_or(false)
+    async fn remove_tunnel(&self, udid: &str, context: &mut marker_identity::Cutover<3>) -> bool {
+        self.stop_tunnel(udid, context).await.unwrap_or(false)
     }
 
-    async fn stop_tunnel(&self, udid: &str) -> Result<bool> {
+    async fn stop_tunnel(
+        &self,
+        udid: &str,
+        context: &mut marker_identity::Cutover<3>,
+    ) -> Result<bool> {
         admission::selectors(udid, None)?;
         // Reserve the durable stopped key before mutation. At capacity a
         // published/pending known target reuses its gate; an unknown target is
         // rejected explicitly, never evicting another stop or recovery intent.
         let ticket = self.inner.lifecycle.ticket(udid).await?;
-        self.stop_tunnel_with_ticket(udid, &ticket).await
+        self.stop_tunnel_with_ticket(udid, &ticket, context).await
     }
 
-    async fn stop_tunnel_with_ticket(&self, udid: &str, ticket: &Ticket) -> Result<bool> {
+    async fn stop_tunnel_with_ticket(
+        &self,
+        udid: &str,
+        ticket: &Ticket,
+        context: &mut marker_identity::Cutover<3>,
+    ) -> Result<bool> {
         let mut tunnels = self.inner.tunnels.write().await;
         anyhow::ensure!(ticket.is_current(), lifecycle::cancelled());
-        let old_epoch = self.inner.lifecycle.stop_owned(udid).await;
+        let old_epoch = self.inner.lifecycle.stop_owned(udid, context).await;
         let alive = tunnels.get(udid).is_some_and(ManagedTunnel::is_alive);
         let old = tunnels.remove(udid);
         drop(tunnels);
@@ -1245,6 +1284,22 @@ impl TunnelAgentState {
         let ticket = deadline.run(self.inner.lifecycle.ticket(udid)).await?;
         ticket
             .run(deadline.run(async {
+                // The same concrete outer operation owns these destinations
+                // and physical-only releases beyond every nested commit guard.
+                let mut manual_births = if manual.is_some() {
+                    Some(if requested_connection_type.is_none() {
+                        ManualBirths::Fallback(
+                            ticket.prepare_manual_births::<2>(&self.inner.global_metadata_bytes)?,
+                        )
+                    } else {
+                        ManualBirths::One(
+                            ticket.prepare_manual_births::<1>(&self.inner.global_metadata_bytes)?,
+                        )
+                    })
+                } else {
+                    None
+                };
+                let mut releases = marker_identity::ReleaseFence::<2>::new();
                 let _serial = ticket.serial().await;
                 if let Some(record) = self.get_record(udid).await? {
                     self.refresh_alive_rsd(
@@ -1270,6 +1325,9 @@ impl TunnelAgentState {
                                         manual.authority.clone(),
                                         ticket.failure_version(),
                                         Some(&deadline),
+                                        manual_births
+                                            .as_mut()
+                                            .expect("pre-Source manual birth inputs"),
                                     )
                                 })
                             })?;
@@ -1277,7 +1335,7 @@ impl TunnelAgentState {
                             return Err(lifecycle::cancelled());
                         }
                     }
-                    self.try_manual_success(udid, &ticket, &deadline);
+                    self.try_manual_success(udid, &ticket, &deadline, &mut releases);
                     return Ok(record);
                 }
                 let _permit = self.inner.lifecycle.connects.acquire().await?;
@@ -1296,6 +1354,8 @@ impl TunnelAgentState {
                             deadline: Some(&deadline),
                             retry: None,
                             manual: manual.as_ref(),
+                            manual_births: manual_births.as_mut(),
+                            releases: &mut releases,
                             input: None,
                         },
                     )
@@ -1339,6 +1399,8 @@ impl TunnelAgentState {
                                 deadline: Some(&deadline),
                                 retry: None,
                                 manual: manual.as_ref(),
+                                manual_births: manual_births.as_mut(),
+                                releases: &mut releases,
                                 input: None,
                             },
                         )
@@ -1378,6 +1440,7 @@ impl TunnelAgentState {
                     .map(|identity| (identity, slot))
             })
             .transpose()?;
+        let mut releases = marker_identity::ReleaseFence::<2>::new();
         self.connect_and_store_with_context(
             udid,
             (&route).into(),
@@ -1387,6 +1450,8 @@ impl TunnelAgentState {
                 deadline,
                 retry,
                 manual: None,
+                manual_births: None,
+                releases: &mut releases,
                 input: None,
             },
         )
@@ -1405,6 +1470,8 @@ impl TunnelAgentState {
             deadline,
             retry,
             manual,
+            mut manual_births,
+            releases,
             input,
         } = context;
         if let Some(deadline) = deadline {
@@ -1732,6 +1799,9 @@ impl TunnelAgentState {
                                 manual.authority.clone(),
                                 previous_failure,
                                 deadline,
+                                manual_births
+                                    .as_deref_mut()
+                                    .expect("prepared manual publication birth"),
                             )?;
                         }
                         Ok(())
@@ -1768,7 +1838,7 @@ impl TunnelAgentState {
                 self.inner.retry.recovered(udid, ticket, &version);
             }
             if let Some(deadline) = deadline {
-                self.try_manual_success(udid, ticket, deadline);
+                self.try_manual_success(udid, ticket, deadline, releases);
             }
         }
         result
@@ -1782,13 +1852,15 @@ impl TunnelAgentState {
         udid: &str,
         ticket: &Ticket,
         deadline: &lifecycle::ConnectionDeadline,
+        releases: &mut impl marker_identity::ReleaseMarkers,
     ) {
         let Some((desired, success)) = ticket.pending_success() else {
             return;
         };
         let fenced = ticket.fenced();
         if let Ok(mut failed) = self.inner.failed_attempts.try_write() {
-            let result = self.remove_success_row(&mut failed, udid, &success, &fenced, deadline);
+            let result =
+                self.remove_success_row(&mut failed, udid, &success, &fenced, deadline, releases);
             drop(failed);
             if let Ok(old) = result {
                 ticket.clear_success(&desired, &success.version);
@@ -1836,6 +1908,7 @@ impl TunnelAgentState {
             ScanAttemptOutcome::Success(success, ticket) => {
                 // Keep the original direct-attempt seam's completed cleanup.
                 // Production defers contested writers until the window ends.
+                let mut releases = marker_identity::ReleaseFence::<2>::new();
                 if let Ok(deadline) = lifecycle::ConnectionDeadline::for_scan_bookkeeping(
                     self.inner.failure_write_timeout,
                 ) {
@@ -1848,6 +1921,7 @@ impl TunnelAgentState {
                                 &success,
                                 &ticket,
                                 &deadline,
+                                &mut releases,
                             );
                             drop(failed);
                             result.map(drop)
@@ -1884,6 +1958,9 @@ impl TunnelAgentState {
         .expect("direct-attempt node admitted before Source");
         let ticket = lifecycle::TicketOwner::new(ticket, &self.inner.global_metadata_bytes)
             .expect("direct-attempt Ticket root admitted before Source");
+        let mut control = self
+            .prepare_cutover::<3>()
+            .expect("direct-attempt control destinations admitted before Source");
         let mut prepared = Some(prepared_node);
         let mut outcome = self
             .refresh_connect_with_input(
@@ -1895,6 +1972,7 @@ impl TunnelAgentState {
                 RefreshContext {
                     whole,
                     session: None,
+                    control: &mut control,
                 },
             )
             .await;
@@ -1916,7 +1994,9 @@ impl TunnelAgentState {
         let RefreshContext {
             whole,
             session: refresh_session,
+            control,
         } = context;
+        let mut releases = marker_identity::ReleaseFence::<2>::new();
         let identity = prepared
             .as_ref()
             .expect("pre-Source failure node")
@@ -2032,6 +2112,8 @@ impl TunnelAgentState {
                             deadline: Some(&deadline),
                             retry: Some((identity.clone(), slot)),
                             manual: None,
+                            manual_births: None,
+                            releases: &mut releases,
                             input: input.clone(),
                         },
                     )
@@ -2050,6 +2132,7 @@ impl TunnelAgentState {
                                 &pending,
                                 ticket,
                                 &deadline,
+                                &mut releases,
                             );
                             drop(failed);
                             match cleanup {
@@ -2075,7 +2158,7 @@ impl TunnelAgentState {
         {
             // The captured desired version prevents revocation cleanup from
             // stopping a later independently authorized explicit publication.
-            let _ = self.stop_tunnel_with_ticket(udid, ticket).await;
+            let _ = self.stop_tunnel_with_ticket(udid, ticket, control).await;
         }
         if established {
             return success.map_or(ScanAttemptOutcome::NoChange, |success| {
@@ -2182,11 +2265,32 @@ impl TunnelAgentState {
         let desired = desired?;
         let mut manual = scan_desired::Manual::new(&self.inner.global_metadata_bytes);
         let mut suppressed = scan_desired::Suppressed::new(&self.inner.global_metadata_bytes);
+        let manual_count = desired
+            .as_slice()
+            .iter()
+            .filter(|row| matches!(row.snapshot.desired, intent::Desired::Manual { .. }))
+            .count();
+        let mut policy_stops = metadata_vec::KnownVec::new(
+            Arc::clone(&self.inner.global_metadata_bytes),
+            lifecycle::MAX_DEVICE_GATES,
+        );
+        policy_stops.reserve(manual_count)?;
+        for _ in 0..manual_count {
+            policy_stops.push_reserved(self.prepare_cutover::<3>()?);
+        }
+        let mut policy_index = 0;
         // Borrow the admitted listing keys for the entire scan. The maps below
         // do not create independent copies, and the listing retains each key
         // charge while Source/candidate/writer futures still use it.
         for row in desired.as_slice() {
             let (udid, ticket, snapshot) = (&row.udid, &row.ticket, &row.snapshot);
+            let policy_stop = if matches!(snapshot.desired, intent::Desired::Manual { .. }) {
+                let index = policy_index;
+                policy_index += 1;
+                Some(&mut policy_stops.as_mut_slice()[index])
+            } else {
+                None
+            };
             match &snapshot.desired {
                 intent::Desired::Manual { authority, .. } if authority.current() => {
                     manual.insert(row)?;
@@ -2194,7 +2298,13 @@ impl TunnelAgentState {
                 intent::Desired::Manual { .. } => {
                     // Use this exact captured desired version: a concurrent
                     // authorized explicit start must survive obsolete cleanup.
-                    let _ = self.stop_tunnel_with_ticket(udid, ticket).await;
+                    let _ = self
+                        .stop_tunnel_with_ticket(
+                            udid,
+                            ticket,
+                            policy_stop.expect("pre-Source captured manual stop context"),
+                        )
+                        .await;
                     suppressed.insert(udid.as_str())?;
                 }
                 intent::Desired::Stopped => {
@@ -2203,6 +2313,7 @@ impl TunnelAgentState {
                 intent::Desired::Automatic => {}
             }
         }
+        drop(policy_stops);
         manual.sort();
         suppressed.sort();
         let initial = {
@@ -2417,11 +2528,13 @@ impl TunnelAgentState {
                 expected_id,
                 &self.inner.global_metadata_bytes,
             )?;
+            let control = self.prepare_cutover::<3>()?;
             candidates.push(candidate_index::Candidate {
                 input,
                 ticket: ticket.clone(),
                 native_id: expected_id,
                 node,
+                control,
             })?;
         }
         drop(attached_ids);
@@ -2455,8 +2568,12 @@ impl TunnelAgentState {
                 else {
                     return Ok(());
                 };
-                let ticket = match ticket.and_then(|ticket| {
-                    lifecycle::TicketOwner::new(&ticket.fenced(), &self.inner.global_metadata_bytes)
+                let (ticket, control) = match ticket.and_then(|ticket| {
+                    let ticket = lifecycle::TicketOwner::new(
+                        &ticket.fenced(),
+                        &self.inner.global_metadata_bytes,
+                    )?;
+                    Ok((ticket, self.prepare_cutover::<3>()?))
                 }) {
                     Ok(ticket) => ticket,
                     Err(error)
@@ -2473,6 +2590,7 @@ impl TunnelAgentState {
                     ticket,
                     native_id: Some(device.device_id),
                     node,
+                    control,
                 })?;
             }
         }
@@ -2720,11 +2838,23 @@ impl TunnelAgentState {
                                 }
                             }
                         };
+                        let control = match self.prepare_cutover::<3>() {
+                            Ok(control) => control,
+                            Err(error)
+                                if crate::output::operation_error_class(error.as_ref())
+                                    == ios_core::ErrorClass::ResourceLimit =>
+                            {
+                                session.retain(scan::Source::Coordinator, error);
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
                         candidates.push(candidate_index::Candidate {
                             input,
                             ticket,
                             native_id: None,
                             node,
+                            control,
                         })?;
                     }
                 }
@@ -2812,6 +2942,7 @@ impl TunnelAgentState {
             input,
             ticket,
             node,
+            mut control,
             ..
         } = candidate;
         let mut node = Some(node);
@@ -2829,6 +2960,7 @@ impl TunnelAgentState {
                 RefreshContext {
                     whole: Some(whole),
                     session: Some(session),
+                    control: &mut control,
                 },
             )
             .await
@@ -3992,7 +4124,14 @@ async fn agent_shutdown(
     principal.require(Permission::ManageServer, None, None)?;
     let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
     let response = replies.shutdown()?;
-    state.notify_shutdown();
+    let mut cutover = state.prepare_cutover::<1>().map_err(|error| {
+        replies.operation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "shutdown control admission failed",
+            error.as_ref(),
+        )
+    })?;
+    state.notify_shutdown(&mut cutover);
     Ok(response)
 }
 
@@ -4069,6 +4208,55 @@ mod tests {
     mod native_retirement_tests;
     mod upstream_tests;
     mod ws_payload_tests;
+
+    struct PreparedTerminal {
+        inputs: [marker_identity::Cutover<1>; 2],
+    }
+
+    impl PreparedTerminal {
+        fn new(state: &TunnelAgentState) -> Self {
+            Self {
+                inputs: state.prepare_cutover::<2>().unwrap().into_individual(),
+            }
+        }
+
+        fn shutdown(&mut self, state: &TunnelAgentState) {
+            state.notify_shutdown(&mut self.inputs[0]);
+        }
+
+        async fn clear(&mut self, state: &TunnelAgentState) {
+            state.clear(&mut self.inputs[1]).await;
+        }
+    }
+
+    enum PreparedSignal {
+        Clear(marker_identity::Cutover<2>),
+        Shutdown(marker_identity::Cutover<1>),
+    }
+
+    impl PreparedSignal {
+        fn new(state: &TunnelAgentState, shutdown: bool) -> Self {
+            if shutdown {
+                Self::Shutdown(state.prepare_cutover().unwrap())
+            } else {
+                Self::Clear(state.prepare_cutover().unwrap())
+            }
+        }
+
+        fn notify_or_clear_epoch(&mut self, state: &TunnelAgentState) {
+            match self {
+                Self::Clear(input) => state.inner.lifecycle.clear(input),
+                Self::Shutdown(input) => state.notify_shutdown(input),
+            }
+        }
+
+        async fn notify_or_clear(&mut self, state: &TunnelAgentState) {
+            match self {
+                Self::Clear(input) => state.clear(input).await,
+                Self::Shutdown(input) => state.notify_shutdown(input),
+            }
+        }
+    }
 
     #[tokio::test]
     async fn manager_http_categories_keep_native_and_message_only_bodies() {
@@ -4478,7 +4666,8 @@ mod tests {
     #[tokio::test]
     async fn deleting_unknown_tunnel_returns_false() {
         let state = TunnelAgentState::new(TunMode::Userspace);
-        assert!(!state.remove_tunnel("missing-udid").await);
+        let mut control = state.prepare_cutover::<3>().unwrap();
+        assert!(!state.remove_tunnel("missing-udid", &mut control).await);
     }
 
     #[test]

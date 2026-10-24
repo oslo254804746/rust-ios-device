@@ -5,6 +5,9 @@ async fn connection_ticket_actual_lookup_refusal_refunds_original_record_in_both
     for global_short in [true, false] {
         let source = FakeSource::new();
         let state = state(source.clone(), LOCAL_BUDGET);
+        let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+        let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
         drop(start(state.clone(), A).await.unwrap());
         let usb = source.usb_calls.load(Ordering::SeqCst);
         let paired = source.paired_calls.load(Ordering::SeqCst);
@@ -39,8 +42,10 @@ async fn connection_ticket_actual_lookup_refusal_refunds_original_record_in_both
         assert_eq!(source.drops.load(Ordering::SeqCst), 0);
         assert_eq!(state.inner.tunnels.read().await.len(), 1);
         drop(held);
-        state.notify_shutdown();
-        state.clear().await;
+        state.notify_shutdown(&mut prepared_direct_0);
+        drop(prepared_direct_0);
+        state.clear(&mut prepared_direct_1).await;
+        drop(prepared_direct_1);
         drop(state);
         assert_eq!(global.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
         assert_eq!(published.available_permits(), MAX_PUBLISHED_METADATA_BYTES);
@@ -51,6 +56,9 @@ async fn connection_ticket_actual_lookup_refusal_refunds_original_record_in_both
 async fn connection_ticket_actual_target_moves_same_root_without_extending_row_or_state() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut prepared_direct_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     drop(start(state.clone(), A).await.unwrap());
     let global = state.inner.global_metadata_bytes.clone();
     let published = state.inner.metadata_bytes.clone();
@@ -72,12 +80,14 @@ async fn connection_ticket_actual_target_moves_same_root_without_extending_row_o
         .unwrap();
     global.close();
     published.close();
-    state.clear().await;
+    state.clear(&mut prepared_direct_0).await;
+    drop(prepared_direct_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     assert!(publication.check().is_err() && !ticket.is_current());
     assert_eq!(&*ticket as *const Ticket, pointer);
     assert_eq!(ticket.udid().as_ptr(), key);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_direct_1);
+    drop(prepared_direct_1);
     drop((state, record, publication, held_g, held_p));
     assert_eq!(
         published.available_permits(),
@@ -98,6 +108,9 @@ async fn connection_ticket_http_refusal_keeps_original_503_before_local_tcp_dial
         Ordering::SeqCst,
     );
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     drop(start(state.clone(), A).await.unwrap());
     let usb = source.usb_calls.load(Ordering::SeqCst);
     let paired = source.paired_calls.load(Ordering::SeqCst);
@@ -136,8 +149,10 @@ async fn connection_ticket_http_refusal_keeps_original_503_before_local_tcp_dial
     drop(held);
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     drop(state);
     tokio::time::timeout(LOCAL_BUDGET, async {
         while global.available_permits() != MAX_GLOBAL_KNOWN_METADATA_BYTES {

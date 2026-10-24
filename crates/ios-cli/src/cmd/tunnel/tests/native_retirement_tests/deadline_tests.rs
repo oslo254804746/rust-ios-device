@@ -123,12 +123,14 @@ async fn exercise(
         source.clone(),
         BUDGET,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let result = state.ensure_tunnel(DEVICE, None, route).await;
     let unpublished = state.inner.tunnels.read().await.is_empty();
     let queries = base.usb_calls.load(Ordering::SeqCst);
     let records = source.records.load(Ordering::SeqCst);
     let paired = source.paired.load(Ordering::SeqCst);
-    let recovery = finish(&state, &base, expected).await;
+    let recovery = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     // Recover actual original native tasks/stream before checking any regression.
     assert!(recovery && base.handle().shutdown_status().is_ok());
     (result, unpublished, queries, records, paired, recovery)
@@ -221,6 +223,7 @@ async fn publication_crossing(replace: bool) {
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let old = if replace {
         publish(&state, Route::Wifi(None)).await.unwrap();
         Some(source.handle())
@@ -247,7 +250,8 @@ async fn publication_crossing(replace: bool) {
     let stopped = !new.is_alive();
     let old_alive = old.as_ref().map_or(true, |old| old.is_alive());
     let snapshot = state.inner.native.snapshot();
-    let recovery = finish(&state, &source, expected).await;
+    let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     // Both positive and mutation runs join the exact original runtimes and
     // observe their actual stream EOF/task recovery before regression checks.
     assert!(recovery && new.shutdown_status().is_ok());
