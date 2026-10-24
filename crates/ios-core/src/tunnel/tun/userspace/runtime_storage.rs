@@ -2,7 +2,8 @@
 
 use std::collections::VecDeque;
 use std::mem;
-use std::sync::Arc;
+use std::ops::Deref;
+use std::sync::{Arc, OnceLock};
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -59,58 +60,99 @@ pub(crate) fn charge(
     .transpose()
 }
 
-pub(super) struct TaskHandles {
-    values: Vec<super::OwnedTask>,
-    _storage: Option<OwnedSemaphorePermit>,
+/// An actual complete native control/handle root. Workers only clone control
+/// roots; none can retain a root which owns its own JoinHandle.
+pub(super) enum RuntimeRoot<T> {
+    Legacy(Arc<T>),
+    Metered(super::owned_channel::roots::Root<T>),
 }
+impl<T> RuntimeRoot<T> {
+    pub(super) fn new(value: T, bank: Option<&Arc<Semaphore>>) -> Result<Self, TunnelError> {
+        let Some(bank) = bank else {
+            return Ok(Self::Legacy(Arc::new(value)));
+        };
+        let storage = charge(Some(bank), Self::body_bytes())?.expect("whole native root grant");
+        let destination = super::owned_channel::roots::Destination::from_grant(bank, storage)?;
+        Ok(Self::Metered(destination.finish(value)))
+    }
+    pub(super) fn body_bytes() -> usize {
+        super::owned_channel::roots::Root::<T>::body_bytes()
+    }
+}
+impl<T> Clone for RuntimeRoot<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Legacy(value) => Self::Legacy(value.clone()),
+            Self::Metered(value) => Self::Metered(value.clone()),
+        }
+    }
+}
+impl<T> Deref for RuntimeRoot<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        match self {
+            Self::Legacy(value) => value,
+            Self::Metered(value) => value,
+        }
+    }
+}
+
+struct TaskSlots {
+    values: [OnceLock<super::OwnedTask>; 4],
+}
+
+#[derive(Clone)]
+pub(super) struct TaskHandles {
+    slots: RuntimeRoot<TaskSlots>,
+}
+pub(super) type TaskIter<'a> = std::iter::FilterMap<
+    std::slice::Iter<'a, OnceLock<super::OwnedTask>>,
+    fn(&'a OnceLock<super::OwnedTask>) -> Option<&'a super::OwnedTask>,
+>;
 impl TaskHandles {
+    #[cfg(test)]
     pub(super) fn initialize(&mut self, tasks: [super::OwnedTask; 4]) {
-        assert!(self.values.is_empty() && self.values.capacity() >= tasks.len());
-        self.values.extend(tasks);
+        for (index, task) in tasks.into_iter().enumerate() {
+            self.install(index, task);
+        }
     }
-    pub(super) fn iter(&self) -> std::slice::Iter<'_, super::OwnedTask> {
-        self.values.iter()
+    pub(super) fn install(&self, index: usize, task: super::OwnedTask) {
+        assert!(
+            self.slots.values[index].set(task).is_ok(),
+            "one original task per launch slot"
+        );
     }
-    pub(super) fn drain(&mut self) -> std::vec::Drain<'_, super::OwnedTask> {
-        self.values.drain(..)
+    pub(super) fn iter(&self) -> TaskIter<'_> {
+        self.slots.values.iter().filter_map(OnceLock::get)
+    }
+    pub(super) fn all_installed(&self) -> bool {
+        self.slots.values.iter().all(|slot| slot.get().is_some())
+    }
+    #[cfg(test)]
+    pub(super) fn body_bytes() -> usize {
+        RuntimeRoot::<TaskSlots>::body_bytes()
     }
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
-        self.values.len()
+        self.iter().count()
     }
 }
 impl<'a> IntoIterator for &'a TaskHandles {
     type Item = &'a super::OwnedTask;
-    type IntoIter = std::slice::Iter<'a, super::OwnedTask>;
+    type IntoIter = TaskIter<'a>;
     fn into_iter(self) -> Self::IntoIter {
-        self.values.iter()
+        self.iter()
     }
 }
 
 pub(super) fn task_handles(bank: Option<&Arc<Semaphore>>) -> Result<TaskHandles, TunnelError> {
-    let bytes = 4 * mem::size_of::<super::OwnedTask>();
-    let mut storage = charge(bank, bytes)?;
-    let mut handles = Vec::new();
-    handles
-        .try_reserve_exact(4)
-        .map_err(|original| rejected(BufferAdmission::Allocation(original)))?;
-    let actual = handles
-        .capacity()
-        .checked_mul(mem::size_of::<super::OwnedTask>())
-        .ok_or_else(|| rejected(BufferAdmission::SizeOverflow))?;
-    if actual > bytes {
-        return Err(rejected(BufferAdmission::UnexpectedCapacity));
-    }
-    storage = storage.map(|mut fee| {
-        let exact = fee
-            .split(actual)
-            .expect("pre-admitted native task handle backing");
-        drop(fee);
-        exact
-    });
     Ok(TaskHandles {
-        values: handles,
-        _storage: storage,
+        slots: RuntimeRoot::new(
+            TaskSlots {
+                values: std::array::from_fn(|_| OnceLock::new()),
+            },
+            bank,
+        )?,
     })
 }
 

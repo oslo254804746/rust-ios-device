@@ -1,5 +1,13 @@
 # 当前工程调度
 
+2026-10-24：L02 [同一handle先attach后launch](validation/tunnel-attach-before-launch-2026-10-24.md)
+实际userspace activation先准备原4个完整gated F/稳定join槽，再attach同Arc，最后逐个spawn立即入槽/完整后开gate。
+原流仅split一次；未launch/panic先销毁剩余原F再发布cohort完成，原clock内等待后收齐真实joins。
+launch_pending独立于真实join计数，0join的dormant状态不再假完成；新增9例含partial-install/panic/closed0/实际SYN与严格Ok0。
+Core/CLI strict、新9/userspace75/activation10/owner42/shutdown7、两feature检查、完整CLI1903/0/13原ignored及只读host通过。
+736源码一致，仅11处Core（3新文件），19处原正文guard一致；主控接手完成/复核，非独立L02最终审查。
+Kernel原分支、私有handoff/barrier/原生暴露回滚/精确替换继续；23/6/L02待全审计、有效30/Q04全部排除保持。
+
 2026-10-24：L02 [Source ReadyErr先于原future Drop捕获](validation/tunnel-source-ready-capture-2026-10-24.md)
 原poll内完成input/receipt捕获，保留首次emit顺序与构造拒绝零调用/零retry；Source Drop清epoch后仅退休本次精确receipt。
 新增2例真实TCP拒绝/actual F Drop/closed0/预付epoch clear/原IO指针/最终退款；旧生产2例均实证失败。

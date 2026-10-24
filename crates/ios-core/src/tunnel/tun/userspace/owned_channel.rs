@@ -10,7 +10,7 @@ use super::owned_buffer::{rejected, BufferAdmission};
 use super::runtime_storage::charge;
 use super::TunnelError;
 
-mod roots;
+pub(super) mod roots;
 use roots::{Destination, Root};
 pub(super) use roots::{SlotPermit, Slots};
 

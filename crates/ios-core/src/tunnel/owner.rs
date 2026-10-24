@@ -88,6 +88,8 @@ pub(crate) struct LedgerState {
     #[cfg(feature = "tunnel-userspace")]
     runtime_stopped: AtomicBool,
     #[cfg(feature = "tunnel-userspace")]
+    launch_pending: AtomicBool,
+    #[cfg(feature = "tunnel-userspace")]
     stop_watch: unit_stop::State,
     _body_storage: Option<OwnedSemaphorePermit>,
 }
@@ -107,6 +109,8 @@ impl LedgerState {
             #[cfg(feature = "tunnel-userspace")]
             runtime_stopped: AtomicBool::new(false),
             #[cfg(feature = "tunnel-userspace")]
+            launch_pending: AtomicBool::new(false),
+            #[cfg(feature = "tunnel-userspace")]
             stop_watch: unit_stop::State::new(),
             _body_storage: storage,
         }
@@ -120,6 +124,24 @@ impl LedgerState {
     #[cfg(feature = "tunnel-userspace")]
     pub(crate) fn request_runtime_stop(&self) {
         self.runtime_stopped.store(true, Ordering::Release);
+    }
+
+    #[cfg(feature = "tunnel-userspace")]
+    pub(crate) fn prepare_launch(&self) {
+        assert!(
+            !self.launch_pending.swap(true, Ordering::AcqRel),
+            "one original launch cohort per ledger"
+        );
+    }
+
+    #[cfg(feature = "tunnel-userspace")]
+    pub(crate) fn finish_launch(&self) {
+        self.launch_pending.store(false, Ordering::Release);
+    }
+
+    #[cfg(feature = "tunnel-userspace")]
+    pub(crate) fn is_launch_pending(&self) -> bool {
+        self.launch_pending.load(Ordering::Acquire)
     }
 
     // These hooks count actual retained join slots, including child groups once
@@ -225,10 +247,18 @@ impl LedgerState {
             .and_then(|slot| outcomes.slots[slot].as_ref())
             .map(|recorded| Arc::clone(&recorded.cause))
             .or_else(|| elapsed.clone());
+        // Read the cohort fence FIRST. Observing its final release makes all
+        // prior real task registrations visible to the following join count.
+        // A dormant cohort is not an invented pending native join.
+        #[cfg(feature = "tunnel-userspace")]
+        let launch_pending = self.is_launch_pending();
+        #[cfg(not(feature = "tunnel-userspace"))]
+        let launch_pending = false;
         let pending_joins = self.pending.load(Ordering::Acquire);
         let primary = primary.or_else(|| {
-            ((require_joined && pending_joins != 0) || self.invalid_count.load(Ordering::Acquire))
-                .then(|| Arc::new(IncompleteShutdown) as Cause)
+            ((require_joined && (pending_joins != 0 || launch_pending))
+                || self.invalid_count.load(Ordering::Acquire))
+            .then(|| Arc::new(IncompleteShutdown) as Cause)
         });
         let Some(primary) = primary else {
             return Ok(());
@@ -254,6 +284,7 @@ impl LedgerState {
             primary,
             cleanup,
             pending_joins,
+            launch_pending,
             join_accounting_valid: !self.invalid_count.load(Ordering::Acquire),
             retained_outcomes: outcomes.slots.iter().any(Option::is_some),
             additional_unretained_outcomes: outcomes.additional_unretained_outcomes,
@@ -279,6 +310,7 @@ pub struct TunnelShutdownFailure {
     primary: Cause,
     cleanup: Cleanup,
     pending_joins: usize,
+    launch_pending: bool,
     join_accounting_valid: bool,
     retained_outcomes: bool,
     additional_unretained_outcomes: u64,
@@ -299,10 +331,15 @@ impl TunnelShutdownFailure {
     pub fn pending_joins(&self) -> usize {
         self.pending_joins
     }
-    /// Whether all owned native joins were collected with valid accounting.
+    /// Whether the original worker launch cohort has not yet settled.
+    /// This includes unspawned original futures and is separate from join count.
+    pub fn launch_pending(&self) -> bool {
+        self.launch_pending
+    }
+    /// Whether launch settled and all owned native joins were collected.
     /// This does not certify an error-free attempt, its deadline, or a peer ACK.
     pub fn joins_complete(&self) -> bool {
-        self.pending_joins == 0 && self.join_accounting_valid
+        !self.launch_pending && self.pending_joins == 0 && self.join_accounting_valid
     }
 
     /// Whether this snapshot includes an acquired original work/join failure.
@@ -330,6 +367,7 @@ impl std::fmt::Debug for TunnelShutdownFailure {
             .field("primary_class", &crate::classify_error(self.primary()))
             .field("cleanup_classes", &CleanupClasses(&self.cleanup))
             .field("pending_joins", &self.pending_joins)
+            .field("launch_pending", &self.launch_pending)
             .field("joins_complete", &self.joins_complete())
             .field(
                 "additional_unretained_outcomes",

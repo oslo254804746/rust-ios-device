@@ -29,12 +29,12 @@ pub(in crate::tunnel::tun::userspace) struct Root<T> {
 unsafe impl<T: Send + Sync> Send for Root<T> {}
 unsafe impl<T: Send + Sync> Sync for Root<T> {}
 
-pub(super) struct Destination<T> {
+pub(in crate::tunnel::tun::userspace) struct Destination<T> {
     values: Vec<Allocation<T>>,
     storage: OwnedSemaphorePermit,
 }
 impl<T> Destination<T> {
-    pub(super) fn from_grant(
+    pub(in crate::tunnel::tun::userspace) fn from_grant(
         bank: &Arc<Semaphore>,
         storage: OwnedSemaphorePermit,
     ) -> Result<Self, TunnelError> {
@@ -42,7 +42,7 @@ impl<T> Destination<T> {
             .map_err(|source| TunnelError::Io(std::io::Error::other(source)))?;
         Ok(Self { values, storage })
     }
-    pub(super) fn finish(self, value: T) -> Root<T> {
+    pub(in crate::tunnel::tun::userspace) fn finish(self, value: T) -> Root<T> {
         assert!(self.values.is_empty() && self.values.capacity() == 1);
         let Self {
             mut values,
@@ -62,7 +62,7 @@ impl<T> Destination<T> {
     }
 }
 impl<T> Root<T> {
-    pub(super) fn body_bytes() -> usize {
+    pub(in crate::tunnel::tun::userspace) fn body_bytes() -> usize {
         mem::size_of::<Allocation<T>>()
     }
     #[cfg(test)]
@@ -194,7 +194,7 @@ type FreeHook = std::cell::RefCell<Option<Box<dyn FnMut(std::alloc::Layout, usiz
 #[cfg(test)]
 thread_local! { static AFTER_FREE: FreeHook = const { std::cell::RefCell::new(None) }; }
 #[cfg(test)]
-pub(super) fn after_free<T>(
+pub(in crate::tunnel::tun::userspace) fn after_free<T>(
     hook: impl FnMut(std::alloc::Layout, usize) + 'static,
     work: impl FnOnce() -> T,
 ) -> T {
