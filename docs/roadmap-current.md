@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-24：L02 [Source ReadyErr先于原future Drop捕获](validation/tunnel-source-ready-capture-2026-10-24.md)
+原poll内完成input/receipt捕获，保留首次emit顺序与构造拒绝零调用/零retry；Source Drop清epoch后仅退休本次精确receipt。
+新增2例真实TCP拒绝/actual F Drop/closed0/预付epoch clear/原IO指针/最终退款；旧生产2例均实证失败。
+strict/新2/失败原因15/准入12及1/完整CLI1903/0/13原ignored、build、actual manager1 trap0、host5/0/22通过。
+733源码指纹一致，仅4处CLI（1新测试），独立有限只读4SHA复核；全部Cargo/build主控，无设备/OS网络操作。
+完整staging/原生暴露回滚/精确替换与L02全审计继续；23/6/L02待全审计、有效30/Q04全部排除保持。
+
 2026-10-24：L02 [原传输worker与唯一packet port](validation/tunnel-packet-link-port-2026-10-24.md)
 现有userspace生产路径接入PreparedPacketLink/PacketPort，原流只split一次，原4任务/准入/停止与错误时序保持。
 新增真实partial read/write与port移动用例，原joins/严格Ok(0)/任务基线/全费用退款通过；9处原函数正文精确一致。
