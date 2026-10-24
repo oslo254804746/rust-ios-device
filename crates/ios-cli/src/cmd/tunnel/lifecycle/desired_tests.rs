@@ -5,8 +5,13 @@ async fn desired_zero_key_escaped_rows_keep_distinct_old_versions_after_iterator
     const ROUNDS: usize = 4;
     let row_bytes = 2 * std::mem::size_of::<DesiredRow>();
     let root_bytes = TicketOwner::body_bytes() + super::super::intent::SnapshotOwner::body_bytes();
-    let initial_free = row_bytes + ROUNDS * root_bytes;
-    let total = Lifecycle::watch_bytes() + Lifecycle::initial_metadata_bytes("") + initial_free;
+    let marker_bytes = ControlIdentity::body_bytes();
+    let reset_backing = BirthBatch::backing_bytes(2);
+    let initial_free = row_bytes + ROUNDS * (root_bytes + 3 * marker_bytes) + reset_backing;
+    let total = Lifecycle::watch_bytes()
+        + Lifecycle::initial_metadata_bytes("")
+        + 4 * marker_bytes
+        + initial_free;
     let birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = birth.raw().clone();
     let lifecycle = Lifecycle::with_metadata(birth).unwrap();
@@ -14,10 +19,15 @@ async fn desired_zero_key_escaped_rows_keep_distinct_old_versions_after_iterator
     assert_eq!(bank.available_permits(), initial_free);
     let mut escaped: [Option<DesiredRow>; ROUNDS] = std::array::from_fn(|_| None);
     for (index, destination) in escaped.iter_mut().enumerate() {
-        lifecycle.stop("").await;
+        let mut stop = lifecycle.prepare_cutover::<3>(&bank).unwrap();
+        lifecycle.stop("", &mut stop).await;
+        drop(stop);
         let rows = lifecycle.desired().await.unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(bank.available_permits(), (ROUNDS - index - 1) * root_bytes);
+        assert_eq!(
+            bank.available_permits(),
+            (ROUNDS - index - 1) * root_bytes + (ROUNDS - index) * 3 * marker_bytes + reset_backing
+        );
         let mut iterator = rows.into_iter();
         let row = iterator.next().unwrap();
         assert!(row.udid.is_empty());
@@ -26,14 +36,16 @@ async fn desired_zero_key_escaped_rows_keep_distinct_old_versions_after_iterator
         drop(iterator);
         assert_eq!(
             bank.available_permits(),
-            initial_free - (index + 1) * root_bytes
+            initial_free - (index + 1) * root_bytes - index * 3 * marker_bytes
         );
         *destination = Some(row);
-        lifecycle.clear();
+        let mut clear = lifecycle.prepare_cutover::<2>(&bank).unwrap();
+        lifecycle.clear(&mut clear);
+        drop(clear);
         drop(lifecycle.ticket("").await.unwrap());
         assert_eq!(
             bank.available_permits(),
-            initial_free - (index + 1) * root_bytes
+            initial_free - (index + 1) * (root_bytes + 3 * marker_bytes)
         );
         assert_eq!(lifecycle.coordinator_count().await, 1);
     }
@@ -64,7 +76,7 @@ async fn desired_zero_key_escaped_rows_keep_distinct_old_versions_after_iterator
     }
     // The original iterator's actual backing refunds, but each escaped row
     // keeps its independent real Ticket and Snapshot allocations paid.
-    assert_eq!(bank.available_permits(), row_bytes);
+    assert_eq!(bank.available_permits(), row_bytes + reset_backing);
     drop(escaped);
     assert_eq!(bank.available_permits(), initial_free);
     drop(lifecycle);
@@ -78,7 +90,9 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
     let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let key = "synthetic-desired-key";
     let ticket = lifecycle.ticket(key).await.unwrap();
-    lifecycle.stop(key).await;
+    let mut stop = lifecycle.prepare_cutover::<3>(&bank).unwrap();
+    lifecycle.stop(key, &mut stop).await;
+    drop(stop);
     let row_bytes = 2 * std::mem::size_of::<DesiredRow>();
     let root_bytes = TicketOwner::body_bytes() + super::super::intent::SnapshotOwner::body_bytes();
     let before = row_bytes + key.len() + root_bytes;
@@ -197,7 +211,9 @@ async fn desired_listing_one_byte_key_refusal_never_allocates_the_copy_or_change
     let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let key = "synthetic-独立-key";
     let ticket = lifecycle.ticket(key).await.unwrap();
-    lifecycle.stop(key).await;
+    let mut stop = lifecycle.prepare_cutover::<3>(&bank).unwrap();
+    lifecycle.stop(key, &mut stop).await;
+    drop(stop);
     let original = ticket.desired();
     let pointer = ticket.gate.udid.as_ptr();
     let row_bytes = 2 * std::mem::size_of::<DesiredRow>();
@@ -254,8 +270,12 @@ async fn desired_listing_refused_key_restores_all_partial_rows_and_original_stat
     let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let a = lifecycle.ticket("synthetic-a").await.unwrap();
     let b = lifecycle.ticket("synthetic-b").await.unwrap();
-    lifecycle.stop("synthetic-a").await;
-    lifecycle.stop("synthetic-b").await;
+    let mut stop = lifecycle.prepare_cutover::<3>(&bank).unwrap();
+    lifecycle.stop("synthetic-a", &mut stop).await;
+    drop(stop);
+    let mut stop = lifecycle.prepare_cutover::<3>(&bank).unwrap();
+    lifecycle.stop("synthetic-b", &mut stop).await;
+    drop(stop);
     let old_a = a.desired();
     let old_b = b.desired();
     // Enough for two inline rows and only the first independent key: a
@@ -293,7 +313,9 @@ async fn desired_listing_one_byte_backing_refusal_does_not_change_stopped_gate()
     let bank = bank_birth.raw().clone();
     let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let ticket = lifecycle.ticket(key).await.unwrap();
-    lifecycle.stop(key).await;
+    let mut stop = lifecycle.prepare_cutover::<3>(&bank).unwrap();
+    lifecycle.stop(key, &mut stop).await;
+    drop(stop);
     let old = ticket.desired();
     let available = 2 * std::mem::size_of::<DesiredRow>() - 1;
     let held = Arc::clone(&bank)
@@ -318,20 +340,25 @@ async fn desired_listing_empty_clear_and_terminal_need_no_storage() {
     let bank = bank_birth.raw().clone();
     let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let ticket = lifecycle.ticket("synthetic-old-epoch").await.unwrap();
-    lifecycle.stop("synthetic-old-epoch").await;
+    let mut stop = lifecycle.prepare_cutover::<3>(&bank).unwrap();
+    lifecycle.stop("synthetic-old-epoch", &mut stop).await;
+    drop(stop);
     let old = lifecycle.desired().await.unwrap();
+    let mut clear = lifecycle.prepare_cutover::<2>(&bank).unwrap();
+    let mut close = lifecycle.prepare_cutover::<1>(&bank).unwrap();
     let before = bank.available_permits();
-    lifecycle.clear();
+    lifecycle.clear(&mut clear);
     let held = Arc::clone(&bank)
         .try_acquire_many_owned(before as u32)
         .unwrap();
     assert_eq!(lifecycle.desired().await.unwrap().len(), 0);
     assert_eq!(bank.available_permits(), 0);
     assert!(!old.as_slice()[0].ticket.is_current());
-    lifecycle.close();
+    lifecycle.close(&mut close);
     assert_eq!(lifecycle.desired().await.unwrap().len(), 0);
     assert_eq!(bank.available_permits(), 0);
     drop(held);
+    drop((clear, close));
     drop(ticket);
     drop(old);
     drop(lifecycle);

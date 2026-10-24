@@ -67,12 +67,13 @@ async fn lifecycle_tunnel_whole_scan_reconciliation_wait_expires_or_cancels_befo
                 TOTAL
             },
         );
+        let mut cancel_input = cancel.then(|| state.prepare_cutover::<2>().unwrap());
         let table = state.inner.failed_attempts.write().await;
         let mut scan = Box::pin(state.refresh_once());
         assert!(futures_util::poll!(&mut scan).is_pending());
         assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
         if cancel {
-            state.inner.lifecycle.clear();
+            state.inner.lifecycle.clear(cancel_input.as_mut().unwrap());
         }
         let result = tokio::time::timeout(LOCAL_BUDGET, scan).await.unwrap();
         if cancel {
@@ -121,6 +122,7 @@ async fn lifecycle_tunnel_whole_scan_cancels_all_candidates_without_failure_back
                 TOTAL
             },
         );
+        let mut cancel_input = cancel.then(|| state.prepare_cutover::<2>().unwrap());
         let mut scan = Box::pin(state.refresh_once());
         assert!(futures_util::poll!(&mut scan).is_pending());
         assert_eq!(
@@ -128,7 +130,7 @@ async fn lifecycle_tunnel_whole_scan_cancels_all_candidates_without_failure_back
             lifecycle::MAX_CONNECTS
         );
         if cancel {
-            state.inner.lifecycle.clear();
+            state.inner.lifecycle.clear(cancel_input.as_mut().unwrap());
         }
         let result = tokio::time::timeout(LOCAL_BUDGET, scan).await.unwrap();
         if cancel {
@@ -159,10 +161,14 @@ async fn lifecycle_tunnel_whole_scan_stop_a_does_not_cancel_b_or_readiness() {
     source.script(A, [Behavior::Pending]);
     source.script(B, [Behavior::Held(gate.clone())]);
     let state = bounded(source.clone(), Duration::from_secs(5));
+    let mut stop_input = state.prepare_cutover::<3>().unwrap();
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     assert_eq!(source.active.load(Ordering::SeqCst), 2);
-    state.remove_tunnel(A).await;
+    state.remove_tunnel(A, &mut stop_input).await;
+    drop(stop_input);
     gate.add_permits(1);
     tokio::time::timeout(LOCAL_BUDGET, scan)
         .await
@@ -172,7 +178,8 @@ async fn lifecycle_tunnel_whole_scan_stop_a_does_not_cancel_b_or_readiness() {
     assert!(state.get_record(B).await.unwrap().is_some());
     assert!(state.is_ready().await);
     assert!(state.inner.failed_attempts.read().await.is_empty());
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[tokio::test]

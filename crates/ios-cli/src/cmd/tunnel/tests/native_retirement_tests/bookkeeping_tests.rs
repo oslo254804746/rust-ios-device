@@ -167,9 +167,10 @@ async fn recover(
     source: &FailureSource,
     expected: usize,
     held_errors: usize,
+    inputs: &mut PreparedTerminal,
 ) {
     let handles = source.base.handles.lock().unwrap().clone();
-    let recovery = finish(state, &source.base, expected).await;
+    let recovery = finish(state, &source.base, expected, inputs).await;
     // Always recover original joins, actual duplex EOF and task count before
     // evaluating the changed contention/error behavior.
     assert!(
@@ -193,6 +194,7 @@ async fn native_bookkeeping_failed_writers_do_not_occupy_later_candidate_window(
     let expected = baseline();
     let source = fixture(4, true, PairedReply::Complete).await;
     let state = manager(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let mut scan = Box::pin(state.refresh_once());
     let first = drive_until(&mut scan, &source, 4, 0, OBSERVE).await;
     let failed = state.inner.failed_attempts.read().await;
@@ -216,7 +218,8 @@ async fn native_bookkeeping_failed_writers_do_not_occupy_later_candidate_window(
         .is_some_and(|native| !native.is_alive());
     drop(failed);
     let ready = state.is_ready().await;
-    recover(&state, &source, expected, 0).await;
+    recover(&state, &source, expected, 0, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(
         first && later,
         "failure writers prevented the fifth native candidate from entering"
@@ -235,6 +238,7 @@ async fn blocked_flush(paired: PairedReply) -> (Result<()>, TunnelAgentState) {
     let expected = baseline();
     let source = fixture(1, false, paired).await;
     let state = manager(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let mut scan = Box::pin(state.refresh_once());
     let entered = drive_until(&mut scan, &source, 1, 0, OBSERVE).await;
     let failed = state.inner.failed_attempts.read().await;
@@ -270,7 +274,8 @@ async fn blocked_flush(paired: PairedReply) -> (Result<()>, TunnelAgentState) {
     );
     // The returned original-error receipt remains a real owner after manager
     // shutdown; its permit cannot be released while this caller holds it.
-    recover(&state, &source, expected, 1).await;
+    recover(&state, &source, expected, 1, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(entered && unchanged && not_ready);
     assert_eq!(source.eof.load(Ordering::SeqCst), 1);
     assert_eq!((native.retired, native.native_handles), (1, 1));

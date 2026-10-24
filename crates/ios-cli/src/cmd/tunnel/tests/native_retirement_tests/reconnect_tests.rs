@@ -116,6 +116,7 @@ async fn retired(state: &TunnelAgentState, base: &LocalSource, expected: usize) 
 async fn reconnect_native_failed_episodes_join_original_workers_before_new_attempts() {
     let expected = baseline();
     let (state, base) = configured([Fate::Failure, Fate::Failure, Fate::Success], Some(3), None);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     for expected_calls in 1..=2 {
         state.refresh_once().await.unwrap();
         let original = base.handle();
@@ -140,7 +141,8 @@ async fn reconnect_native_failed_episodes_join_original_workers_before_new_attem
     let active = state.inner.native.snapshot().active;
     let available_permits = state.inner.failure_slots.available_permits();
     let old_handles = base.handles.lock().unwrap().clone();
-    let resources = finish(&state, &base, expected).await;
+    let resources = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(
         resources
             && old_handles
@@ -158,6 +160,7 @@ async fn reconnect_native_failed_episodes_join_original_workers_before_new_attem
 async fn reconnect_native_exhaustion_keeps_owned_retirement_without_polling_source() {
     let expected = baseline();
     let (state, base) = configured([Fate::Failure], Some(1), None);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     state.refresh_once().await.unwrap();
     let original = base.handle();
     let retained = state.inner.native.snapshot();
@@ -167,7 +170,8 @@ async fn reconnect_native_exhaustion_keeps_owned_retirement_without_polling_sour
     let after = state.inner.native.snapshot();
     let budget = state.inner.retry.snapshot(DEVICE);
     let calls = base.connect_calls.load(Ordering::SeqCst);
-    let resources = finish(&state, &base, expected).await;
+    let resources = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(resources && original.shutdown_status().is_ok());
     let budget = budget.unwrap();
     assert_eq!(calls, 1);
@@ -184,13 +188,15 @@ async fn reconnect_native_exhaustion_keeps_owned_retirement_without_polling_sour
 async fn reconnect_native_total_expiry_after_attachment_retains_and_joins_exact_runtime() {
     let expected = baseline();
     let (state, base) = configured([Fate::Pending], None, Some(Duration::from_millis(60)));
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     state.refresh_once().await.unwrap();
     let original = base.handle();
     let snapshot = state.inner.native.snapshot();
     let budget = state.inner.retry.snapshot(DEVICE);
     state.refresh_once().await.unwrap();
     let calls = base.connect_calls.load(Ordering::SeqCst);
-    let resources = finish(&state, &base, expected).await;
+    let resources = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(resources && original.shutdown_status().is_ok());
     let budget = budget.unwrap();
     assert_eq!(calls, 1);
@@ -206,6 +212,7 @@ async fn reconnect_native_ready_poll_crossing_total_cannot_publish_or_replace_or
     for fate in [Fate::LateSuccess, Fate::LateFailure] {
         let expected = baseline();
         let (state, base) = configured([fate], None, Some(Duration::from_millis(40)));
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         let ticket = state.inner.lifecycle.ticket(DEVICE).await.unwrap();
         let slot = state.reserve_failure_slot(DEVICE).await.unwrap();
         let clock = lifecycle::ConnectionDeadline::for_scan_candidate(OBSERVE).unwrap();
@@ -229,7 +236,8 @@ async fn reconnect_native_ready_poll_crossing_total_cannot_publish_or_replace_or
         let unpublished = state.inner.tunnels.read().await.is_empty();
         let snapshot = state.inner.native.snapshot();
         let budget = state.inner.retry.snapshot(DEVICE);
-        let resources = finish(&state, &base, expected).await;
+        let resources = finish(&state, &base, expected, &mut terminal_inputs).await;
+        drop(terminal_inputs);
         assert!(resources && original.shutdown_status().is_ok() && unpublished);
         let budget = budget.unwrap();
         let error = result.unwrap_err();
@@ -316,6 +324,7 @@ async fn reconnect_native_post_source_resource_limit_keeps_class_and_original_pu
         .unwrap(),
     )
     .unwrap();
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     publish(&state, Route::Wifi(None)).await.unwrap();
     let old = base.handle();
     let publication = state.inner.tunnels.read().await[DEVICE].publication.clone();
@@ -356,7 +365,8 @@ async fn reconnect_native_post_source_resource_limit_keeps_class_and_original_pu
         });
     let owners = state.inner.native.snapshot();
     let budget = state.inner.retry.snapshot(DEVICE);
-    let resources = finish(&state, &base, expected).await;
+    let resources = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     // Original joins, native duplex EOF and task/registry/permit recovery are
     // checked before the changed classification/publication assertions.
     assert!(resources && old.shutdown_status().is_ok() && new.shutdown_status().is_ok());
@@ -518,6 +528,9 @@ async fn reconnect_native_auto_a_total_expiry_keeps_b_http_query_and_stop_isolat
         .unwrap(),
     )
     .unwrap();
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let scan_state = state.clone();
     let mut scan = tokio::spawn(async move { scan_state.refresh_once().await });
@@ -597,9 +610,11 @@ async fn reconnect_native_auto_a_total_expiry_keeps_b_http_query_and_stop_isolat
         source.healthy.handles.lock().unwrap().clone(),
     ]
     .concat();
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
     let drain = state.drain_native(OBSERVE).await;
-    state.clear().await;
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
     server.abort();
     let _ = server.await;
     let a_resources = recovered(&source.pending, expected).await;

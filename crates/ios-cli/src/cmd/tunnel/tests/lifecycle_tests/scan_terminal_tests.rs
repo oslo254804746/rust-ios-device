@@ -33,6 +33,7 @@ fn assert_cancelled(error: &anyhow::Error) {
 async fn lifecycle_tunnel_shutdown_fences_scan_close_before_capture_never_polls_source() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut callback_input = state.prepare_cutover::<1>().unwrap();
     let captures = Arc::new(AtomicUsize::new(0));
     let observed = captures.clone();
     state
@@ -40,7 +41,7 @@ async fn lifecycle_tunnel_shutdown_fences_scan_close_before_capture_never_polls_
         .lifecycle
         .on_next_scan_capture(move |lifecycle| {
             observed.fetch_add(1, Ordering::SeqCst);
-            lifecycle.close();
+            lifecycle.close(&mut callback_input);
         });
     // The callback completes close after the real open check and deadline,
     // before the real watch subscription. No scheduler race is required.
@@ -68,6 +69,7 @@ async fn lifecycle_tunnel_shutdown_fences_scan_close_before_capture_never_polls_
 async fn lifecycle_tunnel_shutdown_fences_scan_clear_before_capture_remains_reusable() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut callback_input = state.prepare_cutover::<2>().unwrap();
     let captures = Arc::new(AtomicUsize::new(0));
     let observed = captures.clone();
     state
@@ -75,7 +77,7 @@ async fn lifecycle_tunnel_shutdown_fences_scan_clear_before_capture_remains_reus
         .lifecycle
         .on_next_scan_capture(move |lifecycle| {
             observed.fetch_add(1, Ordering::SeqCst);
-            lifecycle.clear();
+            lifecycle.clear(&mut callback_input);
         });
     for expected in 1..=2 {
         tokio::time::timeout(LOCAL_BUDGET, state.refresh_once())
@@ -98,13 +100,14 @@ async fn lifecycle_tunnel_shutdown_fences_scan_closed_and_overflow_keep_admissio
     for terminal in [false, true] {
         let source = FakeSource::new();
         let state = state(source.clone(), Duration::MAX);
+        let mut terminal_input = terminal.then(|| state.prepare_cutover::<1>().unwrap());
         let captures = Arc::new(AtomicUsize::new(0));
         let observed = captures.clone();
         state.inner.lifecycle.on_next_scan_capture(move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
         });
         if terminal {
-            state.notify_shutdown();
+            state.notify_shutdown(terminal_input.as_mut().unwrap());
         }
         let error = tokio::time::timeout(LOCAL_BUDGET, state.refresh_once())
             .await
@@ -132,12 +135,14 @@ async fn lifecycle_tunnel_shutdown_fences_scan_closed_and_overflow_keep_admissio
 async fn lifecycle_tunnel_shutdown_fences_scan_close_after_capture_never_polls_drive_work() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut close_input = state.prepare_cutover::<1>().unwrap();
     let mut control = state
         .inner
         .lifecycle
         .scan_control(TUNNEL_CONNECT_TIMEOUT)
         .unwrap();
-    state.inner.lifecycle.close();
+    state.inner.lifecycle.close(&mut close_input);
+    drop(close_input);
     let polls = AtomicUsize::new(0);
     let outcome = tokio::time::timeout(
         LOCAL_BUDGET,

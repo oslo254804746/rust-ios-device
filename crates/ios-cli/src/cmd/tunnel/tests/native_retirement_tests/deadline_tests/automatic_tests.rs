@@ -28,6 +28,7 @@ async fn automatic(delay: Delay, budget: Duration, insert_delay: bool) -> Observ
         source.clone(),
         budget,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     if insert_delay {
         *state.inner.publication_after_insert.lock().unwrap() =
             Some(Box::new(|| std::thread::sleep(CROSS)));
@@ -62,7 +63,8 @@ async fn automatic(delay: Delay, budget: Duration, insert_delay: bool) -> Observ
         no_panic,
     };
     let handles = base.handles.lock().unwrap().clone();
-    let recovery = finish(&state, &base, expected).await;
+    let recovery = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(
         recovery
             && handles
@@ -186,6 +188,7 @@ async fn whole_scan_deadline_crossing_real_native_source_metadata_and_publicatio
             source.clone(),
             OBSERVE,
         );
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         state.inner.get_mut().unwrap().scan_timeout = BUDGET;
         if matches!(delay, Delay::Publication) {
             *state.inner.publication_after_insert.lock().unwrap() =
@@ -195,7 +198,8 @@ async fn whole_scan_deadline_crossing_real_native_source_metadata_and_publicatio
         let unpublished = state.inner.tunnels.read().await.is_empty();
         let no_backoff = state.inner.failed_attempts.read().await.is_empty();
         let not_ready = !state.is_ready().await;
-        let recovery = finish(&state, &base, expected).await;
+        let recovery = finish(&state, &base, expected, &mut terminal_inputs).await;
+        drop(terminal_inputs);
         assert!(recovery && base.handle().shutdown_status().is_ok());
         assert!(unpublished && no_backoff && not_ready);
         elapsed(&error);

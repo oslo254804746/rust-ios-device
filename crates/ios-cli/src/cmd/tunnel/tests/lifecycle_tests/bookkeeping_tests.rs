@@ -48,11 +48,14 @@ async fn refused(budget: Duration) -> anyhow::Error {
     source.usb.lock().unwrap().push(A.into());
     source.script(A, [Behavior::Failure(std::io::ErrorKind::BrokenPipe)]);
     let state = bounded_state(source.clone(), budget);
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let error = state.refresh_once().await.unwrap_err();
     let unchanged = state.inner.failed_attempts.read().await.is_empty();
     let not_ready = !state.is_ready().await;
     let slots = state.inner.failure_slots.available_permits();
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     assert!(unchanged && not_ready);
     assert_eq!(source.count(A), 1);
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
@@ -95,6 +98,8 @@ async fn lifecycle_tunnel_bookkeeping_overflow_preserves_input_category_and_slot
 async fn lifecycle_tunnel_bookkeeping_deadline_crossing_before_commit_does_not_create_row() {
     let source = FakeSource::new();
     let state = bounded_state(source.clone(), WRITE_BUDGET);
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let pending = intent(&state, A).await;
     state
         .inner
@@ -106,7 +111,8 @@ async fn lifecycle_tunnel_bookkeeping_deadline_crossing_before_commit_does_not_c
         .unwrap_err();
     let unchanged = state.inner.failed_attempts.read().await.is_empty();
     let slots = state.inner.failure_slots.available_permits();
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     elapsed(&error);
     assert!(unchanged && source.calls.lock().unwrap().is_empty());
     assert_eq!(slots, MAX_FAILURE_RECORDS);
@@ -116,6 +122,8 @@ async fn lifecycle_tunnel_bookkeeping_deadline_crossing_before_commit_does_not_c
 async fn lifecycle_tunnel_bookkeeping_late_insert_rolls_back_new_unobserved_row() {
     let source = FakeSource::new();
     let state = bounded_state(source.clone(), WRITE_BUDGET);
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let pending = intent(&state, A).await;
     *state.inner.failure_after_insert.lock().unwrap() =
         Some(Box::new(|| std::thread::sleep(CROSS)));
@@ -125,7 +133,8 @@ async fn lifecycle_tunnel_bookkeeping_late_insert_rolls_back_new_unobserved_row(
         .unwrap_err();
     let unchanged = state.inner.failed_attempts.read().await.is_empty();
     let slots = state.inner.failure_slots.available_permits();
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     elapsed(&error);
     assert!(unchanged && source.calls.lock().unwrap().is_empty());
     assert_eq!(slots, MAX_FAILURE_RECORDS);
@@ -135,6 +144,8 @@ async fn lifecycle_tunnel_bookkeeping_late_insert_rolls_back_new_unobserved_row(
 async fn lifecycle_tunnel_bookkeeping_late_update_restores_original_backoff_and_permit() {
     let source = FakeSource::new();
     let state = bounded_state(source, WRITE_BUDGET);
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let first = intent(&state, A).await;
     state
         .record_prepared_failure(
@@ -160,7 +171,8 @@ async fn lifecycle_tunnel_bookkeeping_late_update_restores_original_backoff_and_
         .ptr_eq(after.slot.as_ref().unwrap());
     drop(before.slot);
     drop(after.slot);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     elapsed(&error);
     assert!(same_permit && before.identity == after.identity);
     assert_eq!(
@@ -178,20 +190,29 @@ async fn lifecycle_tunnel_bookkeeping_late_update_restores_original_backoff_and_
 async fn lifecycle_tunnel_bookkeeping_stop_a_skips_only_a_failure_intent() {
     let source = FakeSource::new();
     let state = bounded_state(source, Duration::from_secs(1));
+    let retained_stop = Arc::new(StdMutex::new(state.prepare_cutover::<3>().unwrap()));
+    let callback_stop = retained_stop.clone();
+
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let a = intent(&state, A).await;
     let b = intent(&state, B).await;
-    state.inner.lifecycle.on_next_failure_record(|lifecycle| {
-        lifecycle
-            .stop(A)
-            .now_or_never()
-            .expect("uncontended stop must complete");
-    });
+    state
+        .inner
+        .lifecycle
+        .on_next_failure_record(move |lifecycle| {
+            lifecycle
+                .stop(A, &mut callback_stop.lock().unwrap())
+                .now_or_never()
+                .expect("uncontended stop must complete");
+        });
     state.flush_failure_intents(vec![a, b]).await.unwrap();
     let failed = state.inner.failed_attempts.read().await;
     let only_b = failed.len() == 1 && failed[B].fail_count == 1;
     let slots = state.inner.failure_slots.available_permits();
     drop(failed);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     assert!(only_b);
     assert_eq!(slots, MAX_FAILURE_RECORDS - 1);
     assert_eq!(
@@ -204,6 +225,8 @@ async fn lifecycle_tunnel_bookkeeping_stop_a_skips_only_a_failure_intent() {
 async fn lifecycle_tunnel_bookkeeping_timely_prefix_survives_later_row_rollback() {
     let source = FakeSource::new();
     let state = bounded_state(source, WRITE_BUDGET);
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let a = intent(&state, A).await;
     let b = intent(&state, B).await;
     let weak = state.inner.downgrade();
@@ -216,7 +239,8 @@ async fn lifecycle_tunnel_bookkeeping_timely_prefix_survives_later_row_rollback(
     let prefix = failed.len() == 1 && failed[A].fail_count == 1;
     let slots = state.inner.failure_slots.available_permits();
     drop(failed);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     elapsed(&error);
     assert!(prefix);
     assert_eq!(slots, MAX_FAILURE_RECORDS - 1);
@@ -230,6 +254,8 @@ async fn lifecycle_tunnel_bookkeeping_timely_prefix_survives_later_row_rollback(
 async fn lifecycle_tunnel_bookkeeping_two_writes_share_one_absolute_deadline() {
     let source = FakeSource::new();
     let state = bounded_state(source, Duration::from_millis(80));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let a = intent(&state, A).await;
     let b = intent(&state, B).await;
     let weak = state.inner.downgrade();
@@ -243,7 +269,8 @@ async fn lifecycle_tunnel_bookkeeping_two_writes_share_one_absolute_deadline() {
     let only_first = failed.len() == 1 && failed[A].fail_count == 1;
     let slots = state.inner.failure_slots.available_permits();
     drop(failed);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     elapsed(&error);
     assert!(
         only_first,

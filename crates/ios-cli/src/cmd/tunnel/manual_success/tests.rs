@@ -37,6 +37,9 @@ async fn manual_authorized(
     authority: DeviceAuthority,
 ) -> (Ticket, crate::cmd::tunnel::ControlIdentity, FailureVersion) {
     let ticket = state.inner.lifecycle.ticket(key).await.unwrap();
+    let mut manual_births = ticket
+        .prepare_manual_births::<1>(&state.inner.global_metadata_bytes)
+        .unwrap();
     let slot = state.reserve_failure_slot(key).await.unwrap();
     state
         .record_failed_attempt(
@@ -59,9 +62,11 @@ async fn manual_authorized(
                 authority,
                 Some(failure.clone()),
                 None,
+                &mut manual_births,
             )
         })
         .unwrap();
+    drop(manual_births);
     let desired = ticket.desired().version;
     (ticket, desired, failure)
 }
@@ -108,6 +113,8 @@ async fn manual_preflight_revoked_authority_keeps_original_failure_and_exact_pen
         Arc::new(super::super::source::NoDevices),
         Duration::from_secs(1),
     );
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     let mut plan =
         Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, desired, failure) = manual_authorized(&state, DEVICE, authorized).await;
@@ -131,18 +138,23 @@ async fn manual_preflight_revoked_authority_keeps_original_failure_and_exact_pen
         crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
             && FailureVersion::ptr_eq(&pending.1.version, &failure)
     );
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
 }
 
 #[tokio::test]
 async fn manual_preflight_stop_skips_old_writer_without_restarting_backoff() {
     let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let mut stop = state.prepare_cutover::<3>().unwrap();
     let mut plan =
         Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, _, failure) = manual(&state, "stopped-before-cleanup").await;
     plan.collect().await;
-    state.inner.lifecycle.stop(ticket.udid()).await;
+    state.inner.lifecycle.stop(ticket.udid(), &mut stop).await;
+    drop(stop);
     plan.into_inner()
         .flush_collected(
             &state,
@@ -155,8 +167,9 @@ async fn manual_preflight_stop_skips_old_writer_without_restarting_backoff() {
         &failure
     ));
     assert!(ticket.pending_success().is_none());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
 }
 
 #[tokio::test(start_paused = true)]
@@ -181,6 +194,8 @@ async fn manual_preflight_expired_authority_keeps_failure_and_unprocessed_pendin
         Arc::new(super::super::source::NoDevices),
         Duration::from_secs(1),
     );
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     let mut plan =
         Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, desired, failure) = manual_authorized(&state, DEVICE, authorized).await;
@@ -203,13 +218,16 @@ async fn manual_preflight_expired_authority_keeps_failure_and_unprocessed_pendin
         crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
             && FailureVersion::ptr_eq(&pending.1.version, &failure)
     );
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
 }
 
 #[tokio::test]
 async fn actual_pending_clear_late_clock_restores_same_desired_and_failure_arcs() {
     let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     let (ticket, desired, failure) = manual(&state, "pending-clear-clock").await;
     let deadline = super::super::scan::Deadline::new(Duration::from_millis(40)).unwrap();
     let checks = std::sync::atomic::AtomicUsize::new(0);
@@ -231,8 +249,9 @@ async fn actual_pending_clear_late_clock_restores_same_desired_and_failure_arcs(
         crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
             && FailureVersion::ptr_eq(&pending.1.version, &failure)
     );
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
 }
 
 #[test]
@@ -267,6 +286,9 @@ async fn manual_preflight_actual_foreign_roots_collect_current_at_closed_zero_an
     use std::sync::Mutex;
 
     let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let mut epoch_clear = state.prepare_cutover::<2>().unwrap();
     let origin = state.inner.global_metadata_bytes.clone();
     let before = origin.available_permits();
     let bytes = Preflight::bytes();
@@ -291,7 +313,8 @@ async fn manual_preflight_actual_foreign_roots_collect_current_at_closed_zero_an
         before - super::super::lifecycle::MAX_DEVICE_GATES * TicketOwner::body_bytes()
     );
     let (old, old_desired, _) = manual(&state, "late-foreign-current").await;
-    state.inner.lifecycle.clear();
+    state.inner.lifecycle.clear(&mut epoch_clear);
+    drop(epoch_clear);
     let (ticket, desired, failure) = manual(&state, "late-foreign-current").await;
     assert!(!super::super::ControlIdentity::ptr_eq(
         &old_desired,
@@ -332,9 +355,10 @@ async fn manual_preflight_actual_foreign_roots_collect_current_at_closed_zero_an
     assert!(ticket.pending_success().is_none());
     assert!(state.inner.failed_attempts.read().await.is_empty());
     assert_eq!(bank.available_permits(), bytes);
-    drop((old, ticket, held, failure));
-    state.notify_shutdown();
-    state.clear().await;
+    drop((old, old_desired, ticket, desired, held, failure));
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
     drop(state);
     assert_eq!(
         origin.available_permits(),
@@ -345,10 +369,15 @@ async fn manual_preflight_actual_foreign_roots_collect_current_at_closed_zero_an
 #[tokio::test]
 async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at_zero_quota() {
     let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     assert_eq!(state.inner.lifecycle.desired().await.unwrap().len(), 0);
     let mut plan = Preflight::new(&bank, &state.inner.lifecycle).unwrap();
     let (ticket, old_desired, failure) = manual(&state, "source-created-manual").await;
+    let mut manual_births = ticket
+        .prepare_manual_births::<1>(&state.inner.global_metadata_bytes)
+        .unwrap();
     ticket
         .commit(|| {
             ticket.establish_manual(
@@ -356,9 +385,11 @@ async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at
                 authority(&state, ticket.udid()),
                 Some(failure.clone()),
                 None,
+                &mut manual_births,
             )
         })
         .unwrap();
+    drop(manual_births);
     let new_desired = ticket.desired().version;
     assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &new_desired,
@@ -393,8 +424,9 @@ async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at
         .contains_key(ticket.udid()));
     assert!(ticket.pending_success().is_none());
     drop(held);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
 }
 
 #[tokio::test]
@@ -421,6 +453,8 @@ async fn manual_preflight_does_not_pin_idle_automatic_namespace() {
 #[tokio::test]
 async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() {
     let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     let mut plan =
         Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, old_desired, old_failure) = manual(&state, "changing-version").await;
@@ -440,6 +474,9 @@ async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() 
     let new_failure = state.inner.failed_attempts.read().await[ticket.udid()]
         .version
         .clone();
+    let mut manual_births = ticket
+        .prepare_manual_births::<1>(&state.inner.global_metadata_bytes)
+        .unwrap();
     ticket
         .commit(|| {
             ticket.establish_manual(
@@ -447,9 +484,11 @@ async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() 
                 authority(&state, ticket.udid()),
                 Some(new_failure.clone()),
                 None,
+                &mut manual_births,
             )
         })
         .unwrap();
+    drop(manual_births);
     let new_desired = ticket.desired().version;
     assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &old_desired,
@@ -473,16 +512,23 @@ async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() 
         &new_desired
     ));
     assert!(FailureVersion::ptr_eq(&pending.version, &new_failure));
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
 }
 
 #[tokio::test]
 async fn manual_preflight_actual_late_writer_restores_failure_stamp_and_pending_tuple() {
     let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     let plan = Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
     let (ticket, desired, failure) = manual(&state, "late-manual-success").await;
-    ticket.fenced().remember_failure(Some(failure.clone()));
+    let mut releases = super::super::marker_identity::ReleaseFence::<2>::new();
+    ticket
+        .fenced()
+        .remember_failure(Some(failure.clone()), &mut releases);
+    drop(releases);
     let original_stamp = ticket.failure_stamp().unwrap();
     *state.inner.success_after_remove.lock().unwrap() =
         Some(Box::new(|| std::thread::sleep(Duration::from_millis(100))));
@@ -507,6 +553,7 @@ async fn manual_preflight_actual_late_writer_restores_failure_stamp_and_pending_
         crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
             && FailureVersion::ptr_eq(&pending.1.version, &failure)
     );
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
 }

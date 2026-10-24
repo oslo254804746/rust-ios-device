@@ -3,8 +3,10 @@ use super::*;
 #[test]
 fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_views_hold_original_fees(
 ) {
-    let total = Lifecycle::watch_bytes();
-    let short_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total - 1);
+    let marker_bytes = ControlIdentity::body_bytes();
+    let initial = Lifecycle::watch_bytes() + 2 * marker_bytes;
+    let total = initial + marker_bytes;
+    let short_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(initial - 1);
     let short = short_birth.raw().clone();
     let error = super::super::metadata_vec::with_allocation_hook(
         |_, _| panic!("partial lifecycle watch prefix allocated"),
@@ -14,9 +16,10 @@ fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_view
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
     );
-    assert_eq!(short.available_permits(), total - 1);
+    assert_eq!(short.available_permits(), initial - 1);
     let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
+    let mut close = Cutover::<1>::new(&bank_birth, &bank).unwrap();
     let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = observed.clone();
     let credit = bank.clone();
@@ -28,13 +31,15 @@ fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_view
         || Lifecycle::with_metadata(bank_birth.clone()).unwrap(),
     );
     let observed = observed.lock().unwrap();
-    assert_eq!(observed.len(), 2);
+    assert_eq!(observed.len(), 4);
+    assert_eq!(observed[0].0, marker_bytes);
+    assert_eq!(observed[1].0, marker_bytes);
     assert_eq!(
-        observed[0].0,
+        observed[2].0,
         watch::body_bytes::<Option<crate::cmd::tunnel::ControlIdentity>>()
     );
     assert_eq!(
-        observed[1].0,
+        observed[3].0,
         watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>()
     );
     let global_value = {
@@ -45,9 +50,9 @@ fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_view
         let value = lifecycle.scan.borrow();
         std::ptr::from_ref(&*value) as usize
     };
-    assert!(observed[0].1 <= global_value && global_value < observed[0].1 + observed[0].0);
-    assert!(observed[1].1 <= scan_value && scan_value < observed[1].1 + observed[1].0);
-    assert_ne!(observed[0].1, observed[1].1);
+    assert!(observed[2].1 <= global_value && global_value < observed[2].1 + observed[2].0);
+    assert!(observed[3].1 <= scan_value && scan_value < observed[3].1 + observed[3].0);
+    assert_ne!(observed[2].1, observed[3].1);
     drop(observed);
     bank.close();
     let (global, scan) = super::super::metadata_vec::with_allocation_hook(
@@ -55,7 +60,7 @@ fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_view
         || {
             let global = lifecycle.global_epoch().unwrap();
             let scan = lifecycle.scan_control(Duration::from_secs(1)).unwrap();
-            lifecycle.close();
+            lifecycle.close(&mut close);
             assert!(global
                 .check()
                 .unwrap_err()
@@ -63,6 +68,7 @@ fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_view
             (global, scan)
         },
     );
+    drop(close);
     drop(lifecycle);
     assert_eq!(bank.available_permits(), 0);
     drop(global);
@@ -74,10 +80,13 @@ fn lifecycle_two_watch_roots_whole_admission_precedes_any_backing_and_final_view
 #[tokio::test]
 async fn coordinator_gate_owner_parallel_old_tickets_keep_original_key_and_closed_pool_body() {
     let key = "original-gate-key";
-    let total = Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes();
+    let marker_bytes = ControlIdentity::body_bytes();
+    let total =
+        Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes() + 6 * marker_bytes;
     let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
     let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
+    let mut clear = lifecycle.prepare_cutover::<2>(&bank).unwrap();
     use futures_util::FutureExt;
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = seen.clone();
@@ -94,47 +103,52 @@ async fn coordinator_gate_owner_parallel_old_tickets_keep_original_key_and_close
     let backing_pointer = lifecycle.devices.lock().await.rows.as_ptr() as usize;
     {
         let observed = seen.lock().unwrap();
-        assert_eq!(observed.len(), 5);
+        assert_eq!(observed.len(), 7);
         assert_eq!(
             observed[0].0,
             std::alloc::Layout::array::<u8>(key.len()).unwrap()
         );
         assert_eq!(observed[0].1, ticket.gate.udid.as_ptr() as usize);
-        assert_eq!(observed[0].2, 2 * std::mem::size_of::<DeviceRow>());
+        assert_eq!(
+            observed[0].2,
+            2 * std::mem::size_of::<DeviceRow>() + 2 * marker_bytes
+        );
         assert_eq!(
             observed[1].0,
             std::alloc::Layout::array::<DeviceRow>(2).unwrap()
         );
-        assert_eq!(observed[1].2, 0);
+        assert_eq!(observed[1].2, 2 * marker_bytes);
         assert_eq!(observed[1].1, backing_pointer);
+        assert_eq!(observed[2].0.size(), marker_bytes);
+        assert_eq!(observed[3].0.size(), marker_bytes);
         assert_eq!(
-            observed[2].0.size(),
+            observed[4].0.size(),
             watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>()
         );
         assert_eq!(
-            observed[3].0.size(),
+            observed[5].0.size(),
             watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>()
         );
-        assert_eq!(observed[4].0.size(), DeviceGate::body_bytes());
+        assert_eq!(observed[6].0.size(), DeviceGate::body_bytes());
         for allocation in &observed[2..] {
             assert_eq!(allocation.2, 0);
         }
         let data = std::ptr::from_ref(&*ticket.gate) as usize;
-        assert!(observed[4].1 <= data && data < observed[4].1 + observed[4].0.size());
+        assert!(observed[6].1 <= data && data < observed[6].1 + observed[6].0.size());
         let generation = ticket.gate.generation.borrow();
         let generation_value = std::ptr::from_ref(&*generation) as usize;
         assert!(
-            observed[2].1 <= generation_value
-                && generation_value < observed[2].1 + observed[2].0.size()
+            observed[4].1 <= generation_value
+                && generation_value < observed[4].1 + observed[4].0.size()
         );
         let intent = ticket.gate.intent.subscribe();
         let desired = intent.borrow();
         let desired_value = std::ptr::from_ref(&*desired) as usize;
         assert!(
-            observed[3].1 <= desired_value && desired_value < observed[3].1 + observed[3].0.size()
+            observed[5].1 <= desired_value && desired_value < observed[5].1 + observed[5].0.size()
         );
-        assert_ne!(observed[2].1, observed[3].1);
-        assert_ne!(observed[3].1, observed[4].1);
+        assert_ne!(observed[4].1, observed[5].1);
+        assert_ne!(observed[5].1, observed[6].1);
         assert_eq!(
             ticket.gate.storage().num_permits(),
             DeviceGate::body_bytes() + key.len()
@@ -149,12 +163,13 @@ async fn coordinator_gate_owner_parallel_old_tickets_keep_original_key_and_close
     let pointer = &*ticket.gate as *const DeviceGate as usize;
     let key_pointer = ticket.gate.udid.as_ptr() as usize;
     bank.close();
-    lifecycle.clear();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     assert!(!ticket.is_current());
     drop(lifecycle);
     let backing = 2 * std::mem::size_of::<DeviceRow>()
         + watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    assert_eq!(bank.available_permits(), backing);
+    assert_eq!(bank.available_permits(), backing + 2 * marker_bytes);
     let barrier = Arc::new(std::sync::Barrier::new(8));
     std::thread::scope(|scope| {
         for _ in 0..7 {
@@ -185,7 +200,9 @@ async fn coordinator_gate_owner_original_live_and_stopped_roots_survive_capacity
     let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
     let live = lifecycle.ticket("retained-live-gate").await.unwrap();
     drop(lifecycle.ticket("persistent-stopped-gate").await.unwrap());
-    lifecycle.stop("persistent-stopped-gate").await;
+    let mut stop = lifecycle.prepare_cutover::<3>(&bank).unwrap();
+    lifecycle.stop("persistent-stopped-gate", &mut stop).await;
+    drop(stop);
     let stopped_pointer = {
         let devices = lifecycle.devices.lock().await;
         let stopped = devices.get("persistent-stopped-gate").unwrap();
@@ -220,7 +237,9 @@ async fn coordinator_gate_owner_original_live_and_stopped_roots_survive_capacity
         stopped.desired().desired,
         super::super::intent::Desired::Stopped
     ));
-    lifecycle.clear();
+    let mut clear = lifecycle.prepare_cutover::<2>(&bank).unwrap();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     let renewed = lifecycle.ticket("retained-live-gate").await.unwrap();
     assert!(live.gate.ptr_eq(&renewed.gate));
     assert!(!live.same_incarnation(&renewed));

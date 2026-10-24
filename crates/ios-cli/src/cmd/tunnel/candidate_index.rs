@@ -12,6 +12,7 @@ pub(super) struct Candidate {
     pub(super) ticket: TicketOwner,
     pub(super) native_id: Option<u32>,
     pub(super) node: super::failure_table::OwnedNode,
+    pub(super) control: super::marker_identity::Cutover<3>,
 }
 
 #[cfg(test)]
@@ -22,6 +23,7 @@ impl Candidate {
             + super::scan_seen::Seen::first_bytes()
             + super::failure_table::Node::input_bytes(&Route::Usbmux)
             + TicketOwner::body_bytes()
+            + 3 * super::ControlIdentity::body_bytes()
     }
 }
 

@@ -4,6 +4,8 @@ use super::*;
 async fn record_copy_refusal_keeps_live_device_and_never_starts_another_source() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     drop(start(state.clone(), A).await.unwrap());
     let bank = state.inner.global_metadata_bytes.clone();
     let mut held = bank
@@ -32,7 +34,8 @@ async fn record_copy_refusal_keeps_live_device_and_never_starts_another_source()
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
     drop(held);
     assert!(state.get_record(A).await.unwrap().is_some());
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -40,6 +43,8 @@ async fn record_copy_refusal_keeps_live_device_and_never_starts_another_source()
 async fn record_copy_post_source_refusal_does_not_browse_default_fallback() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let bank = state.inner.global_metadata_bytes.clone();
     let pressure = Arc::new(StdMutex::new(None));
     let captured = pressure.clone();
@@ -63,7 +68,8 @@ async fn record_copy_post_source_refusal_does_not_browse_default_fallback() {
     assert!(state.inner.tunnels.read().await.is_empty());
     drop(pressure.lock().unwrap().take());
     drop(start(state.clone(), A).await.unwrap());
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.count(A), 2);
 }
 
@@ -71,6 +77,8 @@ async fn record_copy_post_source_refusal_does_not_browse_default_fallback() {
 async fn record_automatic_alive_check_does_not_copy_output_fields() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     drop(start(state.clone(), A).await.unwrap());
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let hook = record_owner::on_text_allocated(|_, _| panic!("alive scan copied output record"));
@@ -79,13 +87,16 @@ async fn record_automatic_alive_check_does_not_copy_output_fields() {
     assert!(state.inner.tunnels.read().await.get(A).unwrap().is_alive());
     assert_eq!(source.count(A), 1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }
 
 #[tokio::test]
 async fn record_http_quota_refusal_is_service_unavailable_instead_of_missing() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     drop(start(state.clone(), A).await.unwrap());
     let bank = state.inner.global_metadata_bytes.clone();
     let held = bank
@@ -106,5 +117,6 @@ async fn record_http_quota_refusal_is_service_unavailable_instead_of_missing() {
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
     drop(held);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }

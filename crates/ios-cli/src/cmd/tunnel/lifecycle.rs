@@ -1,5 +1,8 @@
 //! Private manager coordination. No network future runs under the device table lock.
 
+use super::marker_identity::{
+    BirthBatch, BirthContext, Cutover, PendingBatch, PendingCutover, ReleaseBatch, ReleaseMarkers,
+};
 use super::ControlIdentity;
 use std::future::Future;
 use std::sync::Arc;
@@ -415,20 +418,16 @@ impl Lifecycle {
     pub(super) fn with_metadata(metadata_bytes: super::birth_bank::BirthBank) -> Result<Self> {
         let mut storage =
             super::admission::known_metadata_charge(&metadata_bytes, Self::watch_bytes())?;
+        let mut births = Cutover::<2>::new(&metadata_bytes, &metadata_bytes)?;
         let shutdown = watch::from_grant(
-            Some(ControlIdentity::new(&metadata_bytes)),
+            Some(births.place(&metadata_bytes)),
             &metadata_bytes,
             storage
                 .split(watch::body_bytes::<Option<ControlIdentity>>())
                 .expect("whole lifecycle watch grant"),
         )?
         .0;
-        let scan = watch::from_grant(
-            ControlIdentity::new(&metadata_bytes),
-            &metadata_bytes,
-            storage,
-        )?
-        .0;
+        let scan = watch::from_grant(births.place(&metadata_bytes), &metadata_bytes, storage)?.0;
         Ok(Self {
             devices: Mutex::new(DeviceTable::default()),
             metadata_bytes,
@@ -454,12 +453,41 @@ impl Lifecycle {
     }
 
     pub(super) async fn ticket(&self, udid: &str) -> Result<Ticket> {
+        self.ticket_with_inputs(udid, None, None).await
+    }
+
+    /// A caller which needs admission in a closed-pool phase supplies its
+    /// actual reset destinations beforehand. Ordinary Result admissions stage
+    /// the exact CURRENT stale set before mutating any of its gates.
+    #[cfg(test)]
+    pub(super) async fn ticket_with_births(
+        &self,
+        udid: &str,
+        prepared: Option<BirthBatch>,
+    ) -> Result<Ticket> {
+        self.ticket_with_inputs(udid, prepared, None).await
+    }
+
+    pub(super) async fn ticket_with_inputs(
+        &self,
+        udid: &str,
+        prepared: Option<BirthBatch>,
+        release_fields: Option<ReleaseBatch>,
+    ) -> Result<Ticket> {
         // Guard every caller before retaining a key or waiting on the map.
         // Accepted key capacity and gate storage also enter the shared byte
         // bank before insertion. The selector check remains a separate bound.
         super::admission::selectors(udid, None)?;
         let mut shutdown = self.shutdown.subscribe();
         let shutdown_generation = shutdown.borrow().clone().ok_or_else(cancelled)?;
+        // These owners precede the device guard. Their physical-only keepers
+        // release AFTER that guard, also on error/cancellation/unwind.
+        let mut resets = prepared;
+        let mut births = None;
+        let mut reset_preparation = PendingBatch::new(&self.metadata_bytes, &self.metadata_bytes);
+        let mut gate_preparation =
+            PendingCutover::<2>::new(&self.metadata_bytes, &self.metadata_bytes);
+        let mut pruned = release_fields.unwrap_or_else(|| ReleaseBatch::new(&self.metadata_bytes));
         let mut devices = tokio::select! {
             biased;
             _ = shutdown.changed() => return Err(cancelled()),
@@ -477,17 +505,50 @@ impl Lifecycle {
         // Clear never waits on this map. Renew old desired states on the next
         // admission, retaining the canonical gate while old tickets still own
         // it. Removing/replacing those Arcs would evade the live 4096 ceiling.
+        let stale = devices
+            .rows
+            .iter()
+            .filter(|gate| !gate.intent.is_epoch(&shutdown_generation))
+            .count();
+        if resets.is_none() {
+            resets = Some(reset_preparation.prepare(2 * stale)?);
+        }
+        let resets = resets.as_mut().expect("prepared current reset batch");
+        assert!(
+            resets.remaining() >= 2 * stale,
+            "complete prepared stale-gate batch"
+        );
         for gate in &devices.rows {
             if !gate.intent.is_epoch(&shutdown_generation) {
-                gate.intent.reset(shutdown_generation.clone());
+                gate.intent.reset(shutdown_generation.clone(), resets);
+                resets.keep(&gate.generation.borrow());
                 gate.generation
-                    .send_replace(ControlIdentity::new(&self.metadata_bytes));
+                    .send_replace(resets.place(&self.metadata_bytes));
             }
         }
         let gate = match devices.get(udid).cloned() {
             Some(gate) => gate,
             None => {
                 if devices.rows.len() >= MAX_DEVICE_GATES {
+                    // This is the existing Result admission phase, before its
+                    // first capacity-pruning action or any transport Source.
+                    // Supplied closed-phase storage performs no new admission.
+                    pruned.prepare(5 * devices.rows.len())?;
+                    // The decision can change as other tickets drop. Keep the
+                    // exact marker fields of EVERY current row before retain,
+                    // without keeping the Gate/watch payload alive any longer.
+                    for gate in &devices.rows {
+                        pruned.keep(&gate.generation.borrow());
+                        let snapshot = gate.intent.snapshot();
+                        pruned.keep(&snapshot.epoch);
+                        pruned.keep(&snapshot.version);
+                        if let Some((_, version)) = gate.intent.failure() {
+                            pruned.keep(&version);
+                        }
+                        if let Some((version, _)) = gate.intent.pending_success() {
+                            pruned.keep(&version);
+                        }
+                    }
                     devices
                         .rows
                         .retain(|gate| gate.strong_count() > 1 || gate.intent.persistent());
@@ -513,12 +574,13 @@ impl Lifecycle {
                 key_bytes.extend_from_slice(udid.as_bytes());
                 let key = String::from_utf8(key_bytes).expect("copied UDID str is valid UTF-8");
                 devices.reserve_row(&self.metadata_bytes)?;
+                let births = births.get_or_insert(gate_preparation.prepare()?);
                 let gate = DeviceRow::from_grant_with_fields(
                     DeviceGate {
                         udid: key,
                         serial: Mutex::new(()),
                         generation: watch::from_grant(
-                            ControlIdentity::new(&self.metadata_bytes),
+                            births.place(&self.metadata_bytes),
                             &self.metadata_bytes,
                             generation_storage,
                         )?
@@ -527,6 +589,7 @@ impl Lifecycle {
                             shutdown_generation.clone(),
                             self.metadata_bytes.clone(),
                             intent_storage,
+                            births,
                         )?,
                     },
                     &self.metadata_bytes,
@@ -545,6 +608,23 @@ impl Lifecycle {
             shutdown_generation,
             intent_version: None,
         })
+    }
+
+    pub(super) fn prepare_cutover<const N: usize>(
+        &self,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Cutover<N>> {
+        Cutover::new(&self.metadata_bytes, bank)
+    }
+
+    #[cfg(test)]
+    pub(super) fn prepare_reset_births(&self, count: usize) -> Result<BirthBatch> {
+        BirthBatch::new(&self.metadata_bytes, &self.metadata_bytes, count)
+    }
+
+    #[cfg(test)]
+    pub(super) fn byte_bank(&self) -> &Arc<Semaphore> {
+        self.metadata_bytes.raw()
     }
 
     pub(super) async fn desired(&self) -> Result<super::metadata_vec::KnownVec<DesiredRow>> {
@@ -712,39 +792,49 @@ impl Lifecycle {
     // The caller holds the tunnel table write guard. This fences publication
     // together with removal without waiting for a connecting device's serial lock.
     #[cfg(test)]
-    pub(super) async fn stop(&self, udid: &str) {
-        let _ = self.stop_owned(udid).await;
+    pub(super) async fn stop(&self, udid: &str, cutover: &mut Cutover<3>) {
+        let _ = self.stop_owned(udid, cutover).await;
     }
 
-    pub(super) async fn stop_owned(&self, udid: &str) -> Option<ControlIdentity> {
+    pub(super) async fn stop_owned(
+        &self,
+        udid: &str,
+        cutover: &mut Cutover<3>,
+    ) -> Option<ControlIdentity> {
         let gate = {
             let devices = self.devices.lock().await;
             devices.get(udid).cloned()
         };
         let previous = gate.map(|gate| {
-            gate.intent.replace(super::intent::Desired::Stopped);
+            gate.intent
+                .replace(super::intent::Desired::Stopped, cutover);
+            cutover.keep(&gate.generation.borrow());
             gate.generation
-                .send_replace(ControlIdentity::new(&self.metadata_bytes))
+                .send_replace(cutover.place(&self.metadata_bytes))
         });
-        self.scan
-            .send_replace(ControlIdentity::new(&self.metadata_bytes));
+        cutover.keep(&self.scan.borrow());
+        self.scan.send_replace(cutover.place(&self.metadata_bytes));
         previous
     }
 
-    pub(super) fn clear(&self) {
-        let _ = self.clear_owned();
+    pub(super) fn clear<const N: usize>(&self, cutover: &mut Cutover<N>) {
+        let _ = self.clear_owned(cutover);
     }
 
-    pub(super) fn clear_owned(&self) -> Option<ControlIdentity> {
+    pub(super) fn clear_owned<const N: usize>(
+        &self,
+        cutover: &mut Cutover<N>,
+    ) -> Option<ControlIdentity> {
         let mut previous = None;
         self.shutdown.send_if_modified(|epoch| {
             let Some(current) = epoch else { return false };
+            cutover.keep(current);
             previous = Some(current.clone());
-            *epoch = Some(ControlIdentity::new(&self.metadata_bytes));
+            *epoch = Some(cutover.place(&self.metadata_bytes));
             true
         });
-        self.scan
-            .send_replace(ControlIdentity::new(&self.metadata_bytes));
+        cutover.keep(&self.scan.borrow());
+        self.scan.send_replace(cutover.place(&self.metadata_bytes));
         previous
     }
 
@@ -758,10 +848,13 @@ impl Lifecycle {
         failed.take_other_globals(current.as_ref())
     }
 
-    pub(super) fn close(&self) {
+    pub(super) fn close(&self, cutover: &mut Cutover<1>) {
+        if let Some(current) = self.shutdown.borrow().as_ref() {
+            cutover.keep(current);
+        }
         self.shutdown.send_replace(None);
-        self.scan
-            .send_replace(ControlIdentity::new(&self.metadata_bytes));
+        cutover.keep(&self.scan.borrow());
+        self.scan.send_replace(cutover.place(&self.metadata_bytes));
     }
 
     /// Original allocation-free prefix, before the scan frame's admission.
@@ -950,6 +1043,13 @@ impl Ticket {
         self.gate.intent.snapshot()
     }
 
+    pub(super) fn prepare_manual_births<const N: usize>(
+        &self,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Cutover<N>> {
+        self.gate.intent.prepare_births(bank)
+    }
+
     // Only an unfenced explicit start establishes a new desired selector. The
     // caller already owns the tunnel table and both ticket epoch guards.
     #[cfg(test)]
@@ -959,12 +1059,14 @@ impl Ticket {
         authority: crate::access::DeviceAuthority,
         failure: Option<FailureVersion>,
         deadline: Option<&ConnectionDeadline>,
+        context: &mut impl BirthContext,
     ) -> Result<()> {
         self.establish_manual_with(
             || self.gate.intent.manual(route, authority.clone()),
             &authority,
             failure,
             deadline,
+            context,
         )
     }
 
@@ -974,12 +1076,14 @@ impl Ticket {
         authority: crate::access::DeviceAuthority,
         failure: Option<FailureVersion>,
         deadline: Option<&ConnectionDeadline>,
+        context: &mut impl BirthContext,
     ) -> Result<()> {
         self.establish_manual_with(
             || self.gate.intent.manual_shared(route, authority.clone()),
             &authority,
             failure,
             deadline,
+            context,
         )
     }
 
@@ -989,14 +1093,20 @@ impl Ticket {
         authority: &crate::access::DeviceAuthority,
         failure: Option<FailureVersion>,
         deadline: Option<&ConnectionDeadline>,
+        context: &mut impl BirthContext,
     ) -> Result<()> {
         debug_assert!(self.intent_version.is_none());
-        self.gate.intent.checked_replace(desired, failure, || {
-            if let Some(deadline) = deadline {
-                deadline.check()?;
-            }
-            authority.check_clock()
-        })?;
+        self.gate.intent.checked_replace(
+            desired,
+            failure,
+            || {
+                if let Some(deadline) = deadline {
+                    deadline.check()?;
+                }
+                authority.check_clock()
+            },
+            context,
+        )?;
         Ok(())
     }
 
@@ -1029,29 +1139,42 @@ impl Ticket {
         self.gate.intent.failure()
     }
 
-    pub(super) fn restore_failure_stamp(&self, stamp: Option<(FailureVersion, ControlIdentity)>) {
-        self.gate.intent.set_failure(stamp);
+    pub(super) fn restore_failure_stamp(
+        &self,
+        stamp: Option<(FailureVersion, ControlIdentity)>,
+        context: &mut impl ReleaseMarkers,
+    ) {
+        self.gate.intent.set_failure(stamp, context);
     }
 
-    pub(super) fn clear_failure_version(&self, version: &FailureVersion) {
+    pub(super) fn clear_failure_version(
+        &self,
+        version: &FailureVersion,
+        context: &mut impl ReleaseMarkers,
+    ) {
         let stamp = self.failure_stamp();
         if stamp
             .as_ref()
             .is_some_and(|(row, _)| FailureVersion::ptr_eq(row, version))
         {
-            self.restore_failure_stamp(None);
+            self.restore_failure_stamp(None, context);
         }
     }
 
     // Called under the original failure-table writer/commit, including rollback.
-    pub(super) fn remember_failure(&self, version: Option<FailureVersion>) {
+    pub(super) fn remember_failure(
+        &self,
+        version: Option<FailureVersion>,
+        context: &mut impl ReleaseMarkers,
+    ) {
         let desired = self
             .intent_version
             .clone()
             .unwrap_or_else(|| self.desired().version);
+        context.keep(&desired);
         self.gate
             .intent
-            .set_failure(version.map(|version| (version, desired)));
+            .set_failure(version.map(|version| (version, desired)), context);
     }
 
     pub(super) fn failure_is_current(&self, version: &FailureVersion) -> bool {
@@ -1203,6 +1326,9 @@ mod prepared_ticket_tests;
 mod global_epoch_tests;
 
 #[cfg(test)]
+mod wake_tests;
+
+#[cfg(test)]
 #[path = "lifecycle/deadline_timer_tests.rs"]
 mod deadline_timer_tests;
 
@@ -1246,8 +1372,9 @@ mod tests {
         use futures_util::FutureExt;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let bytes = DeviceGate::body_bytes() + DeviceGate::watch_bytes();
-        let bank_birth =
-            crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + Lifecycle::watch_bytes());
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(
+            bytes + Lifecycle::watch_bytes() + 2 * ControlIdentity::body_bytes(),
+        );
         let bank = bank_birth.raw().clone();
         let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
         let allocated = Arc::new(AtomicUsize::new(0));
@@ -1274,10 +1401,13 @@ mod tests {
     #[tokio::test]
     async fn coordinator_metadata_exact_capacity_shared_tickets_and_last_owner_release() {
         let key = "synthetic-byte-owner";
-        let bytes = Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes();
+        let marker_bytes = ControlIdentity::body_bytes();
+        let bytes =
+            Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes() + 6 * marker_bytes;
         let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
         let bank = bank_birth.raw().clone();
         let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
+        let mut clear = lifecycle.prepare_cutover::<2>(&bank).unwrap();
         let original = lifecycle.ticket(key).await.unwrap();
         assert_eq!(bank.available_permits(), 0);
         let repeated = lifecycle.ticket(key).await.unwrap();
@@ -1290,24 +1420,25 @@ mod tests {
         resource(&lifecycle.ticket("another").await.err().unwrap());
         assert_eq!(lifecycle.coordinator_count().await, 1);
         assert!(original.is_current());
-        lifecycle.clear();
+        lifecycle.clear(&mut clear);
         assert!(!original.is_current());
         assert_eq!(
             bank.available_permits(),
             0,
             "epoch invalidation does not free storage"
         );
+        drop(clear);
         let clone = original.clone();
         drop(lifecycle);
         let backing = 2 * std::mem::size_of::<DeviceRow>() + watch::body_bytes::<ControlIdentity>();
         assert_eq!(
             bank.available_permits(),
-            backing,
+            backing + 2 * marker_bytes,
             "table and scan root freed; original gate and global root still owned"
         );
         drop(original);
         drop(repeated);
-        assert_eq!(bank.available_permits(), backing);
+        assert_eq!(bank.available_permits(), backing + 2 * marker_bytes);
         drop(clone);
         assert_eq!(bank.available_permits(), bytes);
     }
@@ -1315,7 +1446,8 @@ mod tests {
     #[tokio::test]
     async fn coordinator_metadata_failed_backing_admission_rolls_back_original_storage() {
         let key = "synthetic-backing";
-        let bytes = Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes() - 1;
+        let markers = 2 * ControlIdentity::body_bytes();
+        let bytes = Lifecycle::initial_metadata_bytes(key) + Lifecycle::watch_bytes() + markers - 1;
         let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
         let bank = bank_birth.raw().clone();
         let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
@@ -1327,7 +1459,7 @@ mod tests {
         drop(devices);
         assert_eq!(
             bank.available_permits(),
-            bytes - Lifecycle::watch_bytes(),
+            bytes - Lifecycle::watch_bytes() - markers,
             "failed gate/key/backing grants returned; original lifecycle watches retained"
         );
         drop(lifecycle);
@@ -1339,7 +1471,8 @@ mod tests {
         let key_bytes = Lifecycle::additional_metadata_bytes("a");
         let backing = 2 * std::mem::size_of::<DeviceRow>();
         // Two original rows plus a third gate fit, but old+new backing do not.
-        let bytes = 3 * key_bytes + backing + Lifecycle::watch_bytes();
+        let marker_bytes = ControlIdentity::body_bytes();
+        let bytes = 3 * key_bytes + backing + Lifecycle::watch_bytes() + 6 * marker_bytes;
         let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes);
         let bank = bank_birth.raw().clone();
         let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
@@ -1356,7 +1489,7 @@ mod tests {
         drop(lifecycle);
         assert_eq!(
             bank.available_permits(),
-            key_bytes + backing + watch::body_bytes::<ControlIdentity>()
+            key_bytes + backing + watch::body_bytes::<ControlIdentity>() + marker_bytes
         );
         drop(first);
         drop(second);
@@ -1378,10 +1511,14 @@ mod tests {
                     .rows
                     .iter()
                     .map(|gate| {
-                        gate.udid.capacity() + DeviceGate::body_bytes() + DeviceGate::watch_bytes()
+                        gate.udid.capacity()
+                            + DeviceGate::body_bytes()
+                            + DeviceGate::watch_bytes()
+                            + 2 * ControlIdentity::body_bytes()
                     })
                     .sum::<usize>()
-                + Lifecycle::watch_bytes();
+                + Lifecycle::watch_bytes()
+                + 2 * ControlIdentity::body_bytes();
             assert_eq!(bank.available_permits(), 64 * 1024 - actual);
         }
         drop(lifecycle);
@@ -1390,6 +1527,7 @@ mod tests {
             64 * 1024
                 - 5 * Lifecycle::additional_metadata_bytes("a")
                 - watch::body_bytes::<Option<ControlIdentity>>()
+                - 11 * ControlIdentity::body_bytes()
         );
         drop(tickets);
         assert_eq!(bank.available_permits(), 64 * 1024);
@@ -1399,11 +1537,19 @@ mod tests {
     async fn global_clear_resets_desired_intent_and_invalidates_old_ticket() {
         let lifecycle = Lifecycle::new();
         let old = lifecycle.ticket("synthetic-stopped").await.unwrap();
+        let mut replace = old
+            .prepare_manual_births::<1>(lifecycle.byte_bank())
+            .unwrap();
         old.gate
             .intent
-            .replace(super::super::intent::Desired::Stopped);
+            .replace(super::super::intent::Desired::Stopped, &mut replace);
+        drop(replace);
         let before = old.gate.intent.snapshot();
-        lifecycle.clear();
+        let mut clear = lifecycle
+            .prepare_cutover::<2>(lifecycle.byte_bank())
+            .unwrap();
+        lifecycle.clear(&mut clear);
+        drop(clear);
         assert!(!old.is_current());
         let desired = lifecycle.desired().await.unwrap();
         assert_eq!(
@@ -1421,7 +1567,11 @@ mod tests {
         assert!(!ControlIdentity::ptr_eq(&before.epoch, &after.epoch));
         assert!(!ControlIdentity::ptr_eq(&before.version, &after.version));
         assert!(old.gate.ptr_eq(&fresh.gate));
-        lifecycle.close();
+        let mut close = lifecycle
+            .prepare_cutover::<1>(lifecycle.byte_bank())
+            .unwrap();
+        lifecycle.close(&mut close);
+        drop(close);
         assert!(lifecycle.ticket("synthetic-stopped").await.is_err());
     }
 
@@ -1429,13 +1579,23 @@ mod tests {
     async fn lifecycle_tunnel_coordinator_cancel_returns_before_held_lock_release() {
         for terminal in [false, true] {
             let lifecycle = Lifecycle::new();
+            let mut clear = (!terminal).then(|| {
+                lifecycle
+                    .prepare_cutover::<2>(lifecycle.byte_bank())
+                    .unwrap()
+            });
+            let mut close = terminal.then(|| {
+                lifecycle
+                    .prepare_cutover::<1>(lifecycle.byte_bank())
+                    .unwrap()
+            });
             let held = lifecycle.devices.lock().await;
             let mut queued = Box::pin(lifecycle.ticket("synthetic-waiting-device"));
             assert!(futures_util::poll!(&mut queued).is_pending());
             if terminal {
-                lifecycle.close();
+                lifecycle.close(close.as_mut().unwrap());
             } else {
-                lifecycle.clear();
+                lifecycle.clear(clear.as_mut().unwrap());
             }
             let outcome = tokio::time::timeout(Duration::from_secs(1), queued).await;
             assert!(
@@ -1443,6 +1603,7 @@ mod tests {
                 "cancelled admission created coordinator state"
             );
             drop(held);
+            drop((clear, close));
             match outcome.expect("cancellation waited for the held coordinator lock") {
                 Err(error) => {
                     assert!(error.is::<ios_core::OperationCancelled>());
@@ -1463,15 +1624,26 @@ mod tests {
     async fn lifecycle_tunnel_shutdown_admission_coordinator_wait_keeps_original_epoch() {
         for terminal in [false, true] {
             let lifecycle = Lifecycle::new();
+            let mut clear = (!terminal).then(|| {
+                lifecycle
+                    .prepare_cutover::<2>(lifecycle.byte_bank())
+                    .unwrap()
+            });
+            let mut close = terminal.then(|| {
+                lifecycle
+                    .prepare_cutover::<1>(lifecycle.byte_bank())
+                    .unwrap()
+            });
             let held = lifecycle.devices.lock().await;
             let mut queued = Box::pin(lifecycle.ticket("synthetic-queued-device"));
             assert!(futures_util::poll!(&mut queued).is_pending());
             if terminal {
-                lifecycle.close();
+                lifecycle.close(close.as_mut().unwrap());
             } else {
-                lifecycle.clear();
+                lifecycle.clear(clear.as_mut().unwrap());
             }
             drop(held);
+            drop((clear, close));
             let outcome = tokio::time::timeout(Duration::from_secs(1), queued)
                 .await
                 .unwrap();

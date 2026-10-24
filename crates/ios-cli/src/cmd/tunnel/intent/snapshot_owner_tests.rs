@@ -2,20 +2,26 @@ use super::super::{birth_bank::BirthBank, metadata_vec, shared_weak_allocation};
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+fn epoch(origin: &BirthBank) -> ControlIdentity {
+    let mut prepared = Cutover::<1>::new(origin, origin.raw()).unwrap();
+    prepared.place(origin)
+}
+
 #[test]
 fn desired_snapshot_root_each_bank_refusal_precedes_backing_and_rolls_back_other_grants() {
     let bytes = SnapshotOwner::body_bytes();
+    let marker_bytes = ControlIdentity::body_bytes();
     for denied in 0..3 {
         for closed in [false, true] {
             let global = Arc::new(Semaphore::new(bytes));
-            let epoch = BirthBank::new(bytes);
-            let version = BirthBank::new(bytes);
+            let epoch_bank = BirthBank::new(bytes + marker_bytes);
+            let version_bank = BirthBank::new(bytes + marker_bytes);
             let snapshot = Snapshot {
-                epoch: ControlIdentity::new(&epoch),
-                version: ControlIdentity::new(&version),
+                epoch: epoch(&epoch_bank),
+                version: epoch(&version_bank),
                 desired: Desired::Stopped,
             };
-            let banks = [&global, epoch.raw(), version.raw()];
+            let banks = [&global, epoch_bank.raw(), version_bank.raw()];
             let held = if closed {
                 None
             } else {
@@ -48,11 +54,12 @@ fn desired_snapshot_root_each_bank_refusal_precedes_backing_and_rolls_back_other
 #[test]
 fn desired_snapshot_root_actual_span_deduplicates_producer_and_keeps_fees_until_physical_free() {
     let bytes = SnapshotOwner::body_bytes();
+    let marker_bytes = ControlIdentity::body_bytes();
     let global = Arc::new(Semaphore::new(bytes));
-    let origin = BirthBank::new(bytes);
+    let origin = BirthBank::new(bytes + 2 * marker_bytes);
     let snapshot = Snapshot {
-        epoch: ControlIdentity::new(&origin),
-        version: ControlIdentity::new(&origin),
+        epoch: epoch(&origin),
+        version: epoch(&origin),
         desired: Desired::Stopped,
     };
     let old_epoch = snapshot.epoch.downgrade();
@@ -90,5 +97,10 @@ fn desired_snapshot_root_actual_span_deduplicates_producer_and_keeps_fees_until_
     assert_eq!(
         (origin.available_permits(), global.available_permits()),
         (bytes, bytes)
+    );
+    drop((old_epoch, old_version));
+    assert_eq!(
+        (origin.available_permits(), global.available_permits()),
+        (bytes + 2 * marker_bytes, bytes)
     );
 }

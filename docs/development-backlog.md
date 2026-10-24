@@ -1,5 +1,13 @@
 # 当前待开发清单
 
+2026-10-24：L02 [physical marker实际根与预付出生](validation/tunnel-physical-marker-roots-2026-10-24.md)
+15处原生产出生点整体迁移；每个实际root完整G/A费用到最后Weak物理free，raw getter/Clone继承同根。
+控制调用者提前准备真实destination，原锁内只place；Partial preparation和旧/新marker退款由锁外owner持有。
+CURRENT pruning使用实际付费backing，默认栈30个Lifecycle通过；显式预付输入支持zero-quota pruning。
+新增12；完整CLI1901/0FAIL/13原ignored、native110、strict/build/fmt/diff、actual manager1 trap0与host5/0/22通过。
+730源码指纹一致，115处仅CLI；controller review明确非独立最终review，全部Cargo/build主控。
+all-retainer/opaque/endpoint与L02全审计继续；23/6/L02待全审计、有效30/Q04全部排除保持。
+
 2026-10-23：L02 [closed-zero raw getter有限census](validation/tunnel-closed-view-census-2026-10-23.md)
 两组固定栈8轮真实执行：GlobalEpoch跨clear保8个不同旧global且原扣费恒定；Cell销毁全watch费已退而8旧Snapshot仍活。
 仅新增2个cfg用例，原生产/旧断言不变；strict/global5/Cell8/fmt/diff共5门禁通过，726源码只2处测试变化。

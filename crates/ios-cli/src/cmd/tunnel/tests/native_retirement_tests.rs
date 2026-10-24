@@ -34,6 +34,7 @@ async fn publication_retain_native_late_clock_restores_original_key_publication_
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     publish(&state, Route::Wifi(None)).await.unwrap();
     let native = source.handle();
     let (key, publication) = {
@@ -63,7 +64,8 @@ async fn publication_retain_native_late_clock_restores_original_key_publication_
     drop(tunnels);
     drop(publication);
     drop(control);
-    assert!(finish(&state, &source, expected).await);
+    assert!(finish(&state, &source, expected, &mut terminal_inputs).await);
+    drop(terminal_inputs);
     assert!(native.shutdown_status().is_ok());
 }
 
@@ -72,6 +74,7 @@ async fn publication_retain_native_paid_node_removal_at_zero_quota_retires_origi
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     publish(&state, Route::Wifi(None)).await.unwrap();
     let native = source.handle();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
@@ -102,7 +105,8 @@ async fn publication_retain_native_paid_node_removal_at_zero_quota_retires_origi
     );
     drop(held);
     drop(control);
-    assert!(finish(&state, &source, expected).await);
+    assert!(finish(&state, &source, expected, &mut terminal_inputs).await);
+    drop(terminal_inputs);
     assert!(native.shutdown_status().is_ok());
 }
 
@@ -138,7 +142,8 @@ async fn publication_table_actual_destination_one_byte_refusal_before_any_native
                 + TunnelAgentState::watch_bytes()
                 + failure_slot::Counts::body_bytes();
             state.set_global_metadata_limit(
-                original_structure + Lifecycle::initial_metadata_bytes(DEVICE) + bytes - 1,
+                original_structure + Lifecycle::initial_metadata_bytes(DEVICE) + bytes - 1
+                    + 6 * ControlIdentity::body_bytes(),
             );
         } else {
             let inner = state.inner.get_mut().unwrap();
@@ -146,6 +151,7 @@ async fn publication_table_actual_destination_one_byte_refusal_before_any_native
             *inner.tunnels.get_mut() =
                 publication_table::Table::new(&inner.global_metadata_bytes, &inner.metadata_bytes);
         }
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         let error = publish(&state, Route::Wifi(None)).await.unwrap_err();
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
@@ -156,8 +162,9 @@ async fn publication_table_actual_destination_one_byte_refusal_before_any_native
         assert!(state.inner.tunnels.read().await.is_empty());
         assert_eq!(state.inner.native.snapshot().native_handles, 0);
         assert_eq!(baseline(), expected);
-        state.notify_shutdown();
-        state.clear().await;
+        terminal_inputs.shutdown(&state);
+        terminal_inputs.clear(&state).await;
+        drop(terminal_inputs);
     }
 }
 
@@ -279,8 +286,8 @@ async fn recovered(source: &LocalSource, expected: usize) -> bool {
     let peers = std::mem::take(&mut *source.peers.lock().unwrap());
     tokio::time::timeout(OBSERVE, async {
         for mut peer in peers {
-            match peer.read_u8().await {
-                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {}
+            match peer.read(&mut [0; 1]).await {
+                Ok(0) => {}
                 _ => return false,
             }
         }
@@ -298,10 +305,15 @@ async fn publish(state: &TunnelAgentState, route: Route) -> Result<PaidRecord> {
         .connect_and_store(DEVICE, route, &ticket, None, None)
         .await
 }
-async fn finish(state: &TunnelAgentState, source: &LocalSource, expected: usize) -> bool {
-    state.notify_shutdown();
+async fn finish(
+    state: &TunnelAgentState,
+    source: &LocalSource,
+    expected: usize,
+    inputs: &mut PreparedTerminal,
+) -> bool {
+    inputs.shutdown(state);
     let result = state.drain_native(OBSERVE).await;
-    state.clear().await;
+    inputs.clear(state).await;
     let recovery = recovered(source, expected).await;
     result.is_ok() && recovery && state.inner.native.snapshot().closed_and_empty()
 }
@@ -311,6 +323,8 @@ async fn native_cli_server_caller_drop_stops_and_joins_with_table_lock_and_state
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let prepared = server::prepare(
         listener,
@@ -361,7 +375,8 @@ async fn native_cli_server_caller_drop_stops_and_joins_with_table_lock_and_state
     let eof = tokio::time::timeout(OBSERVE, proxy.read_u8()).await;
     let recovery = recovered(&source, expected).await;
     drop(table);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     joined.unwrap();
     assert!(child_started && pending && stopped && recovery);
     assert_eq!((before_join.retired, before_join.native_handles), (1, 1));
@@ -378,6 +393,8 @@ async fn native_cli_server_native_joins_survive_metadata_lock_timeout_and_signal
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let prepared = server::prepare(
         listener,
@@ -400,7 +417,8 @@ async fn native_cli_server_native_joins_survive_metadata_lock_timeout_and_signal
     let snapshot = state.inner.native.snapshot();
     let recovery = recovered(&source, expected).await;
     drop(table);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(recovery && snapshot.closed_and_empty() && native.shutdown_status().is_ok());
     let result = result.unwrap().unwrap_err();
     let dual = result.downcast_ref::<server::CleanupFailure>().unwrap();
@@ -426,6 +444,7 @@ async fn native_cli_publication_query_caller_drop_retains_original_join_owner() 
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let gate = Arc::new(Semaphore::new(0));
     *source.usb_gate.lock().unwrap() = Some(gate.clone());
     let mut connection = Box::pin(publish(&state, Route::Usbmux));
@@ -446,7 +465,8 @@ async fn native_cli_publication_query_caller_drop_retains_original_join_owner() 
     let retired = state.inner.native.snapshot();
     let stopped = !native.is_alive();
     gate.add_permits(1);
-    let recovery = finish(&state, &source, expected).await;
+    let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(waiting && stopped && recovery);
     assert_eq!((admitted.unpublished, admitted.native_handles), (1, 1));
     assert_eq!((retired.retired, retired.native_handles), (1, 1));
@@ -458,6 +478,8 @@ async fn native_cli_publication_table_caller_drop_keeps_owner_outside_locked_met
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let gate = Arc::new(Semaphore::new(0));
     *state.inner.publication_before_write.lock().unwrap() = Some(gate.clone());
     let mut connection = Box::pin(publish(&state, Route::Wifi(None)));
@@ -486,7 +508,8 @@ async fn native_cli_publication_table_caller_drop_keeps_owner_outside_locked_met
     let joined = state.drain_native(OBSERVE).await;
     let recovery = recovered(&source, expected).await;
     drop(table);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     joined.unwrap();
     assert!(pending && stopped && recovery && native.shutdown_status().is_ok());
     assert_eq!((snapshot.retired, snapshot.native_handles), (1, 1));
@@ -498,12 +521,14 @@ async fn native_cli_publication_usb_error_preserves_primary_and_retires_actual_w
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     *source.usb_failure.lock().unwrap() = Some(io::ErrorKind::PermissionDenied);
     let result = publish(&state, Route::Usbmux).await;
     let native = source.handle();
     let snapshot = state.inner.native.snapshot();
     let stopped = !native.is_alive();
-    let recovery = finish(&state, &source, expected).await;
+    let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(stopped && recovery && native.shutdown_status().is_ok());
     assert_eq!((snapshot.retired, snapshot.native_handles), (1, 1));
     assert_eq!(
@@ -522,17 +547,23 @@ async fn native_cli_stop_and_clear_retire_exact_runtime_before_metadata_drop() {
         let expected = baseline();
         let source = LocalSource::new();
         let state = state(source.clone());
+        let mut clear_input = clear.then(|| state.prepare_cutover::<2>().unwrap());
+        let mut stop_input = (!clear).then(|| state.prepare_cutover::<3>().unwrap());
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         publish(&state, Route::Wifi(None)).await.unwrap();
         let native = source.handle();
         let response = if clear {
-            state.clear().await;
+            state.clear(clear_input.as_mut().unwrap()).await;
             true
         } else {
-            state.remove_tunnel(DEVICE).await
+            state
+                .remove_tunnel(DEVICE, stop_input.as_mut().unwrap())
+                .await
         };
         let stopped = !native.is_alive();
         let snapshot = state.inner.native.snapshot();
-        let recovery = finish(&state, &source, expected).await;
+        let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+        drop(terminal_inputs);
         assert!(response && stopped && recovery && native.shutdown_status().is_ok());
         assert_eq!((snapshot.retired, snapshot.native_handles), (1, 1));
     }
@@ -543,6 +574,7 @@ async fn native_cli_replacement_retires_old_arc_and_keeps_new_owner_live() {
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     publish(&state, Route::Wifi(None)).await.unwrap();
     let old = source.handle();
     publish(&state, Route::Wifi(None)).await.unwrap();
@@ -551,7 +583,8 @@ async fn native_cli_replacement_retires_old_arc_and_keeps_new_owner_live() {
     let correct = !Arc::ptr_eq(&old, &new) && !old.is_alive() && new.is_alive();
     let first = state.drain_native(OBSERVE).await;
     let still_live = new.is_alive();
-    let recovery = finish(&state, &source, expected).await;
+    let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     first.unwrap();
     assert!(correct && still_live && recovery);
     assert_eq!((snapshot.active, snapshot.retired), (1, 1));
@@ -563,6 +596,7 @@ async fn native_cli_core_candidate_guard_keeps_failed_owner_before_fresh_target_
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let ticket = state.inner.lifecycle.ticket(DEVICE).await.unwrap();
     let owner = ownership::Ownership::admitted(state.inner.native.clone(), &ticket).unwrap();
     let mut first = owner.reserve_owned().unwrap();
@@ -587,7 +621,8 @@ async fn native_cli_core_candidate_guard_keeps_failed_owner_before_fresh_target_
     let correct = !old.is_alive() && new.is_alive() && !Arc::ptr_eq(&old, &new);
     drop(lease);
     drop(owner);
-    let recovery = finish(&state, &source, expected).await;
+    let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(correct && recovery);
     assert_eq!(
         (
@@ -605,6 +640,7 @@ async fn native_cli_owner_capacity_rejects_before_the_actual_source_is_polled() 
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     publish(&state, Route::Wifi(None)).await.unwrap();
     let native = source.handle();
     let ticket = state.inner.lifecycle.ticket(DEVICE).await.unwrap();
@@ -616,7 +652,8 @@ async fn native_cli_owner_capacity_rejects_before_the_actual_source_is_polled() 
     let rejected = publish(&state, Route::Wifi(None)).await;
     let source_calls = source.connect_calls.load(Ordering::SeqCst);
     drop(reservations);
-    let recovery = finish(&state, &source, expected).await;
+    let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(recovery && native.shutdown_status().is_ok());
     assert_eq!(
         (full.active, full.reserved, full.occupied()),
@@ -639,6 +676,7 @@ async fn native_cli_dead_get_and_list_keep_original_native_joins_for_collection(
         let expected = baseline();
         let source = LocalSource::new();
         let state = state(source.clone());
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         publish(&state, Route::Wifi(None)).await.unwrap();
         let native = source.handle();
         native.request_stop();
@@ -648,7 +686,8 @@ async fn native_cli_dead_get_and_list_keep_original_native_joins_for_collection(
             state.get_record(DEVICE).await.unwrap().is_none()
         };
         let snapshot = state.inner.native.snapshot();
-        let recovery = finish(&state, &source, expected).await;
+        let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+        drop(terminal_inputs);
         assert!(removed && recovery && native.shutdown_status().is_ok());
         assert_eq!((snapshot.retired, snapshot.native_handles), (1, 1));
     }
@@ -659,13 +698,15 @@ async fn native_cli_scan_list_failure_preserves_source_io_and_keeps_removed_nati
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     publish(&state, Route::Wifi(None)).await.unwrap();
     let native = source.handle();
     *source.usb_failure.lock().unwrap() = Some(io::ErrorKind::BrokenPipe);
     let result = state.refresh_once().await;
     let snapshot = state.inner.native.snapshot();
     let stopped = !native.is_alive();
-    let recovery = finish(&state, &source, expected).await;
+    let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(stopped && recovery && native.shutdown_status().is_ok());
     assert_eq!((snapshot.retired, snapshot.native_handles), (1, 1));
     assert_eq!(
@@ -683,6 +724,7 @@ async fn native_cli_scan_detachment_retires_the_exact_published_usb_runtime() {
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     publish(&state, Route::Usbmux).await.unwrap();
     let native = source.handle();
     *source.attached.lock().unwrap() = false;
@@ -690,7 +732,8 @@ async fn native_cli_scan_detachment_retires_the_exact_published_usb_runtime() {
     let snapshot = state.inner.native.snapshot();
     let stopped = !native.is_alive();
     let absent = state.get_record(DEVICE).await.unwrap().is_none();
-    let recovery = finish(&state, &source, expected).await;
+    let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     result.unwrap();
     assert!(stopped && absent && recovery && native.shutdown_status().is_ok());
     assert_eq!((snapshot.retired, snapshot.native_handles), (1, 1));
@@ -702,6 +745,9 @@ async fn native_cli_clear_and_stop_fence_unpublished_real_runtime_before_query_r
         let expected = baseline();
         let source = LocalSource::new();
         let state = state(source.clone());
+        let mut clear_input = clear.then(|| state.prepare_cutover::<2>().unwrap());
+        let mut stop_input = (!clear).then(|| state.prepare_cutover::<3>().unwrap());
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         let gate = Arc::new(Semaphore::new(0));
         *source.usb_gate.lock().unwrap() = Some(gate.clone());
         let mut connection = Box::pin(publish(&state, Route::Usbmux));
@@ -718,17 +764,20 @@ async fn native_cli_clear_and_stop_fence_unpublished_real_runtime_before_query_r
         .unwrap_or(false);
         let native = source.handle();
         let response = if clear {
-            state.clear().await;
+            state.clear(clear_input.as_mut().unwrap()).await;
             false
         } else {
-            state.remove_tunnel(DEVICE).await
+            state
+                .remove_tunnel(DEVICE, stop_input.as_mut().unwrap())
+                .await
         };
         let stopped_before_return = !native.is_alive();
         let snapshot = state.inner.native.snapshot();
         gate.add_permits(1);
         let rejected = connection.await;
         let absent = state.get_record(DEVICE).await.unwrap().is_none();
-        let recovery = finish(&state, &source, expected).await;
+        let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+        drop(terminal_inputs);
         assert!(waiting && !response && stopped_before_return && absent && recovery);
         assert!(rejected.is_err() && native.shutdown_status().is_ok());
         assert_eq!((snapshot.retired, snapshot.native_handles), (1, 1));

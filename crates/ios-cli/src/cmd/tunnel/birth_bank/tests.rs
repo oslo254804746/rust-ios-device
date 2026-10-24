@@ -1,23 +1,29 @@
 use super::*;
 use crate::cmd::tunnel::{
-    admission, lifecycle::Lifecycle, marker_identity::Identity, publication, retirement,
+    admission,
+    lifecycle::Lifecycle,
+    marker_identity::{Cutover, Identity},
+    publication, retirement,
 };
 
 #[test]
 fn birth_bank_original_total_survives_held_refunds_closure_clone_and_identity_weak() {
-    let bank = BirthBank::new(17);
-    let identity = Identity::new(&bank);
+    let marker_bytes = Identity::body_bytes();
+    let bank = BirthBank::new(17 + marker_bytes);
+    let mut prepared = Cutover::<1>::new(&bank, bank.raw()).unwrap();
+    let identity = prepared.place(&bank);
+    drop(prepared);
     let weak = identity.downgrade();
     let raw = bank.raw().clone();
     let held = raw.clone().try_acquire_many_owned(16).unwrap();
-    assert_eq!(bank.total(), 17);
+    assert_eq!(bank.total(), 17 + marker_bytes);
     assert_eq!(raw.available_permits(), 1);
     assert!(identity.origin_charge(2).is_err());
     let one = identity.origin_charge(1).unwrap();
     assert_eq!(raw.available_permits(), 0);
     drop(held);
     assert_eq!(raw.available_permits(), 16);
-    assert_eq!(bank.total(), 17);
+    assert_eq!(bank.total(), 17 + marker_bytes);
     let last = weak.upgrade().unwrap();
     assert!(last.ptr_eq(&identity) && Arc::ptr_eq(last.bank(), &raw));
     drop((identity, bank));
@@ -30,6 +36,8 @@ fn birth_bank_original_total_survives_held_refunds_closure_clone_and_identity_we
     drop(last);
     assert!(weak.upgrade().is_none());
     assert_eq!(raw.available_permits(), 17);
+    drop(weak);
+    assert_eq!(raw.available_permits(), 17 + marker_bytes);
 }
 
 #[test]
@@ -79,12 +87,14 @@ async fn birth_bank_real_lifecycle_registry_and_foreign_ticket_keep_original_pro
         before - publication::TicketOwner::body_bytes()
     );
     assert_eq!(origin.total(), total);
+    let mut clear = lifecycle.prepare_cutover::<2>(&old_raw).unwrap();
     let held = old_raw
         .clone()
         .try_acquire_many_owned(old_raw.available_permits() as u32)
         .unwrap();
     old_raw.close();
-    lifecycle.clear();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     assert!(!root.is_current());
     drop((ticket, lifecycle, origin, registry));
     assert_eq!(destination.raw().available_permits(), total);

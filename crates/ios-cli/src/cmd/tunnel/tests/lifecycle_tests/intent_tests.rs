@@ -1,12 +1,15 @@
 //! Actual HTTP requests and production scans through the private Source seam.
 use super::*;
 use crate::access::test_support::{grant, PolicyFixture, DEVICE, REPLACEMENT, TOKEN};
+use crate::cmd::tunnel::marker_identity::Cutover;
 
 #[tokio::test]
 async fn shared_route_pre_source_refusal_keeps_original_resource_without_default_discovery_fallback(
 ) {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+    let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
@@ -31,13 +34,16 @@ async fn shared_route_pre_source_refusal_keeps_original_resource_without_default
     ));
     drop(held);
     assert_eq!(bank.available_permits(), before);
-    cleanup(&state, &source).await;
+    cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+    drop((cleanup_close, cleanup_clear));
 }
 
 #[tokio::test]
 async fn shared_route_live_manual_and_recovery_keep_original_arc_and_text_pointer() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+    let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
     let host = "original-filter-192.0.2.123";
     drop(
         state
@@ -109,12 +115,18 @@ async fn shared_route_live_manual_and_recovery_keep_original_arc_and_text_pointe
     assert_eq!(text.as_ptr(), pointer);
     assert_eq!(source.count(A), 2);
     drop(table);
-    cleanup(&state, &source).await;
+    cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+    drop((cleanup_close, cleanup_clear));
 }
 
-async fn cleanup(state: &TunnelAgentState, source: &FakeSource) {
-    state.notify_shutdown();
-    state.clear().await;
+async fn cleanup(
+    state: &TunnelAgentState,
+    source: &FakeSource,
+    close: &mut Cutover<1>,
+    clear: &mut Cutover<2>,
+) {
+    state.notify_shutdown(close);
+    state.clear(clear).await;
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert_eq!(
@@ -158,6 +170,8 @@ async fn intent_http_wifi_selector_survives_usb_and_partial_discovery_without_fa
     for host in [None, Some("192.0.2.45")] {
         let source = FakeSource::new();
         let state = state(source.clone(), LOCAL_BUDGET);
+        let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+        let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
         let (port, server) = spawn_test_router(agent_router(state.clone())).await;
         let base = format!("http://127.0.0.1:{port}");
         let initial = post(&base, A, Some("wifi"), host).await;
@@ -174,7 +188,8 @@ async fn intent_http_wifi_selector_survives_usb_and_partial_discovery_without_fa
         let recovered_route = route(&state, &ticket);
         server.abort();
         let _ = server.await;
-        cleanup(&state, &source).await;
+        cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+        drop((cleanup_close, cleanup_clear));
         assert_eq!(initial, StatusCode::OK);
         assert!(initial_route == Some(intent::RouteIntent::Wifi(host.map(str::to_owned))));
         assert!(recovered_route == initial_route);
@@ -206,6 +221,8 @@ async fn intent_http_actual_mobdev2_family_rediscovers_host_and_respects_origina
             host: "192.0.2.50".into(),
         });
         let state = state(source.clone(), LOCAL_BUDGET);
+        let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+        let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
         let (port, server) = spawn_test_router(agent_router(state.clone())).await;
         let base = format!("http://127.0.0.1:{port}");
         let initial = post(&base, A, None, pin).await;
@@ -220,7 +237,8 @@ async fn intent_http_actual_mobdev2_family_rediscovers_host_and_respects_origina
         let retained = route(&state, &ticket);
         server.abort();
         let _ = server.await;
-        cleanup(&state, &source).await;
+        cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+        drop((cleanup_close, cleanup_clear));
         assert_eq!(initial, StatusCode::OK);
         assert!(established == Some(intent::RouteIntent::Mobdev2(pin.map(str::to_owned))));
         assert!(retained == established);
@@ -245,6 +263,8 @@ async fn intent_http_actual_mobdev2_family_rediscovers_host_and_respects_origina
 async fn intent_http_delete_survives_scans_replug_failed_start_and_caller_drop() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+    let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let base = format!("http://127.0.0.1:{port}");
     let initial = post(&base, A, Some("wifi"), None).await;
@@ -334,7 +354,8 @@ async fn intent_http_delete_survives_scans_replug_failed_start_and_caller_drop()
     let resumed_route = route(&state, &state.inner.lifecycle.ticket(A).await.unwrap());
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source).await;
+    cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+    drop((cleanup_close, cleanup_clear));
     assert_eq!(initial, StatusCode::OK);
     assert_eq!(stop, StatusCode::OK);
     assert_eq!(before, 1);
@@ -351,9 +372,16 @@ async fn intent_http_delete_survives_scans_replug_failed_start_and_caller_drop()
 async fn intent_http_missing_stop_is_durable_and_4097_key_is_rejected_before_source() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
-    for index in 0..4096 {
+    let mut stop_inputs: Vec<_> = (0..4096)
+        .map(|_| state.prepare_cutover::<3>().unwrap())
+        .collect();
+    let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+    let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
+    for (index, input) in (0..4096).zip(&mut stop_inputs) {
         state
-            .stop_tunnel(&format!("bounded-intent-{index}"))
+            .stop_tunnel(&format!("bounded-intent-{index}"), input)
             .await
             .unwrap();
     }
@@ -375,12 +403,14 @@ async fn intent_http_missing_stop_is_durable_and_4097_key_is_rejected_before_sou
     let rejection_status = rejected_stop.status();
     let count = state.inner.lifecycle.coordinator_count().await;
     let calls = source.calls.lock().unwrap().len();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     let next = post(&base, A, Some("wifi"), None).await;
     let next_count = state.inner.lifecycle.coordinator_count().await;
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source).await;
+    cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+    drop((cleanup_close, cleanup_clear));
     assert_eq!(known, StatusCode::NOT_FOUND);
     assert_eq!(
         (rejected, rejection_status),
@@ -398,6 +428,8 @@ async fn intent_actual_manual_source_success_clears_old_default_backoff_before_n
     source.usb.lock().unwrap().push(A.into());
     source.script(A, [Behavior::Failure(std::io::ErrorKind::BrokenPipe)]);
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+    let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
     state.refresh_once().await.unwrap();
     let old = state.inner.failed_attempts.read().await[A].version.clone();
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
@@ -416,7 +448,8 @@ async fn intent_actual_manual_source_success_clears_old_default_backoff_before_n
         .pending_success();
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source).await;
+    cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+    drop((cleanup_close, cleanup_clear));
     drop(old);
     assert_eq!(started, StatusCode::OK);
     assert!(cleaned && pending.is_none());
@@ -429,6 +462,8 @@ async fn intent_contested_manual_cleanup_never_removes_later_real_source_failure
     source.usb.lock().unwrap().push(A.into());
     source.script(A, [Behavior::Failure(std::io::ErrorKind::BrokenPipe)]);
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+    let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
     state.refresh_once().await.unwrap();
     let held = state.inner.failed_attempts.write().await;
     let old = held[A].version.clone();
@@ -460,7 +495,8 @@ async fn intent_contested_manual_cleanup_never_removes_later_real_source_failure
     drop(newer);
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source).await;
+    cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+    drop((cleanup_close, cleanup_clear));
     assert_eq!(started, StatusCode::OK);
     assert!(FailureVersion::ptr_eq(&old, &queued));
     assert!(!FailureVersion::ptr_eq(&old, &newer_version));
@@ -494,6 +530,8 @@ async fn intent_original_grant_reload_cannot_borrow_another_active_grant_for_rec
         source.clone(),
         LOCAL_BUDGET,
     );
+    let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+    let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let base = format!("http://127.0.0.1:{port}");
     let started = client()
@@ -544,7 +582,8 @@ async fn intent_original_grant_reload_cannot_borrow_another_active_grant_for_rec
     let after = source.count(DEVICE);
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source).await;
+    cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+    drop((cleanup_close, cleanup_clear));
     assert_eq!(
         (started, reload, replacement),
         (StatusCode::OK, StatusCode::OK, StatusCode::OK)
@@ -557,6 +596,8 @@ async fn intent_original_grant_reload_cannot_borrow_another_active_grant_for_rec
 async fn intent_live_http_start_reauthorizes_only_the_actual_published_selector() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+    let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let base = format!("http://127.0.0.1:{port}");
     let started = post(&base, A, Some("wifi"), Some("192.0.2.10")).await;
@@ -567,7 +608,8 @@ async fn intent_live_http_start_reauthorizes_only_the_actual_published_selector(
     let count = source.count(A);
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source).await;
+    cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+    drop((cleanup_close, cleanup_clear));
     assert_eq!((started, repeated), (StatusCode::OK, StatusCode::OK));
     assert_eq!(count, 1);
     assert!(publication.ptr_eq(&retained));
@@ -578,6 +620,10 @@ async fn intent_live_http_start_reauthorizes_only_the_actual_published_selector(
 async fn intent_clear_does_not_evict_live_old_tickets_to_evade_4096_gate_limit() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut cleanup_close = state.prepare_cutover::<1>().unwrap();
+    let mut cleanup_clear = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut held = Vec::new();
     for index in 0..4096 {
         held.push(
@@ -589,7 +635,8 @@ async fn intent_clear_does_not_evict_live_old_tickets_to_evade_4096_gate_limit()
                 .unwrap(),
         );
     }
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     let rejected = state
         .inner
         .lifecycle
@@ -602,7 +649,8 @@ async fn intent_clear_does_not_evict_live_old_tickets_to_evade_4096_gate_limit()
     let next = state.inner.lifecycle.ticket("new-epoch-unknown").await;
     let next_count = state.inner.lifecycle.coordinator_count().await;
     let calls = source.calls.lock().unwrap().len();
-    cleanup(&state, &source).await;
+    cleanup(&state, &source, &mut cleanup_close, &mut cleanup_clear).await;
+    drop((cleanup_close, cleanup_clear));
     let rejected = rejected.unwrap();
     assert_eq!(
         crate::output::operation_error_class(rejected.as_ref()),

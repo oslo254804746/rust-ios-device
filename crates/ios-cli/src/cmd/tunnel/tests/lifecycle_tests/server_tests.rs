@@ -4,7 +4,9 @@ use super::*;
 async fn lifecycle_tunnel_server_shutdown_is_retained_for_late_waiter() {
     let source = FakeSource::new();
     let state = state(source, TUNNEL_CONNECT_TIMEOUT);
-    state.notify_shutdown();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    state.notify_shutdown(&mut shutdown);
+    drop(shutdown);
     tokio::time::timeout(Duration::from_millis(50), state.wait_shutdown())
         .await
         .expect("shutdown was lost before the waiter subscribed");
@@ -120,7 +122,9 @@ async fn lifecycle_tunnel_server_inline_scanner_drops_original_frame_before_bloc
 async fn lifecycle_tunnel_server_shutdown_before_start_does_not_poll_source() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    state.notify_shutdown();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    state.notify_shutdown(&mut shutdown);
+    drop(shutdown);
     let (listener, port) = listener().await;
     tokio::time::timeout(
         LOCAL_BUDGET,
@@ -281,6 +285,7 @@ async fn lifecycle_tunnel_server_signal_failure_keeps_native_io_and_clears_state
 async fn lifecycle_tunnel_server_cleanup_lock_deadline_preserves_primary_and_elapsed() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     start(state.clone(), B).await.unwrap();
     let held = state.inner.tunnels.write().await;
     let (listener, _) = listener().await;
@@ -323,7 +328,8 @@ async fn lifecycle_tunnel_server_cleanup_lock_deadline_preserves_primary_and_ela
     // releases that lock and explicitly completes its remaining cleanup.
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
     drop(held);
-    state.clear().await;
+    state.clear(&mut clear).await;
+    drop(clear);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 

@@ -6,6 +6,7 @@ async fn native_manual_selector_rejection_keeps_original_arc_then_recovers_joins
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     state
         .ensure_tunnel(DEVICE, None, Some(StartTunnelConnectionType::Usbmux))
         .await
@@ -51,7 +52,8 @@ async fn native_manual_selector_rejection_keeps_original_arc_then_recovers_joins
         .await
         .unwrap();
     proxy.write_all(&[0]).await.unwrap();
-    let recovery = finish(&state, &source, expected).await;
+    let recovery = finish(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     let eof = tokio::time::timeout(OBSERVE, proxy.read_u8()).await;
     // First certify original joins, registry release, duplex/loopback EOF and
     // task/permit recovery; only then evaluate the selector-refusal regression.

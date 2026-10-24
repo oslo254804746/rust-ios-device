@@ -5,9 +5,12 @@ async fn lifecycle_tunnel_liveness_inactive_native_result_is_released_without_qu
     let source = FakeSource::new();
     source.alive.store(false, Ordering::SeqCst);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let result = start(state.clone(), A).await;
     let released = source.drops.load(Ordering::SeqCst);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(result.unwrap_err().is::<ios_core::OperationCancelled>());
     assert_eq!(source.count(A), 1);
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
@@ -26,6 +29,8 @@ async fn lifecycle_tunnel_liveness_owned_result_dies_during_current_id_query() {
     let query_gate = Arc::new(Semaphore::new(0));
     source.script(A, [Behavior::Held(connect_gate.clone())]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut request =
         Box::pin(state.ensure_tunnel(A, None, Some(StartTunnelConnectionType::Usbmux)));
     assert!(futures_util::poll!(&mut request).is_pending());
@@ -38,7 +43,8 @@ async fn lifecycle_tunnel_liveness_owned_result_dies_during_current_id_query() {
     query_gate.add_permits(1);
     let result = request.await;
     let released = source.drops.load(Ordering::SeqCst);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(result.unwrap_err().is::<ios_core::OperationCancelled>());
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
     assert_eq!(released, 1);
@@ -54,6 +60,8 @@ async fn lifecycle_tunnel_liveness_owned_result_dies_while_publication_lock_pend
     let gate = Arc::new(Semaphore::new(0));
     source.script(A, [Behavior::Held(gate.clone())]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut request =
         Box::pin(state.ensure_tunnel(A, None, Some(StartTunnelConnectionType::Usbmux)));
     assert!(futures_util::poll!(&mut request).is_pending());
@@ -66,7 +74,8 @@ async fn lifecycle_tunnel_liveness_owned_result_dies_while_publication_lock_pend
     drop(table);
     let result = request.await;
     let released = source.drops.load(Ordering::SeqCst);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(result.unwrap_err().is::<ios_core::OperationCancelled>());
     assert_eq!(released, 1);
     assert!(state.list_records().await.unwrap().as_slice().is_empty());
@@ -81,11 +90,14 @@ async fn lifecycle_tunnel_liveness_wifi_uses_same_local_guard_without_daemon_que
     let source = FakeSource::new();
     source.alive.store(false, Ordering::SeqCst);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let result = state
         .ensure_tunnel(A, Some("192.0.2.42"), Some(StartTunnelConnectionType::Wifi))
         .await;
     let released = source.drops.load(Ordering::SeqCst);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(result.unwrap_err().is::<ios_core::OperationCancelled>());
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
     assert_eq!(

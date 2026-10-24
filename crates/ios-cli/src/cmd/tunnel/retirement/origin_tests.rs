@@ -1,3 +1,4 @@
+use super::super::marker_identity::Cutover;
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, DuplexStream};
@@ -10,8 +11,11 @@ mod proof_root_tests;
 fn registry() -> RegistryOwner {
     Registry::small(NonZeroUsize::new(1).unwrap())
 }
-fn stamp(bank: &crate::cmd::tunnel::birth_bank::BirthBank) -> OwnershipStamp {
-    OwnershipStamp::new(ControlIdentity::new(bank), ControlIdentity::new(bank))
+fn stamp<const N: usize>(
+    bank: &crate::cmd::tunnel::birth_bank::BirthBank,
+    births: &mut Cutover<N>,
+) -> OwnershipStamp {
+    OwnershipStamp::new(births.place(bank), births.place(bank))
 }
 
 #[test]
@@ -22,16 +26,32 @@ fn native_origin_historical_producers_outnumber_current_slots_and_reuse_keeps_wh
     let before = bank.available_permits();
     let mut producers = Vec::new();
     for _ in 0..3 {
-        let producer_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+        let producer_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(
+            mirror + 4 * ControlIdentity::body_bytes(),
+        );
         let producer = producer_birth.raw().clone();
-        drop(registry.reserve(stamp(&producer_birth)).unwrap());
+        let mut births = Cutover::<4>::new(&producer_birth, &producer).unwrap();
+        drop(
+            registry
+                .reserve(stamp(&producer_birth, &mut births))
+                .unwrap(),
+        );
         assert_eq!(registry.snapshot().occupied(), 0);
         assert_eq!(producer.available_permits(), 0);
         producer.close();
-        // The original whole-backing mirror is already funded, even though
-        // this different actual epoch is created after producer bank closure.
-        drop(registry.reserve(stamp(&producer_birth)).unwrap());
+        // Both distinct stamps already own real empty roots. The second
+        // placement and original whole-backing reuse run at closed zero.
+        drop(
+            registry
+                .reserve(stamp(&producer_birth, &mut births))
+                .unwrap(),
+        );
         assert_eq!(producer.available_permits(), 0);
+        drop(births);
+        assert_eq!(
+            producer.available_permits(),
+            4 * ControlIdentity::body_bytes()
+        );
         producers.push(producer);
     }
     assert_eq!(registry.lock().issued, 6);
@@ -40,9 +60,12 @@ fn native_origin_historical_producers_outnumber_current_slots_and_reuse_keeps_wh
     assert_eq!(catalogue, 4 * std::mem::size_of::<OwnedSemaphorePermit>());
     assert_eq!(bank.available_permits(), before - catalogue);
     drop(registry);
-    assert!(producers
-        .iter()
-        .all(|producer| producer.available_permits() == mirror));
+    assert!(
+        producers
+            .iter()
+            .all(|producer| producer.available_permits()
+                == mirror + 4 * ControlIdentity::body_bytes())
+    );
     assert_eq!(bank.available_permits(), TOTAL);
 }
 
@@ -51,23 +74,40 @@ fn native_origin_growth_refusal_keeps_old_catalogue_and_success_pays_both_actual
     let registry = registry();
     let bank = registry.byte_bank();
     let mirror = registry._slots_storage.num_permits();
-    let first_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let first_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(mirror + 2 * ControlIdentity::body_bytes());
     let first = first_birth.raw().clone();
-    let second_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let second_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(mirror + 2 * ControlIdentity::body_bytes());
     let second = second_birth.raw().clone();
-    drop(registry.reserve(stamp(&first_birth)).unwrap());
-    drop(registry.reserve(stamp(&second_birth)).unwrap());
+    let mut first_roots = Cutover::<2>::new(&first_birth, &first).unwrap();
+    let mut second_roots = Cutover::<2>::new(&second_birth, &second).unwrap();
+    drop(
+        registry
+            .reserve(stamp(&first_birth, &mut first_roots))
+            .unwrap(),
+    );
+    drop(
+        registry
+            .reserve(stamp(&second_birth, &mut second_roots))
+            .unwrap(),
+    );
     let old_bytes = 2 * std::mem::size_of::<OwnedSemaphorePermit>();
     let next_bytes = 2 * old_bytes;
     assert_eq!(registry.origins.lock().unwrap().backing_bytes(), old_bytes);
-    let third_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let third_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(mirror + 4 * ControlIdentity::body_bytes());
     let third = third_birth.raw().clone();
+    let mut third_roots = Cutover::<4>::new(&third_birth, &third).unwrap();
     let leave = Registry::incarnation_bytes() + next_bytes - 1;
     let held = bank
         .clone()
         .try_acquire_many_owned((bank.available_permits() - leave) as u32)
         .unwrap();
-    let error = registry.reserve(stamp(&third_birth)).err().unwrap();
+    let error = registry
+        .reserve(stamp(&third_birth, &mut third_roots))
+        .err()
+        .unwrap();
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
@@ -108,7 +148,9 @@ fn native_origin_growth_refusal_keeps_old_catalogue_and_success_pays_both_actual
         assert_eq!(old_first.available_permits(), 0);
         assert_eq!(old_second.available_permits(), 0);
     });
-    let reservation = registry.reserve(stamp(&third_birth)).unwrap();
+    let reservation = registry
+        .reserve(stamp(&third_birth, &mut third_roots))
+        .unwrap();
     drop(hook);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -127,6 +169,19 @@ fn native_origin_growth_refusal_keeps_old_catalogue_and_success_pays_both_actual
         ),
         (mirror, mirror, mirror)
     );
+    drop((first_roots, second_roots, third_roots));
+    assert_eq!(
+        first.available_permits(),
+        mirror + 2 * ControlIdentity::body_bytes()
+    );
+    assert_eq!(
+        second.available_permits(),
+        mirror + 2 * ControlIdentity::body_bytes()
+    );
+    assert_eq!(
+        third.available_permits(),
+        mirror + 4 * ControlIdentity::body_bytes()
+    );
     assert_eq!(bank.available_permits(), TOTAL);
 }
 
@@ -137,15 +192,19 @@ fn native_origin_mixed_two_producers_roll_back_together_and_original_capacity_st
     let bank = registry.byte_bank();
     let before = bank.available_permits();
     let mirror = registry._slots_storage.num_permits();
-    let first_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let first_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(mirror + 2 * ControlIdentity::body_bytes());
     let first = first_birth.raw().clone();
-    let second_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(mirror);
+    let second_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(mirror + 2 * ControlIdentity::body_bytes());
     let second = second_birth.raw().clone();
+    let mut first_roots = Cutover::<2>::new(&first_birth, &first).unwrap();
+    let mut second_roots = Cutover::<2>::new(&second_birth, &second).unwrap();
     let held = second.clone().try_acquire_owned().unwrap();
-    let mixed = || {
+    let mut mixed = || {
         OwnershipStamp::new(
-            ControlIdentity::new(&first_birth),
-            ControlIdentity::new(&second_birth),
+            first_roots.place(&first_birth),
+            second_roots.place(&second_birth),
         )
     };
     assert!(registry.reserve(mixed()).is_err());
@@ -160,13 +219,16 @@ fn native_origin_mixed_two_producers_roll_back_together_and_original_capacity_st
         (first.available_permits(), second.available_permits()),
         (0, 0)
     );
-    let denied_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(0);
+    let denied_birth =
+        crate::cmd::tunnel::birth_bank::BirthBank::new(2 * ControlIdentity::body_bytes());
     let denied = denied_birth.raw().clone();
+    let mut denied_roots = Cutover::<2>::new(&denied_birth, &denied).unwrap();
+    let denied_stamp = stamp(&denied_birth, &mut denied_roots);
     denied.close();
     let hook = super::super::metadata_vec::on_allocation(|_, _| {
         panic!("capacity refusal allocated a new owner")
     });
-    let error = registry.reserve(stamp(&denied_birth)).err().unwrap();
+    let error = registry.reserve(denied_stamp).err().unwrap();
     drop(hook);
     assert_eq!(error.to_string(), "native tunnel owner capacity exhausted");
     assert_eq!(registry.lock().issued, 1);
@@ -179,6 +241,19 @@ fn native_origin_mixed_two_producers_roll_back_together_and_original_capacity_st
     assert_eq!(
         (first.available_permits(), second.available_permits()),
         (mirror, mirror)
+    );
+    drop((first_roots, second_roots, denied_roots));
+    assert_eq!(
+        first.available_permits(),
+        mirror + 2 * ControlIdentity::body_bytes()
+    );
+    assert_eq!(
+        second.available_permits(),
+        mirror + 2 * ControlIdentity::body_bytes()
+    );
+    assert_eq!(
+        denied.available_permits(),
+        2 * ControlIdentity::body_bytes()
     );
 }
 
@@ -254,18 +329,43 @@ async fn native_origin_foreign_proofs_pay_independently_after_slot_reuse_and_ori
         let mirror = registry._slots_storage.num_permits();
         let proof_bytes = RefreshProof::body_bytes();
         let total = mirror + 2 * proof_bytes;
-        let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
+        let marker_fields = if distinct { 2 } else { 4 };
+        let producer_total = total + marker_fields * ControlIdentity::body_bytes();
+        let origin_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(producer_total);
         let origin = origin_birth.raw().clone();
         let other_birth = if distinct {
-            crate::cmd::tunnel::birth_bank::BirthBank::new(total)
+            crate::cmd::tunnel::birth_bank::BirthBank::new(producer_total)
         } else {
             origin_birth.clone()
         };
         let other = other_birth.raw().clone();
-        let make_stamp = || {
+        let mut origin_roots = if distinct {
+            Some(Cutover::<2>::new(&origin_birth, &origin).unwrap())
+        } else {
+            None
+        };
+        let mut shared_roots = if distinct {
+            None
+        } else {
+            Some(Cutover::<4>::new(&origin_birth, &origin).unwrap())
+        };
+        let mut other_roots = if distinct {
+            Some(Cutover::<2>::new(&other_birth, &other).unwrap())
+        } else {
+            None
+        };
+        let mut make_stamp = || {
             OwnershipStamp::new(
-                ControlIdentity::new(&origin_birth),
-                ControlIdentity::new(&other_birth),
+                if distinct {
+                    origin_roots.as_mut().unwrap().place(&origin_birth)
+                } else {
+                    shared_roots.as_mut().unwrap().place(&origin_birth)
+                },
+                if distinct {
+                    other_roots.as_mut().unwrap().place(&other_birth)
+                } else {
+                    shared_roots.as_mut().unwrap().place(&other_birth)
+                },
             )
         };
         let destination = Arc::new(Semaphore::new(2 * proof_bytes));
@@ -433,5 +533,8 @@ async fn native_origin_foreign_proofs_pay_independently_after_slot_reuse_and_ori
         assert_eq!(publication.available_permits(), 65536);
         assert_eq!(bank.available_permits(), TOTAL);
         assert!(first.shutdown_status().is_ok() && second.shutdown_status().is_ok());
+        drop((origin_roots, other_roots, shared_roots));
+        assert_eq!(origin.available_permits(), producer_total);
+        assert_eq!(other.available_permits(), producer_total);
     }
 }

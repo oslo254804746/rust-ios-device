@@ -128,6 +128,8 @@ async fn reconnect_default_production_scans_keep_legacy_schedule_and_unlimited_r
         (0..6).map(|_| Behavior::Failure(std::io::ErrorKind::BrokenPipe)),
     );
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     for (index, seconds) in [30, 60, 120, 240, 300].into_iter().enumerate() {
         tokio::time::advance(Duration::from_secs(seconds - 1)).await;
@@ -146,7 +148,8 @@ async fn reconnect_default_production_scans_keep_legacy_schedule_and_unlimited_r
             "default failed write remains the only retained owner"
         );
     }
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
@@ -162,6 +165,8 @@ async fn reconnect_default_subscriber_omits_episode_fields_while_legacy_scans_ba
         (0..4).map(|_| Behavior::Failure(std::io::ErrorKind::BrokenPipe)),
     );
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let (dispatch, captured) = subscriber();
     let capture = tracing::dispatcher::set_default(&dispatch);
     state.refresh_once().await.unwrap();
@@ -178,7 +183,8 @@ async fn reconnect_default_subscriber_omits_episode_fields_while_legacy_scans_ba
     drop(capture);
     let fail_count = state.inner.failed_attempts.read().await[A].fail_count;
     let ledger_rows = state.inner.retry.len();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
@@ -245,6 +251,8 @@ async fn reconnect_configured_subscriber_keeps_authoritative_episode_counters_an
         (0..2).map(|_| Behavior::Failure(std::io::ErrorKind::BrokenPipe)),
     );
     let state = configured(source.clone(), policy(1_000, 4_000, None, Some(10_000)));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let (dispatch, captured) = subscriber();
     let capture = tracing::dispatcher::set_default(&dispatch);
     state.refresh_once().await.unwrap();
@@ -252,7 +260,8 @@ async fn reconnect_configured_subscriber_keeps_authoritative_episode_counters_an
     state.refresh_once().await.unwrap();
     drop(capture);
     let snapshot = state.inner.retry.snapshot(A);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
@@ -293,6 +302,8 @@ async fn reconnect_configured_backoff_and_cap_drive_actual_scans() {
         (0..5).map(|_| Behavior::Failure(std::io::ErrorKind::ConnectionReset)),
     );
     let state = configured(source.clone(), policy(1_000, 4_000, None, None));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     for (call, delay) in [(1, 1_000), (2, 2_000), (3, 4_000), (4, 4_000)] {
         let before = state.inner.retry.snapshot(A).unwrap();
@@ -310,7 +321,8 @@ async fn reconnect_configured_backoff_and_cap_drive_actual_scans() {
         state.refresh_once().await.unwrap();
         assert_eq!(source.count(A), call as usize + 1);
     }
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     assert_eq!(state.inner.retry.len(), 0);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
@@ -323,6 +335,8 @@ async fn reconnect_attempt_limit_survives_unwritten_failure_and_held_writer() {
     let source = FakeSource::new();
     source.script(A, [Behavior::Failure(std::io::ErrorKind::ConnectionReset)]);
     let state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let first = state
         .refresh_connect_with_total(A, Route::Usbmux, &ticket, None, None)
@@ -349,7 +363,8 @@ async fn reconnect_attempt_limit_survives_unwritten_failure_and_held_writer() {
         MAX_FAILURE_RECORDS - 1
     );
     drop(writer);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
@@ -361,6 +376,8 @@ async fn reconnect_pending_source_obeys_total_started_at_admission() {
     let source = FakeSource::new();
     source.script(A, [Behavior::Pending]);
     let state = configured(source.clone(), policy(1_000, 4_000, None, Some(70)));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let start = Instant::now();
     state.refresh_connect(A, Route::Usbmux, &ticket, None).await;
@@ -380,7 +397,8 @@ async fn reconnect_pending_source_obeys_total_started_at_admission() {
     let failed = state.inner.failed_attempts.read().await;
     assert_eq!(failed[A].fail_count, 1);
     drop(failed);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -388,6 +406,8 @@ async fn reconnect_early_caller_drop_remains_interrupted_without_local_timeout()
     let source = FakeSource::new();
     source.script(A, [Behavior::Pending]);
     let state = configured(source.clone(), policy(1_000, 4_000, None, Some(10_000)));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let mut attempt =
         Box::pin(state.refresh_connect_with_total(A, Route::Usbmux, &ticket, None, None));
@@ -398,7 +418,8 @@ async fn reconnect_early_caller_drop_remains_interrupted_without_local_timeout()
     let released = source.active.load(Ordering::SeqCst) == 0
         && state.inner.lifecycle.connects.available_permits() == lifecycle::MAX_CONNECTS;
     let no_failure_write = state.inner.failed_attempts.read().await.is_empty();
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     assert!(released);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
@@ -423,6 +444,8 @@ async fn reconnect_total_counts_idle_and_does_not_repeat_exhaustion_event() {
     source.usb.lock().unwrap().push(A.into());
     source.script(A, [Behavior::Failure(std::io::ErrorKind::ConnectionReset)]);
     let state = configured(source.clone(), policy(1_000, 4_000, None, Some(100)));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     tokio::time::advance(Duration::from_millis(100)).await;
     state.refresh_once().await.unwrap();
@@ -434,7 +457,8 @@ async fn reconnect_total_counts_idle_and_does_not_repeat_exhaustion_event() {
     let after = state.inner.retry.snapshot(A).unwrap();
     assert_eq!(after.sequence, first.sequence);
     assert_eq!(source.count(A), 1);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -443,6 +467,10 @@ async fn reconnect_exhausted_a_does_not_delay_b_or_remove_published_b() {
     *source.usb.lock().unwrap() = vec![A.into(), B.into()];
     source.script(A, [Behavior::Failure(std::io::ErrorKind::ConnectionReset)]);
     let state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     let before = state.get_record(B).await.unwrap().unwrap();
     let publication = state.inner.tunnels.read().await[B].publication.clone();
@@ -458,14 +486,18 @@ async fn reconnect_exhausted_a_does_not_delay_b_or_remove_published_b() {
         .publication
         .ptr_eq(&publication));
     assert_eq!((source.count(A), source.count(B)), (1, 1));
-    assert!(tokio::time::timeout(LOCAL_BUDGET, state.remove_tunnel(B))
-        .await
-        .unwrap());
+    assert!(
+        tokio::time::timeout(LOCAL_BUDGET, state.remove_tunnel(B, &mut stop_input_0))
+            .await
+            .unwrap()
+    );
+    drop(stop_input_0);
     assert_eq!(
         state.inner.retry.snapshot(A).unwrap().phase,
         reconnect::Phase::Exhausted
     );
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -480,6 +512,8 @@ async fn reconnect_identity_change_starts_new_episode_and_recovery_clears_it() {
         ],
     );
     let state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 1);
@@ -493,7 +527,8 @@ async fn reconnect_identity_change_starts_new_episode_and_recovery_clears_it() {
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
     );
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -511,6 +546,8 @@ async fn reconnect_paired_failure_preserves_budget_but_confirmed_host_change_res
         ],
     );
     let state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     source.paired_failure.store(true, Ordering::SeqCst);
     assert!(state.refresh_once().await.is_err());
@@ -523,7 +560,8 @@ async fn reconnect_paired_failure_preserves_budget_but_confirmed_host_change_res
         matches!(&source.calls.lock().unwrap()[1].1, Route::Mobdev2(host) if host == "192.0.2.2")
     );
     assert!(state.inner.retry.snapshot(A).is_none());
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -531,6 +569,8 @@ async fn reconnect_unadmitted_semaphore_and_native_owner_do_not_start_episode() 
     for reject_owner in [false, true] {
         let source = FakeSource::new();
         let state = configured(source.clone(), policy(1_000, 4_000, Some(1), Some(70)));
+        let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
         let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
         let permits = if reject_owner {
             state.inner.native.close_and_stop_all();
@@ -554,7 +594,8 @@ async fn reconnect_unadmitted_semaphore_and_native_owner_do_not_start_episode() 
         assert_eq!(source.count(A), 0);
         assert_eq!(state.inner.retry.len(), 0);
         drop(permits);
-        state.clear().await;
+        state.clear(&mut prepared_outer_0).await;
+        drop(prepared_outer_0);
         assert_eq!(
             state.inner.failure_slots.available_permits(),
             MAX_FAILURE_RECORDS
@@ -568,6 +609,11 @@ async fn reconnect_stop_clear_shutdown_fence_pending_and_queued_attempts() {
         let source = FakeSource::new();
         source.script(A, [Behavior::Pending]);
         let state = configured(source.clone(), policy(1_000, 4_000, Some(3), None));
+        let mut stop_input = (operation == 0).then(|| state.prepare_cutover::<3>().unwrap());
+        let mut clear_input = (operation == 1).then(|| state.prepare_cutover::<2>().unwrap());
+        let mut shutdown_input = (operation == 2).then(|| state.prepare_cutover::<1>().unwrap());
+        let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
         let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
         let mut active =
             Box::pin(state.refresh_connect_with_total(A, Route::Usbmux, &ticket, None, None));
@@ -578,10 +624,10 @@ async fn reconnect_stop_clear_shutdown_fence_pending_and_queued_attempts() {
         assert!(futures_util::poll!(&mut queued).is_pending());
         match operation {
             0 => {
-                state.remove_tunnel(A).await;
+                state.remove_tunnel(A, stop_input.as_mut().unwrap()).await;
             }
-            1 => state.clear().await,
-            _ => state.notify_shutdown(),
+            1 => state.clear(clear_input.as_mut().unwrap()).await,
+            _ => state.notify_shutdown(shutdown_input.as_mut().unwrap()),
         }
         assert!(matches!(active.await, ScanAttemptOutcome::NoChange));
         assert!(matches!(queued.await, ScanAttemptOutcome::NoChange));
@@ -592,7 +638,8 @@ async fn reconnect_stop_clear_shutdown_fence_pending_and_queued_attempts() {
             state.inner.lifecycle.connects.available_permits(),
             lifecycle::MAX_CONNECTS
         );
-        state.clear().await;
+        state.clear(&mut prepared_outer_0).await;
+        drop(prepared_outer_0);
         assert_eq!(
             state.inner.failure_slots.available_permits(),
             MAX_FAILURE_RECORDS
@@ -611,6 +658,9 @@ async fn reconnect_old_epoch_drop_cannot_clear_fresh_exhausted_episode() {
         ],
     );
     let state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<2>().unwrap();
+
     let old_ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let mut old =
         Box::pin(state.refresh_connect_with_total(A, Route::Usbmux, &old_ticket, None, None));
@@ -618,7 +668,8 @@ async fn reconnect_old_epoch_drop_cannot_clear_fresh_exhausted_episode() {
     // A reusable clear admits a fresh automatic incarnation. DELETE now
     // deliberately keeps this device stopped; its reactivation is separately
     // exercised through an authorized successful HTTP start.
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     // The old Source future still owns the original serial guard. It must drop
     // before a new connection can proceed; its eventual completion stays stale.
     assert!(matches!(old.await, ScanAttemptOutcome::NoChange));
@@ -643,7 +694,8 @@ async fn reconnect_old_epoch_drop_cannot_clear_fresh_exhausted_episode() {
         (snapshot.sequence, snapshot.first_attempt)
     );
     assert_eq!(source.count(A), 2);
-    state.clear().await;
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -658,6 +710,8 @@ async fn reconnect_complete_detach_releases_gate_and_permit_but_not_partial_disc
         ],
     );
     let state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     assert_eq!(state.inner.retry.len(), 1);
     source.usb.lock().unwrap().clear();
@@ -671,7 +725,8 @@ async fn reconnect_complete_detach_releases_gate_and_permit_but_not_partial_disc
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 2);
     assert!(state.get_record(A).await.unwrap().is_some());
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -679,6 +734,8 @@ async fn reconnect_remaining_total_bounds_contested_metadata_without_an_extra_at
     let source = FakeSource::new();
     source.script(A, [Behavior::Failure(std::io::ErrorKind::ConnectionReset)]);
     let state = configured(source.clone(), policy(1, 4, Some(3), Some(70)));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let first = state
         .refresh_connect_with_total(A, Route::Usbmux, &ticket, None, None)
@@ -703,7 +760,8 @@ async fn reconnect_remaining_total_bounds_contested_metadata_without_an_extra_at
     );
     assert_eq!(source.count(A), 1);
     drop(held);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -719,6 +777,8 @@ async fn reconnect_explicit_success_ends_the_prior_automatic_failure_episode() {
         ],
     );
     let state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     assert_eq!(
         state.inner.retry.snapshot(A).unwrap().phase,
@@ -733,7 +793,8 @@ async fn reconnect_explicit_success_ends_the_prior_automatic_failure_episode() {
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 3);
     assert_eq!(state.inner.retry.snapshot(A).unwrap().attempts, 1);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -744,6 +805,8 @@ async fn reconnect_ledger_reservations_are_bounded_by_original_failure_capacity(
         source.script(udid, [Behavior::Failure(std::io::ErrorKind::BrokenPipe)]);
     }
     let mut state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
+    let mut prepared_direct_0 = state.prepare_cutover::<2>().unwrap();
+
     state.inner.get_mut().unwrap().failure_slots =
         failure_slot::Counts::new(2, &state.inner.global_metadata_bytes).unwrap();
     state.refresh_once().await.unwrap();
@@ -762,7 +825,8 @@ async fn reconnect_ledger_reservations_are_bounded_by_original_failure_capacity(
         state.refresh_once().await.unwrap();
     }
     assert_eq!(source.count("synthetic-device-c"), 0);
-    state.clear().await;
+    state.clear(&mut prepared_direct_0).await;
+    drop(prepared_direct_0);
     assert_eq!(state.inner.retry.len(), 0);
     assert_eq!(state.inner.failure_slots.available_permits(), 2);
 }
@@ -779,6 +843,8 @@ async fn reconnect_obsolete_success_version_cannot_clear_a_newer_real_attempt() 
         ],
     );
     let state = configured(source.clone(), policy(1_000, 4_000, Some(3), None));
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let obsolete = state.inner.retry.version(A, &ticket).unwrap();
@@ -793,7 +859,8 @@ async fn reconnect_obsolete_success_version_cannot_clear_a_newer_real_attempt() 
     );
     assert_eq!(after.attempts, 2);
     assert_eq!(source.count(A), 2);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
 }
 
 #[test]

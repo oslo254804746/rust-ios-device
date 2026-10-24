@@ -18,7 +18,7 @@ fn write_batch_bytes_exact_backings_and_whole_shared_owner_refuse_last_byte_and_
             || WriteBatch::new(&bank, capacity).unwrap(),
         );
         let observed = allocated.lock().unwrap();
-        assert_eq!(observed.len(), if capacity == 0 { 2 } else { 5 });
+        assert_eq!(observed.len(), if capacity == 0 { 2 } else { 6 });
         if capacity != 0 {
             assert_eq!(observed[0].0.size(), Destination::minimum_bytes());
             assert_eq!(
@@ -41,6 +41,11 @@ fn write_batch_bytes_exact_backings_and_whole_shared_owner_refuse_last_byte_and_
                     .as_slice()
                     .as_ptr() as usize
             );
+            assert_eq!(
+                observed[4].0,
+                std::alloc::Layout::array::<PhysicalKeepAlive>(3 * capacity).unwrap()
+            );
+            assert_eq!(observed[4].1, batch.releases.as_slice().as_ptr() as usize);
         }
         let payload_index = usize::from(capacity != 0);
         assert_eq!(
@@ -82,6 +87,10 @@ fn write_batch_bytes_exact_backings_and_whole_shared_owner_refuse_last_byte_and_
             FailureWriteOwner::body_bytes()
         );
         assert!(Arc::ptr_eq(batch.owner.storage().semaphore(), &bank));
+        assert_eq!(
+            observed.iter().map(|entry| entry.0.size()).sum::<usize>(),
+            bytes
+        );
         drop(observed);
         assert_eq!(bank.available_permits(), 0);
         drop(batch);

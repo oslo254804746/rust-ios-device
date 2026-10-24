@@ -7,6 +7,9 @@ async fn observed_route_scan_publication_shares_original_input_and_retains_it_af
     let source = FakeSource::new();
     paired(&source, Some("192.0.2.93"));
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state.refresh_once().await.unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let (observed, weak) = {
@@ -24,8 +27,10 @@ async fn observed_route_scan_publication_shares_original_input_and_retains_it_af
         (observed, weak)
     };
     let before = bank.available_permits();
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     drop(state);
     assert!(bank.available_permits() > before);
@@ -47,6 +52,9 @@ async fn observed_route_pre_source_last_byte_refusal_keeps_original_resource_and
 ) {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     drop(state.inner.lifecycle.ticket(A).await.unwrap());
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
@@ -112,8 +120,10 @@ async fn observed_route_pre_source_last_byte_refusal_keeps_original_resource_and
     held.lock().unwrap().take();
     let backing = state.inner.tunnels.read().await.backing_bytes();
     assert_eq!(bank.available_permits(), before - backing);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
@@ -145,6 +155,8 @@ async fn freshness_alive_paired_address_change_rebuilds_and_complete_detach_rele
     let source = FakeSource::new();
     paired(&source, Some("192.0.2.70"));
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     assert!(observed(&state).await == Some(Route::Mobdev2("192.0.2.70".into())));
     let old = state
@@ -179,7 +191,8 @@ async fn freshness_alive_paired_address_change_rebuilds_and_complete_detach_rele
         state.inner.metadata_bytes.available_permits(),
         MAX_PUBLISHED_METADATA_BYTES - retained_backing - publication::Life::bytes()
     );
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(old.check().is_err());
     assert_eq!(
         state.inner.metadata_bytes.available_permits(),
@@ -198,6 +211,8 @@ async fn freshness_failed_paired_browse_keeps_original_alive_publication_and_typ
     let source = FakeSource::new();
     paired(&source, Some("192.0.2.70"));
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     let old = state
         .inner
@@ -218,7 +233,8 @@ async fn freshness_failed_paired_browse_keeps_original_alive_publication_and_typ
     assert!(old.ptr_eq(&state.inner.tunnels.read().await.get(A).unwrap().publication));
     assert_eq!(source.count(A), 1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -227,6 +243,8 @@ async fn freshness_old_paired_browse_cannot_retire_concurrent_replacement_public
     let source = FakeSource::new();
     paired(&source, Some("192.0.2.70"));
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     let gate = Arc::new(Semaphore::new(0));
     *source.paired_gate.lock().unwrap() = Some(gate.clone());
@@ -255,5 +273,6 @@ async fn freshness_old_paired_browse_cannot_retire_concurrent_replacement_public
     assert!(observed(&state).await == Some(Route::Mobdev2("192.0.2.71".into())));
     assert_eq!(source.count(A), 2);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }

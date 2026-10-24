@@ -52,10 +52,12 @@ async fn discovery_future_post_connect_usb_refusal_never_falls_back_and_joins_or
         source.clone(),
         OBSERVE,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let error = state.ensure_tunnel(DEVICE, None, None).await.unwrap_err();
     let empty = state.inner.tunnels.read().await.is_empty();
     let native = source.base.handle();
-    assert!(finish(&state, &source.base, expected).await);
+    assert!(finish(&state, &source.base, expected, &mut terminal_inputs).await);
+    drop(terminal_inputs);
     assert!(native.shutdown_status().is_ok());
     assert!(empty);
     assert!(error.is::<source::DiscoveryAdmission>());

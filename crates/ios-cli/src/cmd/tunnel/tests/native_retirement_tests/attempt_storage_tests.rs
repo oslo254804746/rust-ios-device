@@ -5,6 +5,8 @@ async fn native_attempt_storage_closed_zero_keeps_each_original_runtime_and_all_
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<1>().unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let ticket = state.inner.lifecycle.ticket(DEVICE).await.unwrap();
     let scope = ownership::Ownership::admitted(state.inner.native.clone(), &ticket).unwrap();
@@ -51,7 +53,8 @@ async fn native_attempt_storage_closed_zero_keeps_each_original_runtime_and_all_
     assert_eq!(state.inner.native.snapshot().retired, 2);
     assert!(!new.is_alive());
     assert_eq!(source.connect_calls.load(Ordering::SeqCst), 2);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut shutdown);
+    drop(shutdown);
     state.drain_native(OBSERVE).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
     assert!(old.shutdown_status().is_ok() && new.shutdown_status().is_ok());
@@ -69,7 +72,8 @@ async fn native_attempt_storage_closed_zero_keeps_each_original_runtime_and_all_
     drop(next_device);
     drop(first_device);
     drop(ticket);
-    state.clear().await;
+    state.clear(&mut clear).await;
+    drop(clear);
     drop(state);
     drop(held);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);

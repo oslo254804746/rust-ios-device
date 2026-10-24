@@ -20,6 +20,9 @@ async fn record_independent_copies_pay_after_original_native_workers_join() {
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let initial = publish(&state, Route::Wifi(None)).await.unwrap();
     let native = source.handle();
     let bank = state.inner.global_metadata_bytes.clone();
@@ -41,9 +44,11 @@ async fn record_independent_copies_pay_after_original_native_workers_join() {
     let wire = serde_json::to_vec(&initial).unwrap();
     assert_ne!(initial.udid.as_ptr(), single.udid.as_ptr());
     assert_ne!(initial.udid.as_ptr(), list.as_slice()[0].udid.as_ptr());
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
     state.drain_native(OBSERVE).await.unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     let peers = std::mem::take(&mut *source.peers.lock().unwrap());
     tokio::time::timeout(OBSERVE, async {
         for mut peer in peers {

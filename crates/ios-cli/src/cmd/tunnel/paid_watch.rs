@@ -101,6 +101,11 @@ pub(super) fn from_grant<T>(
 }
 impl<T> Sender<T> {
     #[cfg(test)]
+    pub(super) fn value_is_unlocked(&self) -> bool {
+        self.shared.value.try_write().is_ok()
+    }
+
+    #[cfg(test)]
     pub(super) fn is_unique_initial(&self) -> bool {
         self.shared.strong_count() == 1
             && self.shared.senders.load(Ordering::Acquire) == 1

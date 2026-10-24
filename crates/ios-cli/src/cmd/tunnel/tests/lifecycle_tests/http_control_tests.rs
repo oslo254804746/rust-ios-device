@@ -22,6 +22,8 @@ async fn http_control_actual_last_byte_refusal_precedes_locks_and_keeps_original
     for stop in [false, true] {
         let source = FakeSource::new();
         let state = state(source.clone(), LOCAL_BUDGET);
+        let mut shutdown = state.prepare_cutover::<1>().unwrap();
+        let mut clear = state.prepare_cutover::<2>().unwrap();
         drop(start(state.clone(), A).await.unwrap());
         let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
         let snapshot = ticket.desired();
@@ -116,8 +118,9 @@ async fn http_control_actual_last_byte_refusal_precedes_locks_and_keeps_original
         drop(held);
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
-        state.notify_shutdown();
-        state.clear().await;
+        state.notify_shutdown(&mut shutdown);
+        state.clear(&mut clear).await;
+        drop((shutdown, clear));
         state.drain_native(LOCAL_BUDGET).await.unwrap();
         drop(publication);
         drop(snapshot);
@@ -138,12 +141,15 @@ async fn http_stop_two_actual_frames_keep_distinct_old_global_epochs_until_each_
 ) {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut first_clear = state.prepare_cutover::<2>().unwrap();
+    let mut second_clear = state.prepare_cutover::<2>().unwrap();
     let principal = principal(&state);
     let bank = state.inner.global_metadata_bytes.clone();
     let frame = http_control::stop_bytes();
+    let markers = 3 * ControlIdentity::body_bytes();
     let held = bank
         .clone()
-        .try_acquire_many_owned((bank.available_permits() - 2 * frame) as u32)
+        .try_acquire_many_owned((bank.available_permits() - 2 * (frame + markers)) as u32)
         .unwrap();
     let control = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
     let a = crate::cmd::tunnel::ControlIdentity::downgrade(&control.epoch.generation);
@@ -152,18 +158,30 @@ async fn http_stop_two_actual_frames_keep_distinct_old_global_epochs_until_each_
     let observed_bank = bank.clone();
     let addresses = Arc::new(StdMutex::new(Vec::new()));
     let observed = addresses.clone();
+    let allocated = Arc::new(AtomicUsize::new(0));
+    let seen = allocated.clone();
     let hook = metadata_vec::on_allocation(move |layout, pointer| {
-        let mut addresses = observed.lock().unwrap();
-        assert_eq!(layout.size(), frame);
-        assert_eq!(
-            observed_bank.available_permits(),
-            (1 - addresses.len()) * frame
-        );
-        addresses.push(pointer);
+        let allocation = seen.fetch_add(1, Ordering::SeqCst);
+        let group = allocation / 4;
+        assert!(group < 2);
+        if allocation % 4 == 0 {
+            assert_eq!(layout.size(), frame);
+            assert_eq!(
+                observed_bank.available_permits(),
+                (1 - group) * frame + (2 - group) * markers
+            );
+            observed.lock().unwrap().push(pointer);
+        } else {
+            assert_eq!(layout.size(), ControlIdentity::body_bytes());
+            assert_eq!(
+                observed_bank.available_permits(),
+                (1 - group) * (frame + markers)
+            );
+        }
     });
     let mut first = Box::pin(http_control::prepare_stop(&state, &principal, A).unwrap());
     assert!(futures_util::poll!(&mut first).is_pending());
-    state.inner.lifecycle.clear();
+    state.inner.lifecycle.clear(&mut first_clear);
     let control = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
     let b = crate::cmd::tunnel::ControlIdentity::downgrade(&control.epoch.generation);
     drop(control);
@@ -179,17 +197,26 @@ async fn http_stop_two_actual_frames_keep_distinct_old_global_epochs_until_each_
         assert_eq!(addresses.len(), 2);
         assert_ne!(addresses[0], addresses[1]);
     }
+    assert_eq!(allocated.load(Ordering::SeqCst), 8);
     bank.close();
-    state.inner.lifecycle.clear();
+    state.inner.lifecycle.clear(&mut second_clear);
     assert_eq!(bank.available_permits(), 0);
     assert!(a.upgrade().is_some() && b.upgrade().is_some());
     drop(first);
-    assert_eq!(bank.available_permits(), frame);
+    assert_eq!(bank.available_permits(), frame + markers);
     assert!(a.upgrade().is_none() && b.upgrade().is_some());
     drop(second);
-    assert_eq!(bank.available_permits(), 2 * frame);
+    assert_eq!(bank.available_permits(), 2 * (frame + markers));
     assert!(b.upgrade().is_none());
+    drop((a, b));
     drop(coordinator);
+    // Both clear contexts also own old physical-only fields; end them after
+    // the coordinator guard, while the actual old global strongs are gone.
+    drop((first_clear, second_clear));
+    assert_eq!(
+        bank.available_permits(),
+        2 * (frame + markers) + 4 * ControlIdentity::body_bytes()
+    );
     assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
     assert_eq!(counts(&source, A), (0, 0, 0, 0));
     drop(held);
@@ -201,48 +228,59 @@ async fn http_stop_two_actual_frames_keep_distinct_old_global_epochs_until_each_
 async fn http_epoch_frame_exact_pending_drop_and_core_clear_closed_zero_have_independent_rules() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut core_clear = state.prepare_cutover::<2>().unwrap();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut terminal_clear = state.prepare_cutover::<2>().unwrap();
     let epoch = state.inner.lifecycle.global_epoch().unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let frame = http_control::epoch_bytes();
+    let markers = 2 * ControlIdentity::body_bytes();
     let mut held = bank
         .clone()
-        .try_acquire_many_owned((bank.available_permits() - frame) as u32)
+        .try_acquire_many_owned((bank.available_permits() - frame - markers) as u32)
         .unwrap();
     let table = state.inner.tunnels.write().await;
     let observed_bank = bank.clone();
     let allocated = Arc::new(AtomicUsize::new(0));
     let observed = allocated.clone();
     let hook = metadata_vec::on_allocation(move |layout, pointer| {
-        assert_eq!(layout.size(), frame);
         assert_ne!(pointer, 0);
-        assert_eq!(observed.fetch_add(1, Ordering::SeqCst), 0);
-        assert_eq!(observed_bank.available_permits(), 0);
+        let allocation = observed.fetch_add(1, Ordering::SeqCst);
+        if allocation == 0 {
+            assert_eq!(layout.size(), frame);
+            assert_eq!(observed_bank.available_permits(), markers);
+        } else {
+            assert!(allocation <= 2);
+            assert_eq!(layout.size(), ControlIdentity::body_bytes());
+            assert_eq!(observed_bank.available_permits(), 0);
+        }
     });
     let mut pending = Box::pin(http_control::prepare_epoch(&state).unwrap());
     assert!(futures_util::poll!(&mut pending).is_pending());
     drop(hook);
-    assert_eq!(allocated.load(Ordering::SeqCst), 1);
+    assert_eq!(allocated.load(Ordering::SeqCst), 3);
     drop(pending);
     assert!(epoch.check().is_ok());
-    assert_eq!(bank.available_permits(), frame);
+    assert_eq!(bank.available_permits(), frame + markers);
     held.merge(
         bank.clone()
-            .try_acquire_many_owned(frame.try_into().unwrap())
+            .try_acquire_many_owned((frame + markers).try_into().unwrap())
             .unwrap(),
     );
     assert_eq!(bank.available_permits(), 0);
     bank.close();
     drop(table);
     let hook = metadata_vec::on_allocation(|_, _| panic!("core clear requested a new backing"));
-    state.clear().await;
+    state.clear(&mut core_clear).await;
     assert!(epoch.check().is_err());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut terminal_clear).await;
     drop(hook);
     assert_eq!(bank.available_permits(), 0);
     assert_eq!(counts(&source, A), (0, 0, 0, 0));
     drop(epoch);
     drop(held);
+    drop((core_clear, shutdown, terminal_clear));
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
@@ -251,6 +289,10 @@ async fn http_epoch_frame_exact_pending_drop_and_core_clear_closed_zero_have_ind
 async fn http_stop_frame_does_not_add_admission_to_core_stop_of_existing_closed_zero_gate() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut first_stop = state.prepare_cutover::<3>().unwrap();
+    let mut second_stop = state.prepare_cutover::<3>().unwrap();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     drop(start(state.clone(), A).await.unwrap());
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let snapshot = ticket.desired();
@@ -262,21 +304,22 @@ async fn http_stop_frame_does_not_add_admission_to_core_stop_of_existing_closed_
         .unwrap();
     bank.close();
     let hook = metadata_vec::on_allocation(|_, _| panic!("core known stop requested new backing"));
-    assert!(state.stop_tunnel(A).await.unwrap());
+    assert!(state.stop_tunnel(A, &mut first_stop).await.unwrap());
     assert!(!ticket.is_current());
     assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &snapshot.version,
         &ticket.desired().version
     ));
     assert!(matches!(ticket.desired().desired, intent::Desired::Stopped));
-    assert!(!state.stop_tunnel(A).await.unwrap());
+    assert!(!state.stop_tunnel(A, &mut second_stop).await.unwrap());
     drop(hook);
     assert_eq!(source.count(A), original_calls);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
     drop(held);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((first_stop, second_stop, shutdown, clear));
     drop(snapshot);
     drop(ticket);
     drop(state);
@@ -301,6 +344,8 @@ async fn http_stop_paid_frame_preserves_original_authorization_revocation_while_
         source.clone(),
         LOCAL_BUDGET,
     );
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
     drop(start(state.clone(), DEVICE).await.unwrap());
     let publication = state.inner.tunnels.read().await[DEVICE].publication.clone();
     let ticket = state.inner.lifecycle.ticket(DEVICE).await.unwrap();
@@ -313,9 +358,10 @@ async fn http_stop_paid_frame_preserves_original_authorization_revocation_while_
         .unwrap_or_else(|_| panic!("fixture initial authority"));
     let bank = state.inner.global_metadata_bytes.clone();
     let frame = http_control::stop_bytes();
+    let markers = 3 * ControlIdentity::body_bytes();
     let held = bank
         .clone()
-        .try_acquire_many_owned((bank.available_permits() - frame) as u32)
+        .try_acquire_many_owned((bank.available_permits() - frame - markers) as u32)
         .unwrap();
     let coordinator = state.inner.lifecycle.hold_coordinator().await;
     let mut work = Box::pin(http_control::prepare_stop(&state, &principal, DEVICE).unwrap());
@@ -330,7 +376,7 @@ async fn http_stop_paid_frame_preserves_original_authorization_revocation_while_
         .err()
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(bank.available_permits(), frame);
+    assert_eq!(bank.available_permits(), frame + markers);
     assert!(ticket.is_current());
     assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &snapshot.version,
@@ -342,8 +388,9 @@ async fn http_stop_paid_frame_preserves_original_authorization_revocation_while_
     drop(coordinator);
     drop(response);
     drop(held);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     drop(snapshot);
     drop(ticket);

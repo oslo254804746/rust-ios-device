@@ -198,8 +198,9 @@ async fn recover(
     expected: usize,
     handles: &[Arc<TunnelHandle>],
     proxies: Vec<TcpStream>,
+    inputs: &mut PreparedTerminal,
 ) {
-    let recovery = finish(state, &source.base, expected).await;
+    let recovery = finish(state, &source.base, expected, inputs).await;
     let eof = tokio::time::timeout(OBSERVE, async {
         for mut proxy in proxies {
             if !proxy.read_u8().await.is_err_and(|error| {
@@ -240,6 +241,7 @@ async fn recover(
 async fn native_success_bookkeeping_read_lock_allows_complete_window_and_bounded_flush() {
     let expected = baseline();
     let (source, state) = fixture().await;
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let mut scan = Box::pin(state.refresh_once());
     let first = drive_until(&mut scan, &source, 4, OBSERVE).await;
     let failed = state.inner.failed_attempts.read().await;
@@ -276,7 +278,16 @@ async fn native_success_bookkeeping_read_lock_allows_complete_window_and_bounded
     let proxies = proxies(&handles).await;
     drop(scan);
     drop(failed);
-    recover(&state, &source, expected, &handles, proxies).await;
+    recover(
+        &state,
+        &source,
+        expected,
+        &handles,
+        proxies,
+        &mut terminal_inputs,
+    )
+    .await;
+    drop(terminal_inputs);
 
     assert!(
         first && later,

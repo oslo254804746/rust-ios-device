@@ -44,7 +44,7 @@ async fn failure_global_root_same_prepared_value_commits_at_closed_zero_and_outl
     drop((node, ticket, lifecycle, held_a, held_b));
     assert_eq!(
         origin.available_permits(),
-        total - marker_identity::Owner::body_bytes()
+        total - marker_identity::Owner::body_bytes() - super::super::ControlIdentity::body_bytes()
     );
     assert_eq!(
         bank.available_permits(),

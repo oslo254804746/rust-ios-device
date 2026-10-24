@@ -18,6 +18,8 @@ fn assert_no_source(source: &FakeSource) {
 async fn lifecycle_tunnel_manual_deadline_coordinator_expires_before_lock_release() {
     let source = FakeSource::new();
     let state = state(source.clone(), Duration::from_millis(80));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let held = state.inner.lifecycle.hold_coordinator().await;
     let observed = tokio::time::timeout(LOCAL_BUDGET, start(state.clone(), A)).await;
     assert_no_source(&source);
@@ -28,7 +30,8 @@ async fn lifecycle_tunnel_manual_deadline_coordinator_expires_before_lock_releas
             .unwrap_err(),
     );
     start(state.clone(), A).await.unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -37,6 +40,8 @@ async fn lifecycle_tunnel_manual_deadline_coordinator_and_connect_share_one_budg
     let source = FakeSource::new();
     source.script(A, [Behavior::Pending, Behavior::Success]);
     let state = state(source.clone(), Duration::from_millis(1000));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let held = state.inner.lifecycle.hold_coordinator().await;
     let mut request = Box::pin(start(state.clone(), A));
     assert!(futures_util::poll!(&mut request).is_pending());
@@ -60,7 +65,8 @@ async fn lifecycle_tunnel_manual_deadline_coordinator_and_connect_share_one_budg
     );
     assert!(state.get_record(A).await.unwrap().is_none());
     start(state.clone(), A).await.unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -119,6 +125,8 @@ async fn lifecycle_tunnel_manual_deadline_late_native_success_cannot_publish() {
     let gate = Arc::new(Semaphore::new(0));
     source.script(A, [Behavior::Held(gate.clone()), Behavior::Success]);
     let state = state(source.clone(), Duration::from_millis(60));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut request = Box::pin(start(state.clone(), A));
     assert!(futures_util::poll!(&mut request).is_pending());
     assert_eq!(source.active.load(Ordering::SeqCst), 1);
@@ -136,7 +144,8 @@ async fn lifecycle_tunnel_manual_deadline_late_native_success_cannot_publish() {
     );
     assert!(state.list_records().await.unwrap().as_slice().is_empty());
     start(state.clone(), A).await.unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -145,14 +154,11 @@ async fn lifecycle_tunnel_manual_deadline_coordinator_wait_still_observes_cancel
     for terminal in [false, true] {
         let source = FakeSource::new();
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut cancel_input = PreparedSignal::new(&state, terminal);
         let held = state.inner.lifecycle.hold_coordinator().await;
         let mut request = Box::pin(start(state.clone(), A));
         assert!(futures_util::poll!(&mut request).is_pending());
-        if terminal {
-            state.notify_shutdown();
-        } else {
-            state.inner.lifecycle.clear();
-        }
+        cancel_input.notify_or_clear_epoch(&state);
         let observed = tokio::time::timeout(LOCAL_BUDGET, request.as_mut()).await;
         drop(request);
         assert_no_source(&source);
@@ -172,6 +178,8 @@ async fn lifecycle_tunnel_manual_deadline_coordinator_wait_still_observes_cancel
 async fn lifecycle_tunnel_manual_deadline_caller_drop_releases_coordinator_wait() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let held = state.inner.lifecycle.hold_coordinator().await;
     let mut request = Box::pin(start(state.clone(), A));
     assert!(futures_util::poll!(&mut request).is_pending());
@@ -179,7 +187,8 @@ async fn lifecycle_tunnel_manual_deadline_caller_drop_releases_coordinator_wait(
     assert_no_source(&source);
     drop(held);
     start(state.clone(), A).await.unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -307,6 +316,8 @@ async fn lifecycle_tunnel_manual_deadline_late_publication_lock_releases_complet
     let gate = Arc::new(Semaphore::new(0));
     source.script(A, [Behavior::Held(gate.clone()), Behavior::Success]);
     let state = state(source.clone(), Duration::from_millis(60));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut request = Box::pin(start(state.clone(), A));
     assert!(futures_util::poll!(&mut request).is_pending());
     let held = state.inner.tunnels.write().await;
@@ -325,7 +336,8 @@ async fn lifecycle_tunnel_manual_deadline_late_publication_lock_releases_complet
         lifecycle::MAX_CONNECTS
     );
     start(state.clone(), A).await.unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
 }
 
@@ -334,6 +346,8 @@ async fn lifecycle_tunnel_manual_deadline_http_timeout_preserves_native_class() 
     let source = FakeSource::new();
     source.script(A, [Behavior::Pending]);
     let state = state(source.clone(), Duration::from_millis(60));
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let response = client()
         .post(format!("http://127.0.0.1:{port}/start-tunnel"))
@@ -348,7 +362,8 @@ async fn lifecycle_tunnel_manual_deadline_http_timeout_preserves_native_class() 
     assert!(!body.contains("synthetic-private"));
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert!(state.list_records().await.unwrap().as_slice().is_empty());
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }

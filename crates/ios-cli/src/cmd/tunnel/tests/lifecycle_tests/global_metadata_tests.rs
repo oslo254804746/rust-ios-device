@@ -24,7 +24,10 @@ async fn manual_success_preflight_one_byte_refusal_is_before_all_source_and_keep
         + TunnelAgentOwner::body_bytes()
         + TunnelAgentState::watch_bytes()
         + failure_slot::Counts::body_bytes();
-    state.set_global_metadata_limit(structural + bytes);
+    state.set_global_metadata_limit(
+        structural + bytes + 4 * crate::cmd::tunnel::ControlIdentity::body_bytes(),
+    );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let error = state.refresh_once().await.unwrap_err();
     assert_eq!(
@@ -38,10 +41,14 @@ async fn manual_success_preflight_one_byte_refusal_is_before_all_source_and_keep
     assert!(state.inner.failed_attempts.read().await.is_empty());
     assert!(!state.is_ready().await);
     drop(error);
-    state.notify_shutdown();
-    state.clear().await;
+    terminal_inputs.shutdown(&state);
+    terminal_inputs.clear(&state).await;
+    drop(terminal_inputs);
     drop(state);
-    assert_eq!(bank.available_permits(), structural + bytes);
+    assert_eq!(
+        bank.available_permits(),
+        structural + bytes + 4 * crate::cmd::tunnel::ControlIdentity::body_bytes()
+    );
 }
 
 #[tokio::test]
@@ -49,6 +56,9 @@ async fn failure_window_roots_one_byte_refusal_precedes_source_with_prepared_sin
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let held = Arc::new(StdMutex::new(None));
     let retained = Arc::clone(&held);
@@ -80,8 +90,10 @@ async fn failure_window_roots_one_byte_refusal_precedes_source_with_prepared_sin
     assert!(!state.is_ready().await);
     drop(error);
     drop(held.lock().unwrap().take());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
@@ -96,6 +108,9 @@ async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_wi
         host: old_host.into(),
     });
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state.refresh_once().await.unwrap();
     let publication = state.inner.tunnels.read().await[B].publication.clone();
     let ticket = state.inner.lifecycle.ticket(B).await.unwrap();
@@ -203,8 +218,10 @@ async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_wi
     );
     drop(error);
     drop(held.lock().unwrap().take());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
     drop(original);
@@ -227,6 +244,9 @@ async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_
             host: "192.0.2.88".into(),
         }));
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let before = bank.available_permits();
     let remaining = state.scan_frame_bytes()
@@ -239,6 +259,7 @@ async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_
         + candidate_input::Input::body_bytes()
         + A.len()
         + scan_seen::Seen::first_bytes()
+        + 2 * std::mem::size_of::<candidate_index::Candidate>()
         + failure_table::Node::input_bytes(&Route::Usbmux)
         + Lifecycle::additional_metadata_bytes(A)
         - 1;
@@ -269,8 +290,10 @@ async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_
     assert!(state.get_record(A).await.unwrap().is_none());
     assert!(state.get_record(B).await.unwrap().is_some());
     drop(error);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
 }
@@ -285,8 +308,12 @@ async fn candidate_ticket_actual_foreign_origin_last_byte_refusal_keeps_seen_and
         host: "192.0.2.88".into(),
     });
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+
     let producer = birth_bank::BirthBank::new(MAX_GLOBAL_KNOWN_METADATA_BYTES);
     state.inner.get_mut().unwrap().lifecycle = Lifecycle::with_metadata(producer.clone()).unwrap();
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let global = state.inner.global_metadata_bytes.clone();
     let held = Arc::new(StdMutex::new(None));
@@ -342,8 +369,10 @@ async fn candidate_ticket_actual_foreign_origin_last_byte_refusal_keeps_seen_and
     assert!(state.inner.tunnels.read().await.is_empty());
     assert!(ticket.is_current());
     drop((error, held.lock().unwrap().take()));
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     drop((ticket, state));
     assert_eq!(global.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
     assert_eq!(
@@ -361,6 +390,9 @@ async fn observed_last_byte_refusal_preserves_old_paired_publication_and_publish
         host: old_host.into(),
     });
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state.ensure_tunnel(B, Some(old_host), None).await.unwrap();
     let old = state.inner.tunnels.read().await[B].publication.clone();
     source.usb.lock().unwrap().push(A.into());
@@ -401,8 +433,10 @@ async fn observed_last_byte_refusal_preserves_old_paired_publication_and_publish
     assert!(!state.is_ready().await);
     drop(error);
     drop(held.lock().unwrap().take());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
 }
@@ -443,6 +477,9 @@ async fn manual_paired_fixture() -> (Arc<FakeSource>, TunnelAgentState, Ticket) 
 #[tokio::test]
 async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication_before_browse() {
     let (source, state, ticket) = manual_paired_fixture().await;
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     let original = ticket.desired();
     let publication = state.inner.tunnels.read().await[A].publication.clone();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
@@ -494,8 +531,10 @@ async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication
     drop(error);
     assert_eq!(bank.available_permits(), admitted);
     drop(held.lock().unwrap().take());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
 }
@@ -504,6 +543,9 @@ async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication
 async fn manual_paired_plan_one_byte_refusal_is_incomplete_and_preserves_both_original_publications(
 ) {
     let (source, state, ticket) = manual_paired_fixture().await;
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     source.usb.lock().unwrap().push(B.into());
     start(state.clone(), B).await.unwrap();
     source.usb_calls.store(0, Ordering::SeqCst);
@@ -553,8 +595,10 @@ async fn manual_paired_plan_one_byte_refusal_is_incomplete_and_preserves_both_or
     }
     drop(error);
     drop(held.lock().unwrap().take());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
 }
@@ -563,8 +607,12 @@ async fn manual_paired_plan_one_byte_refusal_is_incomplete_and_preserves_both_or
 async fn scan_desired_suppressed_index_quota_refusal_precedes_source_and_keeps_stop_epoch() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut stop_input = state.prepare_cutover::<3>().unwrap();
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
-    state.inner.lifecycle.stop(A).await;
+    state.inner.lifecycle.stop(A, &mut stop_input).await;
     let original = ticket.desired();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let before = bank.available_permits();
@@ -595,14 +643,19 @@ async fn scan_desired_suppressed_index_quota_refusal_precedes_source_and_keeps_s
     assert!(matches!(ticket.desired().desired, intent::Desired::Stopped));
     drop(error);
     drop(held);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
 }
 
 #[tokio::test]
 async fn scan_desired_manual_index_retains_original_snapshot_refs_and_exact_backing_owner() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let response = client()
         .post(format!("http://127.0.0.1:{port}/start-tunnel"))
@@ -651,8 +704,10 @@ async fn scan_desired_manual_index_retains_original_snapshot_refs_and_exact_back
     drop(desired);
     server.abort();
     let _ = server.await;
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
 }
@@ -668,6 +723,7 @@ async fn scan_capsule_preflight_refusal_has_zero_source_calls_and_no_history_or_
         + scan::Outcomes::body_bytes()
         + TunnelAgentOwner::body_bytes()
         + TunnelAgentState::watch_bytes()
+        + 2 * ControlIdentity::body_bytes()
         + failure_slot::Counts::body_bytes();
     state.set_global_metadata_limit(native_bytes + (bytes));
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
@@ -699,11 +755,14 @@ async fn desired_listing_bytes_refusal_is_before_discovery_and_preserves_stop() 
         + scan::Outcomes::body_bytes()
         + TunnelAgentOwner::body_bytes()
         + TunnelAgentState::watch_bytes()
+        + 5 * ControlIdentity::body_bytes() // initial/gate pairs plus old Ticket generation
         + failure_slot::Counts::body_bytes();
     state.set_global_metadata_limit(native_bytes + (bytes));
+    let mut stop_input = state.prepare_cutover::<3>().unwrap();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
-    state.inner.lifecycle.stop(A).await;
+    state.inner.lifecycle.stop(A, &mut stop_input).await;
+    drop(stop_input);
     let before = ticket.desired();
     assert_eq!(bank.available_permits(), reserve);
     let error = state.refresh_once().await.unwrap_err();
@@ -723,6 +782,11 @@ async fn desired_listing_bytes_refusal_is_before_discovery_and_preserves_stop() 
     assert_eq!(bank.available_permits(), reserve);
     drop(ticket);
     drop(state);
+    assert_eq!(
+        bank.available_permits(),
+        bytes + native_bytes - 2 * ControlIdentity::body_bytes()
+    );
+    drop(before);
     assert_eq!(bank.available_permits(), bytes + native_bytes);
 }
 
@@ -750,7 +814,10 @@ async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
         + TunnelAgentOwner::body_bytes()
         + TunnelAgentState::watch_bytes()
         + failure_slot::Counts::body_bytes();
-    state.set_global_metadata_limit(native_bytes + (bytes));
+    state.set_global_metadata_limit(
+        native_bytes + (bytes) + 4 * crate::cmd::tunnel::ControlIdentity::body_bytes(),
+    );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let error = state.refresh_once().await.unwrap_err();
     assert_eq!(
@@ -763,10 +830,14 @@ async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
     assert_eq!(state.inner.retry.receipt_count(), 0);
     assert_eq!(state.inner.native.snapshot().occupied(), 0);
     assert!(!state.is_ready().await);
-    state.notify_shutdown();
-    state.clear().await;
+    terminal_inputs.shutdown(&state);
+    terminal_inputs.clear(&state).await;
+    drop(terminal_inputs);
     drop(state);
-    assert_eq!(bank.available_permits(), bytes + native_bytes);
+    assert_eq!(
+        bank.available_permits(),
+        bytes + native_bytes + 4 * crate::cmd::tunnel::ControlIdentity::body_bytes()
+    );
 }
 
 #[tokio::test]
@@ -774,6 +845,9 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(B).await.unwrap();
     let slot = state.reserve_failure_slot(B).await.unwrap();
     state
@@ -797,6 +871,7 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
         + raw
         + selection
         + Lifecycle::additional_metadata_bytes(A)
+        + 2 * ControlIdentity::body_bytes()
         + candidate_index::Candidate::first_usb_bytes(A)
         + TunnelAgentState::scan_window_bytes(1)
         + std::mem::size_of::<usize>()
@@ -844,10 +919,12 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
     assert!(!state.is_ready().await);
     assert_eq!(
         bank.available_permits(),
-        remaining - Lifecycle::additional_metadata_bytes(A)
+        remaining - Lifecycle::additional_metadata_bytes(A) - 2 * ControlIdentity::body_bytes()
     );
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     drop(ticket);
     drop(original);
     drop(state);
@@ -867,6 +944,9 @@ async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_us
     });
     let raw_paired = std::mem::size_of::<PairedMobdev2Device>() + B.len() + host.len();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let before = bank.available_permits();
     let held = Arc::new(StdMutex::new(None));
@@ -902,14 +982,16 @@ async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_us
     assert_eq!(state.inner.lifecycle.coordinator_count().await, 1);
     assert_eq!(state.list_records().await.unwrap().len(), 1);
     assert!(!state.is_ready().await);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(
         bank.available_permits(),
-        before - Lifecycle::initial_metadata_bytes(A)
+        before - Lifecycle::initial_metadata_bytes(A) - ControlIdentity::body_bytes()
     );
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_1);
+    drop(control_input_1);
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
@@ -946,8 +1028,10 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
                 + Lifecycle::initial_metadata_bytes(A)
                 + TunnelAgentState::scan_window_bytes(1)
                 + failure_table::Destination::minimum_bytes()
-                + paired_frame),
+                + paired_frame)
+            + 6 * crate::cmd::tunnel::ControlIdentity::body_bytes(),
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
@@ -969,14 +1053,18 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     assert_eq!(source.paired_active.load(Ordering::SeqCst), 0);
     assert_eq!(source.paired_exited.load(Ordering::SeqCst), 1);
     assert!(source.calls.lock().unwrap().is_empty());
-    state.notify_shutdown();
-    state.clear().await;
+    terminal_inputs.shutdown(&state);
+    terminal_inputs.clear(&state).await;
+    drop(terminal_inputs);
 }
 
 #[tokio::test]
 async fn initial_publication_snapshot_refusal_is_before_discovery_and_keeps_exact_publication() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state
         .ensure_tunnel(A, None, Some(StartTunnelConnectionType::Wifi))
         .await
@@ -1011,14 +1099,19 @@ async fn initial_publication_snapshot_refusal_is_before_discovery_and_keeps_exac
         .ptr_eq(&publication));
     drop(error);
     drop(held);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
 }
 
 #[tokio::test]
 async fn global_metadata_rejected_usb_snapshot_keeps_old_publication_and_no_extra_source() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state
         .ensure_tunnel(A, None, Some(StartTunnelConnectionType::Wifi))
         .await
@@ -1061,8 +1154,10 @@ async fn global_metadata_rejected_usb_snapshot_keeps_old_publication_and_no_extr
     );
     assert_eq!(source.count(A), 1);
     drop(held.lock().unwrap().take());
-    state.clear().await;
-    state.notify_shutdown();
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
+    state.notify_shutdown(&mut control_input_1);
+    drop(control_input_1);
     drop(publication);
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);

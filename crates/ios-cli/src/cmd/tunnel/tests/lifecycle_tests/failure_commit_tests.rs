@@ -12,6 +12,12 @@ fn identity(id: u32) -> AttemptIdentity {
 async fn lifecycle_tunnel_clear_preserves_failure_committed_in_replacement_epoch() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let retained_stop = Arc::new(StdMutex::new(state.prepare_cutover::<3>().unwrap()));
+    let callback_stop = retained_stop.clone();
+
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<2>().unwrap();
+
     let old = state.inner.lifecycle.ticket(A).await.unwrap();
     let slot = state.reserve_failure_slot(A).await.unwrap();
     state
@@ -50,9 +56,15 @@ async fn lifecycle_tunnel_clear_preserves_failure_committed_in_replacement_epoch
         ));
         drop(failed);
         // A device-only stop must not make old global cleanup erase this row.
-        fresh.inner.lifecycle.stop(A).now_or_never().unwrap();
+        fresh
+            .inner
+            .lifecycle
+            .stop(A, &mut callback_stop.lock().unwrap())
+            .now_or_never()
+            .unwrap();
     });
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     {
         let failed = state.inner.failed_attempts.read().await;
         let row = failed
@@ -76,7 +88,8 @@ async fn lifecycle_tunnel_clear_preserves_failure_committed_in_replacement_epoch
         MAX_FAILURE_RECORDS - 1
     );
     assert!(source.calls.lock().unwrap().is_empty());
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
@@ -112,7 +125,13 @@ impl Drop for ClearCause {
     }
 }
 
-fn retired_cause(state: &TunnelAgentState, udid: &str, id: u32, drops: Arc<AtomicUsize>) -> usize {
+fn retired_cause(
+    state: &TunnelAgentState,
+    udid: &str,
+    id: u32,
+    drops: Arc<AtomicUsize>,
+    control: &mut marker_identity::Cutover<3>,
+) -> usize {
     let ticket = state
         .inner
         .lifecycle
@@ -130,7 +149,12 @@ fn retired_cause(state: &TunnelAgentState, udid: &str, id: u32, drops: Arc<Atomi
         .unwrap();
     // A Source already polled before stop still returns its original error into
     // the preallocated pending node. This creates actual retired cause storage.
-    state.inner.lifecycle.stop(udid).now_or_never().unwrap();
+    state
+        .inner
+        .lifecycle
+        .stop(udid, control)
+        .now_or_never()
+        .unwrap();
     let original = anyhow::Error::new(std::io::Error::new(
         std::io::ErrorKind::ConnectionRefused,
         ClearCause {
@@ -149,8 +173,15 @@ fn retired_cause(state: &TunnelAgentState, udid: &str, id: u32, drops: Arc<Atomi
 async fn lifecycle_tunnel_clear_preserves_retired_cause_created_in_replacement_epoch() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut old_stop = state.prepare_cutover::<3>().unwrap();
+    let retained_stop = Arc::new(StdMutex::new(state.prepare_cutover::<3>().unwrap()));
+    let callback_stop = retained_stop.clone();
+
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<2>().unwrap();
+
     let old_drops = Arc::new(AtomicUsize::new(0));
-    retired_cause(&state, A, 71, Arc::clone(&old_drops));
+    retired_cause(&state, A, 71, Arc::clone(&old_drops), &mut old_stop);
     assert_eq!(state.inner.retry.receipt_count(), 1);
     let new_drops = Arc::new(AtomicUsize::new(0));
     let observed_drops = Arc::clone(&new_drops);
@@ -158,9 +189,16 @@ async fn lifecycle_tunnel_clear_preserves_retired_cause_created_in_replacement_e
     let captured = Arc::clone(&expected);
     let fresh = state.clone();
     state.inner.lifecycle.on_next_clear_cleanup(move |_| {
-        *captured.lock().unwrap() = Some(retired_cause(&fresh, B, 72, observed_drops));
+        *captured.lock().unwrap() = Some(retired_cause(
+            &fresh,
+            B,
+            72,
+            observed_drops,
+            &mut callback_stop.lock().unwrap(),
+        ));
     });
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(old_drops.load(Ordering::SeqCst), 1);
     assert_eq!(
         new_drops.load(Ordering::SeqCst),
@@ -178,7 +216,8 @@ async fn lifecycle_tunnel_clear_preserves_retired_cause_created_in_replacement_e
     );
     drop(receipts);
     assert!(source.calls.lock().unwrap().is_empty());
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert_eq!(new_drops.load(Ordering::SeqCst), 1);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
@@ -190,9 +229,11 @@ async fn lifecycle_tunnel_clear_preserves_retired_cause_created_in_replacement_e
 async fn lifecycle_tunnel_clear_cancels_old_epoch_before_waiting_for_failure_table() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut queued_input = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let failed = state.inner.failed_attempts.write().await;
-    let mut clear = Box::pin(state.clear());
+    let mut clear = Box::pin(state.clear(&mut queued_input));
     assert!(futures_util::poll!(&mut clear).is_pending());
     assert!(
         !ticket.is_current(),
@@ -216,12 +257,16 @@ async fn lifecycle_tunnel_clear_cancels_old_epoch_before_waiting_for_failure_tab
 async fn lifecycle_tunnel_clear_preserves_pending_source_node_until_original_arrives() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let slot = state.reserve_failure_slot(A).await.unwrap();
     let attempt = ticket
         .commit(|| state.inner.retry.start(A, identity(71), &ticket, slot))
         .unwrap();
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(state.inner.retry.receipt_count(), 0);
     let drops = Arc::new(AtomicUsize::new(0));
     let result: Result<TunnelRecord> = Err(attempt.source_failed(anyhow::Error::new(
@@ -237,7 +282,8 @@ async fn lifecycle_tunnel_clear_preserves_pending_source_node_until_original_arr
     drop(result);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert_eq!(state.inner.retry.receipt_count(), 1);
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
@@ -250,6 +296,10 @@ async fn lifecycle_tunnel_clear_preserves_pending_source_node_until_original_arr
 async fn lifecycle_tunnel_clear_cancelled_while_publication_locked_keeps_old_epoch_and_failures() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut queued_input = state.prepare_cutover::<2>().unwrap();
+
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let slot = state.reserve_failure_slot(A).await.unwrap();
     state
@@ -257,7 +307,7 @@ async fn lifecycle_tunnel_clear_cancelled_while_publication_locked_keeps_old_epo
         .await;
     let version = state.inner.failed_attempts.read().await[A].version.clone();
     let tunnels = state.inner.tunnels.write().await;
-    let mut clear = Box::pin(state.clear());
+    let mut clear = Box::pin(state.clear(&mut queued_input));
     assert!(futures_util::poll!(&mut clear).is_pending());
     assert!(ticket.is_current());
     drop(clear);
@@ -267,7 +317,8 @@ async fn lifecycle_tunnel_clear_cancelled_while_publication_locked_keeps_old_epo
     assert_eq!(failed[A].fail_count, 1);
     drop(failed);
     assert!(source.calls.lock().unwrap().is_empty());
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
@@ -278,19 +329,24 @@ async fn lifecycle_tunnel_clear_cancelled_while_publication_locked_keeps_old_epo
 async fn lifecycle_tunnel_later_clear_collects_failure_left_by_cancelled_earlier_clear() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut queued_input = state.prepare_cutover::<2>().unwrap();
+
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let slot = state.reserve_failure_slot(A).await.unwrap();
     state
         .record_failed_attempt(A, identity(71), slot, &ticket)
         .await;
     let failed = state.inner.failed_attempts.write().await;
-    let mut clear = Box::pin(state.clear());
+    let mut clear = Box::pin(state.clear(&mut queued_input));
     assert!(futures_util::poll!(&mut clear).is_pending());
     assert!(!ticket.is_current());
     drop(clear);
     drop(failed);
     assert!(state.inner.failed_attempts.read().await.contains_key(A));
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(state.inner.failed_attempts.read().await.is_empty());
     assert_eq!(
         state.inner.failure_slots.available_permits(),
@@ -303,6 +359,11 @@ async fn lifecycle_tunnel_later_clear_collects_failure_left_by_cancelled_earlier
 async fn lifecycle_tunnel_shutdown_fences_failure_close_after_check_releases_reservation() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let retained_close = Arc::new(StdMutex::new(state.prepare_cutover::<1>().unwrap()));
+    let callback_close = retained_close.clone();
+
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let slot = state.reserve_failure_slot(A).await.unwrap();
     assert_eq!(
@@ -316,7 +377,7 @@ async fn lifecycle_tunnel_shutdown_fences_failure_close_after_check_releases_res
         .lifecycle
         .on_next_failure_record(move |lifecycle| {
             observed.fetch_add(1, Ordering::SeqCst);
-            lifecycle.close();
+            lifecycle.close(&mut callback_close.lock().unwrap());
         });
     tokio::time::timeout(
         LOCAL_BUDGET,
@@ -337,7 +398,8 @@ async fn lifecycle_tunnel_shutdown_fences_failure_close_after_check_releases_res
         ios_core::ErrorClass::Cancelled
     );
     assert!(source.calls.lock().unwrap().is_empty());
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
@@ -349,6 +411,15 @@ async fn lifecycle_tunnel_shutdown_fences_failure_clear_and_stop_preserve_old_ro
     for clear in [false, true] {
         let source = FakeSource::new();
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let retained_clear =
+            clear.then(|| Arc::new(StdMutex::new(state.prepare_cutover::<2>().unwrap())));
+        let retained_stop =
+            (!clear).then(|| Arc::new(StdMutex::new(state.prepare_cutover::<3>().unwrap())));
+        let callback_clear = retained_clear.clone();
+        let callback_stop = retained_stop.clone();
+
+        let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
         let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
         let slot = state.reserve_failure_slot(A).await.unwrap();
         state
@@ -368,11 +439,14 @@ async fn lifecycle_tunnel_shutdown_fences_failure_clear_and_stop_preserve_old_ro
             .on_next_failure_record(move |lifecycle| {
                 observed.fetch_add(1, Ordering::SeqCst);
                 if clear {
-                    lifecycle.clear();
+                    lifecycle.clear(&mut *callback_clear.as_ref().unwrap().lock().unwrap());
                 } else {
                     // The real stop path has no contention in this fixture. Poll
                     // it once while the caller owns the required tunnel guard.
-                    assert!(lifecycle.stop(A).now_or_never().is_some());
+                    assert!(lifecycle
+                        .stop(A, &mut callback_stop.as_ref().unwrap().lock().unwrap())
+                        .now_or_never()
+                        .is_some());
                 }
             });
         let tunnels = state.inner.tunnels.write().await;
@@ -410,7 +484,8 @@ async fn lifecycle_tunnel_shutdown_fences_failure_clear_and_stop_preserve_old_ro
         }
         assert_eq!(called.load(Ordering::SeqCst), 1);
         assert!(source.calls.lock().unwrap().is_empty());
-        state.clear().await;
+        state.clear(&mut control_input_0).await;
+        drop(control_input_0);
         assert!(state.inner.failed_attempts.read().await.is_empty());
         assert_eq!(
             state.inner.failure_slots.available_permits(),

@@ -111,6 +111,9 @@ async fn receipt_body_pending_source_clear_and_parallel_report_drops_keep_origin
     let bank = Arc::new(Semaphore::new(total));
     let ledger = Ledger::with_metadata(RetryPolicy::default(), bank.clone()).unwrap();
     let lifecycle = lifecycle();
+    let mut clear = lifecycle
+        .prepare_cutover::<2>(lifecycle.byte_bank())
+        .unwrap();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let attempt = ticket
         .commit(|| ledger.start(A, buffered_identity(), &ticket, slot(&bank)))
@@ -118,7 +121,8 @@ async fn receipt_body_pending_source_clear_and_parallel_report_drops_keep_origin
     let weak = attempt.receipt.downgrade();
     // The original pending capsule remains owned across cutover, and captures
     // the same typed error after its original ticket has become stale.
-    lifecycle.clear();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     ledger.close();
     let (original, original_pointer) = io_original("original-receipt-body-after-clear");
     let result = failed_result(attempt.source_failed(original));

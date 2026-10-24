@@ -12,16 +12,21 @@ struct Fixture {
     peer: DuplexStream,
     metadata: super::super::super::metadata_lease::Owner,
     global_metadata: super::super::super::metadata_lease::Owner,
+    _origin_birth: Cutover<1>,
+    _other_birth: Cutover<1>,
 }
 
 impl Fixture {
     async fn new() -> Self {
         let registry = registry();
-        let total = registry._slots_storage.num_permits() + RefreshProof::body_bytes();
+        let total = registry._slots_storage.num_permits()
+            + RefreshProof::body_bytes()
+            + ControlIdentity::body_bytes();
         let origin = BirthBank::new(total);
         let other = BirthBank::new(total);
-        let stamp =
-            OwnershipStamp::new(ControlIdentity::new(&origin), ControlIdentity::new(&other));
+        let mut origin_birth = Cutover::<1>::new(&origin, origin.raw()).unwrap();
+        let mut other_birth = Cutover::<1>::new(&other, other.raw()).unwrap();
+        let stamp = OwnershipStamp::new(origin_birth.place(&origin), other_birth.place(&other));
         let (runtime, peer) = native().await;
         let lease = registry
             .reserve(stamp.clone())
@@ -45,6 +50,8 @@ impl Fixture {
             peer,
             metadata,
             global_metadata,
+            _origin_birth: origin_birth,
+            _other_birth: other_birth,
         }
     }
 

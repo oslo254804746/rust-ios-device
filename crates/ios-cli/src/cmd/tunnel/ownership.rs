@@ -70,7 +70,8 @@ impl<'a> Ownership<'a> {
     }
 
     pub(super) fn standalone(registry: RegistryOwner) -> Result<Self> {
-        let stamp = OwnershipStamp::standalone(&registry);
+        let mut births = registry.prepare_births::<2>(&registry.byte_bank())?;
+        let stamp = OwnershipStamp::standalone(&registry, &mut births);
         let storage = Self::attempt_backing(&registry)?;
         let reservation = registry.reserve(stamp.clone())?;
         Ok(Self {
@@ -399,12 +400,19 @@ mod buffer_bank_tests {
         let header_fee = supplied.try_acquire_many_owned(40).unwrap();
         assert_eq!(
             bank.available_permits(),
-            baseline - Registry::incarnation_bytes() - std::mem::size_of::<Attempt<'_, '_>>() - 40
+            baseline
+                - Registry::incarnation_bytes()
+                - std::mem::size_of::<Attempt<'_, '_>>()
+                - 2 * super::super::ControlIdentity::body_bytes()
+                - 40
         );
         drop(header_fee);
         assert_eq!(
             bank.available_permits(),
-            baseline - Registry::incarnation_bytes() - std::mem::size_of::<Attempt<'_, '_>>()
+            baseline
+                - Registry::incarnation_bytes()
+                - std::mem::size_of::<Attempt<'_, '_>>()
+                - 2 * super::super::ControlIdentity::body_bytes()
         );
         drop(reservation);
         drop(owner);

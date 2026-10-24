@@ -70,6 +70,9 @@ async fn authorization_payload_websocket_request_last_header_outlives_input_clie
         AccessControl::trusted_test_local(),
         access,
     );
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
     let client = state.inner.upstream_access.client(root).unwrap();
@@ -98,8 +101,10 @@ async fn authorization_payload_websocket_request_last_header_outlives_input_clie
     assert!(!format!("{request:?}").contains(TOKEN));
     drop(request);
     drop(client);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
     state.drain_native(Duration::from_secs(1)).await.unwrap();
     drop(state);
     assert_eq!(

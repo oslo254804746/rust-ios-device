@@ -1,6 +1,7 @@
 //! Current desired state on the existing bounded device coordinator.
 //! No retry history, failure permit or independent device task lives here.
 
+use super::marker_identity::{BirthContext, Cutover, ReleaseMarkers};
 use super::paid_watch as watch;
 use super::ControlIdentity;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -230,6 +231,14 @@ pub(super) struct Cell {
 
 impl Cell {
     #[cfg(test)]
+    pub(super) fn mutation_guards_are_unlocked(&self) -> bool {
+        self.state.try_lock().is_ok()
+            && self.pending_success.try_lock().is_ok()
+            && self.failure.try_lock().is_ok()
+            && self.changes.value_is_unlocked()
+    }
+
+    #[cfg(test)]
     pub(super) fn new(
         epoch: ControlIdentity,
         metadata_bytes: super::birth_bank::BirthBank,
@@ -238,14 +247,16 @@ impl Cell {
             &metadata_bytes,
             watch::body_bytes::<ControlIdentity>(),
         )?;
-        Self::from_grant(epoch, metadata_bytes, storage)
+        let mut context = Cutover::<1>::new(&metadata_bytes, &metadata_bytes)?;
+        Self::from_grant(epoch, metadata_bytes, storage, &mut context)
     }
     pub(super) fn from_grant(
         epoch: ControlIdentity,
         metadata_bytes: super::birth_bank::BirthBank,
         storage: OwnedSemaphorePermit,
+        context: &mut impl BirthContext,
     ) -> anyhow::Result<Self> {
-        let version = ControlIdentity::new(&metadata_bytes);
+        let version = context.place(&metadata_bytes);
         let (changes, _) = watch::from_grant(version.clone(), &metadata_bytes, storage)?;
         Ok(Self {
             state: Mutex::new(Snapshot {
@@ -274,26 +285,41 @@ impl Cell {
         self.lock().clone()
     }
 
+    pub(super) fn prepare_births<const N: usize>(
+        &self,
+        bank: &Arc<Semaphore>,
+    ) -> anyhow::Result<Cutover<N>> {
+        Cutover::new(&self.metadata_bytes, bank)
+    }
+
     pub(super) fn is_epoch(&self, epoch: &ControlIdentity) -> bool {
         ControlIdentity::ptr_eq(&self.lock().epoch, epoch)
     }
 
-    pub(super) fn reset(&self, epoch: ControlIdentity) {
+    pub(super) fn reset(&self, epoch: ControlIdentity, context: &mut impl BirthContext) {
         // Explicit global clear resets desired states, unlike durable per-device
         // stop across ordinary scans. Do this atomically with the new version.
         let version = {
             let mut state = self.lock();
+            context.keep(&state.epoch);
+            context.keep(&state.version);
             state.epoch = epoch;
             state.desired = Desired::Automatic;
-            state.version = ControlIdentity::new(&self.metadata_bytes);
-            *self
-                .pending_success
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()) = None;
+            state.version = context.place(&self.metadata_bytes);
+            {
+                let mut pending = self
+                    .pending_success
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                if let Some((version, _)) = pending.as_ref() {
+                    context.keep(version);
+                }
+                *pending = None;
+            }
             state.version.clone()
         };
         self.changes.send_replace(version);
-        self.set_failure(None);
+        self.set_failure(None, context);
     }
 
     pub(super) fn persistent(&self) -> bool {
@@ -304,16 +330,27 @@ impl Cell {
         ControlIdentity::ptr_eq(&self.lock().version, version)
     }
 
-    pub(super) fn replace(&self, desired: Desired) -> ControlIdentity {
+    pub(super) fn replace(
+        &self,
+        desired: Desired,
+        context: &mut impl BirthContext,
+    ) -> ControlIdentity {
         let mut state = self.lock();
-        state.version = ControlIdentity::new(&self.metadata_bytes);
+        context.keep(&state.version);
+        state.version = context.place(&self.metadata_bytes);
         state.desired = desired;
         let version = state.version.clone();
         drop(state);
-        *self
-            .pending_success
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = None;
+        {
+            let mut pending = self
+                .pending_success
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some((version, _)) = pending.as_ref() {
+                context.keep(version);
+            }
+            *pending = None;
+        }
         self.changes.send_replace(version.clone());
         version
     }
@@ -327,6 +364,7 @@ impl Cell {
         desired: impl FnOnce() -> anyhow::Result<Desired>,
         failure: Option<FailureVersion>,
         check: impl Fn() -> anyhow::Result<()>,
+        context: &mut impl BirthContext,
     ) -> anyhow::Result<ControlIdentity> {
         #[cfg(test)]
         Self::run_replace_callback(&self.before_checked_replace);
@@ -339,7 +377,11 @@ impl Cell {
         let desired = desired()?;
         let previous = state.clone();
         let previous_pending = pending.clone();
-        let version = ControlIdentity::new(&self.metadata_bytes);
+        context.keep(&state.version);
+        if let Some((version, _)) = pending.as_ref() {
+            context.keep(version);
+        }
+        let version = context.place(&self.metadata_bytes);
         state.version = version.clone();
         state.desired = desired;
         *pending = failure.map(|failure| (version.clone(), failure));
@@ -425,8 +467,16 @@ impl Cell {
             .clone()
     }
 
-    pub(super) fn set_failure(&self, failure: Option<(FailureVersion, ControlIdentity)>) {
-        *self.failure.lock().unwrap_or_else(|p| p.into_inner()) = failure;
+    pub(super) fn set_failure(
+        &self,
+        failure: Option<(FailureVersion, ControlIdentity)>,
+        context: &mut impl ReleaseMarkers,
+    ) {
+        let mut current = self.failure.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((_, version)) = current.as_ref() {
+            context.keep(version);
+        }
+        *current = failure;
     }
 
     pub(super) fn pending_success(&self) -> Option<(ControlIdentity, FailureVersion)> {
@@ -516,3 +566,5 @@ mod body_tests;
 mod snapshot_owner_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wake_tests;

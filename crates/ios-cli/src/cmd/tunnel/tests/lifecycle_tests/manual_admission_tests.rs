@@ -9,6 +9,7 @@ const FIELD_BYTES: usize = 4096;
 async fn source_future_constructor_last_byte_refusal_never_runs_source_or_consumes_retry() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     drop(state.inner.lifecycle.ticket(A).await.unwrap());
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
@@ -37,7 +38,8 @@ async fn source_future_constructor_last_byte_refusal_never_runs_source_or_consum
     let backing = state.inner.tunnels.read().await.backing_bytes();
     assert_eq!(bank.available_permits(), before - backing);
     drop(error);
-    recover(&state, &source).await;
+    recover(&state, &source, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
@@ -46,6 +48,7 @@ async fn source_future_constructor_last_byte_refusal_never_runs_source_or_consum
 async fn native_source_admission_full_registry_default_start_never_browses_paired_fallback() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     drop(start(state.clone(), B).await.unwrap());
     let original = state.inner.tunnels.read().await[B].publication.clone();
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
@@ -76,7 +79,8 @@ async fn native_source_admission_full_registry_default_start_never_browses_paire
     drop(reserved);
     drop(original);
     drop(error);
-    recover(&state, &source).await;
+    recover(&state, &source, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(
         after, before,
         "pre-Source owner rejection must not trigger paired discovery"
@@ -88,6 +92,7 @@ async fn native_source_admission_publication_last_byte_refusal_never_browses_def
     for global in [false, true] {
         let source = FakeSource::new();
         let state = state(source.clone(), LOCAL_BUDGET);
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         drop(state.inner.lifecycle.ticket(A).await.unwrap());
         let metadata = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
         let published = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
@@ -124,8 +129,17 @@ async fn native_source_admission_publication_last_byte_refusal_never_browses_def
         let backing = state.inner.tunnels.read().await.backing_bytes();
         assert_eq!(bank.available_permits(), before - backing);
         drop(error);
-        recover(&state, &source).await;
-        assert_eq!(bank.available_permits(), before);
+        recover(&state, &source, &mut terminal_inputs).await;
+        drop(terminal_inputs);
+        assert_eq!(
+            bank.available_permits(),
+            before
+                + if global {
+                    2 * ControlIdentity::body_bytes()
+                } else {
+                    0
+                }
+        );
     }
 }
 
@@ -144,6 +158,7 @@ async fn native_source_admission_original_source_io_still_uses_existing_paired_f
         host: "192.0.2.143".into(),
     });
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     drop(state.ensure_tunnel(A, None, None).await.unwrap());
     assert_eq!(source.count(A), 2);
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
@@ -153,7 +168,8 @@ async fn native_source_admission_original_source_io_still_uses_existing_paired_f
         assert_eq!(calls[0].1, Route::Usbmux);
         assert_eq!(calls[1].1, Route::Mobdev2("192.0.2.143".into()));
     }
-    recover(&state, &source).await;
+    recover(&state, &source, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 }
 
 fn source_counts(source: &FakeSource) -> (usize, usize, usize) {
@@ -176,9 +192,9 @@ fn resource(error: &anyhow::Error) {
     assert!(!rendered.contains("synthetic-private-selector"));
 }
 
-async fn recover(state: &TunnelAgentState, source: &FakeSource) {
-    state.notify_shutdown();
-    state.clear().await;
+async fn recover(state: &TunnelAgentState, source: &FakeSource, inputs: &mut PreparedTerminal) {
+    inputs.shutdown(state);
+    inputs.clear(state).await;
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert_eq!(
@@ -197,6 +213,7 @@ async fn recover(state: &TunnelAgentState, source: &FakeSource) {
 async fn admission_manual_oversized_selectors_preserve_old_rows_before_any_source_or_gate() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     state
         .ensure_tunnel(A, None, Some(StartTunnelConnectionType::Usbmux))
         .await
@@ -266,7 +283,8 @@ async fn admission_manual_oversized_selectors_preserve_old_rows_before_any_sourc
     let not_ready = !state.is_ready().await;
     drop(previous);
     drop(ticket);
-    recover(&state, &source).await;
+    recover(&state, &source, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 
     assert!(retained && unchanged && not_ready);
     assert_eq!(
@@ -312,11 +330,13 @@ async fn admission_manual_exact_utf8_fields_keep_all_explicit_route_handoffs() {
     ] {
         let source = FakeSource::new();
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         let result = state.ensure_tunnel(&udid, Some(&host), route).await;
         let actual = source.calls.lock().unwrap().clone();
         let gates = state.inner.lifecycle.coordinator_count().await;
         let paired = source.paired_calls.load(Ordering::SeqCst);
-        recover(&state, &source).await;
+        recover(&state, &source, &mut terminal_inputs).await;
+        drop(terminal_inputs);
 
         assert_eq!(result.unwrap().udid, udid);
         assert_eq!(gates, 1);
@@ -341,11 +361,13 @@ async fn admission_manual_exact_fields_keep_default_paired_fallback_matching() {
         host: host.clone(),
     });
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let result = state.ensure_tunnel(&udid, Some(&host), None).await;
     let actual = source.calls.lock().unwrap().clone();
     let paired = source.paired_calls.load(Ordering::SeqCst);
     let gates = state.inner.lifecycle.coordinator_count().await;
-    recover(&state, &source).await;
+    recover(&state, &source, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 
     assert_eq!(result.unwrap().udid, udid);
     assert_eq!(
@@ -360,11 +382,13 @@ async fn admission_manual_small_empty_and_nul_selectors_keep_existing_acceptance
     for (udid, host) in [("", ""), ("synthetic\0selector", "synthetic\0host")] {
         let source = FakeSource::new();
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut terminal_inputs = PreparedTerminal::new(&state);
         let result = state
             .ensure_tunnel(udid, Some(host), Some(StartTunnelConnectionType::Wifi))
             .await;
         let actual = source.calls.lock().unwrap().clone();
-        recover(&state, &source).await;
+        recover(&state, &source, &mut terminal_inputs).await;
+        drop(terminal_inputs);
 
         assert_eq!(result.unwrap().udid, udid);
         assert_eq!(actual, vec![(udid.into(), Route::Wifi(Some(host.into())))]);
@@ -407,6 +431,7 @@ async fn admission_manual_authorized_http_start_rejects_before_source_and_redact
         source.clone(),
         TUNNEL_CONNECT_TIMEOUT,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let oversized = format!("synthetic-private-selector{}", "x".repeat(FIELD_BYTES));
     let response = client()
@@ -426,7 +451,8 @@ async fn admission_manual_authorized_http_start_rejects_before_source_and_redact
     let gates = state.inner.lifecycle.coordinator_count().await;
     server.abort();
     let stopped = server.await.is_err_and(|error| error.is_cancelled());
-    recover(&state, &source).await;
+    recover(&state, &source, &mut terminal_inputs).await;
+    drop(terminal_inputs);
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(class, "resource_limit");
@@ -440,6 +466,7 @@ async fn admission_manual_authorized_http_start_rejects_before_source_and_redact
 async fn incarnation_actual_manager_last_byte_refusal_precedes_source_and_default_fallback() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     drop(state.inner.lifecycle.ticket(A).await.unwrap());
     let global = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
     let published = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
@@ -507,7 +534,8 @@ async fn incarnation_actual_manager_last_byte_refusal_precedes_source_and_defaul
     );
     assert_eq!(bank.available_permits(), before - backing);
     drop(error);
-    recover(&state, &source).await;
+    recover(&state, &source, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }

@@ -6,6 +6,9 @@ async fn metadata_lease_actual_manager_publishes_original_destinations_allocated
     let gate = Arc::new(Semaphore::new(0));
     source.script(A, [Behavior::Held(gate.clone())]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let allocations = Arc::new(StdMutex::new(Vec::new()));
     let captured = allocations.clone();
     let observed = source.clone();
@@ -44,10 +47,12 @@ async fn metadata_lease_actual_manager_publishes_original_destinations_allocated
         }
     }
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     drop(record);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_1);
+    drop(control_input_1);
 }
 
 #[tokio::test]
@@ -62,6 +67,9 @@ async fn metadata_lease_actual_manager_short_body_refuses_before_source_without_
     drop(probe.take_all());
     let limit = destination + publication::Life::bytes() + metadata_lease::Lease::pair_bytes() - 1;
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut prepared_setup_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_setup_1 = state.prepare_cutover::<1>().unwrap();
+
     let inner = state.inner.get_mut().unwrap();
     inner.metadata_bytes = Arc::new(Semaphore::new(limit));
     *inner.tunnels.get_mut() =
@@ -79,7 +87,9 @@ async fn metadata_lease_actual_manager_short_body_refuses_before_source_without_
     assert_eq!(state.inner.retry.receipt_count(), 0);
     assert_eq!(state.inner.native.snapshot().occupied(), 0);
     drop(error);
-    state.clear().await;
+    state.clear(&mut prepared_setup_0).await;
+    drop(prepared_setup_0);
     assert_eq!(state.inner.metadata_bytes.available_permits(), limit);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_setup_1);
+    drop(prepared_setup_1);
 }

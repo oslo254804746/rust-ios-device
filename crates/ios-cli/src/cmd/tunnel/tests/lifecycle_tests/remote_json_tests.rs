@@ -22,6 +22,8 @@ async fn remote_json_escaped_wire_keeps_listing_target_and_original_global_error
     .await;
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let url = format!("http://127.0.0.1:{port}/");
     state
         .inner
@@ -73,7 +75,8 @@ async fn remote_json_escaped_wire_keeps_listing_target_and_original_global_error
     assert_eq!(bank.available_permits(), before);
     assert_eq!(source.count(A), 0);
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
@@ -96,6 +99,8 @@ async fn remote_json_actual_root_preserves_extensions_overlay_and_original_targe
     .await;
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let url = format!("http://127.0.0.1:{upstream_port}/");
     state
         .inner
@@ -162,7 +167,8 @@ async fn remote_json_actual_root_preserves_extensions_overlay_and_original_targe
     assert!(server.await.unwrap_err().is_cancelled());
     upstream_task.abort();
     assert!(upstream_task.await.unwrap_err().is_cancelled());
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }
 
 #[tokio::test]
@@ -179,6 +185,8 @@ async fn remote_json_snapshot_refuses_before_http_and_body_copy_refuses_before_a
     .await;
     let source = FakeSource::new();
     let state = state(source, TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let url = format!("http://127.0.0.1:{port}/");
     state
         .inner
@@ -220,5 +228,6 @@ async fn remote_json_snapshot_refuses_before_http_and_body_copy_refuses_before_a
     drop(held);
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
 }

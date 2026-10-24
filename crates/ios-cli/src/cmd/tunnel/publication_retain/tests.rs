@@ -8,7 +8,10 @@ fn epoch(
     Epoch,
     watch::Sender<Option<crate::cmd::tunnel::ControlIdentity>>,
 ) {
-    let generation = crate::cmd::tunnel::ControlIdentity::new(bank);
+    let mut birth =
+        crate::cmd::tunnel::marker_identity::Cutover::<1>::new(bank, bank.raw()).unwrap();
+    let generation = birth.place(bank);
+    drop(birth);
     let (sender, changes) = watch::channel(Some(generation.clone()), bank).unwrap();
     (
         Epoch {
@@ -92,6 +95,10 @@ fn publication_retain_stale_epoch_and_predicate_unwind_restore_each_original_slo
         let before = [table.proof("a"), table.proof("b")];
         let (epoch, sender) = epoch(&bank_birth);
         let clock = Deadline::new(Duration::from_secs(1)).unwrap();
+        let mut birth =
+            crate::cmd::tunnel::marker_identity::Cutover::<1>::new(&bank_birth, &bank).unwrap();
+        let fresh = std::cell::RefCell::new(Some(birth.place(&bank_birth)));
+        crate::cmd::tunnel::marker_identity::ReleaseMarkers::keep(&mut birth, &epoch.generation);
         let calls = AtomicUsize::new(0);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             retain(&epoch, &clock, &mut table, &bank, |_, _| {
@@ -99,8 +106,7 @@ fn publication_retain_stale_epoch_and_predicate_unwind_restore_each_original_slo
                     if unwind {
                         panic!("synthetic predicate unwind");
                     }
-                    sender
-                        .send_replace(Some(crate::cmd::tunnel::ControlIdentity::new(&bank_birth)));
+                    sender.send_replace(fresh.borrow_mut().take());
                 }
                 false
             })

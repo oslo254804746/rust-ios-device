@@ -117,10 +117,13 @@ impl OwnershipStamp {
         Self { global, device }
     }
 
-    pub(super) fn standalone(registry: &RegistryOwner) -> Self {
+    pub(super) fn standalone(
+        registry: &RegistryOwner,
+        births: &mut super::marker_identity::Cutover<2>,
+    ) -> Self {
         Self::new(
-            ControlIdentity::new(&registry.byte_bank),
-            ControlIdentity::new(&registry.byte_bank),
+            births.place(&registry.byte_bank),
+            births.place(&registry.byte_bank),
         )
     }
 }
@@ -465,6 +468,13 @@ impl RegistryOwner {
         Arc::clone(&self.byte_bank)
     }
 
+    pub(super) fn prepare_births<const N: usize>(
+        &self,
+        bank: &Arc<Semaphore>,
+    ) -> Result<super::marker_identity::Cutover<N>> {
+        super::marker_identity::Cutover::new(&self.byte_bank, bank)
+    }
+
     pub(super) fn reserve_with_input(
         &self,
         stamp: OwnershipStamp,
@@ -589,12 +599,21 @@ impl Registry {
     }
 
     fn retire_key(&self, key: &Key, release_empty: bool) {
+        let mut marker_headers = super::marker_identity::ReleaseFence::<2>::new();
         let handle = {
             let mut state = self.lock();
             let Some(entry) = Self::entry_mut(&mut state, key) else {
                 return;
             };
             if entry.handle.is_none() && release_empty {
+                super::marker_identity::ReleaseMarkers::keep(
+                    &mut marker_headers,
+                    &entry.stamp.global,
+                );
+                super::marker_identity::ReleaseMarkers::keep(
+                    &mut marker_headers,
+                    &entry.stamp.device,
+                );
                 state.slots[key.slot] = None;
                 None
             } else {
@@ -750,6 +769,7 @@ impl Registry {
     }
 
     fn certify_completed(&self, key: &Key, handle: &Arc<TunnelHandle>) {
+        let mut marker_headers = super::marker_identity::ReleaseFence::<2>::new();
         let mut state = self.lock();
         let same = Self::entry_mut(&mut state, key).is_some_and(|entry| {
             entry.phase == Phase::Retired
@@ -763,6 +783,11 @@ impl Registry {
             // shutdown report's joins_complete(). This certifies native joins,
             // not a successful/deadline-compliant attempt or remote ACK.
             // The local drain clone outlives removal, so final Arc Drop is outside.
+            let entry = state.slots[key.slot]
+                .as_ref()
+                .expect("same retired native entry");
+            super::marker_identity::ReleaseMarkers::keep(&mut marker_headers, &entry.stamp.global);
+            super::marker_identity::ReleaseMarkers::keep(&mut marker_headers, &entry.stamp.device);
             state.slots[key.slot] = None;
         }
         drop(state);
@@ -1256,5 +1281,7 @@ mod report_body_tests;
 mod origin_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wake_tests;
 
 include!("retirement_refresh.inc.rs");

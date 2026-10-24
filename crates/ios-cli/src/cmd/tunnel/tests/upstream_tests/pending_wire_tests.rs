@@ -80,6 +80,10 @@ async fn pending_remote_wire_clear_shutdown_close_original_listing_and_handshake
                     AccessControl::trusted_test_local(),
                     access,
                 );
+                let mut signal_input = PreparedSignal::new(&state, shutdown);
+                let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+                let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
                 if !persistent {
                     state.inner.upstreams.write().await.insert(&root).unwrap();
                 }
@@ -94,11 +98,7 @@ async fn pending_remote_wire_clear_shutdown_close_original_listing_and_handshake
                     .unwrap()
                     .unwrap();
                 assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
-                if shutdown {
-                    state.notify_shutdown();
-                } else {
-                    state.clear().await;
-                }
+                signal_input.notify_or_clear(&state).await;
                 let cancelled =
                     match tokio::time::timeout(Duration::from_secs(1), &mut request).await {
                         Ok(result) => match result.unwrap() {
@@ -146,8 +146,10 @@ async fn pending_remote_wire_clear_shutdown_close_original_listing_and_handshake
                 assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
                 server.abort();
                 assert!(server.await.unwrap_err().is_cancelled());
-                state.notify_shutdown();
-                state.clear().await;
+                state.notify_shutdown(&mut prepared_outer_0);
+                drop(prepared_outer_0);
+                state.clear(&mut prepared_outer_1).await;
+                drop(prepared_outer_1);
                 state.drain_native(Duration::from_secs(1)).await.unwrap();
             }
         }

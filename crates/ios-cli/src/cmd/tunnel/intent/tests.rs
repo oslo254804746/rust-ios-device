@@ -1,13 +1,22 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+fn seed_epoch(origin: &super::super::birth_bank::BirthBank) -> ControlIdentity {
+    let mut prepared = Cutover::<1>::new(origin, origin.raw()).unwrap();
+    prepared.place(origin)
+}
+
 #[test]
-fn closed_zero_raw_snapshots_keep_eight_distinct_versions_after_all_original_watch_fee_returns() {
+fn closed_zero_raw_snapshots_keep_eight_distinct_versions_and_marker_fees_after_cell_drop() {
     const ROUNDS: usize = 8;
-    let bytes = watch::body_bytes::<ControlIdentity>();
-    let authority = super::super::birth_bank::BirthBank::new(bytes);
+    let watch_bytes = watch::body_bytes::<ControlIdentity>();
+    let marker_bytes = ControlIdentity::body_bytes();
+    // The epoch, initial version and eight actual replacement destinations.
+    let total = watch_bytes + (ROUNDS + 2) * marker_bytes;
+    let authority = super::super::birth_bank::BirthBank::new(total);
     let bank = authority.raw().clone();
-    let cell = Cell::new(ControlIdentity::new(&authority), authority.clone()).unwrap();
+    let cell = Cell::new(seed_epoch(&authority), authority.clone()).unwrap();
+    let mut cutover = cell.prepare_births::<ROUNDS>(&bank).unwrap();
     assert_eq!(bank.available_permits(), 0);
     bank.close();
     let mut retained: [Option<Snapshot>; ROUNDS] = std::array::from_fn(|_| None);
@@ -22,12 +31,14 @@ fn closed_zero_raw_snapshots_keep_eight_distinct_versions_after_all_original_wat
             assert!(ControlIdentity::ptr_eq(&old.epoch, &current.epoch));
         }
         retained[index] = Some(current);
-        cell.replace(Desired::Stopped);
+        cell.replace(Desired::Stopped, &mut cutover);
         assert_eq!(bank.available_permits(), 0);
     }
     drop(hook);
+    // The borrowed activation has returned and holds no Cell/watch guards.
+    drop(cutover);
     drop(cell);
-    assert_eq!(bank.available_permits(), bytes);
+    assert_eq!(bank.available_permits(), watch_bytes + marker_bytes);
     for snapshot in retained.iter().flatten() {
         assert!(ControlIdentity::downgrade(&snapshot.version)
             .upgrade()
@@ -36,8 +47,17 @@ fn closed_zero_raw_snapshots_keep_eight_distinct_versions_after_all_original_wat
             .upgrade()
             .is_some());
     }
+    let weak_versions: [_; ROUNDS] =
+        std::array::from_fn(|index| retained[index].as_ref().unwrap().version.downgrade());
+    let weak_epoch = retained[0].as_ref().unwrap().epoch.downgrade();
     drop(retained);
-    assert_eq!(bank.available_permits(), bytes);
+    assert!(weak_versions.iter().all(|weak| weak.upgrade().is_none()));
+    assert!(weak_epoch.upgrade().is_none());
+    assert_eq!(bank.available_permits(), watch_bytes + marker_bytes);
+    drop(weak_versions);
+    assert_eq!(bank.available_permits(), total - marker_bytes);
+    drop(weak_epoch);
+    assert_eq!(bank.available_permits(), total);
 }
 
 #[test]
@@ -45,9 +65,13 @@ fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
     let host = "manual-filter-雪";
     let bytes = RetainedRoute::body_bytes() + host.len();
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + watch_bytes);
+    let marker_bytes = ControlIdentity::body_bytes();
+    // Epoch plus the simultaneously live previous/new desired markers.
+    let total = bytes + watch_bytes + 3 * marker_bytes;
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
-    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
+    let cell = Cell::new(seed_epoch(&bank_birth), bank_birth.clone()).unwrap();
+    let mut manual_context = cell.prepare_births::<1>(&bank).unwrap();
     let charged = bank.clone();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let captured = observed.clone();
@@ -89,6 +113,7 @@ fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
         || cell.manual_shared(route.clone(), authority()),
         None,
         || Ok(()),
+        &mut manual_context,
     )
     .unwrap();
     let snapshot = cell.snapshot();
@@ -99,16 +124,20 @@ fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
         unreachable!()
     };
     assert!(route.ptr_eq(retained));
-    cell.replace(Desired::Stopped);
+    drop(manual_context);
+    let mut stop_context = cell.prepare_births::<1>(&bank).unwrap();
+    cell.replace(Desired::Stopped, &mut stop_context);
+    drop(stop_context);
     drop(cell);
     drop(route);
     let RouteIntent::Mobdev2(Some(text)) = &retained.route else {
         unreachable!()
     };
     assert_eq!(text.as_ptr(), pointer);
-    assert_eq!(bank.available_permits(), watch_bytes);
+    // The retained Snapshot still owns BOTH its epoch and desired marker.
+    assert_eq!(bank.available_permits(), watch_bytes + marker_bytes);
     drop(snapshot);
-    assert_eq!(bank.available_permits(), bytes + watch_bytes);
+    assert_eq!(bank.available_permits(), total);
 }
 
 #[test]
@@ -154,9 +183,12 @@ fn shared_route_foreign_bank_rejection_keeps_original_version_watch_and_fees() {
             .unwrap();
     let before = original_bank.available_permits();
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(watch_bytes);
+    let marker_bytes = ControlIdentity::body_bytes();
+    let total = watch_bytes + 3 * marker_bytes;
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
-    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
+    let cell = Cell::new(seed_epoch(&bank_birth), bank_birth.clone()).unwrap();
+    let mut context = cell.prepare_births::<1>(&bank).unwrap();
     let version = cell.snapshot().version;
     let watch = cell.changes.subscribe();
     let error = cell
@@ -164,6 +196,7 @@ fn shared_route_foreign_bank_rejection_keeps_original_version_watch_and_fees() {
             || cell.manual_shared(route.clone(), authority()),
             None,
             || Ok(()),
+            &mut context,
         )
         .err()
         .unwrap();
@@ -179,10 +212,15 @@ fn shared_route_foreign_bank_rejection_keeps_original_version_watch_and_fees() {
     assert!(matches!(cell.snapshot().desired, Desired::Automatic));
     assert_eq!(original_bank.available_permits(), before);
     assert_eq!(bank.available_permits(), 0);
+    drop(context);
+    assert_eq!(bank.available_permits(), marker_bytes);
     drop(cell);
-    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(bank.available_permits(), 2 * marker_bytes);
     drop(watch);
-    assert_eq!(bank.available_permits(), watch_bytes);
+    // Only the raw version remains; epoch and unused destination both refunded.
+    assert_eq!(bank.available_permits(), watch_bytes + 2 * marker_bytes);
+    drop(version);
+    assert_eq!(bank.available_permits(), total);
     drop(route);
     assert_eq!(original_bank.available_permits(), 4096);
 }
@@ -202,8 +240,12 @@ fn route(capacity: usize, text: &str) -> RouteIntent {
     RouteIntent::Wifi(Some(host))
 }
 
-fn manual(cell: &Cell, route: RouteIntent) -> anyhow::Result<crate::cmd::tunnel::ControlIdentity> {
-    cell.checked_replace(|| cell.manual(route, authority()), None, || Ok(()))
+fn manual(
+    cell: &Cell,
+    route: RouteIntent,
+    context: &mut impl BirthContext,
+) -> anyhow::Result<crate::cmd::tunnel::ControlIdentity> {
+    cell.checked_replace(|| cell.manual(route, authority()), None, || Ok(()), context)
 }
 
 #[test]
@@ -215,10 +257,13 @@ fn manual_route_bytes_capacity_shared_snapshots_and_last_owner_after_stop() {
     let original = host.as_ptr();
     let bytes = RetainedRoute::bytes(&route);
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + watch_bytes);
+    let marker_bytes = ControlIdentity::body_bytes();
+    let total = bytes + watch_bytes + 3 * marker_bytes;
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
-    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
-    let version = manual(&cell, route).unwrap();
+    let cell = Cell::new(seed_epoch(&bank_birth), bank_birth.clone()).unwrap();
+    let mut manual_context = cell.prepare_births::<1>(&bank).unwrap();
+    let version = manual(&cell, route, &mut manual_context).unwrap();
     assert_eq!(bank.available_permits(), 0);
     let snapshot = cell.snapshot();
     let copied = snapshot.clone();
@@ -243,7 +288,11 @@ fn manual_route_bytes_capacity_shared_snapshots_and_last_owner_after_stop() {
         &version,
         &snapshot.version
     ));
-    cell.replace(Desired::Stopped);
+    drop(version);
+    drop(manual_context);
+    let mut stop_context = cell.prepare_births::<1>(&bank).unwrap();
+    cell.replace(Desired::Stopped, &mut stop_context);
+    drop(stop_context);
     assert_eq!(
         bank.available_permits(),
         0,
@@ -251,9 +300,10 @@ fn manual_route_bytes_capacity_shared_snapshots_and_last_owner_after_stop() {
     );
     drop(cell);
     drop(snapshot);
-    assert_eq!(bank.available_permits(), watch_bytes);
+    // The retained Snapshot still owns BOTH its epoch and desired marker.
+    assert_eq!(bank.available_permits(), watch_bytes + marker_bytes);
     drop(copied);
-    assert_eq!(bank.available_permits(), bytes + watch_bytes);
+    assert_eq!(bank.available_permits(), total);
 }
 
 #[test]
@@ -261,13 +311,21 @@ fn manual_route_bytes_rejected_replacement_preserves_original_version_watch_and_
     let original = route(4096, "original-private-host");
     let bytes = RetainedRoute::bytes(&original);
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + watch_bytes);
+    let marker_bytes = ControlIdentity::body_bytes();
+    let total = bytes + watch_bytes + 3 * marker_bytes;
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
-    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
-    manual(&cell, original).unwrap();
+    let cell = Cell::new(seed_epoch(&bank_birth), bank_birth.clone()).unwrap();
+    let mut manual_context = cell.prepare_births::<1>(&bank).unwrap();
+    manual(&cell, original, &mut manual_context).unwrap();
+    drop(manual_context);
     let before = cell.snapshot();
     let watch = cell.changes.subscribe();
-    let error = manual(&cell, route(32, "candidate-host")).err().unwrap();
+    let mut rejected_context = cell.prepare_births::<1>(&bank).unwrap();
+    assert_eq!(bank.available_permits(), 0);
+    let error = manual(&cell, route(32, "candidate-host"), &mut rejected_context)
+        .err()
+        .unwrap();
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
@@ -286,12 +344,14 @@ fn manual_route_bytes_rejected_replacement_preserves_original_version_watch_and_
     assert!(!watch.has_changed().unwrap());
     assert!(cell.pending_success().is_none());
     assert_eq!(bank.available_permits(), 0);
+    drop(rejected_context);
+    assert_eq!(bank.available_permits(), marker_bytes);
     drop(before);
     drop(after);
     drop(cell);
-    assert_eq!(bank.available_permits(), bytes);
+    assert_eq!(bank.available_permits(), bytes + 2 * marker_bytes);
     drop(watch);
-    assert_eq!(bank.available_permits(), bytes + watch_bytes);
+    assert_eq!(bank.available_permits(), total);
 }
 
 #[test]
@@ -302,14 +362,17 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
     let new_bytes = RetainedRoute::bytes(&new);
     let version_bytes = FailureVersion::body_bytes();
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(
-        old_bytes + new_bytes + version_bytes + watch_bytes,
-    );
+    let marker_bytes = ControlIdentity::body_bytes();
+    let total = old_bytes + new_bytes + version_bytes + watch_bytes + 3 * marker_bytes;
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
-    let cell = Cell::new(ControlIdentity::new(&bank_birth), bank_birth.clone()).unwrap();
-    manual(&cell, old).unwrap();
+    let cell = Cell::new(seed_epoch(&bank_birth), bank_birth.clone()).unwrap();
+    let mut manual_context = cell.prepare_births::<1>(&bank).unwrap();
+    manual(&cell, old, &mut manual_context).unwrap();
+    drop(manual_context);
     let before = cell.snapshot();
     let calls = AtomicUsize::new(0);
+    let mut candidate_context = cell.prepare_births::<1>(&bank).unwrap();
     let error = cell
         .checked_replace(
             || cell.manual(new, authority()),
@@ -321,6 +384,7 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
                     Err(super::super::lifecycle::cancelled())
                 }
             },
+            &mut candidate_context,
         )
         .err()
         .unwrap();
@@ -338,13 +402,15 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
     assert!(old.ptr_eq(current));
     assert!(cell.pending_success().is_none());
     assert_eq!(bank.available_permits(), new_bytes + version_bytes);
+    drop(candidate_context);
+    assert_eq!(
+        bank.available_permits(),
+        new_bytes + version_bytes + marker_bytes
+    );
     drop(before);
     drop(after);
     drop(cell);
-    assert_eq!(
-        bank.available_permits(),
-        old_bytes + new_bytes + version_bytes + watch_bytes
-    );
+    assert_eq!(bank.available_permits(), total);
 }
 
 #[test]
@@ -352,47 +418,60 @@ fn manual_route_bytes_clear_keeps_original_epoch_snapshot_and_zero_bank_stop_wor
     let selected = route(2048, "selected-host");
     let bytes = RetainedRoute::bytes(&selected);
     let watch_bytes = watch::body_bytes::<crate::cmd::tunnel::ControlIdentity>();
-    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(bytes + watch_bytes);
+    let marker_bytes = ControlIdentity::body_bytes();
+    // Two old snapshot markers, new epoch/version and the next stop destination.
+    let total = bytes + watch_bytes + 5 * marker_bytes;
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(total);
     let bank = bank_birth.raw().clone();
-    let epoch = ControlIdentity::new(&bank_birth);
+    let epoch = seed_epoch(&bank_birth);
     let cell = Cell::new(
         crate::cmd::tunnel::ControlIdentity::clone(&epoch),
         bank_birth.clone(),
     )
     .unwrap();
-    manual(&cell, selected).unwrap();
+    let mut manual_context = cell.prepare_births::<1>(&bank).unwrap();
+    manual(&cell, selected, &mut manual_context).unwrap();
+    drop(manual_context);
     let before = cell.snapshot();
-    cell.reset(ControlIdentity::new(&bank_birth));
+    let mut epoch_context = Cutover::<1>::new(&bank_birth, &bank).unwrap();
+    let mut reset_context = cell.prepare_births::<1>(&bank).unwrap();
+    let mut stop_context = cell.prepare_births::<1>(&bank).unwrap();
+    cell.reset(epoch_context.place(&bank_birth), &mut reset_context);
+    drop((epoch_context, reset_context));
     assert!(matches!(cell.snapshot().desired, Desired::Automatic));
     assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
         &before.epoch,
         &epoch
     ));
+    drop(epoch);
     assert_eq!(bank.available_permits(), 0);
-    cell.replace(Desired::Stopped);
+    cell.replace(Desired::Stopped, &mut stop_context);
     assert_eq!(bank.available_permits(), 0);
+    drop(stop_context);
     drop(before);
-    assert_eq!(bank.available_permits(), bytes);
+    assert_eq!(bank.available_permits(), bytes + 3 * marker_bytes);
     drop(cell);
-    assert_eq!(bank.available_permits(), bytes + watch_bytes);
-    let zero_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(watch_bytes);
+    assert_eq!(bank.available_permits(), total);
+    let zero_total = watch_bytes + 5 * marker_bytes;
+    let zero_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(zero_total);
     let zero_bank = zero_bank_birth.raw().clone();
-    let zero = Cell::new(
-        ControlIdentity::new(&zero_bank_birth),
-        zero_bank_birth.clone(),
-    )
-    .unwrap();
+    let zero = Cell::new(seed_epoch(&zero_bank_birth), zero_bank_birth.clone()).unwrap();
+    let mut zero_stop = zero.prepare_births::<1>(&zero_bank).unwrap();
+    let mut zero_epoch = Cutover::<1>::new(&zero_bank_birth, &zero_bank).unwrap();
+    let mut zero_reset = zero.prepare_births::<1>(&zero_bank).unwrap();
     assert_eq!(zero_bank.available_permits(), 0);
     zero_bank.close();
     super::super::metadata_vec::with_allocation_hook(
         |_, _| panic!("zero-pool stop/reset allocated a controlled watch backing"),
         || {
-            zero.replace(Desired::Stopped);
-            zero.reset(ControlIdentity::new(&zero_bank_birth));
+            zero.replace(Desired::Stopped, &mut zero_stop);
+            zero.reset(zero_epoch.place(&zero_bank_birth), &mut zero_reset);
             assert!(matches!(zero.snapshot().desired, Desired::Automatic));
             assert_eq!(zero_bank.available_permits(), 0);
         },
     );
+    drop((zero_stop, zero_epoch, zero_reset));
+    assert_eq!(zero_bank.available_permits(), 3 * marker_bytes);
     drop(zero);
-    assert_eq!(zero_bank.available_permits(), watch_bytes);
+    assert_eq!(zero_bank.available_permits(), zero_total);
 }

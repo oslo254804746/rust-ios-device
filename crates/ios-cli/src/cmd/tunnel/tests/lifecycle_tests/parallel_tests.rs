@@ -10,6 +10,9 @@ async fn scan_window_actual_last_payload_byte_refusal_occurs_before_every_origin
         "fourth-window-device".into(),
     ];
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let bank = state.inner.global_metadata_bytes.clone();
     let held = Arc::new(StdMutex::new(None));
     let captured = held.clone();
@@ -56,8 +59,10 @@ async fn scan_window_actual_last_payload_byte_refusal_occurs_before_every_origin
     assert!(!state.is_ready().await);
     held.lock().unwrap().take();
     drop(error);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
@@ -95,6 +100,8 @@ async fn lifecycle_tunnel_parallel_healthy_b_publishes_while_a_remains_stalled()
     *source.usb.lock().unwrap() = vec![A.into(), B.into()];
     source.script(A, [Behavior::Pending]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let scan = scan_job(&state);
     source.entered(A, 1).await;
     let observed = record_within_budget(&state, B).await;
@@ -106,7 +113,8 @@ async fn lifecycle_tunnel_parallel_healthy_b_publishes_while_a_remains_stalled()
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
     );
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(observed.is_ok(), "healthy B waited behind stalled A");
     assert_eq!(active, 1);
     assert!(a_record.is_none());
@@ -121,11 +129,14 @@ async fn lifecycle_tunnel_parallel_duplicate_a_candidates_do_not_occupy_b_window
     *source.usb.lock().unwrap() = vec![A.into(), A.into(), A.into(), A.into(), B.into()];
     source.script(A, [Behavior::Pending]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let scan = scan_job(&state);
     source.entered(A, 1).await;
     let observed = record_within_budget(&state, B).await;
     abort_scan(scan).await;
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(
         observed.is_ok(),
         "duplicate A candidates occupied the connection window"
@@ -187,6 +198,8 @@ async fn lifecycle_tunnel_parallel_caller_drop_owns_every_active_connection_futu
     }
     *source.usb.lock().unwrap() = devices;
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     let active = source.active.load(Ordering::SeqCst);
@@ -201,7 +214,8 @@ async fn lifecycle_tunnel_parallel_caller_drop_owns_every_active_connection_futu
     assert_eq!(source.exited.load(Ordering::SeqCst), 4);
     state.refresh_once().await.unwrap();
     assert_eq!(state.list_records().await.unwrap().len(), 4);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 4);
 }
 
@@ -213,6 +227,10 @@ async fn lifecycle_tunnel_parallel_stop_a_does_not_cancel_healthy_b_connection()
     source.script(A, [Behavior::Pending]);
     source.script(B, [Behavior::Held(gate.clone())]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let scan = scan_job(&state);
     let b_entered = tokio::time::timeout(LOCAL_BUDGET, async {
         while source.count(B) == 0 {
@@ -224,7 +242,8 @@ async fn lifecycle_tunnel_parallel_stop_a_does_not_cancel_healthy_b_connection()
         abort_scan(scan).await;
         panic!("B never entered while A stalled");
     }
-    assert!(!state.remove_tunnel(A).await);
+    assert!(!state.remove_tunnel(A, &mut stop_input_0).await);
+    drop(stop_input_0);
     gate.add_permits(1);
     tokio::time::timeout(LOCAL_BUDGET, scan)
         .await
@@ -237,7 +256,8 @@ async fn lifecycle_tunnel_parallel_stop_a_does_not_cancel_healthy_b_connection()
     assert_eq!(source.count(A), 1);
     assert_eq!(source.count(B), 1);
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -251,11 +271,14 @@ async fn lifecycle_tunnel_parallel_mobdev2_b_is_not_behind_stalled_usb_a() {
     });
     source.script(A, [Behavior::Pending]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let scan = scan_job(&state);
     source.entered(A, 1).await;
     let observed = record_within_budget(&state, B).await;
     abort_scan(scan).await;
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert!(observed.is_ok(), "mobdev2 B waited for the USB batch");
     assert_eq!(source.count(A), 1);
     assert_eq!(source.count(B), 1);
@@ -273,6 +296,8 @@ async fn lifecycle_tunnel_parallel_paired_discovery_failure_keeps_usb_result_and
     source.usb.lock().unwrap().push(A.into());
     source.paired_failure.store(true, Ordering::SeqCst);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let error = state.refresh_once().await.unwrap_err();
     assert_eq!(
         error.downcast_ref::<std::io::Error>().unwrap().kind(),
@@ -282,7 +307,8 @@ async fn lifecycle_tunnel_parallel_paired_discovery_failure_keeps_usb_result_and
     assert_eq!(source.count(A), 1);
     assert!(state.get_record(A).await.unwrap().is_some());
     assert!(!state.is_ready().await);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -305,6 +331,8 @@ async fn lifecycle_tunnel_parallel_cross_family_duplicate_keeps_first_usb_route(
         },
     ];
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 1);
     assert_eq!(source.count(B), 1);
@@ -318,6 +346,7 @@ async fn lifecycle_tunnel_parallel_cross_family_duplicate_keeps_first_usb_route(
         Route::Mobdev2("192.0.2.42".into())
     );
     assert_eq!(state.list_records().await.unwrap().len(), 2);
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
 }

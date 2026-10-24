@@ -78,6 +78,9 @@ fn fixture() -> (Arc<LimitedSource>, TunnelAgentState) {
 #[tokio::test]
 async fn discovery_future_usb_scan_constructor_refusal_preserves_old_publication_and_backoff() {
     let (source, state) = fixture();
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     start(state.clone(), A).await.unwrap();
     let publication = state.inner.tunnels.read().await[A].publication.clone();
     let ticket = state.inner.lifecycle.ticket(B).await.unwrap();
@@ -124,8 +127,10 @@ async fn discovery_future_usb_scan_constructor_refusal_preserves_old_publication
     assert!(!state.is_ready().await);
     let bank = state.inner.global_metadata_bytes.clone();
     drop((error, publication, previous));
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
@@ -134,6 +139,9 @@ async fn discovery_future_usb_scan_constructor_refusal_preserves_old_publication
 #[tokio::test]
 async fn discovery_future_paired_constructor_refusal_keeps_paid_usb_window_and_unknown_backoff() {
     let (source, state) = fixture();
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     source
         .base
         .paired
@@ -166,8 +174,10 @@ async fn discovery_future_paired_constructor_refusal_keeps_paid_usb_window_and_u
     assert!(state.is_ready().await);
     let bank = state.inner.global_metadata_bytes.clone();
     drop((error, previous));
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);

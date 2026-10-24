@@ -163,6 +163,10 @@ async fn lifecycle_tunnel_shutdown_fences_publication_close_after_final_check_re
             }),
             TUNNEL_CONNECT_TIMEOUT,
         );
+        let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+        let mut prepared_outer_1 = state.prepare_cutover::<2>().unwrap();
+
+        let mut close_input = state.prepare_cutover::<1>().unwrap();
         let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
         let request_state = state.clone();
         let mut request =
@@ -172,7 +176,7 @@ async fn lifecycle_tunnel_shutdown_fences_publication_close_after_final_check_re
         let (closed, observed_close) = tokio::sync::oneshot::channel();
         let close_state = state.clone();
         let closer = std::thread::spawn(move || {
-            close_state.notify_shutdown();
+            close_state.notify_shutdown(&mut close_input);
             let _ = closed.send(());
         });
         // Wait for close to finish before allowing the manager to insert. If a
@@ -198,9 +202,11 @@ async fn lifecycle_tunnel_shutdown_fences_publication_close_after_final_check_re
         let serial_released = tokio::time::timeout(HOST_BUDGET, ticket.serial())
             .await
             .is_ok();
-        state.clear().await;
+        state.clear(&mut prepared_outer_0).await;
+        drop(prepared_outer_0);
         let restarted = state.ensure_tunnel(A, None, route).await;
-        state.clear().await;
+        state.clear(&mut prepared_outer_1).await;
+        drop(prepared_outer_1);
 
         // Every task and OS thread is reclaimed before checking outcomes,
         // including the expected failure when running the old implementation.
@@ -246,13 +252,18 @@ async fn lifecycle_tunnel_shutdown_fences_publication_close_after_final_check_re
 async fn lifecycle_tunnel_shutdown_fences_publication_success_before_close_is_released_by_clear() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let record = start(state.clone(), A).await.unwrap();
     assert_eq!(state.get_record(A).await.unwrap(), Some(record));
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
     // A commit accepted before close remains owned until table cleanup.
     assert!(state.inner.tunnels.read().await.contains_key(A));
-    state.clear().await;
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     assert_cancelled(&start(state.clone(), A).await.unwrap_err());
     assert_eq!(source.count(A), 1);
@@ -268,11 +279,16 @@ async fn lifecycle_tunnel_shutdown_fences_publication_stale_stop_and_clear_ticke
     for clear in [false, true] {
         let source = FakeSource::new();
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut clear_input = clear.then(|| state.prepare_cutover::<2>().unwrap());
+        let mut stop_input = (!clear).then(|| state.prepare_cutover::<3>().unwrap());
+
+        let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
         let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
         if clear {
-            state.inner.lifecycle.clear();
+            state.inner.lifecycle.clear(clear_input.as_mut().unwrap());
         } else {
-            assert!(!state.remove_tunnel(A).await);
+            assert!(!state.remove_tunnel(A, stop_input.as_mut().unwrap()).await);
         }
         let called = AtomicBool::new(false);
         let error = ticket
@@ -292,13 +308,20 @@ async fn lifecycle_tunnel_shutdown_fences_publication_stale_stop_and_clear_ticke
             .unwrap();
         assert!(called.load(Ordering::SeqCst));
         assert!(source.calls.lock().unwrap().is_empty());
-        state.clear().await;
+        state.clear(&mut control_input_0).await;
+        drop(control_input_0);
     }
 }
 
 #[tokio::test]
 async fn lifecycle_tunnel_shutdown_fences_publication_holds_shutdown_guard_through_action() {
     let lifecycle = Arc::new(Lifecycle::new());
+    let mut close_input = lifecycle
+        .prepare_cutover::<1>(lifecycle.byte_bank())
+        .unwrap();
+    let mut clear_input = lifecycle
+        .prepare_cutover::<1>(lifecycle.byte_bank())
+        .unwrap();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let pause = PublicationPause::new();
     let resume = ResumePublication(pause.clone());
@@ -326,7 +349,7 @@ async fn lifecycle_tunnel_shutdown_fences_publication_holds_shutdown_guard_throu
     let closed_order = close_order.clone();
     let closer = std::thread::spawn(move || {
         let _ = started.send(());
-        closing.close();
+        closing.close(&mut close_input);
         closed_order.store(
             closing_sequence.fetch_add(1, Ordering::SeqCst),
             Ordering::SeqCst,
@@ -341,7 +364,7 @@ async fn lifecycle_tunnel_shutdown_fences_publication_holds_shutdown_guard_throu
     let publication = publisher.join();
     let close_thread = closer.join();
     drop(resume);
-    lifecycle.clear();
+    lifecycle.clear(&mut clear_input);
     let restarted = lifecycle.ticket(A).await;
 
     assert!(entered.is_ok(), "commit did not enter its guarded action");

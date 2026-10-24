@@ -209,9 +209,14 @@ async fn post(
     Ok(request.send().await?.status())
 }
 
-async fn cleanup(state: &TunnelAgentState, source: &IntentSource, expected: usize) {
-    state.notify_shutdown();
-    state.clear().await;
+async fn cleanup(
+    state: &TunnelAgentState,
+    source: &IntentSource,
+    expected: usize,
+    inputs: &mut PreparedTerminal,
+) {
+    inputs.shutdown(state);
+    inputs.clear(state).await;
     state.drain_native(OBSERVE).await.unwrap();
     assert!(recovered(&source.a, expected).await);
     assert!(recovered(&source.b, expected).await);
@@ -231,6 +236,7 @@ async fn intent_native_http_route_recovery_retains_actual_selector_and_joins_eac
     let expected = baseline();
     let source = IntentSource::new();
     let state = manager(source.clone(), AccessControl::trusted_test_local());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let base = format!("http://127.0.0.1:{port}");
     let client = client();
@@ -260,7 +266,8 @@ async fn intent_native_http_route_recovery_retains_actual_selector_and_joins_eac
     drop(client);
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source, expected).await;
+    cleanup(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(started.unwrap(), StatusCode::OK);
     assert!(scan.is_err());
     assert!(original_drained.is_ok() && original_join.is_ok());
@@ -289,6 +296,7 @@ async fn intent_native_a_pending_b_real_http_query_and_stop_remain_isolated() {
     let expected = baseline();
     let source = IntentSource::new();
     let state = manager(source.clone(), AccessControl::trusted_test_local());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let base = format!("http://127.0.0.1:{port}");
     let client = client();
@@ -330,7 +338,8 @@ async fn intent_native_a_pending_b_real_http_query_and_stop_remain_isolated() {
     drop(client);
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source, expected).await;
+    cleanup(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(
         (a_started.unwrap(), b_started.unwrap()),
         (StatusCode::OK, StatusCode::OK)
@@ -365,6 +374,7 @@ async fn intent_native_revoked_original_authority_retires_native_without_any_gra
         .unwrap();
     let source = IntentSource::new();
     let state = manager(source.clone(), access);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let base = format!("http://127.0.0.1:{port}");
     let client = client();
@@ -400,7 +410,8 @@ async fn intent_native_revoked_original_authority_retires_native_without_any_gra
     drop(client);
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source, expected).await;
+    cleanup(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(
         (started.unwrap(), reloaded.unwrap()),
         (StatusCode::OK, StatusCode::OK)
@@ -414,6 +425,7 @@ async fn intent_native_manual_success_discards_old_deferred_failure_without_reti
     let expected = baseline();
     let source = IntentSource::new();
     let state = manager(source.clone(), AccessControl::trusted_test_local());
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     source.script(Fate::Failure);
     let old_ticket = state
         .inner
@@ -457,7 +469,8 @@ async fn intent_native_manual_success_discards_old_deferred_failure_without_reti
     drop(client);
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source, expected).await;
+    cleanup(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(started.unwrap(), StatusCode::OK);
     assert!(!old_ticket.is_current());
     assert!(failed_empty && published.ptr_eq(&retained));
@@ -488,6 +501,7 @@ async fn intent_native_manual_retry_exhaustion_survives_partial_discovery_withou
         policy,
     )
     .unwrap();
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let base = format!("http://127.0.0.1:{port}");
     let client = client();
@@ -504,7 +518,8 @@ async fn intent_native_manual_retry_exhaustion_survives_partial_discovery_withou
     drop(client);
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source, expected).await;
+    cleanup(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(started.unwrap(), StatusCode::OK);
     assert!(partial.is_err());
     let exhausted = exhausted.unwrap();
@@ -535,6 +550,7 @@ async fn intent_native_pending_recovery_reloaded_authority_cancels_and_joins_ori
         .unwrap();
     let source = IntentSource::new();
     let state = manager(source.clone(), access);
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let base = format!("http://127.0.0.1:{port}");
     let client = client();
@@ -569,7 +585,8 @@ async fn intent_native_pending_recovery_reloaded_authority_cancels_and_joins_ori
     drop(client);
     server.abort();
     let _ = server.await;
-    cleanup(&state, &source, expected).await;
+    cleanup(&state, &source, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert_eq!(
         (started.unwrap(), reload.unwrap()),
         (StatusCode::OK, StatusCode::OK)

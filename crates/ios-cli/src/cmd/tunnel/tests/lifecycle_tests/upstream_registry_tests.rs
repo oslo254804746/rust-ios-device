@@ -5,6 +5,8 @@ async fn upstream_registry_http_growth_refusal_keeps_state_and_original_resource
 ) {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<2>().unwrap();
+
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
     let url = "https://registered-original-fixture.invalid:23456/";
@@ -108,7 +110,8 @@ async fn upstream_registry_http_growth_refusal_keeps_state_and_original_resource
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
-    state.clear().await;
+    state.clear(&mut control_input_0).await;
+    drop(control_input_0);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     drop(state);
     // Axum's accepted connection task observes Connection: close after the

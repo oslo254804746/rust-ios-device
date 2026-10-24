@@ -88,6 +88,7 @@ async fn check_usb_publication(capacity_overflow: bool) {
         source,
         OBSERVE,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
     publish(&state, Route::Wifi(None)).await.unwrap();
     let old = base.handle();
     let publication = state.inner.tunnels.read().await[DEVICE].publication.clone();
@@ -102,7 +103,8 @@ async fn check_usb_publication(capacity_overflow: bool) {
         .await
         .get(DEVICE)
         .is_some_and(|row| row.publication.ptr_eq(&publication));
-    let recovery = finish(&state, &base, expected).await;
+    let recovery = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(recovery && old.shutdown_status().is_ok() && new.shutdown_status().is_ok());
     let error = result.unwrap_err();
     let rendered = crate::output::operation_failure_message(
@@ -143,18 +145,21 @@ async fn check_stale_paired(capacity_overflow: bool) {
         source,
         OBSERVE,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
+    let mut clear_input = state.prepare_cutover::<2>().unwrap();
     publish(&state, Route::Wifi(None)).await.unwrap();
     let native = base.handle();
     let control = state.clone();
     *state.inner.paired_after_first_check.lock().unwrap() = Some(Box::new(move || {
-        control.clear().now_or_never().unwrap();
+        control.clear(&mut clear_input).now_or_never().unwrap();
     }));
     let result = state.refresh_once().await;
     let stopped = !native.is_alive();
     let not_ready = !state.is_ready().await;
     let unused = state.inner.paired_after_first_check.lock().unwrap().take();
     drop(unused);
-    let recovery = finish(&state, &base, expected).await;
+    let recovery = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(recovery && native.shutdown_status().is_ok());
     result.unwrap();
     assert!(stopped && not_ready);

@@ -129,6 +129,8 @@ async fn ensure_frame_original_input_and_deadline_prefixes_precede_closed_pool_r
 async fn ensure_frame_distinct_precoordinator_epochs_keep_each_exact_fee_through_actual_drop() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut first_clear = state.prepare_cutover::<2>().unwrap();
+    let mut second_clear = state.prepare_cutover::<2>().unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let frame = state.ensure_frame_bytes();
     let before = bank.available_permits();
@@ -154,7 +156,7 @@ async fn ensure_frame_distinct_precoordinator_epochs_keep_each_exact_fee_through
     });
     let mut first = Box::pin(state.ensure_tunnel(A, None, None));
     assert!(futures_util::poll!(&mut first).is_pending());
-    state.inner.lifecycle.clear();
+    state.inner.lifecycle.clear(&mut first_clear);
     let probe = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
     let next = crate::cmd::tunnel::ControlIdentity::downgrade(&probe.epoch.generation);
     drop(probe);
@@ -171,7 +173,7 @@ async fn ensure_frame_distinct_precoordinator_epochs_keep_each_exact_fee_through
         assert_ne!(pointers[0], pointers[1]);
     }
     bank.close();
-    state.inner.lifecycle.clear();
+    state.inner.lifecycle.clear(&mut second_clear);
     no_source(&source);
     assert!(old.upgrade().is_some());
     assert!(next.upgrade().is_some());
@@ -184,6 +186,16 @@ async fn ensure_frame_distinct_precoordinator_epochs_keep_each_exact_fee_through
     assert!(next.upgrade().is_none());
     drop(coordinator);
     assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
+    drop((first_clear, second_clear));
+    assert_eq!(
+        bank.available_permits(),
+        2 * frame + 2 * ControlIdentity::body_bytes()
+    );
+    drop((old, next));
+    assert_eq!(
+        bank.available_permits(),
+        2 * frame + 4 * ControlIdentity::body_bytes()
+    );
     drop(held);
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
@@ -217,6 +229,9 @@ async fn ensure_frame_active_source_drop_keeps_preexisting_gate_and_refunds_actu
     let source = FakeSource::new();
     source.script(A, [Behavior::Pending]);
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<2>().unwrap();
+
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let destination = state.inner.tunnels.write().await.prepare(A).unwrap();
     drop(destination);
@@ -245,8 +260,10 @@ async fn ensure_frame_active_source_drop_keeps_preexisting_gate_and_refunds_actu
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
     assert!(ticket.is_current());
     assert_eq!(bank.available_permits(), before);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     drop(ticket);
     drop(state);
@@ -257,6 +274,9 @@ async fn ensure_frame_active_source_drop_keeps_preexisting_gate_and_refunds_actu
 async fn ensure_frame_actual_http_one_byte_refusal_precedes_coordinator_and_default_fallback() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<2>().unwrap();
+
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
     let leave = 2048 + state.ensure_frame_bytes() - 1;
@@ -285,8 +305,10 @@ async fn ensure_frame_actual_http_one_byte_refusal_precedes_coordinator_and_defa
     drop(held);
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     drop(state);
     tokio::time::timeout(LOCAL_BUDGET, async {
         while bank.available_permits() != MAX_GLOBAL_KNOWN_METADATA_BYTES {

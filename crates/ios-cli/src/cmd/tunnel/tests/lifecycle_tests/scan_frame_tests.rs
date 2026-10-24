@@ -30,7 +30,9 @@ async fn scan_frame_admission_preserves_prefix_and_refuses_before_capture_even_a
             state.inner.get_mut().unwrap().scan_timeout = Duration::ZERO;
         }
         if case == 1 {
-            state.notify_shutdown();
+            let mut terminal = state.prepare_cutover::<1>().unwrap();
+            state.notify_shutdown(&mut terminal);
+            drop(terminal);
         }
         let bank = state.inner.global_metadata_bytes.clone();
         let before = bank.available_permits();
@@ -81,6 +83,8 @@ async fn scan_frame_admission_preserves_prefix_and_refuses_before_capture_even_a
 async fn scan_frame_prelock_old_markers_and_exact_backings_live_until_each_actual_drop() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut first_clear = state.prepare_cutover::<2>().unwrap();
+    let mut second_clear = state.prepare_cutover::<2>().unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let frame = state.scan_frame_bytes();
     let before = bank.available_permits();
@@ -111,7 +115,7 @@ async fn scan_frame_prelock_old_markers_and_exact_backings_live_until_each_actua
     assert_eq!(bank.available_permits(), frame);
     // Keep the first stale frame unpolled while a second scan captures a
     // DIFFERENT actual global/scan pair. Cancellation is not destruction.
-    state.inner.lifecycle.clear();
+    state.inner.lifecycle.clear(&mut first_clear);
     let control = state.inner.lifecycle.scan_control(LOCAL_BUDGET).unwrap();
     let next_scan = crate::cmd::tunnel::ControlIdentity::downgrade(&control.generation);
     let next_global = crate::cmd::tunnel::ControlIdentity::downgrade(&control.epoch.generation);
@@ -133,7 +137,7 @@ async fn scan_frame_prelock_old_markers_and_exact_backings_live_until_each_actua
         assert_ne!(addresses[0], addresses[1]);
     }
     bank.close();
-    state.inner.lifecycle.clear();
+    state.inner.lifecycle.clear(&mut second_clear);
     assert!(scan.upgrade().is_some());
     assert!(global.upgrade().is_some());
     assert!(next_scan.upgrade().is_some());
@@ -152,6 +156,13 @@ async fn scan_frame_prelock_old_markers_and_exact_backings_live_until_each_actua
     assert!(next_scan.upgrade().is_none());
     assert!(next_global.upgrade().is_none());
     drop(lock);
+    drop((first_clear, second_clear));
+    assert_eq!(bank.available_permits(), 2 * frame);
+    drop((scan, global, next_scan, next_global));
+    assert_eq!(
+        bank.available_permits(),
+        2 * frame + 4 * ControlIdentity::body_bytes()
+    );
     drop(held);
     drop(state);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
@@ -235,6 +246,9 @@ async fn scan_frame_active_source_caller_drop_releases_source_session_and_origin
 async fn scan_frame_actual_http_refusal_precedes_held_scan_lock_and_all_source_work() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<2>().unwrap();
+
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
     let replies = response_json::Replies::new(&bank).unwrap();
@@ -267,8 +281,10 @@ async fn scan_frame_actual_http_refusal_precedes_held_scan_lock_and_all_source_w
     drop(held);
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     drop(state);
     tokio::time::timeout(LOCAL_BUDGET, async {
         while bank.available_permits() != MAX_GLOBAL_KNOWN_METADATA_BYTES {

@@ -93,7 +93,11 @@ async fn prepared_ticket_places_current_after_clear_at_closed_zero_and_projectio
         || lifecycle.prepare_manual_ticket(&bank).unwrap(),
     );
     let old = lifecycle.ticket("CURRENT-root").await.unwrap().fenced();
-    lifecycle.clear();
+    let mut clear = lifecycle
+        .prepare_cutover::<2>(lifecycle.byte_bank())
+        .unwrap();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     let ticket = lifecycle.ticket("CURRENT-root").await.unwrap().fenced();
     assert!(!ControlIdentity::ptr_eq(
         &old.shutdown_generation,
@@ -148,22 +152,26 @@ async fn prepared_ticket_places_current_after_clear_at_closed_zero_and_projectio
         desired.upgrade().is_some(),
         "original desired value ended early"
     );
-    assert_eq!(origin.available_permits(), TOTAL - bytes);
+    let markers = 3 * ControlIdentity::body_bytes();
+    assert_eq!(origin.available_permits(), TOTAL - bytes - markers);
     assert_eq!(bank.available_permits(), 0);
     drop(captured);
     let a = origin.clone();
     let b = bank.clone();
+    let desired_check = desired.clone();
     shared_weak_allocation::after_free(
         move || {
             assert!(
-                desired.upgrade().is_none(),
+                desired_check.upgrade().is_none(),
                 "derived value must end before physical free"
             );
-            assert_eq!(a.available_permits(), TOTAL - bytes);
+            assert_eq!(a.available_permits(), TOTAL - bytes - markers);
             assert_eq!(b.available_permits(), 0);
         },
         || drop(last),
     );
-    assert_eq!(origin.available_permits(), TOTAL);
+    assert_eq!(origin.available_permits(), TOTAL - markers);
     assert_eq!(bank.available_permits(), bytes);
+    drop((global, device, desired));
+    assert_eq!(origin.available_permits(), TOTAL);
 }

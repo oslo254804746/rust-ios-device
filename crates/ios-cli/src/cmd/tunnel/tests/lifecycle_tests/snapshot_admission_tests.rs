@@ -22,6 +22,9 @@ fn resource_error(error: &anyhow::Error) {
 async fn reject_usb(devices: Vec<source::UsbDevice>) {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state
         .ensure_tunnel(A, None, Some(StartTunnelConnectionType::Usbmux))
         .await
@@ -69,8 +72,10 @@ async fn reject_usb(devices: Vec<source::UsbDevice>) {
         source.paired_calls.load(Ordering::SeqCst),
     );
     let ready = state.is_ready().await;
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     resource_error(&result.unwrap_err());
     assert!(retained && unchanged && !ready);
@@ -120,6 +125,9 @@ async fn admission_usb_exact_boundaries_enter_paired_discovery_without_connectio
         *source.usb_details.lock().unwrap() = Some(devices);
         *source.paired_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+        let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
         let mut scan = Box::pin(state.refresh_once());
         let reached_while_pending = tokio::time::timeout(LOCAL_BUDGET, async {
             loop {
@@ -136,8 +144,10 @@ async fn admission_usb_exact_boundaries_enter_paired_discovery_without_connectio
         .unwrap_or(false);
         let reached = source.paired_calls.load(Ordering::SeqCst);
         drop(scan);
-        state.notify_shutdown();
-        state.clear().await;
+        state.notify_shutdown(&mut control_input_0);
+        drop(control_input_0);
+        state.clear(&mut control_input_1).await;
+        drop(control_input_1);
         state.drain_native(LOCAL_BUDGET).await.unwrap();
         assert!(reached_while_pending);
         assert_eq!(reached, 1);
@@ -157,6 +167,9 @@ async fn admission_paired_rejection_preserves_unknown_backoff_and_publishes_usb(
     });
     source.script(B, [Behavior::Failure(std::io::ErrorKind::ConnectionReset)]);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     state.refresh_once().await.unwrap();
     let before = state.inner.failed_attempts.read().await[B].clone();
     source.usb.lock().unwrap().push(A.into());
@@ -175,8 +188,10 @@ async fn admission_paired_rejection_preserves_unknown_backoff_and_publishes_usb(
     let calls = (source.count(A), source.count(B));
     let prefix_calls = source.count("fresh-valid-paired-prefix");
     let coordinators = state.inner.lifecycle.coordinator_count().await;
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     resource_error(&result.unwrap_err());
     let after = after.unwrap();
@@ -207,11 +222,16 @@ async fn admission_manual_paired_fallback_validates_tail_after_matching_target()
         },
     ];
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let result = state.ensure_tunnel(A, None, None).await;
     let calls = source.count(A);
     let empty = state.list_records().await.unwrap().as_slice().is_empty();
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     resource_error(&result.unwrap_err());
     assert!(empty);
@@ -243,6 +263,9 @@ async fn admission_paired_combined_count_and_bytes_reject_without_partial_ticket
         });
         source.script(B, [Behavior::Failure(std::io::ErrorKind::ConnectionReset)]);
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+        let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
         state.refresh_once().await.unwrap();
         let before = state.inner.failed_attempts.read().await[B].clone();
         source.usb.lock().unwrap().push(A.into());
@@ -252,8 +275,10 @@ async fn admission_paired_combined_count_and_bytes_reject_without_partial_ticket
         let after = state.inner.failed_attempts.read().await.get(B).cloned();
         let coordinators = state.inner.lifecycle.coordinator_count().await;
         let calls = source.calls.lock().unwrap().len();
-        state.notify_shutdown();
-        state.clear().await;
+        state.notify_shutdown(&mut control_input_0);
+        drop(control_input_0);
+        state.clear(&mut control_input_1).await;
+        drop(control_input_1);
         state.drain_native(LOCAL_BUDGET).await.unwrap();
         resource_error(&result.unwrap_err());
         let after = after.unwrap();
@@ -283,6 +308,9 @@ async fn admission_paired_combined_exact_count_keeps_four_future_window() {
         .collect();
     *source.paired.lock().unwrap() = targets;
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let mut scan = Box::pin(state.refresh_once());
     let reached = tokio::time::timeout(LOCAL_BUDGET, async {
         loop {
@@ -299,8 +327,10 @@ async fn admission_paired_combined_exact_count_keeps_four_future_window() {
     .unwrap_or(false);
     let coordinators = state.inner.lifecycle.coordinator_count().await;
     drop(scan);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(reached);
     assert_eq!(coordinators, 4096);
@@ -333,6 +363,9 @@ async fn admission_paired_combined_exact_bytes_keeps_four_future_window() {
     targets.last_mut().unwrap().host.truncate(4096 - A.len());
     *source.paired.lock().unwrap() = targets;
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let mut control_input_0 = state.prepare_cutover::<1>().unwrap();
+    let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
+
     let mut scan = Box::pin(state.refresh_once());
     let reached = tokio::time::timeout(LOCAL_BUDGET, async {
         loop {
@@ -349,8 +382,10 @@ async fn admission_paired_combined_exact_bytes_keeps_four_future_window() {
     .unwrap_or(false);
     let coordinators = state.inner.lifecycle.coordinator_count().await;
     drop(scan);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut control_input_0);
+    drop(control_input_0);
+    state.clear(&mut control_input_1).await;
+    drop(control_input_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(reached);
     assert_eq!(coordinators, 2049);
@@ -389,10 +424,15 @@ async fn admission_usb_unique_counts_unauthorized_rows_before_gate_selection() {
         source.clone(),
         TUNNEL_CONNECT_TIMEOUT,
     );
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     let result = state.refresh_once().await;
     let coordinators = state.inner.lifecycle.coordinator_count().await;
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     resource_error(&result.unwrap_err());
     assert_eq!(coordinators, 0);
@@ -426,6 +466,9 @@ async fn admission_policy_reload_removes_planned_target_without_adding_new_one()
         source.clone(),
         TUNNEL_CONNECT_TIMEOUT,
     );
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     let paired_gate = Arc::new(Semaphore::new(0));
     *source.paired_gate.lock().unwrap() = Some(paired_gate.clone());
     let mut scan = Box::pin(state.refresh_once());
@@ -454,8 +497,10 @@ async fn admission_policy_reload_removes_planned_target_without_adding_new_one()
     let calls = (source.count(A), source.count(B), source.count(C));
     server.abort();
     server.await.unwrap_err();
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
     state.drain_native(LOCAL_BUDGET).await.unwrap();
     assert!(pending);
     assert_eq!(paired_calls, 1);

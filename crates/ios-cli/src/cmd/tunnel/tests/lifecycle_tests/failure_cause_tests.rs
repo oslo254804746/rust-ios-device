@@ -126,6 +126,9 @@ fn original(error: &anyhow::Error) -> usize {
 async fn failure_node_real_original_records_at_zero_quota_and_last_receipt_retains_input() {
     let source = RefusedSource::new().await;
     let state = manager(source.clone());
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let held = Arc::new(StdMutex::new(Vec::with_capacity(2)));
     let return_bank = Arc::clone(&bank);
@@ -165,8 +168,10 @@ async fn failure_node_real_original_records_at_zero_quota_and_last_receipt_retai
         .unwrap()
         .input
         .downgrade();
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
     drop(state);
     held.lock().unwrap().clear();
     assert!(input.upgrade().is_some());
@@ -188,6 +193,9 @@ async fn failure_writer_late_after_adopt_refunds_empty_actual_backing_and_preser
     let gate = Arc::new(Semaphore::new(0));
     *source.return_gate.lock().unwrap() = Some(Arc::clone(&gate));
     let mut state = manager(source.clone());
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     state.inner.get_mut().unwrap().failure_write_timeout = Duration::from_millis(40);
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let held = Arc::new(StdMutex::new(None));
@@ -244,15 +252,21 @@ async fn failure_writer_late_after_adopt_refunds_empty_actual_backing_and_preser
     assert!(bank.available_permits() >= failure_table::Destination::minimum_bytes());
     assert!(!state.is_ready().await);
     drop(held.lock().unwrap().take());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     drop(state);
     assert!(bank.available_permits() < MAX_GLOBAL_KNOWN_METADATA_BYTES);
     drop(error);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 
-async fn pending_manual_cleanup(state: &TunnelAgentState) {
+async fn pending_manual_cleanup(
+    state: &TunnelAgentState,
+    input: &mut marker_identity::Cutover<1>,
+    releases: &mut marker_identity::ReleaseFence<3>,
+) {
     let ticket = state.inner.lifecycle.ticket(B).await.unwrap();
     let slot = state.reserve_failure_slot(B).await.unwrap();
     state
@@ -282,10 +296,11 @@ async fn pending_manual_cleanup(state: &TunnelAgentState) {
                 authority.clone(),
                 Some(version.clone()),
                 None,
+                input,
             )
         })
         .unwrap();
-    ticket.fenced().remember_failure(Some(version));
+    ticket.fenced().remember_failure(Some(version), releases);
     assert!(ticket.pending_success().is_some());
 }
 
@@ -294,7 +309,16 @@ async fn manual_success_preflight_real_source_new_gate_and_latest_pending_cleanu
     use futures_util::FutureExt;
     let source = RefusedSource::new().await;
     let state = manager(source.clone());
-    pending_manual_cleanup(&state).await;
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
+    let mut initial_manual = state.prepare_cutover::<1>().unwrap();
+    let mut initial_releases = marker_identity::ReleaseFence::<3>::new();
+    let retained_manual = Arc::new(StdMutex::new(
+        state.prepare_cutover::<2>().unwrap().into_individual(),
+    ));
+    let callback_manual = retained_manual.clone();
+    pending_manual_cleanup(&state, &mut initial_manual, &mut initial_releases).await;
     let old = state
         .inner
         .lifecycle
@@ -311,7 +335,11 @@ async fn manual_success_preflight_real_source_new_gate_and_latest_pending_cleanu
     *source.on_return.lock().unwrap() = Some(Box::new(move || {
         // This independent metadata creator admits its own gate/key before
         // publishing a pending manual proof. Scan storage was prepared earlier.
-        for uid in [B, "source-created-new-manual-gate"] {
+        let mut inputs = callback_manual.lock().unwrap();
+        for (uid, input) in [B, "source-created-new-manual-gate"]
+            .into_iter()
+            .zip(inputs.iter_mut())
+        {
             let ticket = worker
                 .inner
                 .lifecycle
@@ -360,6 +388,7 @@ async fn manual_success_preflight_real_source_new_gate_and_latest_pending_cleanu
                         authority,
                         Some(failure),
                         None,
+                        input,
                     )
                 })
                 .unwrap();
@@ -412,10 +441,18 @@ async fn manual_success_preflight_real_source_new_gate_and_latest_pending_cleanu
     assert_eq!(receipt.completion(), reconnect::Completion::Recorded);
     assert_eq!(state.inner.failed_attempts.read().await[A].fail_count, 1);
     drop(held.lock().unwrap().take());
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
     drop(state);
     drop(receipt);
+    // Five actual historical/current version roots remain in these observers.
+    assert_eq!(
+        bank.available_permits(),
+        MAX_GLOBAL_KNOWN_METADATA_BYTES - 5 * ControlIdentity::body_bytes()
+    );
+    drop((initial_manual, initial_releases, retained_manual, old));
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 
@@ -426,8 +463,14 @@ async fn write_batch_bytes_manual_cleanup_timeout_preserves_original_source_and_
     let gate = Arc::new(Semaphore::new(0));
     *source.return_gate.lock().unwrap() = Some(gate.clone());
     let mut state = manager(source.clone());
+    let mut initial_manual = state.prepare_cutover::<1>().unwrap();
+    let mut initial_releases = marker_identity::ReleaseFence::<3>::new();
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     state.inner.get_mut().unwrap().failure_write_timeout = Duration::from_millis(40);
-    pending_manual_cleanup(&state).await;
+    pending_manual_cleanup(&state, &mut initial_manual, &mut initial_releases).await;
+    drop((initial_manual, initial_releases));
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let mut scan = Box::pin(state.refresh_once());
     source.until_error(&mut scan).await;
@@ -455,8 +498,10 @@ async fn write_batch_bytes_manual_cleanup_timeout_preserves_original_source_and_
     assert_eq!(source.count(A), 1);
     assert_eq!(source.count(B), 0);
     assert!(!state.is_ready().await);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     drop(state);
     assert!(bank.available_permits() < MAX_GLOBAL_KNOWN_METADATA_BYTES);
     drop(error);
@@ -467,8 +512,14 @@ async fn write_batch_bytes_manual_cleanup_timeout_preserves_original_source_and_
 async fn write_batch_bytes_whole_deadline_keeps_original_source_after_manual_marker_conversion() {
     let source = RefusedSource::new().await;
     let mut state = manager(source.clone());
+    let mut initial_manual = state.prepare_cutover::<1>().unwrap();
+    let mut initial_releases = marker_identity::ReleaseFence::<3>::new();
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     state.inner.get_mut().unwrap().scan_timeout = Duration::from_secs(3);
-    pending_manual_cleanup(&state).await;
+    pending_manual_cleanup(&state, &mut initial_manual, &mut initial_releases).await;
+    drop((initial_manual, initial_releases));
     *state.inner.success_before_remove.lock().unwrap() =
         Some(Box::new(|| std::thread::sleep(Duration::from_millis(3500))));
     let error = state.refresh_once().await.unwrap_err();
@@ -495,14 +546,19 @@ async fn write_batch_bytes_whole_deadline_keeps_original_source_after_manual_mar
     assert!(state.inner.failed_attempts.read().await.contains_key(B));
     assert_eq!(source.count(A), 1);
     assert_eq!(source.count(B), 0);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
 }
 
 #[tokio::test]
 async fn write_batch_bytes_ready_timeout_keeps_recorded_source_after_successful_writer() {
     let source = RefusedSource::new().await;
     let mut state = manager(source.clone());
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     state.inner.get_mut().unwrap().scan_timeout = Duration::from_secs(3);
     let ready = state.inner.ready.write().await;
     let error = state.refresh_once().await.unwrap_err();
@@ -522,8 +578,10 @@ async fn write_batch_bytes_ready_timeout_keeps_recorded_source_after_successful_
     assert!(state.inner.failed_attempts.read().await.contains_key(A));
     drop(ready);
     assert!(!state.is_ready().await);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
 }
 
 #[tokio::test]
@@ -532,7 +590,13 @@ async fn write_batch_bytes_caller_drop_during_manual_cleanup_marks_actual_source
     let gate = Arc::new(Semaphore::new(0));
     *source.return_gate.lock().unwrap() = Some(gate.clone());
     let state = manager(source.clone());
-    pending_manual_cleanup(&state).await;
+    let mut initial_manual = state.prepare_cutover::<1>().unwrap();
+    let mut initial_releases = marker_identity::ReleaseFence::<3>::new();
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
+    pending_manual_cleanup(&state, &mut initial_manual, &mut initial_releases).await;
+    drop((initial_manual, initial_releases));
     let mut scan = Box::pin(state.refresh_once());
     source.until_error(&mut scan).await;
     let writer = state.inner.failed_attempts.write().await;
@@ -552,14 +616,19 @@ async fn write_batch_bytes_caller_drop_during_manual_cleanup_marks_actual_source
     );
     drop(writer);
     drop(receipt);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
 }
 
 #[tokio::test]
 async fn candidate_input_original_source_receipt_owns_input_after_manager_clear_and_drop() {
     let source = RefusedSource::new().await;
     let state = manager(source.clone());
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     state.refresh_once().await.unwrap();
     let receipt = state.inner.retry.receipt(A).unwrap();
     let original_io = original(receipt.primary());
@@ -572,8 +641,10 @@ async fn candidate_input_original_source_receipt_owns_input_after_manager_clear_
         .downgrade();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     assert!(!format!("{receipt:?} {receipt}").contains(PRIVATE_CONTEXT));
-    state.clear().await;
-    state.notify_shutdown();
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
+    state.notify_shutdown(&mut prepared_outer_1);
+    drop(prepared_outer_1);
     drop(state);
     assert!(input.upgrade().is_some());
     assert_eq!(original(receipt.primary()), original_io);
@@ -593,6 +664,9 @@ async fn failure_cause_real_refusal_keeps_first_latest_and_reconciles_changed_id
 {
     let source = RefusedSource::new().await;
     let state = manager(source.clone());
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     state.refresh_once().await.unwrap();
     let first = state.inner.retry.receipt(A).unwrap();
     assert_eq!(
@@ -641,8 +715,10 @@ async fn failure_cause_real_refusal_keeps_first_latest_and_reconciles_changed_id
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
     );
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
 }
 
 #[tokio::test]
@@ -651,6 +727,9 @@ async fn failure_cause_source_receipt_survives_actual_write_elapsed_with_both_or
     let gate = Arc::new(Semaphore::new(0));
     *source.return_gate.lock().unwrap() = Some(gate.clone());
     let mut state = manager(source.clone());
+    let mut prepared_direct_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     state.inner.get_mut().unwrap().failure_write_timeout = Duration::from_millis(40);
     let mut scan = Box::pin(state.refresh_once());
     source.until_error(&mut scan).await;
@@ -681,7 +760,8 @@ async fn failure_cause_source_receipt_survives_actual_write_elapsed_with_both_or
     );
     assert!(!format!("{report:?} {report} {receipt:?} {receipt}").contains(PRIVATE_CONTEXT));
     assert!(state.inner.failed_attempts.read().await.is_empty());
-    state.clear().await;
+    state.clear(&mut prepared_direct_0).await;
+    drop(prepared_direct_0);
     assert_eq!(state.inner.retry.receipt_count(), 0);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
@@ -692,7 +772,8 @@ async fn failure_cause_source_receipt_survives_actual_write_elapsed_with_both_or
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
     );
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_direct_1);
+    drop(prepared_direct_1);
 }
 
 #[tokio::test]
@@ -701,6 +782,9 @@ async fn failure_cause_caller_drop_while_writer_queued_keeps_source_and_marks_ab
     let gate = Arc::new(Semaphore::new(0));
     *source.return_gate.lock().unwrap() = Some(gate.clone());
     let state = manager(source.clone());
+    let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
     let mut scan = Box::pin(state.refresh_once());
     source.until_error(&mut scan).await;
     let writer = state.inner.failed_attempts.write().await;
@@ -720,13 +804,15 @@ async fn failure_cause_caller_drop_while_writer_queued_keeps_source_and_marks_ab
     );
     drop(writer);
     drop(receipt);
-    state.clear().await;
+    state.clear(&mut prepared_outer_0).await;
+    drop(prepared_outer_0);
     assert_eq!(state.inner.retry.receipt_count(), 0);
     assert_eq!(
         state.inner.failure_slots.available_permits(),
         MAX_FAILURE_RECORDS
     );
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_outer_1);
+    drop(prepared_outer_1);
 }
 
 #[tokio::test]
@@ -734,31 +820,47 @@ async fn failure_cause_slot_exhaustion_rejects_fresh_source_and_stop_releases_or
     let source = RefusedSource::new().await;
     source.devices.lock().unwrap().push(B.into());
     let mut state = manager(source.clone());
+    let mut stop_input_0 = state.prepare_cutover::<3>().unwrap();
+
+    let mut prepared_direct_0 = state.prepare_cutover::<2>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     state.inner.get_mut().unwrap().failure_slots =
         failure_slot::Counts::new(1, &state.inner.global_metadata_bytes).unwrap();
     state.refresh_once().await.unwrap();
     assert_eq!((source.count(A), source.count(B)), (1, 0));
     assert_eq!(state.inner.retry.receipt_count(), 1);
     assert_eq!(state.inner.failure_slots.available_permits(), 0);
-    state.stop_tunnel(A).await.unwrap();
+    state.stop_tunnel(A, &mut stop_input_0).await.unwrap();
+    drop(stop_input_0);
     assert_eq!(state.inner.retry.receipt_count(), 0);
     // A committed failure-table row is removed at the next complete scan.
     source.devices.lock().unwrap().retain(|key| key != A);
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(B), 1);
     assert_eq!(state.inner.retry.receipt_count(), 1);
-    state.clear().await;
+    state.clear(&mut prepared_direct_0).await;
+    drop(prepared_direct_0);
     assert_eq!(state.inner.failure_slots.available_permits(), 1);
-    state.notify_shutdown();
+    state.notify_shutdown(&mut prepared_direct_1);
+    drop(prepared_direct_1);
 }
 
 #[tokio::test]
 async fn failure_cause_same_poll_clear_keeps_acquired_original_without_current_row_or_backoff() {
     let source = RefusedSource::new().await;
     let state = manager(source.clone());
+    let mut prepared_outer_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_outer_1 = state.prepare_cutover::<1>().unwrap();
+
+    let retained_clear = Arc::new(StdMutex::new(state.prepare_cutover::<2>().unwrap()));
+    let callback_clear = retained_clear.clone();
     let weak = state.inner.downgrade();
     *source.on_return.lock().unwrap() = Some(Box::new(move || {
-        weak.upgrade().unwrap().lifecycle.clear();
+        weak.upgrade()
+            .unwrap()
+            .lifecycle
+            .clear(&mut *callback_clear.lock().unwrap());
     }));
     state.refresh_once().await.unwrap();
     assert!(state.inner.retry.receipt(A).is_none());
@@ -772,8 +874,10 @@ async fn failure_cause_same_poll_clear_keeps_acquired_original_without_current_r
     assert!(state.inner.failed_attempts.read().await.is_empty());
     assert!(!state.is_ready().await);
     drop(history);
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_outer_0);
+    drop(prepared_outer_0);
+    state.clear(&mut prepared_outer_1).await;
+    drop(prepared_outer_1);
     assert_eq!(state.inner.retry.receipt_count(), 0);
     assert_eq!(
         state.inner.failure_slots.available_permits(),

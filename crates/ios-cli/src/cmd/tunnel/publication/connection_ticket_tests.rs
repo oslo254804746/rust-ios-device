@@ -17,7 +17,13 @@ async fn connection_ticket_each_retained_bank_refuses_without_cloning_or_backing
             let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
             let desired_bank = desired_bank_birth.raw().clone();
             let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
-            let desired = Identity::new(&desired_bank_birth);
+            let mut desired_birth = crate::cmd::tunnel::marker_identity::Cutover::<1>::new(
+                &desired_bank_birth,
+                &desired_bank,
+            )
+            .unwrap();
+            let desired = desired_birth.place(&desired_bank_birth);
+            drop(desired_birth);
             let ticket = lifecycle
                 .ticket(KEY)
                 .await
@@ -68,7 +74,12 @@ async fn connection_ticket_actual_projection_omits_closed_desired_and_keeps_paid
     let desired_bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(TOTAL);
     let desired_bank = desired_bank_birth.raw().clone();
     let lifecycle = Lifecycle::with_metadata(origin_birth.clone()).unwrap();
-    let desired = Identity::new(&desired_bank_birth);
+    let mut desired_birth =
+        crate::cmd::tunnel::marker_identity::Cutover::<1>::new(&desired_bank_birth, &desired_bank)
+            .unwrap();
+    let desired = desired_birth.place(&desired_bank_birth);
+    drop(desired_birth);
+    let mut clear = lifecycle.prepare_cutover::<2>(&origin).unwrap();
     let weak_desired = desired.downgrade();
     let ticket = lifecycle
         .ticket(KEY)
@@ -127,7 +138,8 @@ async fn connection_ticket_actual_projection_omits_closed_desired_and_keeps_paid
     global.close();
     published.close();
     origin.close();
-    lifecycle.clear();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     assert!(!root.is_current());
     drop((root, owner, ticket, lifecycle, desired, held_c));
     assert!(
@@ -154,5 +166,10 @@ async fn connection_ticket_actual_projection_omits_closed_desired_and_keeps_paid
     assert_eq!(origin.available_permits(), TOTAL - held_bytes);
     drop(held_a);
     assert_eq!(origin.available_permits(), TOTAL);
+    assert_eq!(
+        desired_bank.available_permits(),
+        TOTAL - Identity::body_bytes()
+    );
+    drop(weak_desired);
     assert_eq!(desired_bank.available_permits(), TOTAL);
 }

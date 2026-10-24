@@ -300,13 +300,17 @@ async fn retry_receipt_stale_same_poll_original_uses_reserved_history_even_with_
     let bank = Arc::new(Semaphore::new(bytes));
     let ledger = Ledger::with_metadata(RetryPolicy::default(), Arc::clone(&bank)).unwrap();
     let lifecycle = lifecycle();
+    let mut clear = lifecycle
+        .prepare_cutover::<2>(lifecycle.byte_bank())
+        .unwrap();
     let ticket = lifecycle.ticket(A).await.unwrap();
     let attempt = ticket
         .commit(|| ledger.start(A, identity, &ticket, slot(&bank)))
         .unwrap();
     assert_eq!(bank.available_permits(), 0);
     let (original, original_pointer) = io_original("private-original-refusal-token");
-    lifecycle.clear();
+    lifecycle.clear(&mut clear);
+    drop(clear);
     ledger.close();
     // Block every refund from the now-removed episode. Source capture has no
     // remaining quota and must retain the acquired object in its existing node.

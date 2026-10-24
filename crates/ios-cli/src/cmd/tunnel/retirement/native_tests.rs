@@ -14,12 +14,13 @@ async fn native_report_prepaid_history_and_current_join_snapshots_survive_closed
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
     let structural = registry.structural_bytes();
     let bank = registry.byte_bank.raw().clone();
     let (stream, peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(native.clone());
     drop(peer);
@@ -71,21 +72,28 @@ async fn native_report_prepaid_history_and_current_join_snapshots_survive_closed
     );
     assert_eq!(registry.snapshot().occupied(), 0);
     assert!(recovered(baseline).await);
-    assert_eq!(bank.available_permits(), Registry::incarnation_bytes());
+    assert_eq!(
+        bank.available_permits(),
+        Registry::incarnation_bytes() + 2 * ControlIdentity::body_bytes()
+    );
     drop(registry);
     assert_eq!(
         bank.available_permits(),
-        structural - NativeReport::body_bytes() + Registry::incarnation_bytes()
+        structural - NativeReport::body_bytes()
+            + Registry::incarnation_bytes()
+            + 2 * ControlIdentity::body_bytes()
     );
     drop(history);
     assert_eq!(
         bank.available_permits(),
-        structural - NativeReport::body_bytes() + Registry::incarnation_bytes()
+        structural - NativeReport::body_bytes()
+            + Registry::incarnation_bytes()
+            + 2 * ControlIdentity::body_bytes()
     );
     drop(first);
     assert_eq!(
         bank.available_permits(),
-        structural + Registry::incarnation_bytes()
+        structural + Registry::incarnation_bytes() + 2 * ControlIdentity::body_bytes()
     );
     assert_eq!(
         work(second.primary().downcast_ref::<TunnelError>().unwrap()) as *const _,
@@ -104,9 +112,10 @@ async fn native_census_current_snapshot_is_inside_prepaid_backing_and_stays_froz
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
     let (stream, peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
-    let owner = stamp(&registry);
+    let owner = prepared_stamp_0;
     let lease = registry
         .reserve(owner.clone())
         .unwrap()
@@ -213,6 +222,7 @@ async fn registry_owner_original_native_lease_outlives_caller_and_joins_at_close
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
     let bank = registry.byte_bank.raw().clone();
     let total = super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES;
     let structural = registry.structural_bytes();
@@ -220,13 +230,13 @@ async fn registry_owner_original_native_lease_outlives_caller_and_joins_at_close
     let (stream, mut peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(native.clone());
     assert!(lease.registry.ptr_eq(&registry));
     assert_eq!(
         bank.available_permits(),
-        total - structural - Registry::incarnation_bytes()
+        total - structural - Registry::incarnation_bytes() - 2 * ControlIdentity::body_bytes()
     );
     let held = bank
         .clone()
@@ -263,13 +273,13 @@ async fn registry_owner_original_native_lease_outlives_caller_and_joins_at_close
     assert!(recovered(baseline).await);
     assert_eq!(
         bank.available_permits(),
-        Registry::incarnation_bytes(),
-        "only the last incarnation key ended; the registry body/backing remain live"
+        Registry::incarnation_bytes() + 2 * ControlIdentity::body_bytes(),
+        "the original marker roots and last incarnation key ended; the registry body/backing remain live"
     );
     drop(retained);
     assert_eq!(
         bank.available_permits(),
-        structural + Registry::incarnation_bytes()
+        structural + Registry::incarnation_bytes() + 2 * ControlIdentity::body_bytes()
     );
     drop(held);
     assert_eq!(bank.available_permits(), total);
@@ -281,10 +291,11 @@ async fn native_ordinal_cleanup_at_zero_pool_joins_original_workers_and_strict_e
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
     let (stream, mut peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(Arc::clone(&native));
     let bank = Arc::clone(&registry.byte_bank);
@@ -313,11 +324,14 @@ async fn native_ordinal_cleanup_at_zero_pool_joins_original_workers_and_strict_e
         (1, 1, 0)
     );
     assert!(native.shutdown_status().is_ok());
-    assert_eq!(bank.available_permits(), Registry::incarnation_bytes());
+    assert_eq!(
+        bank.available_permits(),
+        Registry::incarnation_bytes() + 2 * ControlIdentity::body_bytes()
+    );
     drop(held);
     assert_eq!(
         bank.available_permits(),
-        before + Registry::incarnation_bytes()
+        before + Registry::incarnation_bytes() + 2 * ControlIdentity::body_bytes()
     );
 }
 
@@ -327,7 +341,8 @@ async fn native_census_keeps_active_original_io_on_quota_refusal_and_last_root_d
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
-    let owner = stamp(&registry);
+    let prepared_stamp_0 = stamp(&registry);
+    let owner = prepared_stamp_0;
     let (stream, peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
@@ -371,7 +386,8 @@ async fn native_census_keeps_active_original_io_on_quota_refusal_and_last_root_d
 }
 
 fn stamp(registry: &RegistryOwner) -> OwnershipStamp {
-    OwnershipStamp::standalone(registry)
+    let mut births = registry.prepare_births::<2>(&registry.byte_bank()).unwrap();
+    OwnershipStamp::standalone(registry, &mut births)
 }
 
 async fn runtime<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
@@ -430,10 +446,11 @@ async fn native_retirement_joins_real_workers_with_another_handle_arc_held() {
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
     let (stream, mut peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(Arc::clone(&native));
     let retained = Arc::clone(&native);
@@ -464,10 +481,11 @@ async fn native_retirement_fully_joined_eof_releases_slot_and_preserves_history_
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
     let (stream, peer) = tokio::io::duplex(1280);
     let native = runtime(stream).await;
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(Arc::clone(&native));
     drop(peer);
@@ -569,6 +587,7 @@ async fn native_retirement_later_join_panic_replaces_same_owner_pure_expiry_with
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
     let (stream, mut peer) = tokio::io::duplex(1280);
     let gate = Arc::new(Gate::default());
     let native = runtime(PanickingDropStream {
@@ -577,7 +596,7 @@ async fn native_retirement_later_join_panic_replaces_same_owner_pure_expiry_with
     })
     .await;
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(native.clone());
     let key = lease.key.clone();
@@ -670,6 +689,7 @@ async fn native_retirement_outer_expiry_captures_acquired_io_before_internal_shu
         .metrics()
         .num_alive_tasks();
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
     let (stream, mut peer) = tokio::io::duplex(1280);
     let gate = Arc::new(Gate::default());
     let native = runtime(FaultStream {
@@ -679,7 +699,7 @@ async fn native_retirement_outer_expiry_captures_acquired_io_before_internal_shu
     })
     .await;
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(Arc::clone(&native));
     let finished = inactive(&native).await;
@@ -724,6 +744,8 @@ async fn native_retirement_outer_expiry_captures_acquired_io_before_internal_shu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_retirement_false_outer_report_never_uses_completed_foreign_inner_certificate() {
+    let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let prepared_stamp_0 = stamp(&registry);
     let baseline = tokio::runtime::Handle::current()
         .metrics()
         .num_alive_tasks();
@@ -744,9 +766,9 @@ async fn native_retirement_false_outer_report_never_uses_completed_foreign_inner
         gate: Arc::clone(&gate),
     })
     .await;
-    let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+
     let lease = registry
-        .reserve(stamp(&registry))
+        .reserve(prepared_stamp_0)
         .unwrap()
         .attach(Arc::clone(&native));
     let finished = inactive(&native).await;

@@ -2,6 +2,7 @@
 use super::*;
 
 struct PairedSource {
+    prepared: tokio::sync::Mutex<Option<PreparedSignal>>,
     base: Arc<LocalSource>,
     control: StdMutex<Option<TunnelAgentState>>,
     stream: StdMutex<Option<TcpStream>>,
@@ -33,11 +34,11 @@ impl Source for PairedSource {
                 .expect_err("actual one-byte loopback EOF fixture");
             // Acquire the original IO first; change the epoch before the same
             // discovery poll returns, with no hook mutex/watch Ref retained.
-            if self.terminal {
-                state.notify_shutdown();
-            } else {
-                state.clear().await;
-            }
+            let mut prepared = self.prepared.lock().await;
+            let input = prepared.as_mut().unwrap();
+            assert_eq!(matches!(input, PreparedSignal::Shutdown(_)), self.terminal);
+            input.notify_or_clear(&state).await;
+            drop(prepared);
             if self.failure {
                 Err(error.into())
             } else {
@@ -64,6 +65,7 @@ async fn exercise(terminal: bool, failure: bool) -> Result<()> {
     let source = Arc::new(PairedSource {
         base: base.clone(),
         control: StdMutex::new(None),
+        prepared: tokio::sync::Mutex::new(None),
         stream: StdMutex::new(Some(stream)),
         terminal,
         failure,
@@ -76,6 +78,8 @@ async fn exercise(terminal: bool, failure: bool) -> Result<()> {
         source.clone(),
         OBSERVE,
     );
+    let mut terminal_inputs = PreparedTerminal::new(&state);
+    *source.prepared.lock().await = Some(PreparedSignal::new(&state, terminal));
     publish(&state, Route::Wifi(None)).await.unwrap();
     let native = base.handle();
     *source.control.lock().unwrap() = Some(state.clone());
@@ -90,7 +94,8 @@ async fn exercise(terminal: bool, failure: bool) -> Result<()> {
     // Release any unconsumed one-shot control if admission unexpectedly failed.
     let pending = source.control.lock().unwrap().take();
     drop(pending);
-    let recovery = finish(&state, &base, expected).await;
+    let recovery = finish(&state, &base, expected, &mut terminal_inputs).await;
+    drop(terminal_inputs);
     assert!(recovery && native.shutdown_status().is_ok());
     assert!(stopped && not_ready);
     assert_eq!(calls, (1, 1, 1));

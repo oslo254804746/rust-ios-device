@@ -99,6 +99,9 @@ async fn source_route_pending_manual_and_fallback_borrow_actual_paid_observation
         None,
     ] {
         let (source, state, _) = fixture();
+        let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+        let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
         // Automatic mobdev2 desired state keeps no discovery host filter;
         // explicit Usb/Wifi keep it in both desired and observed destinations.
         let expected_copies = if family.is_none() { 1 } else { 2 };
@@ -130,8 +133,10 @@ async fn source_route_pending_manual_and_fallback_borrow_actual_paid_observation
         assert_eq!(source.dropped.load(Ordering::SeqCst), 1);
         assert!(state.inner.tunnels.read().await.is_empty());
         assert_eq!(state.inner.native.snapshot().occupied(), 0);
-        state.notify_shutdown();
-        state.clear().await;
+        state.notify_shutdown(&mut prepared_direct_0);
+        drop(prepared_direct_0);
+        state.clear(&mut prepared_direct_1).await;
+        drop(prepared_direct_1);
         drop(state);
         assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
     }
@@ -140,6 +145,9 @@ async fn source_route_pending_manual_and_fallback_borrow_actual_paid_observation
 #[tokio::test]
 async fn source_route_original_candidate_host_survives_same_error_receipt_after_manager_drop() {
     let (source, state, original) = fixture();
+    let mut prepared_direct_0 = state.prepare_cutover::<1>().unwrap();
+    let mut prepared_direct_1 = state.prepare_cutover::<1>().unwrap();
+
     let bank = state.inner.global_metadata_bytes.clone();
     let mut work = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut work).is_pending());
@@ -168,8 +176,10 @@ async fn source_route_original_candidate_host_survives_same_error_receipt_after_
         original
     );
     let weak = context.input.downgrade();
-    state.notify_shutdown();
-    state.clear().await;
+    state.notify_shutdown(&mut prepared_direct_0);
+    drop(prepared_direct_0);
+    state.clear(&mut prepared_direct_1).await;
+    drop(prepared_direct_1);
     drop(state);
     assert!(weak.upgrade().is_some());
     assert!(bank.available_permits() < MAX_GLOBAL_KNOWN_METADATA_BYTES);
