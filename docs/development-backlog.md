@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-24：L02 [原传输worker与唯一packet port](validation/tunnel-packet-link-port-2026-10-24.md)
+现有userspace生产路径接入PreparedPacketLink/PacketPort，原流只split一次，原4任务/准入/停止与错误时序保持。
+新增真实partial read/write与port移动用例，原joins/严格Ok(0)/任务基线/全费用退款通过；9处原函数正文精确一致。
+Core strict/新1/userspace67/shutdown7及两feature组合、CLI strict/完整1901/0/13原ignored、build/只读host通过。
+732源码指纹一致，仅3处Core（2新文件），全部Cargo/build主控；零筛选integration不计覆盖。
+Kernel私有探测/最终切换、barrier ACK/暴露回滚/精确替换与L02全审计继续；23/6/L02/Q04口径保持。
+
 2026-10-24：L02 [physical marker实际根与预付出生](validation/tunnel-physical-marker-roots-2026-10-24.md)
 15处原生产出生点整体迁移；每个实际root完整G/A费用到最后Weak物理free，raw getter/Clone继承同根。
 控制调用者提前准备真实destination，原锁内只place；Partial preparation和旧/新marker退款由锁外owner持有。

@@ -36,6 +36,9 @@ mod owned_channel;
 use owned_channel as mpsc;
 mod worker_future;
 use worker_future::PreparedWorker;
+mod packet_link;
+#[cfg(test)]
+use packet_link::{read_ios_packets_owned, write_ios_packets_owned};
 
 const PREFIX_LEN: u8 = 64;
 const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
@@ -281,14 +284,10 @@ impl UserspaceTunDevice {
             TunnelError::Protocol(format!("invalid client IPv6 address: {client_address}"))
         })?;
 
-        // Header admission and allocation finish before listener or workers.
-        // The exact Vec and permit then move into the original reader task.
-        let header = OwnedBuffer::zeroed(IPV6_HEADER_LEN, byte_bank.as_ref())?;
-
-        let (ios_to_smol_tx, ios_to_smol_rx) =
-            mpsc::with_bank::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY, byte_bank.as_ref())?;
-        let (smol_to_ios_tx, smol_to_ios_rx) =
-            mpsc::with_bank::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY, byte_bank.as_ref())?;
+        // One packet port owns the backend ends; the original transport
+        // reader/writer keep the other ends through the complete runtime.
+        let (packet_link, packets) =
+            packet_link::PreparedPacketLink::prepare(mtu, payload_capacity, byte_bank.as_ref())?;
         let (conn_req_tx, conn_req_rx) = mpsc::with_bank::<ConnRequest>(32, byte_bank.as_ref())?;
         let outcomes = Ledger::with_metadata(byte_bank.as_ref())?;
         let clients = SharedChildTaskSet::with_metadata(
@@ -303,7 +302,7 @@ impl UserspaceTunDevice {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_port = listener.local_addr()?.port();
 
-        let (mut ios_reader, mut ios_writer) = tokio::io::split(ios_stream);
+        let (ios_reader, ios_writer) = tokio::io::split(ios_stream);
         let (stop, stop_rx) = watch::channel(outcomes.clone());
 
         let storage = RuntimeStorage {
@@ -312,45 +311,15 @@ impl UserspaceTunDevice {
             stop: stop.clone(),
         };
         let future_bank = byte_bank.clone();
-        let reader_storage = storage.clone();
-        let mut reader_stop = stop.subscribe();
-        let reader_future = async move {
-            let result = tokio::select! {
-                biased;
-                result = read_ios_packets_owned(&mut ios_reader, payload_capacity, ios_to_smol_tx, header, byte_bank) => result,
-                _ = reader_stop.changed() => Ok(()),
-            };
-            if let Err(original) = result {
-                reader_storage.fail(ParentRole::ForwardOrReader, original);
-            }
-            let result = reader_storage.result();
-            tracing::debug!("userspace: iOS packet reader exited");
-            result
-        };
-
-        let writer_storage = storage.clone();
-        let mut writer_stop = stop.subscribe();
-        let writer_future = async move {
-            let result = tokio::select! {
-                biased;
-                result = write_ios_packets_owned(&mut ios_writer, mtu, smol_to_ios_rx) => result,
-                _ = writer_stop.changed() => Ok(()),
-            };
-            if let Err(original) = result {
-                writer_storage.fail(ParentRole::Writer, original);
-            }
-            let result = writer_storage.result();
-            tracing::debug!("userspace: iOS packet writer exited");
-            result
-        };
+        let (reader_future, writer_future) =
+            packet_link.workers(ios_reader, ios_writer, byte_bank, storage.clone());
 
         let smoltcp_storage = storage.clone();
         let smoltcp_future = async move {
             run_smoltcp(
                 client_ipv6,
                 mtu,
-                ios_to_smol_rx,
-                smol_to_ios_tx,
+                packets,
                 conn_req_rx,
                 smoltcp_storage.clone(),
             )
@@ -467,89 +436,12 @@ where
     let _ = read_ios_packets_owned(reader, payload_capacity, tx, header, None).await;
 }
 
-async fn read_ios_packets_owned<R>(
-    reader: &mut R,
-    payload_capacity: usize,
-    tx: mpsc::Sender<OwnedBuffer>,
-    mut hdr: OwnedBuffer,
-    byte_bank: Option<Arc<Semaphore>>,
-) -> Result<(), TunnelError>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    loop {
-        reader.read_exact(&mut hdr).await?;
-        let payload_len = u16::from_be_bytes([hdr[4], hdr[5]]) as usize;
-        if hdr[0] >> 4 != 6 {
-            tracing::warn!("userspace: non-IPv6 packet from iOS, skipping");
-            discard_bytes_owned(reader, payload_len).await?;
-            continue;
-        }
-        if payload_len > payload_capacity {
-            tracing::warn!(
-                "userspace: IPv6 payload {payload_len} exceeds negotiated payload capacity {payload_capacity}"
-            );
-            discard_bytes_owned(reader, payload_len).await?;
-            continue;
-        }
-        let packet_len = match IPV6_HEADER_LEN.checked_add(payload_len) {
-            Some(packet_len) => packet_len,
-            None => {
-                tracing::warn!("userspace: IPv6 packet length overflow");
-                break;
-            }
-        };
-        let mut pkt = OwnedBuffer::zeroed(packet_len, byte_bank.as_ref())?;
-        pkt[..IPV6_HEADER_LEN].copy_from_slice(&hdr);
-        reader.read_exact(&mut pkt[IPV6_HEADER_LEN..]).await?;
-        if tx.send(pkt).await.is_err() {
-            break;
-        }
-    }
-    Ok(())
-}
-
-async fn discard_bytes_owned<R>(reader: &mut R, mut remaining: usize) -> Result<(), TunnelError>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let mut discard = [0u8; 4096];
-    while remaining > 0 {
-        let chunk_len = remaining.min(discard.len());
-        reader.read_exact(&mut discard[..chunk_len]).await?;
-        remaining -= chunk_len;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 async fn write_ios_packets<W>(writer: &mut W, mtu: ValidatedMtu, rx: mpsc::Receiver<OwnedBuffer>)
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     let _ = write_ios_packets_owned(writer, mtu, rx).await;
-}
-
-async fn write_ios_packets_owned<W>(
-    writer: &mut W,
-    mtu: ValidatedMtu,
-    mut rx: mpsc::Receiver<OwnedBuffer>,
-) -> Result<(), TunnelError>
-where
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    while let Some(pkt) = rx.recv().await {
-        if pkt.len() > mtu.as_usize() {
-            tracing::warn!(
-                "userspace: generated IPv6 packet length {} exceeds negotiated MTU {}",
-                pkt.len(),
-                mtu.as_u16()
-            );
-            continue;
-        }
-        writer.write_all(&pkt).await?;
-    }
-    Ok(())
 }
 
 // ── smoltcp event loop ─────────────────────────────────────────────────────────
@@ -618,11 +510,14 @@ fn take_ephemeral_port(cursor: &mut u16, mut in_use: impl FnMut(u16) -> bool) ->
 async fn run_smoltcp(
     client_ipv6: Ipv6Address,
     mtu: ValidatedMtu,
-    mut ios_rx: mpsc::Receiver<OwnedBuffer>,
-    ios_tx: mpsc::Sender<OwnedBuffer>,
+    packets: packet_link::PacketPort,
     mut conn_req_rx: mpsc::Receiver<ConnRequest>,
     storage: RuntimeStorage,
 ) {
+    let packet_link::PacketPort {
+        incoming: mut ios_rx,
+        outgoing: ios_tx,
+    } = packets;
     let mut device = ChannelDevice::new(mtu, storage.clone());
     let config = Config::new(HardwareAddress::Ip);
     let mut iface = Interface::new(config, &mut device, smol_now());
