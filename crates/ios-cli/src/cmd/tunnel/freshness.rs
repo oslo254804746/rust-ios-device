@@ -539,6 +539,7 @@ impl TunnelAgentState {
 
     /// Caller owns the original device serial guard. Nested cancellation/clock
     /// guards include the permit wait; no new deadline is started here.
+    #[allow(dead_code)]
     pub(super) async fn refresh_alive_rsd(
         &self,
         udid: &str,

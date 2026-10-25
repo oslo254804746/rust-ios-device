@@ -52,9 +52,7 @@ impl Source for ReplacementSource {
         _route: ios_core::device::ExistingRsdRoute,
         _deadline: tokio::time::Instant,
         bank: &'a Arc<Semaphore>,
-    ) -> Result<
-        future_storage::Dynamic<'a, Result<ios_core::device::PreparedRsdOwner>>,
-    > {
+    ) -> Result<future_storage::Dynamic<'a, Result<ios_core::device::PreparedRsdOwner>>> {
         let should_fail = self.refresh_fails.load(Ordering::SeqCst);
         let current = self.currents.lock().unwrap().first().cloned();
         future_storage::Dynamic::new(
@@ -106,8 +104,14 @@ impl Source for ReplacementSource {
                     )
                     .await?;
                     assert!(!device.tunnel_handle().ready_for_publication());
-                    self.handles.lock().unwrap().push(device.tunnel_handle().clone());
-                    self.currents.lock().unwrap().push(device.current_rsd_catalogue().clone());
+                    self.handles
+                        .lock()
+                        .unwrap()
+                        .push(device.tunnel_handle().clone());
+                    self.currents
+                        .lock()
+                        .unwrap()
+                        .push(device.current_rsd_catalogue().clone());
                     Ok(prepared_source::Candidate::Native {
                         device: prepared.place(device),
                         output,
@@ -185,7 +189,10 @@ async fn probe_failure_triggers_exact_replacement_returning_new_paid_record() {
         tunnels.proof(DEVICE).unwrap()
     };
     assert_eq!(initial_proof, new_proof, "same table slot was preserved");
-    assert!(new_incarnation > initial_incarnation, "incarnation monotonically increased");
+    assert!(
+        new_incarnation > initial_incarnation,
+        "incarnation monotonically increased"
+    );
 
     // Old runtime was cleanly retired; new runtime is active.
     assert_eq!(state.inner.native.snapshot().active, 1);
@@ -341,13 +348,10 @@ async fn connect_limit_of_one_does_not_deadlock_during_replacement() {
 
     // Run ensure_tunnel with timeout to verify no deadlock.
     let timeout = Duration::from_secs(5);
-    let record2 = tokio::time::timeout(
-        timeout,
-        state.ensure_tunnel(DEVICE, None, None),
-    )
-    .await
-    .expect("did not deadlock on single permit limit")
-    .unwrap();
+    let record2 = tokio::time::timeout(timeout, state.ensure_tunnel(DEVICE, None, None))
+        .await
+        .expect("did not deadlock on single permit limit")
+        .unwrap();
 
     assert_eq!(state.inner.lifecycle.connects.available_permits(), 1);
 
@@ -411,7 +415,10 @@ fn scan_replaces_probe_failed_tunnel_with_candidate() {
                         tunnels.proof(DEVICE).unwrap()
                     };
                     assert_eq!(initial_proof, new_proof, "same table slot was preserved");
-                    assert!(new_incarnation > initial_incarnation, "incarnation monotonically increased");
+                    assert!(
+                        new_incarnation > initial_incarnation,
+                        "incarnation monotonically increased"
+                    );
 
                     terminal.shutdown(&state);
                     let _ = state.drain_native(CLOCK).await;

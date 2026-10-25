@@ -38,6 +38,7 @@ impl<T> Destination<T> {
         self.values.as_ptr()
     }
 
+    #[allow(dead_code)]
     pub(super) fn bytes_in(&self, bank: &Arc<Semaphore>) -> Result<usize> {
         anyhow::ensure!(
             Arc::ptr_eq(self.storage.semaphore(), bank),
@@ -101,6 +102,7 @@ impl<T> Owner<T> {
         value
     }
 
+    #[allow(dead_code)]
     pub(super) fn bytes_in(&self, bank: &Arc<Semaphore>) -> Result<usize> {
         anyhow::ensure!(
             Arc::ptr_eq(self._storage.semaphore(), bank),

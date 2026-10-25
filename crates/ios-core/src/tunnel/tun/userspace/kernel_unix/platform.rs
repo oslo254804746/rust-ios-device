@@ -37,6 +37,7 @@ pub(super) struct Device {
 }
 
 #[cfg(test)]
+#[allow(clippy::large_enum_variant)]
 pub(super) enum DeviceInner {
     Real(NativeDevice),
     Local(local::LocalDevice),
@@ -447,6 +448,7 @@ impl Device {
             DeviceInner::Local(inner) => inner.undo_step(response, deadline),
         }
     }
+    #[allow(clippy::result_large_err)]
     pub(super) fn close(self) -> Result<(), (Self, NativeError)> {
         let Self { inner, identity } = self;
         #[cfg(not(test))]
