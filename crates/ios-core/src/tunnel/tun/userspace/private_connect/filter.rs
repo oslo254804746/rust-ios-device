@@ -721,6 +721,48 @@ fn transport(
                 next = header[0];
                 cursor += 8;
             }
+            41 => {
+                // RFC 2473: IPv6 Encapsulation in IPv6.
+                // Inspect the inner IPv6 packet to ensure private flows nested
+                // inside outer encapsulation cannot bypass endpoint isolation.
+                let inner = packet.get(cursor..)?;
+                if inner.len() < 40 || inner[0] >> 4 != 6 {
+                    return None;
+                }
+                let inner_len = usize::from(u16::from_be_bytes([inner[4], inner[5]]));
+                if 40 + inner_len > inner.len() {
+                    return None;
+                }
+                projection = Projection {
+                    source: Ipv6Addr::from(<[u8; 16]>::try_from(&inner[8..24]).ok()?),
+                    destination: Ipv6Addr::from(<[u8; 16]>::try_from(&inner[24..40]).ok()?),
+                    home: false,
+                    fragment: false,
+                    authentication: false,
+                    opaque: None,
+                };
+                next = inner[6];
+                cursor += 40;
+            }
+            4 => {
+                // RFC 2473: IPv4 Encapsulation in IPv6.
+                let inner = packet.get(cursor..)?;
+                if inner.len() < 20 || inner[0] >> 4 != 4 {
+                    return None;
+                }
+                let ihl = usize::from(inner[0] & 0x0f) * 4;
+                let total_len = usize::from(u16::from_be_bytes([inner[2], inner[3]]));
+                if ihl < 20 || total_len > inner.len() || ihl > total_len {
+                    return None;
+                }
+                let inner_proto = inner[9];
+                if inner_proto == 41 {
+                    cursor += ihl;
+                    next = 41;
+                    continue;
+                }
+                return Some(projection.canonical(Transport::NonTcp));
+            }
             0 => return None,
             17 | 58 | 59 => return Some(projection.canonical(Transport::NonTcp)),
             // Explicit unresolved boundary, including ESP, encapsulated IP,

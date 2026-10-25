@@ -854,16 +854,44 @@ fn opaque_native_transformation_boundary_is_explicit_and_remains_unaccepted() {
         outer_source,
         outer_destination,
     );
-    assert_eq!(
+    // Inner private TCP tuple encapsulated inside IP-in-IP (Next Header 41) is
+    // inspected and isolated; it must NOT be forwarded.
+    assert!(matches!(
         whole(Direction::ToHost, &outer).transport,
-        Transport::Opaque(41)
-    );
-    // This intentionally exhibits the unresolved IP-in-IP boundary. The test
-    // does not certify isolation: the exact owner is still forwarded, and no
-    // native tunnel policy or SA has been supplied/proved by this filter.
-    assert_forward(&mut filter, Direction::ToHost, outer);
+        Transport::Tcp(_)
+    ));
+    assert!(matches!(
+        filter.ingest(Direction::ToHost, outer).unwrap(),
+        FilterOutput::Discard(DiscardReason::PrivateFlow)
+    ));
     drop(inner);
-    for protocol in [4, 50, 253] {
+
+    // Unrelated IP-in-IP is forwarded intact with original owner preserved:
+    let (unrelated_src, unrelated_dst) = (
+        "fd00::9".parse::<Ipv6Addr>().unwrap(),
+        "fd00::10".parse::<Ipv6Addr>().unwrap(),
+    );
+    let unrelated_data = wire_tcp(Direction::ToHost, port, unrelated_src, unrelated_dst);
+    let unrelated_inner = wire_packet(
+        &bank,
+        Direction::ToHost,
+        6,
+        &unrelated_data,
+        unrelated_src,
+        unrelated_dst,
+    );
+    let outer_unrelated = wire_packet(
+        &bank,
+        Direction::ToHost,
+        41,
+        &unrelated_inner,
+        outer_source,
+        outer_destination,
+    );
+    assert_forward(&mut filter, Direction::ToHost, outer_unrelated);
+    drop(unrelated_inner);
+
+    for protocol in [50, 253] {
         let value = wire_packet(
             &bank,
             Direction::ToHost,
