@@ -1,5 +1,10 @@
 # Quality review and release readiness
 
+2026-10-25：L02 [明文扩展头与分片身份修复](validation/tunnel-filter-plaintext-2026-10-25.md)
+HAO/RH2/SRH/AH 明文端点、offset-zero canonical/key 分离、atomic/首次 ingest TTL 已接入原过滤器。
+原六测试文件前缀逐字节保留，新增十例；Windows16/0、实际 Linux ELF16/0、Core strict/fmt/diff 共六门禁通过，778源码无漂移。
+仅提交过滤器两源与文档；CLI staging/精确替换/Unix actor WIP、ESP/IPIP 与全 retainer 审计继续，23/6/L02待全审计/有效30/Q04排除不变。
+
 2026-10-25 finite L02 profile: [private preparation and same-owner native activation](validation/tunnel-prepared-native-owner-2026-10-25.md).
 The original authenticated transport, Arc, checked catalogue and deadline survive final userspace/Windows activation.
 Core tunnel231/activation16, strict Core/CLI, full CLI1903/0/13original ignored, build and read-only host gates pass on771 unchanged sources.
