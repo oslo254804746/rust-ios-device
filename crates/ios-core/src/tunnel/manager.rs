@@ -4,17 +4,26 @@ use std::collections::HashMap;
 mod shutdown_tests;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+use std::sync::OnceLock;
 
-#[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+mod prepared_kernel;
+#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+use crate::tunnel::tun::userspace::KernelRuntime;
+
+#[cfg(feature = "tunnel-private-ip")]
 use crate::tunnel::owner::{self, Ledger};
 #[cfg(feature = "tunnel-kernel")]
 use crate::tunnel::owner::{ChildRole, OwnedTask, ParentRole, SharedChildTaskSet};
-#[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+#[cfg(feature = "tunnel-private-ip")]
 use crate::tunnel::TunnelError;
 
 use tokio::sync::{watch, RwLock};
 
 #[cfg(feature = "tunnel-userspace")]
+use crate::tunnel::tun::userspace::UserspaceTunDevice;
+#[cfg(all(feature = "tunnel-private-ip", not(feature = "tunnel-userspace")))]
 use crate::tunnel::tun::userspace::UserspaceTunDevice;
 use crate::tunnel::TunnelInfo;
 
@@ -44,7 +53,7 @@ enum TunnelRuntime {
         /// Dropping this sender cancels the tunnel (receivers get RecvError).
         _cancel_tx: watch::Sender<()>,
         stopped: AtomicBool,
-        #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+        #[cfg(feature = "tunnel-private-ip")]
         outcomes: Ledger,
         #[cfg(feature = "tunnel-kernel")]
         tasks: Vec<OwnedTask>,
@@ -53,6 +62,16 @@ enum TunnelRuntime {
     },
     #[cfg(feature = "tunnel-userspace")]
     Userspace { _runtime: UserspaceTunDevice },
+    #[cfg(feature = "tunnel-private-ip")]
+    Prepared {
+        runtime: UserspaceTunDevice,
+        mode: TunMode,
+        ready: AtomicBool,
+        #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+        kernel: OnceLock<KernelRuntime>,
+        #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+        activation_claimed: AtomicBool,
+    },
 }
 
 impl TunnelHandle {
@@ -65,7 +84,7 @@ impl TunnelHandle {
         userspace_port: Option<u16>,
     ) -> (Self, watch::Receiver<()>) {
         let (tx, rx) = watch::channel(());
-        #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+        #[cfg(feature = "tunnel-private-ip")]
         let outcomes = Ledger::new();
         (
             Self {
@@ -75,7 +94,7 @@ impl TunnelHandle {
                 _runtime: TunnelRuntime::Kernel {
                     _cancel_tx: tx,
                     stopped: AtomicBool::new(false),
-                    #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+                    #[cfg(feature = "tunnel-private-ip")]
                     outcomes: outcomes.clone(),
                     #[cfg(feature = "tunnel-kernel")]
                     tasks: Vec::new(),
@@ -133,10 +152,18 @@ impl TunnelHandle {
             }
             #[cfg(feature = "tunnel-userspace")]
             TunnelRuntime::Userspace { _runtime } => _runtime.request_stop(),
+            #[cfg(feature = "tunnel-private-ip")]
+            TunnelRuntime::Prepared { runtime, .. } => {
+                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                if let Some(kernel) = self.prepared_kernel() {
+                    kernel.request_stop();
+                }
+                runtime.request_stop();
+            }
         }
     }
 
-    #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+    #[cfg(feature = "tunnel-private-ip")]
     /// Stop and join owned parents and children under one cooperative budget.
     ///
     /// The absolute clock and stop request start at this method call, before
@@ -178,6 +205,16 @@ impl TunnelHandle {
                 }
                 #[cfg(feature = "tunnel-userspace")]
                 TunnelRuntime::Userspace { _runtime } => _runtime.shutdown_until(deadline).await,
+                #[cfg(feature = "tunnel-private-ip")]
+                TunnelRuntime::Prepared { runtime, .. } => {
+                    #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                    if let Some(kernel) = self.prepared_kernel() {
+                        return self
+                            .shutdown_prepared_kernel_until(runtime, kernel, deadline)
+                            .await;
+                    }
+                    runtime.shutdown_until(deadline).await
+                }
             }
         }
     }
@@ -192,17 +229,132 @@ impl TunnelHandle {
         }
     }
 
+    #[cfg(feature = "tunnel-private-ip")]
+    pub(crate) fn new_prepared(
+        udid: String,
+        info: TunnelInfo,
+        mode: TunMode,
+        runtime: UserspaceTunDevice,
+    ) -> Self {
+        Self {
+            udid,
+            info,
+            userspace_port: (mode == TunMode::Userspace).then_some(runtime.local_port),
+            _runtime: TunnelRuntime::Prepared {
+                runtime,
+                mode,
+                ready: AtomicBool::new(false),
+                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                kernel: OnceLock::new(),
+                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                activation_claimed: AtomicBool::new(false),
+            },
+        }
+    }
+
+    #[cfg(feature = "tunnel-private-ip")]
+    pub(crate) fn private_connector(
+        &self,
+    ) -> Option<crate::tunnel::tun::userspace::PrivateConnector> {
+        match &self._runtime {
+            TunnelRuntime::Prepared { runtime, .. } => runtime.private_connector(),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "tunnel-private-ip")]
+    pub(crate) fn private_work_result(&self) -> Result<(), TunnelError> {
+        match &self._runtime {
+            TunnelRuntime::Prepared { runtime, .. } => runtime.private_work_result(),
+            _ => Err(TunnelError::Protocol(
+                "not an original prepared runtime".into(),
+            )),
+        }
+    }
+
+    #[cfg(feature = "tunnel-private-ip")]
+    pub(crate) async fn private_interrupted(&self) -> TunnelError {
+        match &self._runtime {
+            TunnelRuntime::Prepared { runtime, .. } => runtime.private_interrupted().await,
+            _ => std::future::pending().await,
+        }
+    }
+
+    #[cfg(feature = "tunnel-private-ip")]
+    pub(crate) fn prepared_mode(&self) -> Option<TunMode> {
+        match &self._runtime {
+            TunnelRuntime::Prepared { mode, .. } => Some(*mode),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "tunnel-userspace")]
+    pub(crate) fn finish_prepared_userspace(&self) -> Result<(), TunnelError> {
+        let TunnelRuntime::Prepared {
+            runtime,
+            mode: TunMode::Userspace,
+            ready,
+            ..
+        } = &self._runtime
+        else {
+            return Err(TunnelError::Protocol(
+                "prepared runtime is not selected for userspace".into(),
+            ));
+        };
+        if !runtime.is_alive() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        runtime.open_public();
+        ready.store(true, Ordering::Release);
+        if !runtime.is_alive() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        Ok(())
+    }
+
+    /// A prepared runtime becomes publishable only after its selected final
+    /// backend has actually completed activation. Liveness alone is insufficient.
+    #[cfg(feature = "tunnel-private-ip")]
+    pub fn ready_for_publication(&self) -> bool {
+        match &self._runtime {
+            TunnelRuntime::Prepared { ready, .. } => {
+                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                if let Some(kernel) = self.prepared_kernel() {
+                    return ready.load(Ordering::Acquire) && kernel.ready() && self.is_alive();
+                }
+                ready.load(Ordering::Acquire) && self.is_alive()
+            }
+            _ => self.is_alive(),
+        }
+    }
+
     /// Snapshot acquired failures and owned join progress without stopping or
     /// polling a worker. This also observes causes acquired inside a cancelled
     /// shutdown future. It is not a new shutdown attempt or deadline result.
     /// An error report can describe incomplete joins without an original fault;
     /// inspect `TunnelShutdownFailure::has_retained_outcomes` to distinguish it.
-    #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+    #[cfg(feature = "tunnel-private-ip")]
     pub fn shutdown_status(&self) -> Result<(), TunnelError> {
         match &self._runtime {
             TunnelRuntime::Kernel { outcomes, .. } => outcomes.result(None),
             #[cfg(feature = "tunnel-userspace")]
             TunnelRuntime::Userspace { _runtime } => _runtime.shutdown_status(),
+            #[cfg(feature = "tunnel-private-ip")]
+            TunnelRuntime::Prepared { runtime, .. } => {
+                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                if let Some(kernel) = self.prepared_kernel() {
+                    return runtime
+                        .phase_outcomes()
+                        .expect("original Kernel phase hub")
+                        .status(
+                            runtime.ledger(),
+                            Some(kernel.native_ledger()),
+                            Some(kernel.undo_ledger()),
+                        )
+                        .map_err(TunnelError::Phases);
+                }
+                runtime.shutdown_status()
+            }
         }
     }
 
@@ -216,6 +368,14 @@ impl TunnelHandle {
             } => !stopped.load(Ordering::Acquire) && _cancel_tx.receiver_count() > 0,
             #[cfg(feature = "tunnel-userspace")]
             TunnelRuntime::Userspace { _runtime } => _runtime.is_alive(),
+            #[cfg(feature = "tunnel-private-ip")]
+            TunnelRuntime::Prepared { runtime, .. } => {
+                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                if let Some(kernel) = self.prepared_kernel() {
+                    return runtime.transport_is_alive() && kernel.is_alive();
+                }
+                runtime.is_alive()
+            }
         }
     }
 }

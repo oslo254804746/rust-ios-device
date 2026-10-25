@@ -114,6 +114,12 @@ pub use device::{
     observe_existing_rsd, ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdRoute,
     ExistingRsdService, ExistingRsdServiceEvidence, OwnedConnectedDevice,
 };
+#[cfg(feature = "tunnel-private-ip")]
+pub use device::{
+    prepare_direct_usb_tunnel_owned_with_owner_at, prepare_owned_with_owner_at,
+    prepare_remote_pairing_tunnel_owned_with_owner_at,
+    prepare_tcp_lockdown_tunnel_owned_with_owner_at, PreparedConnectedDevice,
+};
 #[cfg(feature = "mdns")]
 pub use discovery::{browse_mobdev2, browse_remotepairing, BonjourService, MdnsDevice};
 pub use discovery::{DeviceEvent, DeviceInfo};
@@ -241,8 +247,10 @@ pub use services::{backup2, device_link, simlocation};
 pub use tunnel::forward::ForwardReaderCleanup;
 #[cfg(feature = "tunnel-userspace")]
 pub use tunnel::tun::userspace::UserspaceTunDevice;
-#[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+#[cfg(feature = "tunnel-private-ip")]
 pub use tunnel::TunnelShutdownFailure;
+#[cfg(feature = "tunnel-private-ip")]
+pub use tunnel::{PhaseCleanup, PhaseFailure};
 pub use tunnel::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
 #[cfg(feature = "tunnel")]
 pub use xpc::client::XpcClient;

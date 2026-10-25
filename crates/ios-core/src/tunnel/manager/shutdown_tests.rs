@@ -689,6 +689,8 @@ async fn native_kernel_owner_reader_panic_keeps_native_primary_without_work_prom
         TunnelRuntime::Kernel { outcomes, .. } => outcomes.work_result(),
         #[cfg(feature = "tunnel-userspace")]
         TunnelRuntime::Userspace { .. } => Ok(()),
+        #[cfg(feature = "tunnel-private-ip")]
+        TunnelRuntime::Prepared { .. } => panic!("fixture must own the original kernel parent"),
     };
     let result = handle.shutdown(OBSERVE).await;
     let joined_drops = probe.drops.load(Ordering::SeqCst);

@@ -1,5 +1,5 @@
 //! Complete private native Ledger allocation; reports retain only its identity.
-#[cfg(feature = "tunnel-userspace")]
+#[cfg(feature = "tunnel-private-ip")]
 use super::TunnelError;
 use super::{Identity, LedgerState};
 use std::{
@@ -28,7 +28,7 @@ unsafe impl Sync for Ledger where LedgerState: Send + Sync {}
 
 struct Destination {
     values: Vec<Allocation>,
-    #[cfg(all(test, feature = "tunnel-userspace"))]
+    #[cfg(all(test, feature = "tunnel-private-ip"))]
     _after_free: AfterFree,
     // Empty destination backing must end before its original whole fee.
     storage: Option<OwnedSemaphorePermit>,
@@ -37,12 +37,12 @@ impl Destination {
     fn unmetered() -> Self {
         Self {
             values: Vec::with_capacity(1),
-            #[cfg(all(test, feature = "tunnel-userspace"))]
+            #[cfg(all(test, feature = "tunnel-private-ip"))]
             _after_free: AfterFree,
             storage: None,
         }
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     fn from_grant(
         bank: &std::sync::Arc<tokio::sync::Semaphore>,
         storage: OwnedSemaphorePermit,
@@ -51,7 +51,7 @@ impl Destination {
             .map_err(|source| TunnelError::Io(std::io::Error::other(source)))?;
         Ok(Self {
             values,
-            #[cfg(all(test, feature = "tunnel-userspace"))]
+            #[cfg(all(test, feature = "tunnel-private-ip"))]
             _after_free: AfterFree,
             storage: Some(storage),
         })
@@ -60,7 +60,7 @@ impl Destination {
         let Self {
             mut values,
             storage,
-            #[cfg(all(test, feature = "tunnel-userspace"))]
+            #[cfg(all(test, feature = "tunnel-private-ip"))]
             _after_free,
         } = self;
         assert!(values.is_empty() && values.capacity() == 1);
@@ -70,7 +70,7 @@ impl Destination {
         });
         let pointer = NonNull::from(&mut values[0]);
         mem::forget(values);
-        #[cfg(all(test, feature = "tunnel-userspace"))]
+        #[cfg(all(test, feature = "tunnel-private-ip"))]
         mem::forget(_after_free);
         Ledger {
             pointer,
@@ -83,15 +83,15 @@ impl Ledger {
         let destination = Destination::unmetered();
         destination.finish(Identity::new())
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn body_bytes() -> usize {
         mem::size_of::<Allocation>()
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn reservation_bytes() -> usize {
         Self::body_bytes() + Identity::body_bytes()
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn with_metadata(
         bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
     ) -> Result<Self, TunnelError> {
@@ -148,15 +148,15 @@ impl Drop for Ledger {
         // SAME full allocation, then end its original fields and whole fee.
         let state = unsafe { ManuallyDrop::take(&mut (*pointer).state) };
         unsafe { drop(Vec::from_raw_parts(pointer, 0, 1)) };
-        #[cfg(all(test, feature = "tunnel-userspace"))]
+        #[cfg(all(test, feature = "tunnel-private-ip"))]
         drop(AfterFree);
         drop(state);
     }
 }
 
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 struct AfterFree;
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 impl Drop for AfterFree {
     fn drop(&mut self) {
         AFTER_FREE.with(|hook| {
@@ -167,11 +167,11 @@ impl Drop for AfterFree {
     }
 }
 
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 type FreeHook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 thread_local! { static AFTER_FREE: FreeHook = const { std::cell::RefCell::new(None) }; }
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 pub(super) fn after_free<T>(hook: impl FnMut() + 'static, work: impl FnOnce() -> T) -> T {
     struct Reset;
     impl Drop for Reset {
@@ -187,7 +187,7 @@ pub(super) fn after_free<T>(hook: impl FnMut() + 'static, work: impl FnOnce() ->
     work()
 }
 
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 mod tests {
     use super::*;
     use crate::device::prepared_rsd::{charge, with_allocation_hook};

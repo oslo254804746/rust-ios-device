@@ -179,6 +179,39 @@ pub(super) async fn attempt_owned_rsd_via_proxy(
     RsdProbeOutcome::Completed(result)
 }
 
+#[cfg(feature = "tunnel-private-ip")]
+pub(super) async fn attempt_owned_rsd_via_private(
+    connector: &crate::tunnel::tun::userspace::PrivateConnector,
+    endpoint: std::net::SocketAddrV6,
+    deadline: tokio::time::Instant,
+    bank: &Arc<Semaphore>,
+) -> RsdProbeOutcome<crate::OwnedRsdHandshake> {
+    use tokio::io::AsyncWriteExt;
+    let clock = super::existing_rsd::Clock::at(deadline);
+    let result = clock
+        .run(async {
+            crate::xpc::rsd::owned_handshake_with_connector_and_bank(
+                || async {
+                    clock.check().map_err(connection_error_to_xpc)?;
+                    let stream = connector.connect(endpoint).await?;
+                    let mut stream = clock.guard(stream);
+                    stream.write_all(&endpoint.ip().octets()).await?;
+                    stream
+                        .write_all(&(endpoint.port() as u32).to_le_bytes())
+                        .await?;
+                    stream.flush().await?;
+                    clock.check().map_err(connection_error_to_xpc)?;
+                    Ok(stream)
+                },
+                bank,
+            )
+            .await
+            .map_err(CoreError::Xpc)
+        })
+        .await;
+    RsdProbeOutcome::Completed(result)
+}
+
 #[cfg(all(test, feature = "tunnel"))]
 mod rsd_proxy_tests {
     use super::*;

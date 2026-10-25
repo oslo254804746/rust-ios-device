@@ -1,5 +1,12 @@
 # Quality review and release readiness
 
+2026-10-25 finite L02 profile: [private preparation and same-owner native activation](validation/tunnel-prepared-native-owner-2026-10-25.md).
+The original authenticated transport, Arc, checked catalogue and deadline survive final userspace/Windows activation.
+Core tunnel231/activation16, strict Core/CLI, full CLI1903/0/13original ignored, build and read-only host gates pass on771 unchanged sources.
+Linux native component compiles and runs16 pure tests; both Darwin targets typecheck the original native component/ABI only.
+CLI staged publication/replacement, Unix actors, IPv6 semantic isolation and the whole retainer/SDK-boundary audit remain open.
+Development accounting stays23delivered/6missing plus L02 final audit pending, effective30/Q04 excluded; no physical-device or native-interface operation.
+
 Review monthly and after releases or important protocol/dependency changes.
 When cadence changes, record the reason and next review date; retain previous
 conclusions. This template starts D02 governance, not 1.0 readiness or release

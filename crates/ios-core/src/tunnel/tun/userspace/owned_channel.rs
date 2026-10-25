@@ -46,6 +46,22 @@ pub(super) enum Receiver<T> {
     Metered(Root<Shared<T>>),
 }
 
+pub(super) enum SendPermit<'a, T> {
+    Legacy(legacy::Permit<'a, T>),
+    Metered(&'a Root<Shared<T>>, SlotPermit),
+}
+impl<T> SendPermit<'_, T> {
+    pub(super) fn send(self, value: T) -> Result<(), error::SendError<T>> {
+        match self {
+            Self::Legacy(permit) => {
+                permit.send(value);
+                Ok(())
+            }
+            Self::Metered(shared, slot) => shared.enqueue(value, slot),
+        }
+    }
+}
+
 #[cfg(test)]
 pub(super) fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     let (sender, receiver) = legacy::channel(capacity);
@@ -111,6 +127,14 @@ impl<T> Shared<T> {
             .unwrap_or_else(|poison| poison.into_inner())
     }
     fn enqueue(&self, value: T, slot: SlotPermit) -> Result<(), error::SendError<T>> {
+        self.enqueue_marked(value, slot, || {})
+    }
+    fn enqueue_marked(
+        &self,
+        value: T,
+        slot: SlotPermit,
+        mark: impl FnOnce(),
+    ) -> Result<(), error::SendError<T>> {
         let mut state = self.lock();
         if !state.receiver {
             drop(state);
@@ -119,6 +143,7 @@ impl<T> Shared<T> {
         }
         assert!(state.items.len() < state.items.capacity());
         state.items.push_back(Entry { value, _slot: slot });
+        mark();
         drop(state);
         self.arrived.notify_one();
         Ok(())
@@ -141,6 +166,50 @@ impl<T> Clone for Sender<T> {
     }
 }
 impl<T> Sender<T> {
+    pub(super) async fn reserve(&self) -> Result<SendPermit<'_, T>, ()> {
+        match self {
+            Self::Legacy(sender) => sender
+                .reserve()
+                .await
+                .map(SendPermit::Legacy)
+                .map_err(|_| ()),
+            Self::Metered(shared) => shared
+                .slots
+                .clone()
+                .acquire_owned()
+                .await
+                .map(|slot| SendPermit::Metered(shared, slot))
+                .map_err(|_| ()),
+        }
+    }
+
+    /// Banked insertion marks durable state before its receiver is woken.
+    /// Legacy Tokio exposes only send completion; an unwinding caller must
+    /// retain an uncertain submission rather than retrying a duplicate item.
+    pub(super) async fn send_marked(
+        &self,
+        value: T,
+        mark: impl FnOnce(),
+    ) -> Result<(), error::SendError<T>> {
+        match self {
+            Self::Legacy(sender) => {
+                let permit = match sender.reserve().await {
+                    Ok(permit) => permit,
+                    Err(_) => return Err(error::SendError(value)),
+                };
+                permit.send(value);
+                mark();
+                Ok(())
+            }
+            Self::Metered(shared) => {
+                let slot = match shared.slots.clone().acquire_owned().await {
+                    Ok(slot) => slot,
+                    Err(_) => return Err(error::SendError(value)),
+                };
+                shared.enqueue_marked(value, slot, mark)
+            }
+        }
+    }
     pub(super) async fn send(&self, value: T) -> Result<(), error::SendError<T>> {
         match self {
             Self::Legacy(sender) => sender.send(value).await,

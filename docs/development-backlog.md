@@ -1,5 +1,13 @@
 # 当前待开发清单
 
+2026-10-25：L02 [私有准备与同一owner原生激活](validation/tunnel-prepared-native-owner-2026-10-25.md)
+新增四个Core prepare入口；同一认证流上完成独立checked RSD，原Arc/目录/clock跨过最终userspace或Windows Kernel完成。
+实际原4worker/PacketPort与FIFO barrier保持；Windows原生调用、buffer、join、undo先准入，同一owner收齐实际joins后撤销。
+修复native IO被取消掩盖、背压掩盖原EOF和停止事件失败不重试；原IO Arc/深层指针、Elapsed、计数与退款回归通过。
+Core231/activation16、严格Core/CLI、完整CLI1903/0/13原ignored、build/只读manager1/host5通过，771源码与二进制一致。
+Linux实际目标编译及16纯测试通过；Darwin双架构仅原native组件ABI/typecheck。全部Cargo/build由主控，无实际接口/设备操作。
+CLI staged publication/精确替换、Unix actor、IPv6语义隔离与全retainer审计继续；23/6/L02待全审计、有效30/Q04排除保持。
+
 2026-10-24：L02 [同一handle先attach后launch](validation/tunnel-attach-before-launch-2026-10-24.md)
 实际userspace activation先准备原4个完整gated F/稳定join槽，再attach同Arc，最后逐个spawn立即入槽/完整后开gate。
 原流仅split一次；未launch/panic先销毁剩余原F再发布cohort完成，原clock内等待后收齐真实joins。

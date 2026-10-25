@@ -1,7 +1,8 @@
 //! Lockdown credentials, port dialing and CoreDeviceProxy startup.
 
+use super::activation_policy::ActivationPolicy;
 #[cfg(feature = "tunnel")]
-use super::tunnel_activation::{activate_tunnel, TunnelConnection};
+use super::tunnel_activation::TunnelConnection;
 use super::{
     ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason, LockdownTransport,
     ServiceStream,
@@ -90,16 +91,16 @@ pub(super) async fn connect_lockdown_port(
     }
 }
 
-pub(super) async fn connect_via_lockdown_transport(
+pub(super) async fn connect_via_lockdown_transport<P: ActivationPolicy>(
     info: DeviceInfo,
     pair_record: Arc<PairRecord>,
     lockdown_transport: LockdownTransport,
     opts: ConnectOptions,
-    owner: super::tunnel_owner::InitialOwner<'_>,
-) -> Result<ConnectedDevice, CoreError> {
+    owner: super::tunnel_owner::InitialOwner<'_, P>,
+) -> Result<P::Output, CoreError> {
     let initial_rsd_bank = owner.bank;
     if opts.skip_tunnel {
-        return Ok(ConnectedDevice {
+        return owner.policy.without_tunnel(ConnectedDevice {
             info,
             tunnel: None,
             rsd: None,
@@ -163,19 +164,21 @@ pub(super) async fn connect_via_lockdown_transport(
         };
         tracing::info!("tunnel connect: CoreDeviceProxy stream ready");
 
-        activate_tunnel(
-            TunnelConnection::new(
-                info,
-                Some(pair_record),
-                lockdown_transport,
-                "lockdown CoreDeviceProxy",
+        owner
+            .policy
+            .activate(
+                TunnelConnection::new(
+                    info,
+                    Some(pair_record),
+                    lockdown_transport,
+                    "lockdown CoreDeviceProxy",
+                )
+                .with_initial_rsd_bank(initial_rsd_bank),
+                proxy_stream,
+                opts.tun_mode,
+                reservation,
             )
-            .with_initial_rsd_bank(initial_rsd_bank),
-            proxy_stream,
-            opts.tun_mode,
-            reservation,
-        )
-        .await
+            .await
     }
 }
 

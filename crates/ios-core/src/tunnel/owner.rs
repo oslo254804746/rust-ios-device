@@ -4,6 +4,8 @@ use std::error::Error;
 use std::future::{pending, Future};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(feature = "tunnel-private-ip")]
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::task::Poll;
 use std::time::Duration;
@@ -23,8 +25,11 @@ mod ledger_root;
 pub(crate) use ledger_root::Ledger;
 #[path = "owner/child_root.rs"]
 mod child_root;
+#[cfg(feature = "tunnel-private-ip")]
+#[path = "owner/phase_outcomes.rs"]
+pub(crate) mod phase_outcomes;
 pub(crate) use child_root::SharedChildTaskSet;
-#[cfg(feature = "tunnel-userspace")]
+#[cfg(feature = "tunnel-private-ip")]
 #[path = "owner/unit_stop.rs"]
 pub(crate) mod unit_stop;
 
@@ -36,6 +41,7 @@ const OUTCOME_SLOTS: usize = 10;
 struct Recorded {
     cause: Cause,
     sequence: u64,
+    work: bool,
 }
 
 struct Outcomes {
@@ -83,13 +89,15 @@ impl std::fmt::Debug for CleanupClasses<'_> {
 pub(crate) struct LedgerState {
     identity: Identity,
     outcomes: StdMutex<Outcomes>,
+    #[cfg(feature = "tunnel-private-ip")]
+    phase_sink: OnceLock<phase_outcomes::PhaseSink>,
     pending: AtomicUsize,
     invalid_count: AtomicBool,
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     runtime_stopped: AtomicBool,
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     launch_pending: AtomicBool,
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     stop_watch: unit_stop::State,
     _body_storage: Option<OwnedSemaphorePermit>,
 }
@@ -104,29 +112,31 @@ impl LedgerState {
                 next_sequence: 0,
                 additional_unretained_outcomes: 0,
             }),
+            #[cfg(feature = "tunnel-private-ip")]
+            phase_sink: OnceLock::new(),
             pending: AtomicUsize::new(0),
             invalid_count: AtomicBool::new(false),
-            #[cfg(feature = "tunnel-userspace")]
+            #[cfg(feature = "tunnel-private-ip")]
             runtime_stopped: AtomicBool::new(false),
-            #[cfg(feature = "tunnel-userspace")]
+            #[cfg(feature = "tunnel-private-ip")]
             launch_pending: AtomicBool::new(false),
-            #[cfg(feature = "tunnel-userspace")]
+            #[cfg(feature = "tunnel-private-ip")]
             stop_watch: unit_stop::State::new(),
             _body_storage: storage,
         }
     }
 
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn is_runtime_stopped(&self) -> bool {
         self.runtime_stopped.load(Ordering::Acquire)
     }
 
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn request_runtime_stop(&self) {
         self.runtime_stopped.store(true, Ordering::Release);
     }
 
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn prepare_launch(&self) {
         assert!(
             !self.launch_pending.swap(true, Ordering::AcqRel),
@@ -134,12 +144,12 @@ impl LedgerState {
         );
     }
 
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn finish_launch(&self) {
         self.launch_pending.store(false, Ordering::Release);
     }
 
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn is_launch_pending(&self) -> bool {
         self.launch_pending.load(Ordering::Acquire)
     }
@@ -179,6 +189,13 @@ impl LedgerState {
     }
 
     fn is_own_work_report(&self, error: &TunnelError) -> bool {
+        #[cfg(feature = "tunnel-private-ip")]
+        if let TunnelError::Phases(report) = error {
+            return self
+                .phase_sink
+                .get()
+                .is_some_and(|sink| sink.owns_work_report(report));
+        }
         let TunnelError::Io(error) = error else {
             return false;
         };
@@ -198,21 +215,50 @@ impl LedgerState {
     }
 
     fn record(&self, slot: usize, cause: Cause, primary: bool) {
+        #[cfg(feature = "tunnel-private-ip")]
+        if let Some(sink) = self.phase_sink.get() {
+            sink.record(self, slot, cause, primary);
+            return;
+        }
         let mut outcomes = self
             .outcomes
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        // A prepare-time binding may have acquired this guard first. Never
+        // acquire the hub while holding the local lock (hub -> local order).
+        #[cfg(feature = "tunnel-private-ip")]
+        if let Some(sink) = self.phase_sink.get() {
+            drop(outcomes);
+            sink.record(self, slot, cause, primary);
+            return;
+        }
+        let rejected = Self::record_locked(&mut outcomes, slot, cause, primary);
+        drop(outcomes);
+        drop(rejected);
+    }
+
+    fn record_locked(
+        outcomes: &mut Outcomes,
+        slot: usize,
+        cause: Cause,
+        primary: bool,
+    ) -> Option<Cause> {
         if slot >= OUTCOME_SLOTS || outcomes.slots[slot].is_some() {
             outcomes.additional_unretained_outcomes =
                 outcomes.additional_unretained_outcomes.saturating_add(1);
-            return;
+            return Some(cause);
         }
         let sequence = outcomes.next_sequence;
         outcomes.next_sequence = outcomes.next_sequence.saturating_add(1);
-        outcomes.slots[slot] = Some(Recorded { cause, sequence });
+        outcomes.slots[slot] = Some(Recorded {
+            cause,
+            sequence,
+            work: primary,
+        });
         if primary && outcomes.primary.is_none() {
             outcomes.primary = Some(slot);
         }
+        None
     }
 
     pub(crate) fn result(&self, elapsed: Option<Elapsed>) -> Result<(), TunnelError> {
@@ -221,7 +267,7 @@ impl LedgerState {
 
     // A running parent cannot join its own handle; this typed task result
     // reports acquired failures without certifying whole-runtime completion.
-    #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+    #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-private-ip"))]
     pub(crate) fn work_result(&self) -> Result<(), TunnelError> {
         self.snapshot(None, false)
     }
@@ -250,9 +296,9 @@ impl LedgerState {
         // Read the cohort fence FIRST. Observing its final release makes all
         // prior real task registrations visible to the following join count.
         // A dormant cohort is not an invented pending native join.
-        #[cfg(feature = "tunnel-userspace")]
+        #[cfg(feature = "tunnel-private-ip")]
         let launch_pending = self.is_launch_pending();
-        #[cfg(not(feature = "tunnel-userspace"))]
+        #[cfg(not(feature = "tunnel-private-ip"))]
         let launch_pending = false;
         let pending_joins = self.pending.load(Ordering::Acquire);
         let primary = primary.or_else(|| {
@@ -409,11 +455,11 @@ enum Completion {
 #[derive(Clone, Copy)]
 pub(crate) enum ParentRole {
     ForwardOrReader = 0,
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     Writer = 1,
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     Smoltcp = 2,
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     Listener = 3,
 }
 
@@ -449,12 +495,12 @@ impl OwnedTask {
         }
     }
 
-    #[cfg(any(feature = "tunnel-userspace", test))]
+    #[cfg(any(feature = "tunnel-private-ip", test))]
     pub(crate) fn is_finished(&self) -> bool {
         self.abort.is_finished()
     }
 
-    #[cfg(any(feature = "tunnel-userspace", test))]
+    #[cfg(any(feature = "tunnel-private-ip", test))]
     pub(crate) fn abort(&self) {
         // Preserve an already completed unexpected cancellation. Tokio cannot
         // attribute racing aborts; the flag records our request while unfinished.
@@ -592,7 +638,7 @@ impl ChildState {
 pub(crate) enum ChildRole {
     #[cfg(any(feature = "tunnel-kernel", test))]
     ForwardReader = 8,
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     ProxyClient = 9,
 }
 
@@ -602,7 +648,7 @@ pub(crate) struct ChildGuard<'a> {
 }
 
 impl ChildGuard<'_> {
-    #[cfg(any(feature = "tunnel-userspace", test))]
+    #[cfg(any(feature = "tunnel-private-ip", test))]
     pub(crate) fn is_empty(&self) -> bool {
         self.set.is_empty()
     }
@@ -666,6 +712,6 @@ impl Drop for ChildGuard<'_> {
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 #[path = "owner/storage_tests.rs"]
 mod storage_tests;

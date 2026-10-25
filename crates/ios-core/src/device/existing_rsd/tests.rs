@@ -14,6 +14,40 @@ pub(super) const UDID: &str = "synthetic-private-existing-rsd-identity";
 pub(super) const SERVICE: &str = "synthetic.private.service";
 const OBSERVE: Duration = Duration::from_secs(3);
 
+#[tokio::test]
+async fn owned_generic_connector_expiry_never_constructs_identity_or_dial() {
+    let identity = AtomicUsize::new(0);
+    let dial = AtomicUsize::new(0);
+    let bank = std::sync::Arc::new(tokio::sync::Semaphore::new(1024 * 1024));
+    let operation = || {
+        prepare_owned_with_connector(
+            || {
+                identity.fetch_add(1, Ordering::SeqCst);
+                async { Ok(uuid::Uuid::from_bytes([0x55; 16])) }
+            },
+            || {
+                dial.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err::<tokio::io::DuplexStream, _>(CoreError::Io(io::Error::other(
+                        "expired connector was constructed",
+                    )))
+                }
+            },
+            None,
+            Instant::now(),
+            &bank,
+        )
+    };
+    drop(operation());
+    assert_eq!(identity.load(Ordering::SeqCst), 0);
+    assert_eq!(dial.load(Ordering::SeqCst), 0);
+    let error = operation().await.err().unwrap();
+    assert_eq!(error.class(), ErrorClass::Timeout);
+    assert_eq!(identity.load(Ordering::SeqCst), 0);
+    assert_eq!(dial.load(Ordering::SeqCst), 0);
+    assert_eq!(bank.available_permits(), 1024 * 1024);
+}
+
 fn route() -> ExistingRsdRoute {
     ExistingRsdRoute::direct("[::1]:12345".parse().unwrap()).unwrap()
 }

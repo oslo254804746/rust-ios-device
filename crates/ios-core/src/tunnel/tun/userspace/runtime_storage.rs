@@ -125,6 +125,9 @@ impl TaskHandles {
     pub(super) fn iter(&self) -> TaskIter<'_> {
         self.slots.values.iter().filter_map(OnceLock::get)
     }
+    pub(super) fn get(&self, index: usize) -> Option<&super::OwnedTask> {
+        self.slots.values[index].get()
+    }
     pub(super) fn all_installed(&self) -> bool {
         self.slots.values.iter().all(|slot| slot.get().is_some())
     }

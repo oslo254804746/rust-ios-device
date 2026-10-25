@@ -9,11 +9,116 @@ use super::{
     IOS_PACKET_CHANNEL_CAPACITY, IPV6_HEADER_LEN,
 };
 
+mod barrier;
+use barrier::{Barrier, WriterEnd};
+
+pub(super) enum WriteItem {
+    Packet(OwnedBuffer),
+    Barrier(Barrier),
+}
+
+impl From<OwnedBuffer> for WriteItem {
+    fn from(packet: OwnedBuffer) -> Self {
+        Self::Packet(packet)
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct PacketSender {
+    sender: mpsc::Sender<WriteItem>,
+    barrier: Barrier,
+}
+
+impl PacketSender {
+    /// Preserve the bridge's original in-flight packet if a selected wait is
+    /// cancelled or the actual transport receiver has already ended.
+    pub(super) async fn send_from(&self, pending: &mut Option<OwnedBuffer>) -> Result<(), ()> {
+        let permit = self.sender.reserve().await?;
+        let packet = pending.take().expect("owned pending egress packet");
+        match permit.send(WriteItem::Packet(packet)) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let WriteItem::Packet(packet) = error.0 else {
+                    unreachable!("original egress packet")
+                };
+                *pending = Some(packet);
+                Err(())
+            }
+        }
+    }
+
+    pub(super) async fn send(
+        &self,
+        packet: OwnedBuffer,
+    ) -> Result<(), mpsc::error::SendError<OwnedBuffer>> {
+        self.sender
+            .send(WriteItem::Packet(packet))
+            .await
+            .map_err(|error| {
+                let WriteItem::Packet(packet) = error.0 else {
+                    unreachable!("packet submission")
+                };
+                mpsc::error::SendError(packet)
+            })
+    }
+    pub(super) fn try_send(
+        &self,
+        packet: OwnedBuffer,
+    ) -> Result<(), mpsc::error::TrySendError<OwnedBuffer>> {
+        self.sender
+            .try_send(WriteItem::Packet(packet))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(WriteItem::Packet(packet)) => {
+                    mpsc::error::TrySendError::Full(packet)
+                }
+                mpsc::error::TrySendError::Closed(WriteItem::Packet(packet)) => {
+                    mpsc::error::TrySendError::Closed(packet)
+                }
+                _ => unreachable!("packet submission"),
+            })
+    }
+    pub(super) async fn flush_barrier(
+        &self,
+        ledger: &super::Ledger,
+        stop: &super::watch::Sender,
+    ) -> Result<(), TunnelError> {
+        ledger.work_result()?;
+        if let Some(mut submission) = self.barrier.submission()? {
+            if self
+                .sender
+                .send_marked(WriteItem::Barrier(self.barrier.clone()), || {
+                    submission.queued()
+                })
+                .await
+                .is_err()
+            {
+                ledger.work_result()?;
+                return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+            }
+        }
+        self.barrier.wait(ledger, stop.subscribe()).await
+    }
+}
+
+pub(super) trait TrySender<T> {
+    fn try_send(&self, value: T) -> Result<(), mpsc::error::TrySendError<T>>;
+}
+impl<T> TrySender<T> for mpsc::Sender<T> {
+    fn try_send(&self, value: T) -> Result<(), mpsc::error::TrySendError<T>> {
+        mpsc::Sender::try_send(self, value)
+    }
+}
+impl TrySender<OwnedBuffer> for PacketSender {
+    fn try_send(&self, value: OwnedBuffer) -> Result<(), mpsc::error::TrySendError<OwnedBuffer>> {
+        PacketSender::try_send(self, value)
+    }
+}
+
 /// The unique backend-facing receiver and its original egress sender.
 /// There is intentionally no Clone or raw transport capability.
 pub(super) struct PacketPort {
     pub(super) incoming: mpsc::Receiver<OwnedBuffer>,
-    pub(super) outgoing: mpsc::Sender<OwnedBuffer>,
+    pub(super) outgoing: PacketSender,
 }
 
 pub(super) struct PreparedPacketLink {
@@ -21,7 +126,8 @@ pub(super) struct PreparedPacketLink {
     payload_capacity: usize,
     header: OwnedBuffer,
     incoming: mpsc::Sender<OwnedBuffer>,
-    outgoing: mpsc::Receiver<OwnedBuffer>,
+    outgoing: mpsc::Receiver<WriteItem>,
+    barrier: Barrier,
 }
 
 impl PreparedPacketLink {
@@ -35,6 +141,7 @@ impl PreparedPacketLink {
         let header = OwnedBuffer::zeroed(IPV6_HEADER_LEN, bank)?;
         let (incoming, ingress) = mpsc::with_bank(IOS_PACKET_CHANNEL_CAPACITY, bank)?;
         let (egress, outgoing) = mpsc::with_bank(IOS_PACKET_CHANNEL_CAPACITY, bank)?;
+        let barrier = Barrier::prepare(bank)?;
         Ok((
             Self {
                 mtu,
@@ -42,10 +149,14 @@ impl PreparedPacketLink {
                 header,
                 incoming,
                 outgoing,
+                barrier: barrier.clone(),
             },
             PacketPort {
                 incoming: ingress,
-                outgoing: egress,
+                outgoing: PacketSender {
+                    sender: egress,
+                    barrier,
+                },
             },
         ))
     }
@@ -70,6 +181,7 @@ impl PreparedPacketLink {
             header,
             incoming,
             outgoing,
+            barrier,
         } = self;
         let mut reader_stop = storage.stop.subscribe();
         let mut writer_stop = storage.stop.subscribe();
@@ -89,14 +201,12 @@ impl PreparedPacketLink {
         };
         let writer_storage = storage;
         let writer_future = async move {
-            let result = tokio::select! {
+            let _ended = WriterEnd(barrier);
+            let _result = tokio::select! {
                 biased;
-                result = write_ios_packets_owned(&mut writer, mtu, outgoing) => result,
+                result = write_ios_packets_owned(&mut writer, mtu, outgoing, Some(&writer_storage)) => result,
                 _ = writer_stop.changed() => Ok(()),
             };
-            if let Err(original) = result {
-                writer_storage.fail(ParentRole::Writer, original);
-            }
             let result = writer_storage.result();
             tracing::debug!("userspace: iOS packet writer exited");
             result
@@ -160,26 +270,59 @@ where
     Ok(())
 }
 
-pub(super) async fn write_ios_packets_owned<W>(
+pub(super) async fn write_ios_packets_owned<W, T>(
     writer: &mut W,
     mtu: ValidatedMtu,
-    mut rx: mpsc::Receiver<OwnedBuffer>,
+    mut rx: mpsc::Receiver<T>,
+    storage: Option<&RuntimeStorage>,
 ) -> Result<(), TunnelError>
 where
     W: tokio::io::AsyncWrite + Unpin,
+    T: Into<WriteItem>,
 {
-    while let Some(pkt) = rx.recv().await {
-        if pkt.len() > mtu.as_usize() {
-            tracing::warn!(
-                "userspace: generated IPv6 packet length {} exceeds negotiated MTU {}",
-                pkt.len(),
-                mtu.as_u16()
-            );
-            continue;
+    while let Some(item) = rx.recv().await {
+        match item.into() {
+            WriteItem::Packet(pkt) => {
+                if pkt.len() > mtu.as_usize() {
+                    tracing::warn!(
+                        "userspace: generated IPv6 packet length {} exceeds negotiated MTU {}",
+                        pkt.len(),
+                        mtu.as_u16()
+                    );
+                    continue;
+                }
+                writer
+                    .write_all(&pkt)
+                    .await
+                    .map_err(|original| capture_write_error(original, storage))?;
+            }
+            WriteItem::Barrier(barrier) => {
+                writer
+                    .flush()
+                    .await
+                    .map_err(|original| capture_write_error(original, storage))?;
+                barrier.flushed();
+            }
         }
-        writer.write_all(&pkt).await?;
     }
     Ok(())
+}
+
+fn capture_write_error(original: std::io::Error, storage: Option<&RuntimeStorage>) -> TunnelError {
+    let Some(storage) = storage else {
+        return original.into();
+    };
+    // This executes in the actual Ready(Err) path, before the original packet
+    // or future can drop/refund a fee or wake the barrier's caller.
+    storage.fail(ParentRole::Writer, original.into());
+    storage
+        .result()
+        .expect_err("captured original writer error")
+}
+
+#[cfg(test)]
+pub(super) fn egress_bytes() -> usize {
+    mpsc::required_bytes::<WriteItem>(IOS_PACKET_CHANNEL_CAPACITY) + Barrier::body_bytes()
 }
 
 #[cfg(test)]
