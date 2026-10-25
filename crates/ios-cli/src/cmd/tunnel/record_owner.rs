@@ -61,6 +61,15 @@ struct Fields<'a> {
 }
 
 impl PaidRecord {
+    pub(super) fn from_prepared(
+        device: &ios_core::PreparedConnectedDevice,
+        mode: TunMode,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Self> {
+        let handle = device.tunnel_handle();
+        Self::from_tunnel_fields(device.info(), handle, mode, bank)
+    }
+
     pub(super) fn from_device(
         device: &OwnedConnectedDevice,
         mode: TunMode,
@@ -73,19 +82,35 @@ impl PaidRecord {
         let port = device
             .rsd_port()
             .ok_or_else(|| anyhow::anyhow!("tunnel missing RSD port"))?;
-        let userspace = device.userspace_port();
+        let handle = device
+            .tunnel_handle()
+            .ok_or_else(|| anyhow::anyhow!("tunnel missing handle"))?;
+        debug_assert_eq!(address, handle.info.server_address);
+        debug_assert_eq!(port, handle.info.server_rsd_port);
+        Self::from_tunnel_fields(device.info(), handle, mode, bank)
+    }
+
+    fn from_tunnel_fields(
+        info: &ios_core::DeviceInfo,
+        handle: &ios_core::TunnelHandle,
+        mode: TunMode,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Self> {
+        let address = &handle.info.server_address;
+        let port = handle.info.server_rsd_port;
+        let userspace = handle.userspace_port;
         Self::copy(
             Fields {
-                udid: &device.info().udid,
+                udid: &info.udid,
                 interface: [
-                    if device.info().device_id == 0 {
+                    if info.device_id == 0 {
                         "mobdev2-"
                     } else {
                         "usbmux-"
                     },
-                    &device.info().udid,
+                    &info.udid,
                 ],
-                connection_type: &device.info().connection_type,
+                connection_type: &info.connection_type,
                 mode: match mode {
                     TunMode::Userspace => "userspace",
                     TunMode::Kernel => "kernel",

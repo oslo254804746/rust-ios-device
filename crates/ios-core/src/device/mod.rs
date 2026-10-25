@@ -190,6 +190,45 @@ pub use discovery_match::{observe_paired_identity, PairedIdentityReceipt};
 mod rsd_connect;
 #[cfg(feature = "tunnel")]
 mod tunnel_activation;
+#[cfg(feature = "test-tunnel")]
+#[doc(hidden)]
+pub use tunnel_activation::scripted_peer::{
+    remote as scripted_tunnel_peer, Connection as ScriptedTunnelConnection,
+    PeerReport as ScriptedTunnelReport,
+};
+
+/// Explicit local scripted authentication boundary for cross-crate lifecycle
+/// fixtures. This is not a device discovery/authentication constructor. The
+/// original CDTunnel, private IPv6/TCP, RSD and owner implementation still runs.
+#[cfg(feature = "test-tunnel")]
+#[doc(hidden)]
+pub async fn prepare_scripted_tunnel_stream_at<T>(
+    info: DeviceInfo,
+    stream: T,
+    owner: &dyn TunnelOwner,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    deadline: tokio::time::Instant,
+) -> Result<PreparedConnectedDevice, crate::CoreError>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let reservation = owner.reserve_owned()?;
+    let connection = tunnel_activation::TunnelConnection::new(
+        info,
+        None,
+        LockdownTransport::Tcp { host: "::1".into() },
+        "scripted authenticated stream fixture",
+    )
+    .with_initial_rsd_bank(Some(bank));
+    tunnel_activation::prepared::prepare_tunnel(
+        connection,
+        stream,
+        crate::TunMode::Userspace,
+        Some(reservation),
+        activation_policy::Prepared { deadline, bank },
+    )
+    .await
+}
 #[cfg(all(feature = "tunnel", any(feature = "mdns", test)))]
 mod tunnel_connect;
 #[cfg(feature = "tunnel")]

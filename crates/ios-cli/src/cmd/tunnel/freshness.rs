@@ -183,23 +183,111 @@ pub(super) fn on_after_swap(callback: impl FnOnce() + 'static) {
     AFTER_SWAP.with(|hook| *hook.borrow_mut() = Some(Box::new(callback)));
 }
 
+#[derive(Clone)]
+pub(super) struct OldRow {
+    pub(super) key_buffer: usize,
+    pub(super) publication: super::publication::LifeOwner,
+    pub(super) registry: super::retirement::RefreshProof,
+    pub(super) observed_ticket: Ticket,
+}
+
+impl OldRow {
+    pub(super) fn matches_locked(
+        &self,
+        key: &str,
+        row: &super::ManagedTunnel,
+        ticket: &Ticket,
+    ) -> bool {
+        key.as_ptr() as usize == self.key_buffer
+            && self.publication.ptr_eq(&row.publication)
+            && row._ticket.same_incarnation(ticket)
+            && row._ticket.same_incarnation(&self.observed_ticket)
+            && row.device.native_handle().is_some_and(|handle| {
+                self.registry.matches_row(
+                    handle,
+                    &row._metadata,
+                    &row._global_metadata,
+                    row._fresh_metadata.as_ref(),
+                )
+            })
+            && super::retirement::same_optional(
+                row.device.freshness_catalogue(),
+                row._fresh_metadata
+                    .as_ref()
+                    .map(|metadata| &metadata.catalogue),
+            )
+    }
+}
+
+pub(super) struct RecoveryInput {
+    pub(super) old: OldRow,
+    pub(super) probe_failure: anyhow::Error,
+}
+
+pub(super) enum RefreshAttempt {
+    Current,
+    ProbeFailed(RecoveryInput),
+    Ended(OldRow),
+}
+
+struct ProbeFailedError {
+    old: OldRow,
+    report: anyhow::Error,
+}
+
+impl std::fmt::Debug for ProbeFailedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProbeFailedError")
+            .field("report", &self.report)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for ProbeFailedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RSD refresh probe failed: {}", self.report)
+    }
+}
+
+impl std::error::Error for ProbeFailedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.report.as_ref())
+    }
+}
+
+struct EndedError {
+    old: OldRow,
+}
+
+impl std::fmt::Debug for EndedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EndedError").finish()
+    }
+}
+
+impl std::fmt::Display for EndedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("existing tunnel runtime has ended")
+    }
+}
+
+impl std::error::Error for EndedError {}
+
 fn invoke<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
     work()
 }
 
 impl TunnelAgentState {
-    /// Caller owns the original device serial guard. Nested cancellation/clock
-    /// guards include the permit wait; no new deadline is started here.
-    pub(super) async fn refresh_alive_rsd(
+    pub(super) async fn try_refresh_existing(
         &self,
         udid: &str,
         ticket: &Ticket,
         deadline: &lifecycle::ConnectionDeadline,
         session: Option<&super::scan::Session<'_>>,
         manual_authority: Option<&crate::access::DeviceAuthority>,
-    ) -> Result<()> {
+    ) -> Result<RefreshAttempt> {
         if !self.inner.source.observes_freshness() {
-            return Ok(());
+            return Ok(RefreshAttempt::Current);
         }
         let snapshot = ticket.desired();
         let observation = ticket.observe_version(&snapshot.version);
@@ -209,20 +297,33 @@ impl TunnelAgentState {
             (None, super::intent::Desired::Stopped) => return Err(lifecycle::cancelled()),
             (None, super::intent::Desired::Automatic) => None,
         };
-        let work = observation.run(deadline.run(self.refresh_alive_rsd_inner(
+        let work = observation.run(deadline.run(self.try_refresh_existing_inner(
             udid,
             &observation,
             deadline,
             session,
             authority.as_ref(),
         )));
-        match &authority {
+        let result = match &authority {
             Some(authority) => authority.run(work).await,
             None => work.await,
+        };
+        match result {
+            Ok(()) => Ok(RefreshAttempt::Current),
+            Err(err) => match err.downcast::<ProbeFailedError>() {
+                Ok(failed) => Ok(RefreshAttempt::ProbeFailed(RecoveryInput {
+                    old: failed.old,
+                    probe_failure: failed.report,
+                })),
+                Err(err) => match err.downcast::<EndedError>() {
+                    Ok(ended) => Ok(RefreshAttempt::Ended(ended.old)),
+                    Err(err) => Err(err),
+                },
+            },
         }
     }
 
-    async fn refresh_alive_rsd_inner(
+    async fn try_refresh_existing_inner(
         &self,
         udid: &str,
         ticket: &Ticket,
@@ -234,7 +335,7 @@ impl TunnelAgentState {
             self.inner.access.permits_device(udid),
             lifecycle::cancelled()
         );
-        let (key_buffer, publication, proof, route) = {
+        let (key_buffer, publication, proof, route, alive) = {
             let tunnels = self.inner.tunnels.read().await;
             deadline.check()?;
             let (key, row) = tunnels
@@ -257,38 +358,69 @@ impl TunnelAgentState {
                 ),
                 lifecycle::cancelled()
             );
+            let is_alive = runtime.is_alive();
             let capture = || {
                 ticket.commit(|| {
                     deadline.check()?;
-                    native.capture_refresh(
-                        ticket.ownership_stamp(),
-                        runtime,
-                        &row._metadata,
-                        &row._global_metadata,
-                        row._fresh_metadata.as_ref(),
-                        &self.inner.global_metadata_bytes,
-                    )
+                    if is_alive {
+                        native.capture_refresh(
+                            ticket.ownership_stamp(),
+                            runtime,
+                            &row._metadata,
+                            &row._global_metadata,
+                            row._fresh_metadata.as_ref(),
+                            &self.inner.global_metadata_bytes,
+                        )
+                    } else {
+                        native.capture_existing(
+                            ticket.ownership_stamp(),
+                            runtime,
+                            &row._metadata,
+                            &row._global_metadata,
+                            row._fresh_metadata.as_ref(),
+                            &self.inner.global_metadata_bytes,
+                        )
+                    }
                 })
             };
             let proof = match authority {
                 Some(authority) => authority.commit(udid, capture)?,
                 None => capture()?,
             };
-            (key.as_ptr() as usize, row.publication.clone(), proof, route)
+            (
+                key.as_ptr() as usize,
+                row.publication.clone(),
+                proof,
+                route,
+                is_alive,
+            )
         };
+        let old = OldRow {
+            key_buffer,
+            publication,
+            registry: proof,
+            observed_ticket: ticket.clone(),
+        };
+        if !alive {
+            return Err(anyhow::Error::new(EndedError { old }));
+        }
         // Allocate the cause capsule and two output owners before any Source poll.
         let receipt = Receipt::prepare(&self.inner.global_metadata_bytes)?;
-        let _permit = self.inner.lifecycle.connects.acquire().await?;
+        let permit = self.inner.lifecycle.connects.acquire().await?;
         deadline.check()?;
         let admit = || {
             ticket.commit(|| {
                 deadline.check()?;
-                proof.check()
+                old.registry.check()
             })
         };
-        match authority {
-            Some(authority) => authority.commit(udid, admit)?,
-            None => admit()?,
+        let still_alive = match authority {
+            Some(authority) => authority.commit(udid, admit),
+            None => admit(),
+        };
+        if still_alive.is_err() {
+            drop(permit);
+            return Err(anyhow::Error::new(EndedError { old }));
         }
         let mut source = self.inner.source.refresh_existing_rsd(
             route,
@@ -301,7 +433,7 @@ impl TunnelAgentState {
                     receipt.capture(original);
                     // Persist the original in this very Ready poll; no later
                     // await/cancellation/clock or bookkeeping can discard it.
-                    proof.retain_failure(receipt.clone());
+                    old.registry.retain_failure(receipt.clone());
                     if let Some(session) = session {
                         session.retain(super::scan::Source::Freshness, receipt.report());
                     }
@@ -312,9 +444,18 @@ impl TunnelAgentState {
         });
         let result = observe.await;
         // The independent catalogue owns its own storage. Destroy this original
-        // Source frame before admitting the output/publication metadata.
+        // Source frame and release the permit before admitting new candidates or output metadata.
         drop(source);
-        let catalogue = result?;
+        drop(permit);
+        let catalogue = match result {
+            Ok(catalogue) => catalogue,
+            Err(probe_failure) => {
+                return Err(anyhow::Error::new(ProbeFailedError {
+                    old,
+                    report: probe_failure,
+                }));
+            }
+        };
         deadline.check()?;
         anyhow::ensure!(
             catalogue.udid() == udid,
@@ -331,34 +472,20 @@ impl TunnelAgentState {
             .get_key_value(udid)
             .ok_or_else(lifecycle::cancelled)?;
         anyhow::ensure!(
-            key.as_ptr() as usize == key_buffer && publication.ptr_eq(&current.publication),
+            old.matches_locked(key, current, ticket),
             lifecycle::cancelled()
         );
         let row = tunnels.get_mut(udid).ok_or_else(lifecycle::cancelled)?;
-        anyhow::ensure!(
-            publication.ptr_eq(&row.publication) && row._ticket.same_incarnation(ticket),
-            lifecycle::cancelled()
-        );
-        anyhow::ensure!(
-            super::retirement::same_metadata(row._fresh_metadata.as_ref(), proof.previous())
-                && super::retirement::same_optional(
-                    row.device.freshness_catalogue(),
-                    row._fresh_metadata
-                        .as_ref()
-                        .map(|metadata| &metadata.catalogue)
-                ),
-            lifecycle::cancelled()
-        );
         let swap = || {
             ticket.commit(|| {
-                proof.swap_metadata(proposed.clone(), || {
+                old.registry.swap_metadata(proposed.clone(), || {
                     deadline.check()?;
                     anyhow::ensure!(
                         self.inner.access.permits_device(udid),
                         lifecycle::cancelled()
                     );
                     let old_cache = row.device.swap_freshness_catalogue(
-                        proof.runtime(),
+                        old.registry.runtime(),
                         Some(proposed.catalogue.clone()),
                     )?;
                     let old_metadata = row._fresh_metadata.replace(proposed.clone());
@@ -389,7 +516,7 @@ impl TunnelAgentState {
                         // cache swap is validated against the immutable same runtime.
                         let refused_cache = row
                             .device
-                            .swap_freshness_catalogue(proof.runtime(), old_cache)?;
+                            .swap_freshness_catalogue(old.registry.runtime(), old_cache)?;
                         row._fresh_metadata = old_metadata;
                         drop(refused_cache); // proposed still owns this buffer/fees
                         return Err(cause);
@@ -405,6 +532,28 @@ impl TunnelAgentState {
         };
         drop(tunnels);
         // Every displaced cache/fee/error owner drops after all commit locks.
-        result.map(drop)
+        result.map(|displaced| {
+            drop(displaced);
+        })
+    }
+
+    /// Caller owns the original device serial guard. Nested cancellation/clock
+    /// guards include the permit wait; no new deadline is started here.
+    pub(super) async fn refresh_alive_rsd(
+        &self,
+        udid: &str,
+        ticket: &Ticket,
+        deadline: &lifecycle::ConnectionDeadline,
+        session: Option<&super::scan::Session<'_>>,
+        manual_authority: Option<&crate::access::DeviceAuthority>,
+    ) -> Result<()> {
+        match self
+            .try_refresh_existing(udid, ticket, deadline, session, manual_authority)
+            .await?
+        {
+            RefreshAttempt::Current => Ok(()),
+            RefreshAttempt::ProbeFailed(recovery) => Err(recovery.probe_failure),
+            RefreshAttempt::Ended(_) => Err(lifecycle::cancelled()),
+        }
     }
 }

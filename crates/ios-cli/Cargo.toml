@@ -55,6 +55,7 @@ arboard = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+ios-core = { workspace = true, features = ["test-tunnel"] }
 tokio = { workspace = true, features = ["test-util"] }
 indexmap = { workspace = true }
 serde_urlencoded = "0.7"

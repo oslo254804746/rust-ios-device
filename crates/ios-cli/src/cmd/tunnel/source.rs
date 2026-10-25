@@ -107,6 +107,32 @@ mod future_tests;
 
 pub(super) trait Source: Send + Sync {
     #[cfg(not(test))]
+    fn prepare_owned<'a>(
+        &'a self,
+        udid: &'a str,
+        route: RouteRef<'a>,
+        mode: TunMode,
+        owner: &'a dyn TunnelOwner,
+        bank: &'a Arc<Semaphore>,
+        deadline: Option<&'a super::lifecycle::ConnectionDeadline>,
+    ) -> anyhow::Result<super::prepared_source::SourceFuture<'a>>;
+
+    #[cfg(test)]
+    fn prepare_owned<'a>(
+        &'a self,
+        udid: &'a str,
+        route: RouteRef<'a>,
+        mode: TunMode,
+        owner: &'a dyn TunnelOwner,
+        bank: &'a Arc<Semaphore>,
+        _deadline: Option<&'a super::lifecycle::ConnectionDeadline>,
+    ) -> anyhow::Result<super::prepared_source::SourceFuture<'a>> {
+        Ok(super::prepared_source::SourceFuture::Fixture(
+            self.connect_owned(udid, route, mode, owner, bank)?,
+        ))
+    }
+
+    #[cfg(not(test))]
     fn observes_freshness(&self) -> bool;
     #[cfg(test)]
     fn observes_freshness(&self) -> bool {
@@ -148,16 +174,6 @@ pub(super) trait Source: Send + Sync {
         route: Route,
         mode: TunMode,
     ) -> BoxFuture<'a, anyhow::Result<ManagedDevice>>;
-
-    #[cfg(not(test))]
-    fn connect_owned<'a>(
-        &'a self,
-        udid: &'a str,
-        route: RouteRef<'a>,
-        mode: TunMode,
-        owner: &'a dyn TunnelOwner,
-        bank: &'a Arc<Semaphore>,
-    ) -> anyhow::Result<super::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>>;
 
     #[cfg(test)]
     fn connect_owned<'a>(
@@ -245,6 +261,64 @@ impl Source for NoDevices {
 }
 
 impl Source for NativeSource {
+    fn prepare_owned<'a>(
+        &'a self,
+        udid: &'a str,
+        route: RouteRef<'a>,
+        mode: TunMode,
+        owner: &'a dyn TunnelOwner,
+        bank: &'a Arc<Semaphore>,
+        deadline: Option<&'a super::lifecycle::ConnectionDeadline>,
+    ) -> anyhow::Result<super::prepared_source::SourceFuture<'a>> {
+        let prepared =
+            super::owned_box::Destination::<ios_core::PreparedConnectedDevice>::new(bank)?;
+        let output = super::owned_box::Destination::<ios_core::OwnedConnectedDevice>::new(bank)?;
+        let future = super::future_storage::Dynamic::new(
+            async move {
+                // Retry starts after Source construction. Read the same mutable
+                // deadline only at the first actual poll, after its retry clamp.
+                let deadline = deadline.ok_or_else(super::lifecycle::cancelled)?;
+                deadline.check()?;
+                let at = deadline.absolute_at();
+                let options = ConnectOptions {
+                    tun_mode: mode,
+                    pair_record_path: None,
+                    skip_tunnel: false,
+                };
+                let device = match route {
+                    RouteRef::Usbmux => {
+                        ios_core::prepare_owned_with_owner_at(udid, options, owner, bank, at)
+                            .await?
+                    }
+                    RouteRef::Usb(host) => {
+                        ios_core::prepare_direct_usb_tunnel_owned_with_owner_at(
+                            udid, host, options, owner, bank, at,
+                        )
+                        .await?
+                    }
+                    RouteRef::Wifi(host) => {
+                        ios_core::prepare_remote_pairing_tunnel_owned_with_owner_at(
+                            udid, host, options, owner, bank, at,
+                        )
+                        .await?
+                    }
+                    RouteRef::Mobdev2(host) => {
+                        ios_core::prepare_tcp_lockdown_tunnel_owned_with_owner_at(
+                            udid, host, options, owner, bank, at,
+                        )
+                        .await?
+                    }
+                };
+                Ok(super::prepared_source::Candidate::Native {
+                    device: prepared.place(device),
+                    output,
+                })
+            },
+            bank,
+        )?;
+        Ok(super::prepared_source::SourceFuture::Native(future))
+    }
+
     fn observes_freshness(&self) -> bool {
         true
     }
@@ -264,6 +338,7 @@ impl Source for NativeSource {
         )
     }
 
+    #[cfg(test)]
     fn connect_owned<'a>(
         &'a self,
         udid: &'a str,

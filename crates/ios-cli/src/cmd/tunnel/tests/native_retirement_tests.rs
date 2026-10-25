@@ -23,6 +23,8 @@ mod manual_admission_tests;
 mod metadata_tests;
 mod paired_discovery_tests;
 mod paired_fence_tests;
+mod prepared_source_tests;
+mod replacement_integration_tests;
 mod reconnect_tests;
 mod record_owner_tests;
 mod scan_outcome_tests;

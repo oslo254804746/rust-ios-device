@@ -62,6 +62,7 @@ mod ownership;
 mod paid_json;
 mod paid_watch;
 mod paired_observed;
+mod prepared_source;
 use paid_watch as watch;
 mod publication;
 mod publication_retain;
@@ -446,6 +447,19 @@ impl marker_identity::BirthContext for ManualBirths {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+enum PublicationExpectation<'a> {
+    #[default]
+    Ordinary,
+    Replace(&'a freshness::OldRow),
+}
+
+impl PublicationExpectation<'_> {
+    fn is_ordinary(&self) -> bool {
+        matches!(self, PublicationExpectation::Ordinary)
+    }
+}
+
 struct ConnectionContext<'a> {
     expected_id: Option<u32>,
     deadline: Option<&'a lifecycle::ConnectionDeadline>,
@@ -454,6 +468,7 @@ struct ConnectionContext<'a> {
     manual_births: Option<&'a mut ManualBirths>,
     releases: &'a mut marker_identity::ReleaseFence<2>,
     input: Option<candidate_input::Owner>,
+    expectation: PublicationExpectation<'a>,
 }
 
 struct ManagedTunnel {
@@ -496,6 +511,7 @@ enum ManagedDevice {
 }
 
 impl ManagedDevice {
+    #[cfg(test)]
     fn owned_body_bytes(&self, bank: &Arc<Semaphore>) -> Result<usize> {
         match self {
             Self::Native(device) => device
@@ -513,17 +529,13 @@ impl ManagedDevice {
 }
 
 fn managed_metadata_bytes(
-    device: &ManagedDevice,
+    device: &prepared_source::Candidate,
     _udid: &str,
     desired: &intent::RetainedRoute,
     observed: &observed_route::Observed,
 ) -> Result<usize> {
     let overflow = || crate::output::resource_decision("tunnel retained metadata size overflow");
-    let device_bytes = match device {
-        ManagedDevice::Native(device) => device.retained_metadata_bytes().ok_or_else(overflow)?,
-        #[cfg(test)]
-        ManagedDevice::Fake(device) => std::mem::size_of_val(&**device),
-    };
+    let device_bytes = device.retained_metadata_bytes()?;
     // The real publication Node already owns its entire Box payload (including
     // ManagedTunnel), original key and Vec slot backing in both byte banks.
     // The publication ceiling still counts both route texts. Their independent
@@ -1301,114 +1313,196 @@ impl TunnelAgentState {
                 };
                 let mut releases = marker_identity::ReleaseFence::<2>::new();
                 let _serial = ticket.serial().await;
-                if let Some(record) = self.get_record(udid).await? {
-                    self.refresh_alive_rsd(
-                        udid,
-                        &ticket,
-                        &deadline,
-                        None,
-                        manual.as_ref().map(|request| &request.authority),
-                    )
-                    .await?;
-                    if let Some(manual) = &manual {
-                        let tunnels = self.inner.tunnels.write().await;
-                        if let Some(current) =
-                            tunnels.get(udid).filter(|current| current.is_alive())
-                        {
-                            // Preserve the legacy live shortcut's actual route.
-                            // The requested different transport never ran Source.
-                            let route = current.route_intent.clone();
-                            ticket.commit(|| {
-                                manual.authority.commit(udid, || {
-                                    ticket.establish_manual_shared(
-                                        route,
-                                        manual.authority.clone(),
-                                        ticket.failure_version(),
-                                        Some(&deadline),
-                                        manual_births
-                                            .as_mut()
-                                            .expect("pre-Source manual birth inputs"),
-                                    )
-                                })
-                            })?;
-                        } else {
-                            return Err(lifecycle::cancelled());
+                if let Some(_record) = self.get_record(udid).await? {
+                    match self
+                        .try_refresh_existing(
+                            udid,
+                            &ticket,
+                            &deadline,
+                            None,
+                            manual.as_ref().map(|request| &request.authority),
+                        )
+                        .await?
+                    {
+                        freshness::RefreshAttempt::Current => {
+                            if let Some(manual) = &manual {
+                                let tunnels = self.inner.tunnels.write().await;
+                                if let Some(current) =
+                                    tunnels.get(udid).filter(|current| current.is_alive())
+                                {
+                                    // Preserve the legacy live shortcut's actual route.
+                                    // The requested different transport never ran Source.
+                                    let route = current.route_intent.clone();
+                                    ticket.commit(|| {
+                                        manual.authority.commit(udid, || {
+                                            ticket.establish_manual_shared(
+                                                route,
+                                                manual.authority.clone(),
+                                                ticket.failure_version(),
+                                                Some(&deadline),
+                                                manual_births
+                                                    .as_mut()
+                                                    .expect("pre-Source manual birth inputs"),
+                                            )
+                                        })
+                                    })?;
+                                } else {
+                                    return Err(lifecycle::cancelled());
+                                }
+                            }
+                            self.try_manual_success(udid, &ticket, &deadline, &mut releases);
+                            return self
+                                .get_record(udid)
+                                .await?
+                                .ok_or_else(lifecycle::cancelled);
+                        }
+                        freshness::RefreshAttempt::ProbeFailed(recovery) => {
+                            let old = recovery.old;
+                            let probe_failure = recovery.probe_failure;
+                            match self
+                                .connect_with_fallback(
+                                    udid,
+                                    ip_filter,
+                                    requested_connection_type,
+                                    manual.as_ref(),
+                                    manual_births.as_mut(),
+                                    &mut releases,
+                                    &ticket,
+                                    &deadline,
+                                    PublicationExpectation::Replace(&old),
+                                )
+                                .await
+                            {
+                                Ok(new_record) => return Ok(new_record),
+                                Err(candidate_err) => {
+                                    deadline.check()?;
+                                    if !ticket.is_current() {
+                                        return Err(lifecycle::cancelled());
+                                    }
+                                    if let Some(manual) = &manual {
+                                        manual.authority.check_clock()?;
+                                    }
+                                    return Err(probe_failure.context(candidate_err));
+                                }
+                            }
+                        }
+                        freshness::RefreshAttempt::Ended(old) => {
+                            return self
+                                .connect_with_fallback(
+                                    udid,
+                                    ip_filter,
+                                    requested_connection_type,
+                                    manual.as_ref(),
+                                    manual_births.as_mut(),
+                                    &mut releases,
+                                    &ticket,
+                                    &deadline,
+                                    PublicationExpectation::Replace(&old),
+                                )
+                                .await;
                         }
                     }
-                    self.try_manual_success(udid, &ticket, &deadline, &mut releases);
-                    return Ok(record);
                 }
-                let _permit = self.inner.lifecycle.connects.acquire().await?;
-                let route = match requested_connection_type {
-                    Some(StartTunnelConnectionType::Usb) => RouteRef::Usb(ip_filter),
-                    Some(StartTunnelConnectionType::Wifi) => RouteRef::Wifi(ip_filter),
-                    Some(StartTunnelConnectionType::Usbmux) | None => RouteRef::Usbmux,
-                };
-                match self
-                    .connect_and_store_with_context(
-                        udid,
-                        route,
-                        &ticket,
-                        ConnectionContext {
-                            expected_id: None,
-                            deadline: Some(&deadline),
-                            retry: None,
-                            manual: manual.as_ref(),
-                            manual_births: manual_births.as_mut(),
-                            releases: &mut releases,
-                            input: None,
-                        },
-                    )
-                    .await
-                {
-                    Ok(record) => Ok(record),
-                    Err(error) if requested_connection_type.is_some() => Err(error),
-                    // Source may have succeeded already. Output-copy refusal
-                    // must not browse/connect another route or replace its cause.
-                    Err(error) if error.is::<record_owner::CopyAdmission>() => Err(error),
-                    Err(error) if error.is::<intent::RouteAdmission>() => Err(error),
-                    Err(error) if error.is::<observed_route::Admission>() => Err(error),
-                    Err(error) if error.is::<publication::Admission>() => Err(error),
-                    Err(error) if error.is::<ownership::Admission>() => Err(error),
-                    Err(error) if error.is::<source::DiscoveryAdmission>() => Err(error),
-                    // Preserve an already acquired Source error without opening
-                    // another discovery/transport after the total has expired.
-                    Err(error) if deadline.check().is_err() => Err(error),
-                    Err(usbmux_error) => {
-                        let targets = self
-                            .inner
-                            .source
-                            .paired_devices_owned(&self.inner.global_metadata_bytes)?
-                            .await
-                            .context("failed to browse paired mobdev2 devices")?;
-                        let _snapshot_charge = admission::retain_paired_snapshot(
-                            &self.inner.global_metadata_bytes,
-                            &targets,
-                        )?;
-                        let Some(target) = targets.into_iter().find(|target| {
-                            target.udid == udid && ip_filter.map_or(true, |ip| ip == target.host)
-                        }) else {
-                            return Err(usbmux_error.context("no paired mobdev2 target matched"));
-                        };
-                        self.connect_and_store_with_context(
-                            udid,
-                            RouteRef::Mobdev2(&target.host),
-                            &ticket,
-                            ConnectionContext {
-                                expected_id: None,
-                                deadline: Some(&deadline),
-                                retry: None,
-                                manual: manual.as_ref(),
-                                manual_births: manual_births.as_mut(),
-                                releases: &mut releases,
-                                input: None,
-                            },
-                        )
-                        .await
-                    }
-                }
+                self.connect_with_fallback(
+                    udid,
+                    ip_filter,
+                    requested_connection_type,
+                    manual.as_ref(),
+                    manual_births.as_mut(),
+                    &mut releases,
+                    &ticket,
+                    &deadline,
+                    PublicationExpectation::Ordinary,
+                )
+                .await
             }))
             .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn connect_with_fallback(
+        &self,
+        udid: &str,
+        ip_filter: Option<&str>,
+        requested_connection_type: Option<StartTunnelConnectionType>,
+        manual: Option<&intent::ManualRequest<'_>>,
+        mut manual_births: Option<&mut ManualBirths>,
+        releases: &mut marker_identity::ReleaseFence<2>,
+        ticket: &Ticket,
+        deadline: &lifecycle::ConnectionDeadline,
+        expectation: PublicationExpectation<'_>,
+    ) -> Result<PaidRecord> {
+        let _permit = self.inner.lifecycle.connects.acquire().await?;
+        let route = match requested_connection_type {
+            Some(StartTunnelConnectionType::Usb) => RouteRef::Usb(ip_filter),
+            Some(StartTunnelConnectionType::Wifi) => RouteRef::Wifi(ip_filter),
+            Some(StartTunnelConnectionType::Usbmux) | None => RouteRef::Usbmux,
+        };
+        match self
+            .connect_and_store_with_context(
+                udid,
+                route,
+                ticket,
+                ConnectionContext {
+                    expected_id: None,
+                    deadline: Some(deadline),
+                    retry: None,
+                    manual,
+                    manual_births: manual_births.as_deref_mut(),
+                    releases,
+                    input: None,
+                    expectation,
+                },
+            )
+            .await
+        {
+            Ok(record) => Ok(record),
+            Err(error) if requested_connection_type.is_some() => Err(error),
+            // Source may have succeeded already. Output-copy refusal
+            // must not browse/connect another route or replace its cause.
+            Err(error) if error.is::<record_owner::CopyAdmission>() => Err(error),
+            Err(error) if error.is::<intent::RouteAdmission>() => Err(error),
+            Err(error) if error.is::<observed_route::Admission>() => Err(error),
+            Err(error) if error.is::<publication::Admission>() => Err(error),
+            Err(error) if error.is::<ownership::Admission>() => Err(error),
+            Err(error) if error.is::<source::DiscoveryAdmission>() => Err(error),
+            // Preserve an already acquired Source error without opening
+            // another discovery/transport after the total has expired.
+            Err(error) if deadline.check().is_err() => Err(error),
+            Err(usbmux_error) => {
+                let targets = self
+                    .inner
+                    .source
+                    .paired_devices_owned(&self.inner.global_metadata_bytes)?
+                    .await
+                    .context("failed to browse paired mobdev2 devices")?;
+                let _snapshot_charge = admission::retain_paired_snapshot(
+                    &self.inner.global_metadata_bytes,
+                    &targets,
+                )?;
+                let Some(target) = targets.into_iter().find(|target| {
+                    target.udid == udid && ip_filter.map_or(true, |ip| ip == target.host)
+                }) else {
+                    return Err(usbmux_error.context("no paired mobdev2 target matched"));
+                };
+                self.connect_and_store_with_context(
+                    udid,
+                    RouteRef::Mobdev2(&target.host),
+                    ticket,
+                    ConnectionContext {
+                        expected_id: None,
+                        deadline: Some(deadline),
+                        retry: None,
+                        manual,
+                        manual_births,
+                        releases,
+                        input: None,
+                        expectation,
+                    },
+                )
+                .await
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1453,6 +1547,7 @@ impl TunnelAgentState {
                 manual_births: None,
                 releases: &mut releases,
                 input: None,
+                expectation: PublicationExpectation::Ordinary,
             },
         )
         .await
@@ -1473,6 +1568,7 @@ impl TunnelAgentState {
             mut manual_births,
             releases,
             input,
+            expectation,
         } = context;
         if let Some(deadline) = deadline {
             deadline.check()?;
@@ -1553,12 +1649,13 @@ impl TunnelAgentState {
             let mut source = self
                 .inner
                 .source
-                .connect_owned(
+                .prepare_owned(
                     udid,
                     observed_route.route().into(),
                     self.inner.tun_mode,
                     &ownership,
                     &self.inner.global_metadata_bytes,
+                    deadline,
                 )
                 .map_err(ownership::before_source)?;
             manual_version = if retry.is_none() {
@@ -1621,13 +1718,14 @@ impl TunnelAgentState {
             // Release the original finished Box and its fee before unrelated
             // device/output admission. Pending cancellation uses the same Drop.
             drop(source);
-            let device = completed?;
+            let candidate = completed?;
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
             let metadata_size =
-                managed_metadata_bytes(&device, udid, &route_intent, &observed_route)?;
-            let independently_owned = device.owned_body_bytes(&self.inner.global_metadata_bytes)?;
+                managed_metadata_bytes(&candidate, udid, &route_intent, &observed_route)?;
+            let independently_owned =
+                candidate.owned_body_bytes(&self.inner.global_metadata_bytes)?;
             let global_size = metadata_size
                 .checked_sub(route_intent.text_bytes())
                 .and_then(|size| size.checked_sub(observed_route.text_bytes()))
@@ -1657,14 +1755,17 @@ impl TunnelAgentState {
                         "tunnel published metadata byte limit exceeded",
                     )
                 })?;
-            let native = match device.native_handle() {
+            let native = match candidate.native_handle() {
                 Some(handle) => Some(ownership.take_completed(handle)?),
                 None => {
                     #[cfg(not(test))]
                     return Err(lifecycle::cancelled().context("native tunnel handle missing"));
                     #[cfg(test)]
                     {
-                        if matches!(device, ManagedDevice::Native(_)) {
+                        if matches!(
+                            candidate,
+                            prepared_source::Candidate::Fixture(ManagedDevice::Native(_))
+                        ) {
                             return Err(
                                 lifecycle::cancelled().context("native tunnel handle missing")
                             );
@@ -1679,14 +1780,21 @@ impl TunnelAgentState {
                 native.retain_metadata(metadata.clone())?;
                 native.retain_global_metadata(global_metadata.clone())?;
             }
+            let fresh_metadata = candidate.stage_catalogue(
+                &self.inner.global_metadata_bytes,
+                &self.inner.metadata_bytes,
+            )?;
+            if let (Some(native), Some(fresh)) = (&native, &fresh_metadata) {
+                native.retain_prepared_catalogue(fresh.clone())?;
+            }
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
-            if expected_id.is_some_and(|expected| expected != device.device_id()) {
+            if expected_id.is_some_and(|expected| expected != candidate.device_id()) {
                 return Err(lifecycle::cancelled().context("tunnel attachment snapshot changed"));
             }
             let record =
-                device.record_for_mode(self.inner.tun_mode, &self.inner.global_metadata_bytes)?;
+                candidate.record(self.inner.tun_mode, &self.inner.global_metadata_bytes)?;
             if authority.is_some() && record.udid != udid {
                 return Err(ios_core::CoreError::Protocol(
                     "tunnel Source identity differs from authorized device".into(),
@@ -1696,8 +1804,84 @@ impl TunnelAgentState {
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
-            if !device.is_alive() {
+            let witness = match (expectation, &native) {
+                (PublicationExpectation::Replace(_), Some(native)) => {
+                    Some(native.publication_witness()?)
+                }
+                _ => None,
+            };
+            if let PublicationExpectation::Replace(old) = expectation {
+                let tunnels = self.inner.tunnels.read().await;
+                let (key, current) = tunnels.get_key_value(udid).ok_or_else(lifecycle::cancelled)?;
+                anyhow::ensure!(old.matches_locked(key, current, ticket), lifecycle::cancelled());
+                drop(tunnels);
+            }
+            // Every output, catalogue, publication and native attachment owner
+            // above exists before the real finalizer can expose an interface.
+            // This concrete F lives in the original paid connection frame.
+            let admit_activation = || {
+                ticket.commit(|| {
+                    if let Some(deadline) = deadline {
+                        deadline.check()?;
+                    }
+                    anyhow::ensure!(
+                        self.inner.access.permits_device(udid),
+                        lifecycle::cancelled()
+                    );
+                    if let PublicationExpectation::Replace(old) = expectation {
+                        old.registry.check_replacement()?;
+                    }
+                    Ok(())
+                })
+            };
+            match &authority {
+                Some(authority) => authority.commit(udid, admit_activation)?,
+                None => admit_activation()?,
+            }
+            let completed = {
+                let mut finish = std::pin::pin!(candidate.finish(deadline));
+                std::future::poll_fn(|cx| {
+                    std::future::Future::poll(finish.as_mut(), cx).map(|result| {
+                        result.map_err(|error| {
+                            let error = match &input {
+                                Some(input) => error.context(candidate_input::SourceInputContext {
+                                    input: input.clone(),
+                                }),
+                                None => error,
+                            };
+                            match &attempt {
+                                Some(attempt) => attempt.source_failed(error),
+                                None => error,
+                            }
+                        })
+                    })
+                })
+                .await
+            };
+            let device = completed?;
+            if let Some(deadline) = deadline {
+                deadline.check()?;
+            }
+            if !device.is_alive()
+                || device
+                    .native_handle()
+                    .is_some_and(|handle| !handle.ready_for_publication())
+            {
                 return Err(lifecycle::cancelled().context("tunnel inactive at admission"));
+            }
+            if let Some(native) = &native {
+                anyhow::ensure!(
+                    device
+                        .native_handle()
+                        .is_some_and(|handle| native.matches_runtime(handle)),
+                    lifecycle::cancelled()
+                );
+            }
+            if let Some(fresh) = &fresh_metadata {
+                anyhow::ensure!(
+                    retirement::same_optional(device.freshness_catalogue(), Some(&fresh.catalogue)),
+                    lifecycle::cancelled()
+                );
             }
             if usbmux {
                 if let Some(deadline) = deadline {
@@ -1759,65 +1943,80 @@ impl TunnelAgentState {
                         .as_ref()
                         .expect("pre-Source destination"),
                 )?;
-                if let Some(native) = &acquired.as_ref().expect("unpublished owner").1 {
-                    native.publish(ownership.stamp())?;
+                if let PublicationExpectation::Replace(old) = expectation {
+                    let (key, current) = tunnels.get_key_value(udid).ok_or_else(lifecycle::cancelled)?;
+                    anyhow::ensure!(old.matches_locked(key, current, ticket), lifecycle::cancelled());
+                }
+                if expectation.is_ordinary() {
+                    if let Some(native) = &acquired.as_ref().expect("unpublished owner").1 {
+                        native.publish(ownership.stamp())?;
+                    }
                 }
                 if let Some(deadline) = deadline {
                     deadline.check()?;
                 }
                 let (device, native) = acquired.take().expect("single publication");
-                let change = tunnels.publish(
-                    publication_slot,
-                    publication_destination.take().expect("single destination"),
-                    ManagedTunnel {
-                        device,
-                        publication,
-                        usbmux,
-                        native,
-                        route_intent: route_intent.clone(),
-                        observed_route,
-                        _ticket: publication_ticket,
-                        _metadata: metadata,
-                        _global_metadata: global_metadata,
-                        _input: input.clone(),
-                        _fresh_metadata: None,
-                    },
-                );
-                #[cfg(test)]
-                {
-                    let callback = self.inner.publication_after_insert.lock().unwrap().take();
-                    if let Some(callback) = callback {
-                        callback();
-                    }
-                }
-                let late = deadline
-                    .map_or(Ok(()), |deadline| deadline.check())
-                    .and_then(|()| {
-                        authority
-                            .as_ref()
-                            .map_or(Ok(()), |authority| authority.check_clock())
-                    })
-                    .and_then(|()| {
-                        if let Some(manual) = manual {
-                            ticket.establish_manual_shared(
-                                route_intent,
-                                manual.authority.clone(),
-                                previous_failure,
-                                deadline,
-                                manual_births
-                                    .as_deref_mut()
-                                    .expect("prepared manual publication birth"),
-                            )?;
+                let publish_action = || {
+                    let change = tunnels.publish(
+                        publication_slot,
+                        publication_destination.take().expect("single destination"),
+                        ManagedTunnel {
+                            device,
+                            publication,
+                            usbmux,
+                            native,
+                            route_intent: route_intent.clone(),
+                            observed_route,
+                            _ticket: publication_ticket,
+                            _metadata: metadata,
+                            _global_metadata: global_metadata,
+                            _input: input.clone(),
+                            _fresh_metadata: fresh_metadata,
+                        },
+                    );
+                    #[cfg(test)]
+                    {
+                        let callback = self.inner.publication_after_insert.lock().unwrap().take();
+                        if let Some(callback) = callback {
+                            callback();
                         }
-                        Ok(())
-                    });
-                if let Err(error) = late {
-                    // Nothing has observed this row while the table and epoch
-                    // fences are held. Restore the displaced original row and
-                    // retire the late runtime only after releasing those guards.
-                    late_record = Some(tunnels.rollback(change));
-                    return Err(error);
-                }
+                    }
+                    let late = deadline
+                        .map_or(Ok(()), |deadline| deadline.check())
+                        .and_then(|()| {
+                            authority
+                                .as_ref()
+                                .map_or(Ok(()), |authority| authority.check_clock())
+                        })
+                        .and_then(|()| {
+                            if let Some(manual) = manual {
+                                ticket.establish_manual_shared(
+                                    route_intent,
+                                    manual.authority.clone(),
+                                    previous_failure,
+                                    deadline,
+                                    manual_births
+                                        .as_deref_mut()
+                                        .expect("prepared manual publication birth"),
+                                )?;
+                            }
+                            Ok(())
+                        });
+                    if let Err(error) = late {
+                        // Nothing has observed this row while the table and epoch
+                        // fences are held. Restore the displaced original row and
+                        // retire the late runtime only after releasing those guards.
+                        late_record = Some(tunnels.rollback(change));
+                        return Err(error);
+                    }
+                    Ok(change)
+                };
+                let change = match (expectation, &witness) {
+                    (PublicationExpectation::Replace(old), Some(witness)) => {
+                        old.registry.publish_replacement(witness, ownership.stamp(), publish_action)?
+                    }
+                    _ => publish_action()?,
+                };
                 Ok((record, change.finish()))
             };
             let result = ticket.commit(|| {
@@ -2041,42 +2240,27 @@ impl TunnelAgentState {
             deadline
                 .run(async {
                     let _serial = ticket.serial().await;
-                    let mut tunnels = self.inner.tunnels.write().await;
-                    deadline.check()?;
-                    let (existing, remove_dead) = match tunnels.get(udid) {
-                        Some(tunnel) if tunnel.is_alive() => {
-                            let valid = tunnel.device.record_fields_available();
-                            deadline.check()?;
-                            (valid, false)
-                        }
-                        Some(_) => (false, true),
-                        None => (false, false),
-                    };
-                    let removed = ticket.commit(|| {
+                    let existing = {
+                        let tunnels = self.inner.tunnels.read().await;
                         deadline.check()?;
-                        Ok(if remove_dead {
-                            tunnels.remove(udid)
-                        } else {
-                            None
-                        })
-                    })?;
-                    drop(tunnels);
-                    drop(removed);
-                    if existing {
-                        if let Err(error) = self
-                            .refresh_alive_rsd(udid, ticket, &deadline, refresh_session, None)
-                            .await
+                        tunnels.contains_key(udid)
+                    };
+                    let old_holder = if existing {
+                        match self
+                            .try_refresh_existing(udid, ticket, &deadline, refresh_session, None)
+                            .await?
                         {
-                            if let Some(session) = refresh_session {
-                                // Source errors were already owned in Ready(Err); this
-                                // retains independent preflight/commit failures as well.
-                                session.retain(scan::Source::Freshness, error);
-                            } else {
-                                return Err(error);
-                            }
+                            freshness::RefreshAttempt::Current => return Ok(()),
+                            freshness::RefreshAttempt::ProbeFailed(recovery) => Some(recovery.old),
+                            freshness::RefreshAttempt::Ended(old) => Some(old),
                         }
-                        return Ok(());
-                    }
+                    } else {
+                        None
+                    };
+                    let expectation = match &old_holder {
+                        Some(old) => PublicationExpectation::Replace(old),
+                        None => PublicationExpectation::Ordinary,
+                    };
                     let (skip, previous_version) = self
                         .inner
                         .failed_attempts
@@ -2120,6 +2304,7 @@ impl TunnelAgentState {
                             manual_births: None,
                             releases: &mut releases,
                             input: input.clone(),
+                            expectation,
                         },
                     )
                     .await?;

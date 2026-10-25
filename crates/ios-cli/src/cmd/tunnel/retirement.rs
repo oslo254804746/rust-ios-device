@@ -1066,6 +1066,28 @@ pub(super) struct NativeLease {
 }
 
 impl NativeLease {
+    pub(super) fn retain_prepared_catalogue(
+        &self,
+        metadata: super::freshness::MetadataOwner,
+    ) -> Result<()> {
+        let mut state = self.registry.lock();
+        let entry =
+            Registry::entry_mut(&mut state, &self.key).ok_or_else(super::lifecycle::cancelled)?;
+        anyhow::ensure!(
+            entry.phase == Phase::Unpublished
+                && entry.fresh_metadata.is_none()
+                && entry
+                    .metadata
+                    .as_ref()
+                    .zip(entry.global_metadata.as_ref())
+                    .is_some_and(|(publication, global)| metadata
+                        .bank_matches(publication.semaphore(), global.semaphore())),
+            super::lifecycle::cancelled()
+        );
+        entry.fresh_metadata = Some(metadata);
+        Ok(())
+    }
+
     pub(super) fn retain_global_metadata(
         &self,
         metadata: super::metadata_lease::Owner,

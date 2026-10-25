@@ -1,7 +1,10 @@
 //! Authenticated and checked candidate, before selected-backend publication.
 #[cfg(any(
     feature = "tunnel-userspace",
-    all(feature = "tunnel-kernel", target_os = "windows")
+    all(
+        feature = "tunnel-kernel",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    )
 ))]
 use super::OwnedConnectedDevice;
 use super::{ConnectedDevice, InitialRsdProbe, PreparedRsdOwner};
@@ -74,7 +77,10 @@ impl PreparedConnectedDevice {
 
     /// Activate the selected Kernel backend after staging publication owners.
     /// The checked directory, handle and original absolute clock stay the same.
-    #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+    #[cfg(all(
+        feature = "tunnel-kernel",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
     pub async fn finish_kernel_at(
         self,
         deadline: Instant,
@@ -97,7 +103,10 @@ impl PreparedConnectedDevice {
         .await
     }
 
-    #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+    #[cfg(all(
+        feature = "tunnel-kernel",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
     async fn finish_kernel_with(
         mut self,
         deadline: Instant,
