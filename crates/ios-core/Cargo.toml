@@ -85,6 +85,8 @@ tunnel = ["dep:openssl", "dep:tokio-openssl"]
 tunnel-private-ip = ["tunnel", "dep:smoltcp", "dep:socket2", "dep:windows-sys"]
 tunnel-kernel = ["tunnel-private-ip", "dep:tun-rs", "dep:libloading"]
 tunnel-userspace = ["tunnel-private-ip"]
+# Explicit scripted authenticated-stream fixtures; deliberately absent from full.
+test-tunnel = ["tunnel-userspace"]
 supervised-pair = ["dep:openssl"]
 afc = []
 arbitration = []

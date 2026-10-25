@@ -10,6 +10,104 @@ impl TunnelOwner for Trap {
 }
 
 #[test]
+fn prepared_source_prepays_both_actual_value_destinations_and_future_without_device_poll() {
+    use super::super::prepared_source::SourceFuture;
+    let source = NativeSource;
+    let owner = Trap;
+    let deadline =
+        super::super::lifecycle::ConnectionDeadline::new(std::time::Duration::from_secs(15))
+            .unwrap();
+    for mode in [TunMode::Userspace, TunMode::Kernel] {
+        for route in [
+            Route::Usbmux,
+            Route::Usb(None),
+            Route::Wifi(Some("synthetic-host".into())),
+            Route::Mobdev2("synthetic-host".into()),
+        ] {
+            let total = super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES;
+            let bank = Arc::new(Semaphore::new(total));
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let captured = seen.clone();
+            let charged = bank.clone();
+            let future = super::super::metadata_vec::with_allocation_hook(
+                move |layout, pointer| {
+                    let mut seen = captured.lock().unwrap();
+                    let prior: usize = seen.iter().map(|(size, _)| size).sum();
+                    assert_eq!(charged.available_permits(), total - prior - layout.size());
+                    seen.push((layout.size(), pointer));
+                },
+                || {
+                    source
+                        .prepare_owned(
+                            "synthetic-source-no-device",
+                            (&route).into(),
+                            mode,
+                            &owner,
+                            &bank,
+                            Some(&deadline),
+                        )
+                        .unwrap()
+                },
+            );
+            let allocations = seen.lock().unwrap();
+            assert_eq!(allocations.len(), 3);
+            let prepared = allocations[0].0;
+            let output = allocations[1].0;
+            let (frame, pointer) = allocations[2];
+            assert_eq!(
+                prepared,
+                std::mem::size_of::<ios_core::PreparedConnectedDevice>()
+            );
+            assert_eq!(
+                output,
+                std::mem::size_of::<ios_core::OwnedConnectedDevice>()
+            );
+            match &future {
+                SourceFuture::Native(actual) => assert_eq!(actual.data_pointer(), pointer),
+                SourceFuture::Fixture(_) => panic!("NativeSource returned an unverified fixture"),
+            }
+            drop(allocations);
+            drop(future); // NEVER poll the actual NativeSource / SDK constructor.
+            assert_eq!(bank.available_permits(), total);
+            for (available, count) in [
+                (0, 0),
+                (prepared - 1, 0),
+                (prepared + output - 1, 1),
+                (prepared + output + frame - 1, 2),
+            ] {
+                let bank = Arc::new(Semaphore::new(available));
+                let allocated = Arc::new(AtomicUsize::new(0));
+                let captured = allocated.clone();
+                let error = super::super::metadata_vec::with_allocation_hook(
+                    move |_, _| {
+                        captured.fetch_add(1, Ordering::SeqCst);
+                    },
+                    || {
+                        source
+                            .prepare_owned(
+                                "synthetic-source-no-device",
+                                (&route).into(),
+                                mode,
+                                &owner,
+                                &bank,
+                                Some(&deadline),
+                            )
+                            .err()
+                            .unwrap()
+                    },
+                );
+                assert_eq!(
+                    crate::output::operation_error_class(error.as_ref()),
+                    ios_core::ErrorClass::ResourceLimit
+                );
+                assert_eq!(allocated.load(Ordering::SeqCst), count);
+                assert_eq!(bank.available_permits(), available);
+            }
+        }
+    }
+}
+
+#[test]
 fn source_future_native_actual_constructor_is_admitted_before_allocation_without_device_poll() {
     let source = NativeSource;
     let owner = Trap;

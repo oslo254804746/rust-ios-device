@@ -38,6 +38,14 @@ impl<T> Destination<T> {
         self.values.as_ptr()
     }
 
+    pub(super) fn bytes_in(&self, bank: &Arc<Semaphore>) -> Result<usize> {
+        anyhow::ensure!(
+            Arc::ptr_eq(self.storage.semaphore(), bank),
+            crate::output::resource_decision("tunnel original destination bank mismatch")
+        );
+        Ok(self.storage.num_permits())
+    }
+
     pub(super) fn place(self, value: T) -> Owner<T> {
         let Self {
             mut values,

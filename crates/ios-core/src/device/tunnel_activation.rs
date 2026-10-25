@@ -25,6 +25,8 @@ const TUNNEL_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_
 
 #[cfg(feature = "tunnel-private-ip")]
 pub(super) mod prepared;
+#[cfg(feature = "test-tunnel")]
+pub(super) mod scripted_peer;
 
 #[cfg(test)]
 mod owned_output_tests;

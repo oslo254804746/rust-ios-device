@@ -270,6 +270,10 @@ pub use xpc::XpcError;
 
 #[doc(hidden)]
 pub mod test_support {
+    #[cfg(feature = "test-tunnel")]
+    pub use crate::device::prepare_scripted_tunnel_stream_at;
+    #[cfg(feature = "test-tunnel")]
+    pub use crate::device::{scripted_tunnel_peer, ScriptedTunnelConnection, ScriptedTunnelReport};
     #[cfg(feature = "tunnel")]
     pub use crate::xpc::h2_raw::{H2Framer, H2_PREFACE};
     pub use crate::xpc::message::{decode_message, encode_message, flags, XpcMessage};
