@@ -76,6 +76,9 @@ pub(crate) enum Error {
     ResponseStorage {
         required: usize,
     },
+    /// The owned local interrupt descriptor was signalled. This is not a
+    /// fabricated syscall errno or the caller's genuine elapsed timer.
+    Interrupted,
     Deadline,
 }
 
@@ -88,6 +91,7 @@ impl fmt::Display for Error {
                 write!(f, "native response requires {required} paid bytes")
             }
             Self::Deadline => f.write_str("native operation deadline elapsed"),
+            Self::Interrupted => f.write_str("native packet wait interrupted locally"),
         }
     }
 }
@@ -121,6 +125,12 @@ pub(crate) struct AddressReceipt {
     flags: u32,
     lifetimes: codec::AddressLifetimes,
     derived_local: RouteReceipt,
+}
+
+impl AddressReceipt {
+    pub(crate) fn derived_local(&self) -> RouteReceipt {
+        self.derived_local
+    }
 }
 
 /// Linux necessarily derives a local-table /128 route from this address.
@@ -158,13 +168,73 @@ pub(crate) struct MtuReceipt {
     mtu: u16,
 }
 
+#[cfg(test)]
+impl Identity {
+    pub(crate) fn test_new(index: u32, name_str: &str) -> Self {
+        let mut name = [0 as libc::c_char; libc::IFNAMSIZ];
+        for (i, b) in name_str.bytes().take(libc::IFNAMSIZ - 1).enumerate() {
+            name[i] = b as libc::c_char;
+        }
+        Self { index, name }
+    }
+}
+
+#[cfg(test)]
+impl RouteReceipt {
+    pub(crate) fn test_new(
+        identity: Identity,
+        destination: Ipv6Addr,
+        prefix: u8,
+        table: u32,
+    ) -> Self {
+        Self {
+            identity,
+            destination,
+            prefix,
+            table,
+            priority: 1024,
+            protocol: 3,
+            scope: 0,
+            kind: 1,
+        }
+    }
+}
+
+#[cfg(test)]
+impl AddressReceipt {
+    pub(crate) fn test_new(
+        identity: Identity,
+        address: Ipv6Addr,
+        prefix: u8,
+        derived_local: RouteReceipt,
+    ) -> Self {
+        Self {
+            identity,
+            address,
+            prefix,
+            flags: 0,
+            lifetimes: codec::AddressLifetimes {
+                preferred: 0,
+                valid: 0,
+            },
+            derived_local,
+        }
+    }
+}
+
+#[cfg(test)]
+impl MtuReceipt {
+    pub(crate) fn test_new(identity: Identity, mtu: u16) -> Self {
+        Self { identity, mtu }
+    }
+}
+
 /// All storage here is concrete and inline except the owned kernel resources.
 /// Response storage belongs to the operation caller, not an unmetered Vec.
 pub(crate) struct LinuxDevice {
     tun: OwnedFd,
-    interrupt: OwnedFd,
     control: Netlink,
-    identity: Identity,
+    identity: Option<Identity>,
     plan: Plan,
     address: Option<AddressReceipt>,
     route: Option<RouteReceipt>,
@@ -176,8 +246,13 @@ pub(crate) struct LinuxDevice {
 }
 
 impl LinuxDevice {
-    pub(crate) fn create_fresh_unaddressed(plan: Plan) -> Result<Self, Error> {
+    /// The actor stores this genuine resource before resolve/readback. All
+    /// ancillary controls are prepared before successful TUNSETIFF.
+    pub(crate) fn allocate(plan: Plan, deadline: Instant) -> Result<Self, Error> {
         plan.validate()?;
+        if Instant::now() >= deadline {
+            return Err(Error::Deadline);
+        }
         // SAFETY: the constant path is terminated, flags need no variadic mode.
         let raw = unsafe {
             libc::open(
@@ -186,6 +261,7 @@ impl LinuxDevice {
             )
         };
         let tun = owned(raw)?;
+        let control = Netlink::open()?;
         // SAFETY: ifreq is a C plain-data request; zero gives an empty name.
         let mut request: libc::ifreq = unsafe { zeroed() };
         request.ifr_ifru.ifru_flags =
@@ -193,15 +269,10 @@ impl LinuxDevice {
         // Empty name requests a new kernel-assigned name; EXCL forbids adoption.
         // No TUNSETPERSIST or multiqueue call is made anywhere in this owner.
         ioctl(tun.as_raw_fd(), libc::TUNSETIFF as _, &mut request)?;
-        let identity = identity(tun.as_raw_fd())?;
-        // SAFETY: eventfd has no pointer arguments and returns a fresh fd.
-        let interrupt = owned(unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) })?;
-        let control = Netlink::open()?;
         Ok(Self {
             tun,
-            interrupt,
             control,
-            identity,
+            identity: None,
             plan,
             address: None,
             route: None,
@@ -211,6 +282,23 @@ impl LinuxDevice {
             mtu: None,
             session: false,
         })
+    }
+
+    pub(crate) fn resolve_identity(&mut self, deadline: Instant) -> Result<Identity, Error> {
+        if Instant::now() >= deadline {
+            return Err(Error::Deadline);
+        }
+        let actual = identity(self.tun.as_raw_fd())?;
+        if self.identity.is_some_and(|previous| previous != actual) {
+            return Err(Error::Conflict("owned TUN identity changed during resolve"));
+        }
+        self.identity = Some(actual);
+        Ok(actual)
+    }
+
+    fn resolved_identity(&self) -> Identity {
+        self.identity
+            .expect("private operation checked original resolved TUN identity")
     }
 
     pub(crate) fn inspect_inert(
@@ -224,7 +312,7 @@ impl LinuxDevice {
             return Err(Error::Conflict("fresh interface is already active"));
         }
         let mut automatic_link_local_seen = false;
-        let index = self.identity.index;
+        let index = self.resolved_identity().index;
         let client = self.plan.client;
         self.control.dump(
             GET_ADDRESS,
@@ -273,7 +361,7 @@ impl LinuxDevice {
             },
         )?;
         Ok(Inert {
-            identity: self.identity,
+            identity: self.resolved_identity(),
             automatic_link_local_seen,
         })
     }
@@ -285,12 +373,12 @@ impl LinuxDevice {
     ) -> Result<(), Error> {
         self.same_identity()?;
         let mut body = [0; 16];
-        body[4..8].copy_from_slice(&self.identity.index.to_ne_bytes());
+        body[4..8].copy_from_slice(&self.resolved_identity().index.to_ne_bytes());
         let mut request = self.control.request(NEW_LINK, codec::ACK, &body)?;
         request.attribute(4, &u32::from(self.plan.mtu).to_ne_bytes())?;
         self.control.ack(&request, scratch, deadline)?;
         self.mtu = Some(MtuReceipt {
-            identity: self.identity,
+            identity: self.resolved_identity(),
             mtu: self.plan.mtu,
         });
         if self.link(scratch, deadline)?.mtu != u32::from(self.plan.mtu) {
@@ -307,7 +395,7 @@ impl LinuxDevice {
     ) -> Result<(), Error> {
         if self.mtu
             != Some(MtuReceipt {
-                identity: self.identity,
+                identity: self.resolved_identity(),
                 mtu: self.plan.mtu,
             })
         {
@@ -549,7 +637,7 @@ impl LinuxDevice {
             NEW_LINK => {
                 if let Some(mtu) = mtu {
                     self.mtu = Some(MtuReceipt {
-                        identity: self.identity,
+                        identity: self.resolved_identity(),
                         mtu,
                     });
                 }
@@ -593,6 +681,21 @@ impl LinuxDevice {
         self.mtu
     }
 
+    pub(crate) fn inspect_mtu(
+        &mut self,
+        scratch: &mut [u8],
+        deadline: Instant,
+    ) -> Result<MtuReceipt, Error> {
+        self.same_identity()?;
+        let receipt = self
+            .mtu
+            .ok_or(Error::Conflict("native MTU has not been acknowledged"))?;
+        if self.link(scratch, deadline)?.mtu != u32::from(receipt.mtu) {
+            return Err(Error::Conflict("native MTU changed after acknowledgement"));
+        }
+        Ok(receipt)
+    }
+
     /// Returning this typed state needs no admission or allocation. In
     /// particular a closed-zero caller keeps this same owner and original
     /// receipts; it does not retry with an invented receive cap or report undo
@@ -607,112 +710,31 @@ impl LinuxDevice {
 
     /// The event stays signalled, so every in-flight/subsequent packet call can
     /// leave. Keeping this fd in the same owner prevents an fd-reuse wake race.
-    pub(crate) fn interrupt_packets(&self) -> io::Result<()> {
-        let one = 1u64.to_ne_bytes();
-        // SAFETY: the eventfd and the initialized eight-byte input are live.
-        let result =
-            unsafe { libc::write(self.interrupt.as_raw_fd(), one.as_ptr().cast(), one.len()) };
-        if result == one.len() as isize {
-            return Ok(());
+    pub(crate) fn prepare_packet_io(&self, deadline: Instant) -> Result<PacketIo, Error> {
+        self.same_identity()?;
+        if Instant::now() >= deadline {
+            return Err(Error::Deadline);
         }
-        if result < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::WouldBlock {
-                Ok(())
-            } else {
-                Err(error)
-            }
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "short interrupt event write",
-            ))
-        }
+        // SAFETY: dup preserves this original open TUN file description and
+        // creates no second interface. The actor stores the result immediately.
+        let fd = owned(unsafe { libc::fcntl(self.tun.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
+        Ok(PacketIo {
+            fd,
+            mtu: self.plan.mtu,
+        })
     }
-
-    /// Receive into the caller's already paid MTU+1 destination. No copy or
-    /// allocation occurs. The extra byte plus IPv6 length detects truncation.
-    pub(crate) fn recv_packet(
-        &self,
-        destination: &mut [u8],
-        deadline: Instant,
-    ) -> Result<usize, Error> {
-        if destination.len() < usize::from(self.plan.mtu) + 1 {
-            return Err(Error::Conflict(
-                "packet destination needs MTU plus one byte",
-            ));
-        }
-        loop {
-            packet_wait(
-                self.tun.as_raw_fd(),
-                self.interrupt.as_raw_fd(),
-                libc::POLLIN,
-                deadline,
-            )?;
-            // SAFETY: the live TUN fd writes only within the unique slice.
-            let result = unsafe {
-                libc::read(
-                    self.tun.as_raw_fd(),
-                    destination.as_mut_ptr().cast(),
-                    destination.len(),
-                )
-            };
-            if result < 0 {
-                let error = io::Error::last_os_error();
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) {
-                    continue;
-                }
-                return Err(error.into());
-            }
-            let length = result as usize;
-            validate_packet(&destination[..length], self.plan.mtu)?;
-            return Ok(length);
-        }
-    }
-
-    pub(crate) fn send_packet(&self, packet: &[u8], deadline: Instant) -> Result<(), Error> {
-        validate_packet(packet, self.plan.mtu)?;
-        loop {
-            packet_wait(
-                self.tun.as_raw_fd(),
-                self.interrupt.as_raw_fd(),
-                libc::POLLOUT,
-                deadline,
-            )?;
-            // SAFETY: packet remains borrowed for this single whole-packet call.
-            let result =
-                unsafe { libc::write(self.tun.as_raw_fd(), packet.as_ptr().cast(), packet.len()) };
-            if result < 0 {
-                let error = io::Error::last_os_error();
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) {
-                    continue;
-                }
-                return Err(error.into());
-            }
-            if result as usize != packet.len() {
-                return Err(
-                    io::Error::new(io::ErrorKind::WriteZero, "short native packet write").into(),
-                );
-            }
-            return Ok(());
-        }
-    }
-
     fn same_identity(&self) -> Result<(), Error> {
-        if identity(self.tun.as_raw_fd())? != self.identity {
+        let expected = self.identity.ok_or(Error::Conflict(
+            "acquired TUN identity has not been resolved in place",
+        ))?;
+        if identity(self.tun.as_raw_fd())? != expected {
             return Err(Error::Conflict("owned TUN identity changed"));
         }
         Ok(())
     }
 
     fn link(&mut self, scratch: &mut [u8], deadline: Instant) -> Result<LinkRow, Error> {
-        let identity = self.identity;
+        let identity = self.resolved_identity();
         let mut found = None;
         self.control.dump(
             GET_LINK,
@@ -754,7 +776,7 @@ impl LinuxDevice {
     fn set_up(&mut self, up: bool, scratch: &mut [u8], deadline: Instant) -> Result<(), Error> {
         self.same_identity()?;
         let mut body = [0; 16];
-        body[4..8].copy_from_slice(&self.identity.index.to_ne_bytes());
+        body[4..8].copy_from_slice(&self.resolved_identity().index.to_ne_bytes());
         body[8..12].copy_from_slice(&(if up { libc::IFF_UP as u32 } else { 0 }).to_ne_bytes());
         body[12..16].copy_from_slice(&(libc::IFF_UP as u32).to_ne_bytes());
         let request = self.control.request(NEW_LINK, codec::ACK, &body)?;
@@ -783,7 +805,7 @@ impl LinuxDevice {
 
     fn route_receipt(&self) -> RouteReceipt {
         RouteReceipt {
-            identity: self.identity,
+            identity: self.resolved_identity(),
             destination: self.plan.network(),
             prefix: self.plan.prefix,
             table: ROUTE_TABLE,
@@ -796,13 +818,13 @@ impl LinuxDevice {
 
     fn address_plan(&self) -> AddressReceipt {
         AddressReceipt {
-            identity: self.identity,
+            identity: self.resolved_identity(),
             address: self.plan.client,
             prefix: self.plan.prefix,
             flags: ADDRESS_NO_PREFIX_ROUTE,
             lifetimes: codec::AddressLifetimes::INFINITE,
             derived_local: RouteReceipt {
-                identity: self.identity,
+                identity: self.resolved_identity(),
                 destination: self.plan.client,
                 prefix: 128,
                 table: 255,
@@ -924,6 +946,141 @@ impl LinuxDevice {
             },
         )?;
         Ok(found)
+    }
+}
+
+pub(crate) struct PacketInterrupt {
+    fd: OwnedFd,
+}
+impl PacketInterrupt {
+    pub(crate) fn new() -> io::Result<Self> {
+        // SAFETY: this creates the one real external packet interrupt event.
+        let fd = owned(unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) })?;
+        Ok(Self { fd })
+    }
+    pub(crate) fn trigger(&self) -> io::Result<()> {
+        let one = 1u64.to_ne_bytes();
+        // SAFETY: the eventfd and the initialized eight-byte input are live.
+        let result = unsafe { libc::write(self.fd.as_raw_fd(), one.as_ptr().cast(), one.len()) };
+        if result == one.len() as isize {
+            return Ok(());
+        }
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::WouldBlock {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "short interrupt event write",
+            ))
+        }
+    }
+}
+/// Genuine alias of the same original TUN file description. Jobs own no
+/// control-device borrow while waiting; the actor drops this only after joins.
+pub(crate) struct PacketIo {
+    fd: OwnedFd,
+    mtu: u16,
+}
+impl PacketIo {
+    #[cfg(test)]
+    pub(crate) fn from_fd(fd: OwnedFd, mtu: u16) -> Self {
+        Self { fd, mtu }
+    }
+
+    /// Receive into the caller's already paid MTU+1 destination. No copy or
+    /// allocation occurs. The extra byte plus IPv6 length detects truncation.
+    pub(crate) fn recv(
+        &self,
+        destination: &mut [u8],
+        interrupt: &PacketInterrupt,
+    ) -> Result<usize, Error> {
+        self.recv_inner(destination, interrupt, None)
+    }
+    pub(crate) fn send(&self, packet: &[u8], interrupt: &PacketInterrupt) -> Result<usize, Error> {
+        self.send_inner(packet, interrupt, None)
+            .map(|()| packet.len())
+    }
+    fn recv_inner(
+        &self,
+        destination: &mut [u8],
+        interrupt: &PacketInterrupt,
+        deadline: Option<Instant>,
+    ) -> Result<usize, Error> {
+        if destination.len() < usize::from(self.mtu) + 1 {
+            return Err(Error::Conflict(
+                "packet destination needs MTU plus one byte",
+            ));
+        }
+        loop {
+            packet_wait(
+                self.fd.as_raw_fd(),
+                interrupt.fd.as_raw_fd(),
+                libc::POLLIN,
+                deadline,
+            )?;
+            // SAFETY: the live TUN fd writes only within the unique slice.
+            let result = unsafe {
+                libc::read(
+                    self.fd.as_raw_fd(),
+                    destination.as_mut_ptr().cast(),
+                    destination.len(),
+                )
+            };
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    continue;
+                }
+                return Err(error.into());
+            }
+            let length = result as usize;
+            validate_packet(&destination[..length], self.mtu)?;
+            return Ok(length);
+        }
+    }
+
+    fn send_inner(
+        &self,
+        packet: &[u8],
+        interrupt: &PacketInterrupt,
+        deadline: Option<Instant>,
+    ) -> Result<(), Error> {
+        validate_packet(packet, self.mtu)?;
+        loop {
+            packet_wait(
+                self.fd.as_raw_fd(),
+                interrupt.fd.as_raw_fd(),
+                libc::POLLOUT,
+                deadline,
+            )?;
+            // SAFETY: packet remains borrowed for this single whole-packet call.
+            let result =
+                unsafe { libc::write(self.fd.as_raw_fd(), packet.as_ptr().cast(), packet.len()) };
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    continue;
+                }
+                return Err(error.into());
+            }
+            if result as usize != packet.len() {
+                return Err(
+                    io::Error::new(io::ErrorKind::WriteZero, "short native packet write").into(),
+                );
+            }
+            return Ok(());
+        }
     }
 }
 
@@ -1060,7 +1217,7 @@ fn packet_wait(
     tun: RawFd,
     interrupt: RawFd,
     events: libc::c_short,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<(), Error> {
     loop {
         let mut fds = [
@@ -1076,7 +1233,13 @@ fn packet_wait(
             },
         ];
         // SAFETY: this initialized two-element array remains live and unique.
-        let result = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout(deadline)?) };
+        let result = unsafe {
+            libc::poll(
+                fds.as_mut_ptr(),
+                2,
+                deadline.map(timeout).transpose()?.unwrap_or(-1),
+            )
+        };
         if result < 0 {
             let error = io::Error::last_os_error();
             if error.kind() == io::ErrorKind::Interrupted {
@@ -1085,7 +1248,7 @@ fn packet_wait(
             return Err(error.into());
         }
         if fds[1].revents != 0 {
-            return Err(io::Error::from_raw_os_error(libc::EINTR).into());
+            return Err(Error::Interrupted);
         }
         if fds[0].revents & libc::POLLNVAL != 0 {
             return Err(io::Error::from_raw_os_error(libc::EBADF).into());
