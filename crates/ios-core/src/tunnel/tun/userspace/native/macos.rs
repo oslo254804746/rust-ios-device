@@ -72,6 +72,7 @@ pub(crate) enum Error {
     Conflict(&'static str),
     ResponseStorage { required: usize },
     Deadline,
+    Interrupted,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -82,6 +83,7 @@ impl fmt::Display for Error {
                 write!(f, "Darwin route control requires {required} prepaid bytes")
             }
             Self::Deadline => f.write_str("native operation deadline elapsed"),
+            Self::Interrupted => f.write_str("native packet wait interrupted locally"),
         }
     }
 }
@@ -125,6 +127,51 @@ pub(crate) struct RouteReceipt {
 pub(crate) struct MtuReceipt {
     identity: Identity,
     mtu: u16,
+}
+
+#[cfg(test)]
+impl Identity {
+    pub(crate) fn test_new(index: u16, name_str: &str) -> Self {
+        let mut name = [0 as libc::c_char; libc::IFNAMSIZ];
+        for (i, b) in name_str.bytes().take(libc::IFNAMSIZ - 1).enumerate() {
+            name[i] = b as libc::c_char;
+        }
+        Self { index, name }
+    }
+}
+
+#[cfg(test)]
+impl RouteReceipt {
+    pub(crate) fn test_new(identity: Identity, origin: RouteOrigin) -> Self {
+        Self {
+            identity,
+            query: Query {
+                destination: std::net::Ipv6Addr::LOCALHOST,
+                prefix: 64,
+                index: identity.index,
+                scoped: false,
+            },
+            origin,
+        }
+    }
+}
+
+#[cfg(test)]
+impl AddressReceipt {
+    pub(crate) fn test_new(identity: Identity, address: std::net::Ipv6Addr, prefix: u8) -> Self {
+        Self {
+            identity,
+            address,
+            prefix,
+        }
+    }
+}
+
+#[cfg(test)]
+impl MtuReceipt {
+    pub(crate) fn test_new(identity: Identity, mtu: u16) -> Self {
+        Self { identity, mtu }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AddressReadiness {
@@ -751,7 +798,7 @@ impl MacosDevice {
         self.set_up(false, deadline)
     }
     pub(crate) fn close(self) -> Result<(), (Self, Error)> {
-        if self.session
+        if (self.session && self.identity.is_some())
             || self.address.is_some()
             || self.address_intent.is_some()
             || self.removed_address.is_some()
@@ -1070,11 +1117,27 @@ pub(crate) struct PacketIo {
     mtu: u16,
 }
 impl PacketIo {
-    pub(crate) fn recv_packet(
+    #[cfg(test)]
+    pub(crate) fn from_fd(fd: OwnedFd, mtu: u16) -> Self {
+        Self { fd, mtu }
+    }
+
+    pub(crate) fn recv(
         &self,
         destination: &mut [u8],
         interrupt: &PacketInterrupt,
-        deadline: Instant,
+    ) -> Result<usize, Error> {
+        self.recv_inner(destination, interrupt, None)
+    }
+    pub(crate) fn send(&self, packet: &[u8], interrupt: &PacketInterrupt) -> Result<usize, Error> {
+        self.send_inner(packet, interrupt, None)
+            .map(|()| packet.len())
+    }
+    fn recv_inner(
+        &self,
+        destination: &mut [u8],
+        interrupt: &PacketInterrupt,
+        deadline: Option<Instant>,
     ) -> Result<usize, Error> {
         if destination.len() < usize::from(self.mtu) + 1 {
             return Err(Error::Conflict(
@@ -1127,11 +1190,11 @@ impl PacketIo {
             return Ok(length);
         }
     }
-    pub(crate) fn send_packet(
+    fn send_inner(
         &self,
         packet: &[u8],
         interrupt: &PacketInterrupt,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<(), Error> {
         validate_packet(packet, self.mtu)?;
         loop {
@@ -1481,7 +1544,7 @@ fn packet_wait(
     fd: RawFd,
     interrupt: RawFd,
     events: libc::c_short,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<(), Error> {
     loop {
         let mut items = [
@@ -1496,7 +1559,13 @@ fn packet_wait(
                 revents: 0,
             },
         ];
-        let count = unsafe { libc::poll(items.as_mut_ptr(), 2, timeout(deadline)?) };
+        let count = unsafe {
+            libc::poll(
+                items.as_mut_ptr(),
+                2,
+                deadline.map(timeout).transpose()?.unwrap_or(-1),
+            )
+        };
         if count < 0 {
             let error = io::Error::last_os_error();
             if error.kind() == io::ErrorKind::Interrupted {
@@ -1505,7 +1574,7 @@ fn packet_wait(
             return Err(error.into());
         }
         if items[1].revents != 0 {
-            return Err(io::Error::from_raw_os_error(libc::EINTR).into());
+            return Err(Error::Interrupted);
         }
         if items[0].revents & libc::POLLNVAL != 0 {
             return Err(io::Error::from_raw_os_error(libc::EBADF).into());

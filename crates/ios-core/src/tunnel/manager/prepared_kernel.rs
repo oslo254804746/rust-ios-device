@@ -106,6 +106,8 @@ impl TunnelHandle {
         kernel: &KernelRuntime,
         deadline: Result<Instant, TunnelError>,
     ) -> Result<(), TunnelError> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let cleanup_at = deadline.as_ref().ok().copied();
         phase_outcomes::join_until(
             deadline,
             runtime.phase_outcomes().expect("original Kernel phase hub"),
@@ -116,9 +118,22 @@ impl TunnelHandle {
                 tokio::join!(kernel.join_work(), runtime.collect_original());
                 // Original and native packet/control users have really joined.
                 // Undo was admitted before exposure and retains exact receipts.
+                #[cfg(target_os = "windows")]
                 kernel.undo().await;
-                runtime.release_original();
-                kernel.release_flows();
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                kernel
+                    .undo_at(cleanup_at.expect("validated same cleanup clock"))
+                    .await;
+                #[cfg(target_os = "windows")]
+                {
+                    runtime.release_original();
+                    kernel.release_flows();
+                }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if kernel.is_terminal() {
+                    runtime.release_original();
+                    kernel.release_flows();
+                }
             },
         )
         .await
@@ -137,7 +152,7 @@ impl Drop for StopUnlessReady<'_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
     mod cancellation_tests;

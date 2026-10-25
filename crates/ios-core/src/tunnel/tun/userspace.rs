@@ -38,6 +38,11 @@ use owned_channel as mpsc;
 mod worker_future;
 use worker_future::PreparedWorker;
 mod backend;
+#[cfg(all(
+    feature = "tunnel-kernel",
+    any(target_os = "linux", target_os = "macos")
+))]
+mod kernel_unix;
 #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
 mod kernel_windows;
 mod launch;
@@ -45,12 +50,23 @@ mod launch;
 mod native;
 #[cfg(feature = "tunnel-kernel")]
 mod native_jobs;
+#[cfg(all(
+    feature = "tunnel-kernel",
+    any(target_os = "linux", target_os = "macos")
+))]
+pub(crate) use kernel_unix::KernelRuntime;
 #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
 pub(crate) use kernel_windows::KernelRuntime;
+#[cfg(all(feature = "tunnel-kernel", target_os = "linux"))]
+use native::linux::Plan as KernelPlan;
+#[cfg(all(feature = "tunnel-kernel", target_os = "macos"))]
+use native::macos::Plan as KernelPlan;
 #[cfg(all(test, feature = "tunnel-kernel", target_os = "windows"))]
 pub(crate) use native::windows::scripted_runtime::{
     Operation as ScriptOperation, Script as WindowsScript,
 };
+#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+use native::windows::Plan as KernelPlan;
 mod packet_link;
 mod private_connect;
 use backend::{BackendControl, PortLease};
@@ -553,7 +569,10 @@ impl UserspaceTunDevice {
         &self.outcomes
     }
 
-    #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+    #[cfg(all(
+        feature = "tunnel-kernel",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
     pub(crate) fn prepare_kernel(
         &self,
         bank: Arc<Semaphore>,
@@ -580,8 +599,11 @@ impl UserspaceTunDevice {
         )
     }
 
-    #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
-    fn kernel_plan(info: &crate::tunnel::TunnelInfo) -> Result<native::windows::Plan, TunnelError> {
+    #[cfg(all(
+        feature = "tunnel-kernel",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
+    fn kernel_plan(info: &crate::tunnel::TunnelInfo) -> Result<KernelPlan, TunnelError> {
         let parse = |address: &str| {
             address.parse::<std::net::Ipv6Addr>().map_err(|source| {
                 TunnelError::Io(std::io::Error::new(
@@ -590,7 +612,7 @@ impl UserspaceTunDevice {
                 ))
             })
         };
-        Ok(native::windows::Plan {
+        Ok(KernelPlan {
             client: parse(&info.client_address)?,
             server: parse(&info.server_address)?,
             mtu: ValidatedMtu::new(info.client_mtu)?.as_u16(),

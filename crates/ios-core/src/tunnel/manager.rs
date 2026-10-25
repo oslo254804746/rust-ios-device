@@ -4,12 +4,21 @@ use std::collections::HashMap;
 mod shutdown_tests;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+#[cfg(all(
+    feature = "tunnel-kernel",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
 use std::sync::OnceLock;
 
-#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+#[cfg(all(
+    feature = "tunnel-kernel",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
 mod prepared_kernel;
-#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+#[cfg(all(
+    feature = "tunnel-kernel",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
 use crate::tunnel::tun::userspace::KernelRuntime;
 
 #[cfg(feature = "tunnel-private-ip")]
@@ -67,9 +76,15 @@ enum TunnelRuntime {
         runtime: UserspaceTunDevice,
         mode: TunMode,
         ready: AtomicBool,
-        #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+        #[cfg(all(
+            feature = "tunnel-kernel",
+            any(target_os = "windows", target_os = "linux", target_os = "macos")
+        ))]
         kernel: OnceLock<KernelRuntime>,
-        #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+        #[cfg(all(
+            feature = "tunnel-kernel",
+            any(target_os = "windows", target_os = "linux", target_os = "macos")
+        ))]
         activation_claimed: AtomicBool,
     },
 }
@@ -154,7 +169,10 @@ impl TunnelHandle {
             TunnelRuntime::Userspace { _runtime } => _runtime.request_stop(),
             #[cfg(feature = "tunnel-private-ip")]
             TunnelRuntime::Prepared { runtime, .. } => {
-                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                #[cfg(all(
+                    feature = "tunnel-kernel",
+                    any(target_os = "windows", target_os = "linux", target_os = "macos")
+                ))]
                 if let Some(kernel) = self.prepared_kernel() {
                     kernel.request_stop();
                 }
@@ -207,7 +225,10 @@ impl TunnelHandle {
                 TunnelRuntime::Userspace { _runtime } => _runtime.shutdown_until(deadline).await,
                 #[cfg(feature = "tunnel-private-ip")]
                 TunnelRuntime::Prepared { runtime, .. } => {
-                    #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                    #[cfg(all(
+                        feature = "tunnel-kernel",
+                        any(target_os = "windows", target_os = "linux", target_os = "macos")
+                    ))]
                     if let Some(kernel) = self.prepared_kernel() {
                         return self
                             .shutdown_prepared_kernel_until(runtime, kernel, deadline)
@@ -244,9 +265,15 @@ impl TunnelHandle {
                 runtime,
                 mode,
                 ready: AtomicBool::new(false),
-                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                #[cfg(all(
+                    feature = "tunnel-kernel",
+                    any(target_os = "windows", target_os = "linux", target_os = "macos")
+                ))]
                 kernel: OnceLock::new(),
-                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                #[cfg(all(
+                    feature = "tunnel-kernel",
+                    any(target_os = "windows", target_os = "linux", target_os = "macos")
+                ))]
                 activation_claimed: AtomicBool::new(false),
             },
         }
@@ -318,7 +345,10 @@ impl TunnelHandle {
     pub fn ready_for_publication(&self) -> bool {
         match &self._runtime {
             TunnelRuntime::Prepared { ready, .. } => {
-                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                #[cfg(all(
+                    feature = "tunnel-kernel",
+                    any(target_os = "windows", target_os = "linux", target_os = "macos")
+                ))]
                 if let Some(kernel) = self.prepared_kernel() {
                     return ready.load(Ordering::Acquire) && kernel.ready() && self.is_alive();
                 }
@@ -341,7 +371,10 @@ impl TunnelHandle {
             TunnelRuntime::Userspace { _runtime } => _runtime.shutdown_status(),
             #[cfg(feature = "tunnel-private-ip")]
             TunnelRuntime::Prepared { runtime, .. } => {
-                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                #[cfg(all(
+                    feature = "tunnel-kernel",
+                    any(target_os = "windows", target_os = "linux", target_os = "macos")
+                ))]
                 if let Some(kernel) = self.prepared_kernel() {
                     return runtime
                         .phase_outcomes()
@@ -370,7 +403,10 @@ impl TunnelHandle {
             TunnelRuntime::Userspace { _runtime } => _runtime.is_alive(),
             #[cfg(feature = "tunnel-private-ip")]
             TunnelRuntime::Prepared { runtime, .. } => {
-                #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+                #[cfg(all(
+                    feature = "tunnel-kernel",
+                    any(target_os = "windows", target_os = "linux", target_os = "macos")
+                ))]
                 if let Some(kernel) = self.prepared_kernel() {
                     return runtime.transport_is_alive() && kernel.is_alive();
                 }
