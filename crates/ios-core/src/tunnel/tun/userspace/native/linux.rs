@@ -577,6 +577,7 @@ impl LinuxDevice {
 
     /// A refusal returns this exact owner. It cannot close the live fd while
     /// a caller still needs its original native result or reverse undo.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn close(self) -> Result<(), (Self, Error)> {
         if self.session
             || self.address.is_some()
@@ -935,10 +936,9 @@ impl LinuxDevice {
                             && row.prefix == receipt.prefix
                             && row.output == receipt.identity.index
                             && row.table == receipt.table
+                            && found.replace(row).is_some()
                         {
-                            if found.replace(row).is_some() {
-                                return Err(Error::Conflict("duplicate route readback"));
-                            }
+                            return Err(Error::Conflict("duplicate route readback"));
                         }
                     }
                 }

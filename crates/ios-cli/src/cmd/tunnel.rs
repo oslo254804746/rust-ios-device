@@ -1476,10 +1476,8 @@ impl TunnelAgentState {
                     .paired_devices_owned(&self.inner.global_metadata_bytes)?
                     .await
                     .context("failed to browse paired mobdev2 devices")?;
-                let _snapshot_charge = admission::retain_paired_snapshot(
-                    &self.inner.global_metadata_bytes,
-                    &targets,
-                )?;
+                let _snapshot_charge =
+                    admission::retain_paired_snapshot(&self.inner.global_metadata_bytes, &targets)?;
                 let Some(target) = targets.into_iter().find(|target| {
                     target.udid == udid && ip_filter.map_or(true, |ip| ip == target.host)
                 }) else {
@@ -1812,8 +1810,13 @@ impl TunnelAgentState {
             };
             if let PublicationExpectation::Replace(old) = expectation {
                 let tunnels = self.inner.tunnels.read().await;
-                let (key, current) = tunnels.get_key_value(udid).ok_or_else(lifecycle::cancelled)?;
-                anyhow::ensure!(old.matches_locked(key, current, ticket), lifecycle::cancelled());
+                let (key, current) = tunnels
+                    .get_key_value(udid)
+                    .ok_or_else(lifecycle::cancelled)?;
+                anyhow::ensure!(
+                    old.matches_locked(key, current, ticket),
+                    lifecycle::cancelled()
+                );
                 drop(tunnels);
             }
             // Every output, catalogue, publication and native attachment owner
@@ -1944,8 +1947,13 @@ impl TunnelAgentState {
                         .expect("pre-Source destination"),
                 )?;
                 if let PublicationExpectation::Replace(old) = expectation {
-                    let (key, current) = tunnels.get_key_value(udid).ok_or_else(lifecycle::cancelled)?;
-                    anyhow::ensure!(old.matches_locked(key, current, ticket), lifecycle::cancelled());
+                    let (key, current) = tunnels
+                        .get_key_value(udid)
+                        .ok_or_else(lifecycle::cancelled)?;
+                    anyhow::ensure!(
+                        old.matches_locked(key, current, ticket),
+                        lifecycle::cancelled()
+                    );
                 }
                 if expectation.is_ordinary() {
                     if let Some(native) = &acquired.as_ref().expect("unpublished owner").1 {
@@ -2012,9 +2020,9 @@ impl TunnelAgentState {
                     Ok(change)
                 };
                 let change = match (expectation, &witness) {
-                    (PublicationExpectation::Replace(old), Some(witness)) => {
-                        old.registry.publish_replacement(witness, ownership.stamp(), publish_action)?
-                    }
+                    (PublicationExpectation::Replace(old), Some(witness)) => old
+                        .registry
+                        .publish_replacement(witness, ownership.stamp(), publish_action)?,
                     _ => publish_action()?,
                 };
                 Ok((record, change.finish()))

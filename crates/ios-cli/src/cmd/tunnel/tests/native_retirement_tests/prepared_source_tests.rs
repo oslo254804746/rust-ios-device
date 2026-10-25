@@ -291,13 +291,15 @@ async fn prepared_cli_post_activation_usb_detachment_stops_runtime_and_refunds()
         .await
         .err()
         .unwrap();
-    assert!(error.to_string().contains("tunnel attachment absent before publication"));
+    assert!(error
+        .to_string()
+        .contains("tunnel attachment absent before publication"));
     assert!(!source.handle().ready_for_publication());
     assert!(state.inner.tunnels.read().await.is_empty());
     drop(error);
     drop(_serial);
     drop(ticket);
-    drop(deadline);
+    let _ = deadline;
     collect(&state, &source, &mut terminal, expected).await;
     drop(terminal);
     drop(_hook);
@@ -342,7 +344,7 @@ async fn prepared_cli_deadline_clamp_before_activation_aborts_and_cleans_up() {
     drop(error);
     drop(_serial);
     drop(ticket);
-    drop(deadline);
+    let _ = deadline;
     collect(&state, &source, &mut terminal, expected).await;
     drop(terminal);
     drop(_hook);

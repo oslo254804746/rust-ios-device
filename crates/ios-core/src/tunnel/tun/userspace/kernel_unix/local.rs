@@ -316,6 +316,7 @@ impl LocalDevice {
         Ok(true)
     }
 
+    #[allow(clippy::result_large_err)]
     pub(crate) fn close(self) -> Result<(), (Self, NativeError)> {
         let failure = {
             let mut guard = self.hook.lock().unwrap();

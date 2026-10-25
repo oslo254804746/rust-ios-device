@@ -88,6 +88,7 @@ impl NativeLease {
         self.capture_exact(stamp, handle, metadata, global_metadata, previous, bank, false)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn capture_exact(
         &self,
         stamp: OwnershipStamp,
@@ -182,6 +183,7 @@ impl RefreshProof {
         RefreshAllocation::body_bytes()
     }
 
+    #[allow(dead_code)]
     pub(super) fn previous(&self) -> Option<&super::freshness::MetadataOwner> {
         self.previous.as_ref()
     }
