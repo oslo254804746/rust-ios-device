@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-25：L02 [多设备隔离交付与验收收口](validation/l02-closeout-2026-10-25.md)
+CLI 私有准备/发布与精确旧行替换接入生产，Linux/macOS Unix actor 经本地双向包传输与逆序撤销闭环；
+RFC 2473 IP-in-IP 私有流丢弃与合法流量转发接通；全链路 128MiB 准入额度与 closed-zero 保障通过；
+1923 完整 CLI、121 native 退休、8 Unix actor、16 过滤器用例及 host 5/0/22 通过；生成 ios.exe 指纹一致；
+ESP 载荷解密与 128MiB 物理 heap 上界保留为明确 OPEN，macOS 驱动级原生运行与硬件变更保持 NOT_RUN；
+L02 七包开发与独立验收完成，交付 Codex 独立 review，停止扩展到其余六个主项。
+
 2026-10-25：L02 [明文扩展头与分片身份修复](validation/tunnel-filter-plaintext-2026-10-25.md)
 HAO/RH2/SRH/AH 明文端点、offset-zero canonical/key 分离、atomic/首次 ingest TTL 已接入原过滤器。
 原六测试文件前缀逐字节保留，新增十例；Windows16/0、实际 Linux ELF16/0、Core strict/fmt/diff 共六门禁通过，778源码无漂移。
