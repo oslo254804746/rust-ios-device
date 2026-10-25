@@ -136,6 +136,7 @@ fn assert_joined(observed: Completion, recovered: bool, baseline: usize) {
     );
 }
 
+#[cfg(feature = "tunnel-userspace")]
 fn info() -> crate::tunnel::TunnelInfo {
     crate::tunnel::TunnelInfo {
         server_address: "fd00::2".into(),
@@ -165,11 +166,14 @@ async fn native_shutdown_userspace_joins_before_retained_owner_drop() {
         let runtime = UserspaceTunDevice::start("fd00::1", "fd00::2", 1280, stream)
             .await
             .unwrap();
+        #[cfg(feature = "tunnel-userspace")]
         let owner = Arc::new(crate::tunnel::TunnelHandle::new_userspace(
             "native-shutdown-test".into(),
             info(),
             runtime,
         ));
+        #[cfg(not(feature = "tunnel-userspace"))]
+        let owner = Arc::new(runtime);
         let retained = owner.clone();
         let entered = until(|| probe.reads.load(Ordering::SeqCst) > 0).await;
         let result = owner.shutdown(OBSERVATION).await;
@@ -266,6 +270,7 @@ async fn native_shutdown_userspace_joins_actual_pending_packet_write() {
 }
 
 #[tokio::test]
+#[cfg(feature = "tunnel-userspace")]
 async fn native_shutdown_userspace_manager_replacement_and_retire_stop_shared_owners() {
     let baseline = alive();
     let (first_stream, first_peer, first_probe) = stream(128);

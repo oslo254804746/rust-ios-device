@@ -80,8 +80,11 @@ coredevice-files = ["coredevice-base", "fileservice"]
 coredevice-info = ["coredevice-base", "deviceinfo"]
 mdns = ["dep:mdns-sd", "dep:hmac", "dep:siphasher"]
 tunnel = ["dep:openssl", "dep:tokio-openssl"]
-tunnel-kernel = ["tunnel", "dep:tun-rs"]
-tunnel-userspace = ["tunnel", "dep:smoltcp"]
+# The private packet/IP engine is available to both selected final backends.
+# Enabling it alone does not enable the public userspace selection.
+tunnel-private-ip = ["tunnel", "dep:smoltcp", "dep:socket2", "dep:windows-sys"]
+tunnel-kernel = ["tunnel-private-ip", "dep:tun-rs", "dep:libloading"]
+tunnel-userspace = ["tunnel-private-ip"]
 supervised-pair = ["dep:openssl"]
 afc = []
 arbitration = []
@@ -190,6 +193,7 @@ tokio-openssl = { workspace = true, optional = true }
 h2           = { workspace = true }
 http         = { workspace = true }
 smoltcp      = { workspace = true, optional = true }
+socket2      = { version = "0.6.2", features = ["all"], optional = true }
 tun-rs       = { workspace = true, optional = true }
 p256         = { workspace = true }
 sha2         = { workspace = true }
@@ -220,9 +224,13 @@ tar          = { workspace = true, optional = true }
 [target.'cfg(unix)'.dependencies]
 libc         = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60.2", optional = true, features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_System_Threading", "Win32_Security"] }
+libloading = { version = "0.8.8", optional = true }
+
 [dev-dependencies]
 # A worker can block in controlled teardown while the timer drives shutdown.
-tokio        = { workspace = true, features = ["rt-multi-thread"] }
+tokio        = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [package.metadata.docs.rs]
 all-features = true

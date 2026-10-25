@@ -23,10 +23,15 @@ use crate::lockdown::pair_record::PairRecord;
 
 const TUNNEL_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[cfg(feature = "tunnel-private-ip")]
+pub(super) mod prepared;
+
 #[cfg(test)]
 mod owned_output_tests;
 #[cfg(all(test, feature = "tunnel-userspace"))]
 mod ownership_tests;
+#[cfg(all(test, feature = "tunnel-kernel", not(feature = "tunnel-userspace")))]
+mod private_engine_feature_tests;
 
 #[cfg(feature = "tunnel-kernel")]
 use crate::tunnel::forward::forward_packets_inner_owned;

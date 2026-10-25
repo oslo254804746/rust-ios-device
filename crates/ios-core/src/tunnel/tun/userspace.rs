@@ -22,6 +22,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::tunnel::owner::phase_outcomes::{Phase, PhaseOutcomes};
 use crate::tunnel::owner::unit_stop as watch;
 use crate::tunnel::owner::{self, ChildRole, Ledger, OwnedTask, ParentRole, SharedChildTaskSet};
 use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
@@ -36,11 +37,27 @@ mod owned_channel;
 use owned_channel as mpsc;
 mod worker_future;
 use worker_future::PreparedWorker;
+mod backend;
+#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+mod kernel_windows;
 mod launch;
+#[cfg(feature = "tunnel-kernel")]
+mod native;
+#[cfg(feature = "tunnel-kernel")]
+mod native_jobs;
+#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+pub(crate) use kernel_windows::KernelRuntime;
+#[cfg(all(test, feature = "tunnel-kernel", target_os = "windows"))]
+pub(crate) use native::windows::scripted_runtime::{
+    Operation as ScriptOperation, Script as WindowsScript,
+};
 mod packet_link;
+mod private_connect;
+use backend::{BackendControl, PortLease};
 use launch::{LaunchControl, LaunchGuard};
 #[cfg(test)]
 use packet_link::{read_ios_packets_owned, write_ios_packets_owned};
+pub(crate) use private_connect::PrivateConnector;
 
 const PREFIX_LEN: u8 = 64;
 const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
@@ -60,7 +77,8 @@ const MAX_LOCAL_PROXY_CLIENTS: usize = 64;
 
 #[cfg(test)]
 fn runtime_channel_bytes() -> usize {
-    2 * mpsc::required_bytes::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY)
+    mpsc::required_bytes::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY)
+        + packet_link::egress_bytes()
         + mpsc::required_bytes::<ConnRequest>(32)
 }
 
@@ -70,6 +88,7 @@ fn runtime_owner_bytes() -> usize {
         + SharedChildTaskSet::body_bytes()
         + TaskHandles::body_bytes()
         + LaunchControl::body_bytes()
+        + BackendControl::body_bytes()
 }
 
 // ── smoltcp Device implementation ─────────────────────────────────────────────
@@ -215,6 +234,7 @@ struct ConnRequest {
     from_client: mpsc::Receiver<OwnedBuffer>,
     to_client: mpsc::Sender<OwnedBuffer>,
     connected: tokio::sync::oneshot::Sender<()>,
+    source_port: Option<u16>,
 }
 
 struct ConnState {
@@ -236,6 +256,9 @@ pub struct UserspaceTunDevice {
     clients: SharedChildTaskSet,
     outcomes: Ledger,
     launch: LaunchControl,
+    backend: BackendControl,
+    private: Option<PrivateConnector>,
+    phases: Option<PhaseOutcomes>,
 }
 
 impl UserspaceTunDevice {
@@ -313,6 +336,63 @@ impl UserspaceTunDevice {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
+        Self::prepare_with_proxy_policy(
+            client_address,
+            _server_address,
+            mtu,
+            ios_stream,
+            byte_bank,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_private_validated_with_bank<S>(
+        client_address: &str,
+        server_address: &str,
+        mtu: ValidatedMtu,
+        ios_stream: S,
+        bank: Arc<Semaphore>,
+        private_capacity: usize,
+        reserve_for_kernel: bool,
+    ) -> Result<
+        (
+            Self,
+            impl FnOnce() -> Result<(), TunnelError> + Send + 'static,
+        ),
+        TunnelError,
+    >
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::prepare_with_proxy_policy(
+            client_address,
+            server_address,
+            mtu,
+            ios_stream,
+            Some(bank),
+            Some((private_capacity, reserve_for_kernel)),
+        )
+        .await
+    }
+
+    async fn prepare_with_proxy_policy<S>(
+        client_address: &str,
+        _server_address: &str,
+        mtu: ValidatedMtu,
+        ios_stream: S,
+        byte_bank: Option<Arc<Semaphore>>,
+        private_policy: Option<(usize, bool)>,
+    ) -> Result<
+        (
+            Self,
+            impl FnOnce() -> Result<(), TunnelError> + Send + 'static,
+        ),
+        TunnelError,
+    >
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let payload_capacity = mtu.ipv6_payload_capacity()?;
         let client_ipv6: Ipv6Address = client_address.parse().map_err(|_| {
             TunnelError::Protocol(format!("invalid client IPv6 address: {client_address}"))
@@ -324,6 +404,15 @@ impl UserspaceTunDevice {
             packet_link::PreparedPacketLink::prepare(mtu, payload_capacity, byte_bank.as_ref())?;
         let (conn_req_tx, conn_req_rx) = mpsc::with_bank::<ConnRequest>(32, byte_bank.as_ref())?;
         let outcomes = Ledger::with_metadata(byte_bank.as_ref())?;
+        let phases = if private_policy.is_some_and(|(_, kernel)| kernel) {
+            let phases = PhaseOutcomes::new(byte_bank.as_ref())?;
+            phases
+                .bind(&outcomes, Phase::Original)
+                .map_err(|source| TunnelError::Io(std::io::Error::other(source)))?;
+            Some(phases)
+        } else {
+            None
+        };
         let clients = SharedChildTaskSet::with_metadata(
             outcomes.clone(),
             ChildRole::ProxyClient,
@@ -331,11 +420,22 @@ impl UserspaceTunDevice {
         )?;
         let task_handles = runtime_storage::task_handles(byte_bank.as_ref())?;
         let control = LaunchControl::prepare(byte_bank.as_ref(), &outcomes)?;
+        let backend = BackendControl::prepare(byte_bank.as_ref())?;
         let client_permits = ListenerSlots::new(MAX_LOCAL_PROXY_CLIENTS, byte_bank.as_ref())?;
 
         // All buffer/channel admission precedes listener setup and workers.
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_port = listener.local_addr()?.port();
+        let private = private_policy
+            .map(|(capacity, reserve)| {
+                PrivateConnector::prepare(
+                    local_port,
+                    capacity,
+                    reserve,
+                    byte_bank.as_ref().expect("private original bank"),
+                )
+            })
+            .transpose()?;
 
         let (ios_reader, ios_writer) = tokio::io::split(ios_stream);
         let (stop, stop_rx) = watch::channel(outcomes.clone());
@@ -350,26 +450,35 @@ impl UserspaceTunDevice {
             packet_link.workers(ios_reader, ios_writer, byte_bank, storage.clone());
 
         let smoltcp_storage = storage.clone();
+        let smoltcp_control = backend.clone();
         let smoltcp_future = async move {
-            run_smoltcp(
+            let returned = run_smoltcp(
                 client_ipv6,
                 mtu,
                 packets,
                 conn_req_rx,
                 smoltcp_storage.clone(),
+                &smoltcp_control,
             )
             .await;
+            smoltcp_control.returned(returned);
             tracing::debug!("userspace: smoltcp loop exited");
             smoltcp_storage.result()
         };
 
         let listener_clients = clients.clone();
         let listener_outcomes = outcomes.clone();
+        let listener_control = backend.clone();
+        let listener_private = private.clone();
         let listener_future = async move {
             run_local_listener_owned(
                 listener,
                 conn_req_tx,
-                stop_rx,
+                ListenerControl {
+                    stop: stop_rx,
+                    private: Some(listener_control),
+                    access: listener_private,
+                },
                 listener_clients,
                 listener_outcomes,
                 storage,
@@ -418,6 +527,9 @@ impl UserspaceTunDevice {
                 clients,
                 outcomes,
                 launch: control,
+                backend,
+                private,
+                phases,
             },
             launch,
         ))
@@ -430,7 +542,187 @@ impl UserspaceTunDevice {
             && self.task_handles.iter().all(|handle| !handle.is_finished())
     }
 
+    pub(crate) fn private_connector(&self) -> Option<PrivateConnector> {
+        self.private.clone()
+    }
+
+    pub(crate) fn phase_outcomes(&self) -> Option<&PhaseOutcomes> {
+        self.phases.as_ref()
+    }
+    pub(crate) fn ledger(&self) -> &Ledger {
+        &self.outcomes
+    }
+
+    #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+    pub(crate) fn prepare_kernel(
+        &self,
+        bank: Arc<Semaphore>,
+        info: &crate::tunnel::TunnelInfo,
+        deadline: tokio::time::Instant,
+    ) -> Result<KernelRuntime, TunnelError> {
+        KernelRuntime::prepare(self, bank, Self::kernel_plan(info)?, deadline)
+    }
+
+    #[cfg(all(test, feature = "tunnel-kernel", target_os = "windows"))]
+    pub(crate) fn prepare_kernel_scripted(
+        &self,
+        bank: Arc<Semaphore>,
+        info: &crate::tunnel::TunnelInfo,
+        deadline: tokio::time::Instant,
+        script: &WindowsScript,
+    ) -> Result<KernelRuntime, TunnelError> {
+        KernelRuntime::prepare_scripted(
+            self,
+            bank,
+            Self::kernel_plan(info)?,
+            deadline,
+            script.allocator(),
+        )
+    }
+
+    #[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+    fn kernel_plan(info: &crate::tunnel::TunnelInfo) -> Result<native::windows::Plan, TunnelError> {
+        let parse = |address: &str| {
+            address.parse::<std::net::Ipv6Addr>().map_err(|source| {
+                TunnelError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    source,
+                ))
+            })
+        };
+        Ok(native::windows::Plan {
+            client: parse(&info.client_address)?,
+            server: parse(&info.server_address)?,
+            mtu: ValidatedMtu::new(info.client_mtu)?.as_u16(),
+            prefix: PREFIX_LEN,
+        })
+    }
+
+    /// The original transport pair survives a successful backend handoff.
+    /// The private listener and smoltcp joins normally finish at that boundary.
+    pub(crate) fn transport_is_alive(&self) -> bool {
+        self.launch.opened()
+            && self.task_handles.all_installed()
+            && !self.outcomes.is_runtime_stopped()
+            && (0..2).all(|index| {
+                self.task_handles
+                    .get(index)
+                    .is_some_and(|task| !task.is_finished())
+            })
+    }
+
+    pub(crate) fn open_public(&self) {
+        if let Some(private) = &self.private {
+            private.open_public();
+        }
+    }
+
+    pub(crate) fn private_work_result(&self) -> Result<(), TunnelError> {
+        self.outcomes.work_result()?;
+        if !self.is_alive() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn private_interrupted(&self) -> TunnelError {
+        self.launch.finished().await;
+        if let Err(original) = self.private_work_result() {
+            return original;
+        }
+        let mut stop = self.stop.subscribe();
+        tokio::select! {
+            biased;
+            _ = self.task_handles.get(0).expect("original packet reader").join() => {},
+            _ = self.task_handles.get(1).expect("original packet writer").join() => {},
+            _ = self.task_handles.get(2).expect("original private engine").join() => {},
+            _ = self.task_handles.get(3).expect("original private listener").join() => {},
+            _ = stop.changed() => {},
+        }
+        self.outcomes
+            .work_result()
+            .err()
+            .unwrap_or_else(|| std::io::Error::other(crate::OperationCancelled::new()).into())
+    }
+
+    /// Only the original transport pair is persistent after private quiescence.
+    /// Collect its actual completion before selecting a cancellation fallback.
+    pub(crate) async fn transport_interrupted(&self) -> TunnelError {
+        self.launch.finished().await;
+        if let Err(original) = self.outcomes.work_result() {
+            return original;
+        }
+        let mut stop = self.stop.subscribe();
+        tokio::select! {
+            biased;
+            _ = self.task_handles.get(0).expect("original packet reader").join() => {},
+            _ = self.task_handles.get(1).expect("original packet writer").join() => {},
+            _ = stop.changed() => {},
+        }
+        self.outcomes
+            .work_result()
+            .err()
+            .unwrap_or_else(|| std::io::Error::other(crate::OperationCancelled::new()).into())
+    }
+
+    /// Join only the private producers; the same transport pair stays alive.
+    /// The caller's existing absolute deadline covers this whole transition.
+    pub(super) async fn quiesce_backend(&self) -> Result<PortLease, TunnelError> {
+        self.launch.finished().await;
+        self.outcomes.work_result()?;
+        if self.outcomes.is_runtime_stopped() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        self.backend.close_listener();
+        self.task_handles
+            .get(3)
+            .expect("installed original listener")
+            .join()
+            .await;
+        self.clients.drain().await;
+        self.outcomes.work_result()?;
+        self.backend.quiesce();
+        self.task_handles
+            .get(2)
+            .expect("installed original smoltcp")
+            .join()
+            .await;
+        self.outcomes.work_result()?;
+        if self.outcomes.is_runtime_stopped() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        self.backend.lease()
+    }
+
+    pub(crate) async fn quiesce_and_flush(&self) -> Result<PortLease, TunnelError> {
+        let mut lease = self.quiesce_backend().await?;
+        let writer = self.task_handles.get(1).expect("installed original writer");
+        let flushed = tokio::select! {
+            biased;
+            result = lease.port().outgoing.flush_barrier(&self.outcomes, &self.stop) => result,
+            _ = writer.join() => {
+                self.outcomes.work_result()?;
+                Err(TunnelError::Io(std::io::Error::other(crate::OperationCancelled::new())))
+            }
+        };
+        if flushed.is_err() {
+            // A writer panic/normal terminal state is not a flush ACK. Collect
+            // its actual typed completion before choosing the local fallback.
+            writer.join().await;
+            self.outcomes.work_result()?;
+        }
+        flushed?;
+        self.outcomes.work_result()?;
+        if self.outcomes.is_runtime_stopped() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        Ok(lease)
+    }
+
     pub(crate) fn request_stop(&self) {
+        if let Some(private) = &self.private {
+            private.seal();
+        }
         let _abort = launch::AbortInstalled::first_three(&self.task_handles);
         self.outcomes.request_runtime_stop();
         self.stop.send_replace(());
@@ -460,12 +752,28 @@ impl UserspaceTunDevice {
         deadline: Result<tokio::time::Instant, TunnelError>,
     ) -> impl std::future::Future<Output = Result<(), TunnelError>> + Send + '_ {
         owner::join_until(deadline, &self.outcomes, async {
-            self.launch.finished().await;
-            for task in &self.task_handles {
-                task.join().await;
-            }
-            self.clients.drain().await;
+            self.collect_original().await;
+            self.release_original();
         })
+    }
+
+    /// Collect actual original joins without retiring packet/flow ownership.
+    /// A staged native owner must also finish its packet jobs before undo.
+    pub(crate) async fn collect_original(&self) {
+        self.launch.finished().await;
+        for task in &self.task_handles {
+            task.join().await;
+        }
+        self.clients.drain().await;
+    }
+
+    /// Called only after all original/native/undo joins have completed. The
+    /// exact packet mailbox and reserved descriptors die outside their guards.
+    pub(crate) fn release_original(&self) {
+        drop(self.backend.close_port());
+        if let Some(private) = &self.private {
+            private.close();
+        }
     }
 
     /// Observe acquired native failures/join progress without requesting stop
@@ -500,7 +808,7 @@ async fn write_ios_packets<W>(writer: &mut W, mtu: ValidatedMtu, rx: mpsc::Recei
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let _ = write_ios_packets_owned(writer, mtu, rx).await;
+    let _ = write_ios_packets_owned(writer, mtu, rx, None).await;
 }
 
 // ── smoltcp event loop ─────────────────────────────────────────────────────────
@@ -570,13 +878,41 @@ async fn run_smoltcp(
     client_ipv6: Ipv6Address,
     mtu: ValidatedMtu,
     packets: packet_link::PacketPort,
-    mut conn_req_rx: mpsc::Receiver<ConnRequest>,
+    conn_req_rx: mpsc::Receiver<ConnRequest>,
     storage: RuntimeStorage,
-) {
+    backend: &BackendControl,
+) -> Option<packet_link::PacketPort> {
     let packet_link::PacketPort {
         incoming: mut ios_rx,
         outgoing: ios_tx,
     } = packets;
+    // This inner future owns the original socket/device/fee scope. Its drop
+    // glue finishes before the same unique port is reassembled and returned.
+    let quiesced = run_smoltcp_inner(
+        client_ipv6,
+        mtu,
+        &mut ios_rx,
+        &ios_tx,
+        conn_req_rx,
+        storage,
+        backend,
+    )
+    .await;
+    quiesced.then_some(packet_link::PacketPort {
+        incoming: ios_rx,
+        outgoing: ios_tx,
+    })
+}
+
+async fn run_smoltcp_inner(
+    client_ipv6: Ipv6Address,
+    mtu: ValidatedMtu,
+    ios_rx: &mut mpsc::Receiver<OwnedBuffer>,
+    ios_tx: &packet_link::PacketSender,
+    mut conn_req_rx: mpsc::Receiver<ConnRequest>,
+    storage: RuntimeStorage,
+    backend: &BackendControl,
+) -> bool {
     let mut device = ChannelDevice::new(mtu, storage.clone());
     let config = Config::new(HardwareAddress::Ip);
     let mut iface = Interface::new(config, &mut device, smol_now());
@@ -594,7 +930,26 @@ async fn run_smoltcp(
 
     loop {
         if storage.stopped() {
-            return;
+            return false;
+        }
+        if backend.is_quiescing() {
+            // No further iface.poll produces packets after this boundary.
+            // Keep each already emitted buffer in this original worker while
+            // waiting for the same egress FIFO; only whole-runtime stop cancels.
+            let mut stop = storage.stop.subscribe();
+            while let Some(packet) = pending_ios_tx
+                .pop_front()
+                .or_else(|| device.tx_buf.pop_front())
+            {
+                tokio::select! {
+                    biased;
+                    sent = ios_tx.send(packet) => {
+                        if sent.is_err() { return false; }
+                    }
+                    _ = stop.changed() => return false,
+                }
+            }
+            return true;
         }
         let mut made_progress = false;
 
@@ -603,7 +958,7 @@ async fn run_smoltcp(
             if let Err((original, packet)) = device.rx_buf.push_back(pkt) {
                 storage.fail(ParentRole::Smoltcp, original);
                 drop(packet);
-                return;
+                return false;
             }
             made_progress = true;
         }
@@ -619,18 +974,18 @@ async fn run_smoltcp(
             // is reserved and cannot drop fees inside a failed queue admission.
             if let Err(original) = connections.prepare_push() {
                 storage.fail(ParentRole::Smoltcp, original);
-                return;
+                return false;
             }
             if let Err(original) = sockets.prepare_add() {
                 storage.fail(ParentRole::Smoltcp, original);
-                return;
+                return false;
             }
             let (rx, tx, socket_fees) =
                 match socket_buffers(storage.bank.as_ref(), SOCKET_BUFFER_BYTES) {
                     Ok(buffers) => buffers,
                     Err(original) => {
                         storage.fail(ParentRole::Smoltcp, original);
-                        return;
+                        return false;
                     }
                 };
             let rx_buf = tcp::SocketBuffer::new(rx);
@@ -638,16 +993,19 @@ async fn run_smoltcp(
             let mut socket = tcp::Socket::new(rx_buf, tx_buf);
             socket.set_timeout(Some(smoltcp::time::Duration::from_secs(30)));
             socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(1)));
-            let Some(local_port) = take_ephemeral_port(&mut ephemeral_port, |port| {
-                connections.iter().any(|(handle, _)| {
-                    let handle = *handle;
-                    sockets.with_set(|set| {
-                        set.get::<tcp::Socket>(handle)
-                            .local_endpoint()
-                            .is_some_and(|endpoint| endpoint.port == port)
+            let local_port = req.source_port.or_else(|| {
+                take_ephemeral_port(&mut ephemeral_port, |port| {
+                    connections.iter().any(|(handle, _)| {
+                        let handle = *handle;
+                        sockets.with_set(|set| {
+                            set.get::<tcp::Socket>(handle)
+                                .local_endpoint()
+                                .is_some_and(|endpoint| endpoint.port == port)
+                        })
                     })
                 })
-            }) else {
+            });
+            let Some(local_port) = local_port else {
                 tracing::error!(
                     remote = %crate::redaction::diagnostic_id(&req.remote_ip.to_string()),
                     port = req.remote_port,
@@ -679,7 +1037,7 @@ async fn run_smoltcp(
 
         sockets.with_set(|set| iface.poll(smol_now(), &mut device, set));
         if storage.stopped() {
-            return;
+            return false;
         }
 
         while let Some(pkt) = device.tx_buf.pop_front() {
@@ -692,17 +1050,17 @@ async fn run_smoltcp(
                     if let Err((original, packet)) = pending_ios_tx.push_back(pkt) {
                         storage.fail(ParentRole::Smoltcp, original);
                         drop(packet);
-                        return;
+                        return false;
                     }
                     break;
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     tracing::debug!("userspace: iOS packet writer closed");
-                    return;
+                    return false;
                 }
             }
         }
-        made_progress |= flush_channel_queue(&ios_tx, &mut pending_ios_tx);
+        made_progress |= flush_channel_queue(ios_tx, &mut pending_ios_tx);
 
         let mut to_remove = OwnedQueue::new(storage.bank.as_ref());
         let socket_result = sockets.with_set(|set| -> Result<(), ()> {
@@ -804,7 +1162,7 @@ async fn run_smoltcp(
             Ok(())
         });
         if socket_result.is_err() {
-            return;
+            return false;
         }
         while let Some(handle) = to_remove.pop_front() {
             sockets.with_set(|set| drop(set.remove(handle)));
@@ -822,11 +1180,12 @@ async fn run_smoltcp(
 
         let mut stop = storage.stop.subscribe();
         if storage.stopped() {
-            return;
+            return false;
         }
         tokio::select! {
             biased;
-            _ = stop.changed() => return,
+            _ = stop.changed() => return false,
+            _ = backend.quiescing() => {},
             _ = tokio::time::sleep(smoltcp_poll_sleep_duration(
                 sockets.with_set(|set| iface.poll_delay(smol_now(), set)), !connections.is_empty(),
             )) => {},
@@ -834,7 +1193,10 @@ async fn run_smoltcp(
     }
 }
 
-fn flush_channel_queue<T>(tx: &mpsc::Sender<T>, pending: &mut OwnedQueue<T>) -> bool {
+fn flush_channel_queue<T>(
+    tx: &impl packet_link::TrySender<T>,
+    pending: &mut OwnedQueue<T>,
+) -> bool {
     let mut made_progress = false;
     while let Some(buf) = pending.pop_front() {
         match tx.try_send(buf) {
@@ -888,6 +1250,12 @@ struct ListenerLimits {
     preamble_timeout: Duration,
 }
 
+struct ListenerControl {
+    stop: watch::Receiver,
+    private: Option<BackendControl>,
+    access: Option<PrivateConnector>,
+}
+
 #[derive(Clone)]
 enum ListenerSlots {
     Legacy(Arc<Semaphore>),
@@ -919,7 +1287,7 @@ impl ListenerSlots {
 async fn run_local_listener_owned(
     listener: TcpListener,
     conn_req_tx: mpsc::Sender<ConnRequest>,
-    stop: watch::Receiver,
+    control: ListenerControl,
     clients: SharedChildTaskSet,
     outcomes: Ledger,
     storage: RuntimeStorage,
@@ -932,7 +1300,7 @@ async fn run_local_listener_owned(
             permits,
             preamble_timeout: LOCAL_PROXY_PREAMBLE_TIMEOUT,
         },
-        stop,
+        control,
         clients,
         outcomes,
         storage,
@@ -979,7 +1347,11 @@ async fn run_local_listener_with_limit_owned(
             permits: ListenerSlots::new(max_clients, None).expect("legacy slot constructor"),
             preamble_timeout,
         },
-        stop,
+        ListenerControl {
+            stop,
+            private: None,
+            access: None,
+        },
         clients,
         outcomes,
         RuntimeStorage::unmetered(),
@@ -991,11 +1363,16 @@ async fn run_local_listener_with_limit_storage(
     listener: TcpListener,
     conn_req_tx: mpsc::Sender<ConnRequest>,
     limits: ListenerLimits,
-    mut stop: watch::Receiver,
+    control: ListenerControl,
     clients: SharedChildTaskSet,
     outcomes: Ledger,
     storage: RuntimeStorage,
 ) {
+    let ListenerControl {
+        mut stop,
+        private,
+        access,
+    } = control;
     let ListenerLimits {
         permits,
         preamble_timeout,
@@ -1006,6 +1383,12 @@ async fn run_local_listener_with_limit_storage(
         tokio::select! {
             biased;
             _ = stop.changed() => break,
+            _ = async {
+                match &private {
+                    Some(control) => control.listener_closed().await,
+                    None => std::future::pending().await,
+                }
+            } => break,
             _ = conn_req_tx.closed() => break,
             joined = client_tasks.join_next(), if !client_tasks.is_empty() => {
                 if let Some(Err(error)) = joined {
@@ -1021,6 +1404,13 @@ async fn run_local_listener_with_limit_storage(
                         break;
                     }
                 };
+                let authorization = match &access {
+                    Some(access) => match access.claim(peer) {
+                        Some(authorization) => authorization,
+                        None => { drop(client); continue; }
+                    },
+                    None => private_connect::Access::Public,
+                };
                 let permit = match permits.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
@@ -1035,7 +1425,7 @@ async fn run_local_listener_with_limit_storage(
                 let tx = conn_req_tx.clone();
                 let client_storage = storage.clone();
                 let future = async move {
-                    handle_local_client_storage(client, tx, permit, preamble_timeout, client_storage).await;
+                    handle_local_client_storage(client, tx, permit, preamble_timeout, client_storage, authorization).await;
                 };
                 match PreparedWorker::prepare(future, storage.bank.as_ref()) {
                     Ok(prepared) => prepared.spawn_child(&mut client_tasks),
@@ -1065,6 +1455,7 @@ async fn handle_local_client(
         ListenerPermit::Legacy { _permit: permit },
         preamble_timeout,
         RuntimeStorage::unmetered(),
+        private_connect::Access::Public,
     )
     .await;
 }
@@ -1075,6 +1466,7 @@ async fn handle_local_client_storage(
     _permit: ListenerPermit,
     preamble_timeout: Duration,
     storage: RuntimeStorage,
+    authorization: private_connect::Access,
 ) {
     let (remote_ip, remote_port) = match tokio::time::timeout(
         preamble_timeout,
@@ -1093,6 +1485,21 @@ async fn handle_local_client_storage(
                 preamble_timeout.as_millis()
             );
             return;
+        }
+    };
+
+    let source_port = match authorization {
+        private_connect::Access::Public => None,
+        private_connect::Access::Private {
+            endpoint,
+            source_port,
+        } => {
+            if remote_ip != Ipv6Address::from_bytes(&endpoint.ip().octets())
+                || remote_port != endpoint.port()
+            {
+                return;
+            }
+            Some(source_port)
         }
     };
 
@@ -1119,6 +1526,7 @@ async fn handle_local_client_storage(
         from_client: from_client_rx,
         to_client: to_client_tx,
         connected: connected_tx,
+        source_port,
     };
     if conn_req_tx.send(req).await.is_err() {
         return;

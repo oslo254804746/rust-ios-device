@@ -27,11 +27,11 @@ impl Identity {
         // Preserve the original unmetered constructor for owners without a bank.
         Self::place(Vec::with_capacity(1), None)
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(super) fn body_bytes() -> usize {
         mem::size_of::<Allocation>()
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(super) fn from_grant(
         bank: &std::sync::Arc<tokio::sync::Semaphore>,
         storage: OwnedSemaphorePermit,
@@ -84,7 +84,7 @@ impl Drop for Identity {
         // once, then free the SAME entire allocation before its byte credit.
         let storage = unsafe { ManuallyDrop::take(&mut (*pointer).storage) };
         unsafe { drop(Vec::from_raw_parts(pointer, 0, 1)) };
-        #[cfg(all(test, feature = "tunnel-userspace"))]
+        #[cfg(all(test, feature = "tunnel-private-ip"))]
         AFTER_FREE.with(|hook| {
             if let Some(callback) = hook.borrow_mut().as_mut() {
                 callback();
@@ -94,12 +94,12 @@ impl Drop for Identity {
     }
 }
 
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 type FreeHook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 thread_local! { static AFTER_FREE: FreeHook = const { std::cell::RefCell::new(None) }; }
 
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 pub(super) fn after_free<T>(hook: impl FnMut() + 'static, work: impl FnOnce() -> T) -> T {
     struct Reset;
     impl Drop for Reset {
@@ -115,7 +115,7 @@ pub(super) fn after_free<T>(hook: impl FnMut() + 'static, work: impl FnOnce() ->
     work()
 }
 
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 mod tests {
     use super::*;
     use crate::device::prepared_rsd::{charge, with_allocation_hook};

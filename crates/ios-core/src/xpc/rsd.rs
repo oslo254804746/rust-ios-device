@@ -206,6 +206,16 @@ enum HandshakeMode {
     Passive,
 }
 
+#[cfg(feature = "tunnel")]
+const HANDSHAKE_MODES: [HandshakeMode; 4] = [
+    HandshakeMode::Active,
+    HandshakeMode::Queued,
+    HandshakeMode::Legacy,
+    HandshakeMode::Passive,
+];
+#[cfg(feature = "tunnel")]
+pub(crate) const RSD_HANDSHAKE_ATTEMPTS: usize = HANDSHAKE_MODES.len();
+
 /// Both routed TCP and userspace proxy connections use the same identity and
 /// retry policy. A failed/timed-out read may consume a partial frame, so each
 /// fallback owns a fresh transport; no parser state is reused after cancellation.
@@ -357,12 +367,7 @@ where
     use std::time::Duration;
 
     let mut last_error = None;
-    for mode in [
-        HandshakeMode::Active,
-        HandshakeMode::Queued,
-        HandshakeMode::Legacy,
-        HandshakeMode::Passive,
-    ] {
+    for mode in HANDSHAKE_MODES {
         let stream = rsd_timeout(
             crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
             "RSD dial timed out",
@@ -551,17 +556,13 @@ where
     let mut last_error = None;
     let (selection_fee, mut attempted_modes) = match bank {
         Some(bank) => {
-            let (fee, values) = crate::device::prepared_rsd::exact_vec(bank, 4)?;
+            let (fee, values) =
+                crate::device::prepared_rsd::exact_vec(bank, RSD_HANDSHAKE_ATTEMPTS)?;
             (Some(fee), values)
         }
-        None => (None, Vec::with_capacity(4)),
+        None => (None, Vec::with_capacity(RSD_HANDSHAKE_ATTEMPTS)),
     };
-    for mode in [
-        HandshakeMode::Active,
-        HandshakeMode::Queued,
-        HandshakeMode::Legacy,
-        HandshakeMode::Passive,
-    ] {
+    for mode in HANDSHAKE_MODES {
         if tokio::time::Instant::now() >= deadline {
             return match last_error {
                 Some(error) => Err(error),

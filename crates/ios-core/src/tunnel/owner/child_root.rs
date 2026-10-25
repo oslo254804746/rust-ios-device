@@ -1,5 +1,5 @@
 //! Exact native child-set root with in-place State destruction.
-#[cfg(feature = "tunnel-userspace")]
+#[cfg(feature = "tunnel-private-ip")]
 use super::TunnelError;
 use super::{ChildRole, ChildState, Ledger};
 use std::{
@@ -39,7 +39,7 @@ impl Destination {
             storage: None,
         }
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     fn from_grant(
         bank: &std::sync::Arc<tokio::sync::Semaphore>,
         storage: OwnedSemaphorePermit,
@@ -77,11 +77,11 @@ impl SharedChildTaskSet {
     pub(crate) fn new(ledger: Ledger, role: ChildRole) -> Self {
         Destination::unmetered().finish(ledger, role)
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn body_bytes() -> usize {
         mem::size_of::<Allocation>()
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     pub(crate) fn with_metadata(
         ledger: Ledger,
         role: ChildRole,
@@ -129,7 +129,7 @@ impl Drop for Release {
         // SAFETY: State was dropped in place (also through its unwind glue).
         // The unique original capacity-one block contains no remaining value.
         unsafe { drop(Vec::from_raw_parts(self.pointer.as_ptr(), 0, 1)) };
-        #[cfg(all(test, feature = "tunnel-userspace"))]
+        #[cfg(all(test, feature = "tunnel-private-ip"))]
         AFTER_FREE.with(|hook| {
             if let Some(callback) = hook.borrow_mut().as_mut() {
                 callback();
@@ -155,16 +155,16 @@ impl Drop for SharedChildTaskSet {
     }
 }
 
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 type FreeHook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 type StateHook = std::cell::RefCell<Option<Box<dyn FnMut(usize)>>>;
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 thread_local! {
     static AFTER_FREE: FreeHook = const { std::cell::RefCell::new(None) };
     static STATE_DROP: StateHook = const { std::cell::RefCell::new(None) };
 }
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 impl Drop for ChildState {
     fn drop(&mut self) {
         STATE_DROP.with(|hook| {
@@ -174,7 +174,7 @@ impl Drop for ChildState {
         });
     }
 }
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 fn observe_drop<T>(
     state: impl FnMut(usize) + 'static,
     free: impl FnMut() + 'static,
@@ -199,7 +199,7 @@ fn observe_drop<T>(
     work()
 }
 
-#[cfg(all(test, feature = "tunnel-userspace"))]
+#[cfg(all(test, feature = "tunnel-private-ip"))]
 mod tests {
     use super::*;
     use crate::device::prepared_rsd::{charge, with_allocation_hook};

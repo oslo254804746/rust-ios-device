@@ -123,6 +123,13 @@ mod connected;
 mod owned_connection;
 #[cfg(feature = "tunnel")]
 pub use owned_connection::OwnedConnectedDevice;
+#[cfg(feature = "tunnel-private-ip")]
+mod admitted_future;
+#[cfg(feature = "tunnel-private-ip")]
+mod prepared_connection;
+#[cfg(feature = "tunnel-private-ip")]
+pub use prepared_connection::PreparedConnectedDevice;
+mod activation_policy;
 mod connection;
 #[cfg(feature = "tunnel")]
 pub(crate) mod existing_rsd;
@@ -164,6 +171,12 @@ pub use connection::{
 pub use connection::{
     connect_direct_usb_tunnel_owned_with_owner, connect_owned_with_owner,
     connect_remote_pairing_tunnel_owned_with_owner, connect_tcp_lockdown_tunnel_owned_with_owner,
+};
+#[cfg(feature = "tunnel-private-ip")]
+pub use connection::{
+    prepare_direct_usb_tunnel_owned_with_owner_at, prepare_owned_with_owner_at,
+    prepare_remote_pairing_tunnel_owned_with_owner_at,
+    prepare_tcp_lockdown_tunnel_owned_with_owner_at,
 };
 
 #[cfg(feature = "mdns")]

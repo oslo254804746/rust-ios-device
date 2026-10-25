@@ -102,9 +102,9 @@ pub mod forward;
 #[cfg(feature = "tunnel")]
 pub mod handshake;
 pub mod manager;
-#[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+#[cfg(feature = "tunnel-private-ip")]
 pub(crate) mod owner;
-#[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+#[cfg(feature = "tunnel-private-ip")]
 pub use owner::TunnelShutdownFailure;
 #[cfg(feature = "tunnel")]
 pub mod tun;
@@ -138,10 +138,15 @@ impl std::fmt::Debug for TunnelInfo {
     }
 }
 pub use manager::{TunMode, TunnelHandle, TunnelManager};
+#[cfg(feature = "tunnel-private-ip")]
+pub use owner::phase_outcomes::{PhaseCleanup, PhaseFailure};
 
 /// Errors from tunnel operations.
 #[derive(thiserror::Error)]
 pub enum TunnelError {
+    #[cfg(feature = "tunnel-private-ip")]
+    #[error(transparent)]
+    Phases(#[from] PhaseFailure),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("protocol error: {0}")]

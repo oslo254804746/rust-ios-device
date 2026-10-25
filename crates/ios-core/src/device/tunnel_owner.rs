@@ -130,9 +130,10 @@ pub(super) fn reserve_initial<'a>(
 /// Stack-only selection for one strategy. The original reservation allocation
 /// stays intact; owned bank selection cannot affect public legacy entrypoints.
 #[derive(Clone, Copy)]
-pub(super) struct InitialOwner<'a> {
+pub(super) struct InitialOwner<'a, P = super::activation_policy::Immediate> {
     cleanup: Option<&'a dyn TunnelOwner>,
     pub(super) bank: Option<&'a Arc<tokio::sync::Semaphore>>,
+    pub(super) policy: P,
 }
 
 #[cfg(test)]
@@ -163,7 +164,20 @@ impl<'a> InitialOwner<'a> {
         cleanup: Option<&'a dyn TunnelOwner>,
         bank: Option<&'a Arc<tokio::sync::Semaphore>>,
     ) -> Self {
-        Self { cleanup, bank }
+        Self {
+            cleanup,
+            bank,
+            policy: super::activation_policy::Immediate,
+        }
+    }
+}
+impl<'a, P> InitialOwner<'a, P> {
+    pub(super) fn with_policy<Q>(self, policy: Q) -> InitialOwner<'a, Q> {
+        InitialOwner {
+            cleanup: self.cleanup,
+            bank: self.bank,
+            policy,
+        }
     }
     #[cfg(feature = "tunnel")]
     pub(super) fn reserve(self) -> Result<Option<TunnelReservationOwner<'a>>, CoreError> {

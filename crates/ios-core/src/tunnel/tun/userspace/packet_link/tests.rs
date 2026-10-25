@@ -7,6 +7,53 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{DuplexStream, ReadBuf};
 
+#[tokio::test]
+async fn borrowed_pending_packet_survives_cancelled_full_send_and_closed_receiver() {
+    const TOTAL: usize = 1024 * 1024;
+    for metered in [false, true] {
+        let bank = Arc::new(Semaphore::new(TOTAL));
+        let (sender, mut receiver) =
+            mpsc::with_bank::<WriteItem>(1, metered.then_some(&bank)).unwrap();
+        let sender = PacketSender {
+            sender,
+            barrier: Barrier::prepare(metered.then_some(&bank)).unwrap(),
+        };
+        let queued = OwnedBuffer::zeroed(17, Some(&bank)).unwrap();
+        let packet = OwnedBuffer::zeroed(29, Some(&bank)).unwrap();
+        let pointer = packet.as_ptr();
+        let closed_packet = OwnedBuffer::zeroed(31, Some(&bank)).unwrap();
+        let closed_pointer = closed_packet.as_ptr();
+        sender.send(queued).await.unwrap();
+        let mut pending = Some(packet);
+        let held = bank
+            .clone()
+            .try_acquire_many_owned(bank.available_permits() as u32)
+            .unwrap();
+        bank.close();
+        assert_eq!(bank.available_permits(), 0);
+        tokio::select! {
+            biased;
+            _ = sender.send_from(&mut pending) => panic!("full original FIFO accepted packet"),
+            _ = std::future::ready(()) => {},
+        }
+        assert_eq!(pending.as_ref().unwrap().as_ptr(), pointer);
+        drop(receiver.recv().await.unwrap());
+        sender.send_from(&mut pending).await.unwrap();
+        assert!(pending.is_none());
+        let WriteItem::Packet(received) = receiver.recv().await.unwrap() else {
+            panic!("original packet")
+        };
+        assert_eq!(received.as_ptr(), pointer);
+        drop(received);
+        let mut pending = Some(closed_packet);
+        drop(receiver);
+        assert!(sender.send_from(&mut pending).await.is_err());
+        assert_eq!(pending.as_ref().unwrap().as_ptr(), closed_pointer);
+        drop((sender, pending, held));
+        assert_eq!(bank.available_permits(), TOTAL);
+    }
+}
+
 #[derive(Default)]
 struct Traffic {
     read: AtomicUsize,

@@ -1,11 +1,13 @@
 //! Direct-RSD and RemotePairing discovery and authenticated strategies.
 
 #[cfg(feature = "mdns")]
+use super::activation_policy::ActivationPolicy;
+#[cfg(feature = "mdns")]
 use super::discovery_match::ordered_lockdown_addresses;
 #[cfg(feature = "mdns")]
-use super::tunnel_activation::{activate_tunnel, TunnelConnection};
+use super::tunnel_activation::TunnelConnection;
 #[cfg(feature = "mdns")]
-use super::{ConnectOptions, ConnectedDevice, LockdownTransport};
+use super::{ConnectOptions, LockdownTransport};
 #[cfg(feature = "mdns")]
 use crate::discovery::{browse_remotepairing, BonjourService, DeviceInfo, MdnsDevice};
 #[cfg(feature = "mdns")]
@@ -206,14 +208,14 @@ pub(super) async fn observe_alt_irk_matches(
 }
 
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
-pub(super) async fn connect_via_direct_rsd_target(
+pub(super) async fn connect_via_direct_rsd_target<P: ActivationPolicy>(
     info: DeviceInfo,
     pair_record: Option<Arc<PairRecord>>,
     lockdown_transport: LockdownTransport,
     opts: ConnectOptions,
     target: MdnsDevice,
-    owner: super::tunnel_owner::InitialOwner<'_>,
-) -> Result<ConnectedDevice, CoreError> {
+    owner: super::tunnel_owner::InitialOwner<'_, P>,
+) -> Result<P::Output, CoreError> {
     let initial_rsd_bank = owner.bank;
     let reservation = owner.reserve()?;
     let rsd = rsd_handshake(target.ipv6, target.rsd_port, initial_rsd_bank).await?;
@@ -236,46 +238,50 @@ pub(super) async fn connect_via_direct_rsd_target(
         })?;
     let direct_stream = establish_direct_tunnel_stream(target.ipv6, service_port).await?;
 
-    activate_tunnel(
-        TunnelConnection::new(info, pair_record, lockdown_transport, "direct RSD")
-            .with_initial_rsd_bank(initial_rsd_bank),
-        direct_stream,
-        opts.tun_mode,
-        reservation,
-    )
-    .await
+    owner
+        .policy
+        .activate(
+            TunnelConnection::new(info, pair_record, lockdown_transport, "direct RSD")
+                .with_initial_rsd_bank(initial_rsd_bank),
+            direct_stream,
+            opts.tun_mode,
+            reservation,
+        )
+        .await
 }
 
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
-pub(super) async fn connect_via_remote_pairing_target(
+pub(super) async fn connect_via_remote_pairing_target<P: ActivationPolicy>(
     info: DeviceInfo,
     pair_record: Option<Arc<PairRecord>>,
     opts: ConnectOptions,
     remote_identifier: &str,
     host: &str,
     port: u16,
-    owner: super::tunnel_owner::InitialOwner<'_>,
-) -> Result<ConnectedDevice, CoreError> {
+    owner: super::tunnel_owner::InitialOwner<'_, P>,
+) -> Result<P::Output, CoreError> {
     let initial_rsd_bank = owner.bank;
     let reservation = owner.reserve()?;
     let remote_stream =
         establish_remote_pairing_tunnel_stream(remote_identifier, host, port).await?;
 
-    activate_tunnel(
-        TunnelConnection::new(
-            info,
-            pair_record,
-            LockdownTransport::Tcp {
-                host: host.to_string(),
-            },
-            "remote pairing",
+    owner
+        .policy
+        .activate(
+            TunnelConnection::new(
+                info,
+                pair_record,
+                LockdownTransport::Tcp {
+                    host: host.to_string(),
+                },
+                "remote pairing",
+            )
+            .with_initial_rsd_bank(initial_rsd_bank),
+            remote_stream,
+            opts.tun_mode,
+            reservation,
         )
-        .with_initial_rsd_bank(initial_rsd_bank),
-        remote_stream,
-        opts.tun_mode,
-        reservation,
-    )
-    .await
+        .await
 }
 
 #[cfg(test)]

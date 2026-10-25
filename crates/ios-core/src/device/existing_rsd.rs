@@ -409,34 +409,68 @@ async fn prepare_owned_from_source(
     deadline: Instant,
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<super::PreparedRsdOwner, CoreError> {
-    let clock = Clock {
+    prepare_owned_with_connector(
+        || source.identity(),
+        || source.dial(route),
+        route.proxy_port.map(|_| route.endpoint),
         deadline,
-        budget: deadline.saturating_duration_since(Instant::now()),
-    };
+        bank,
+    )
+    .await
+}
+
+/// The same checked selection and paid destination for an authenticated
+/// private route. A connector supplies one fresh stream per existing mode;
+/// the original clock guards its prelude and every subsequent socket poll.
+pub(super) async fn prepare_owned_with_connector<Identity, I, F, Fut, S>(
+    identity: Identity,
+    mut connector: F,
+    prelude: Option<SocketAddrV6>,
+    deadline: Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<super::PreparedRsdOwner, CoreError>
+where
+    Identity: FnOnce() -> I,
+    I: Future<Output = Result<uuid::Uuid, XpcError>>,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<S, CoreError>>,
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let clock = Clock::at(deadline);
     clock
         .run(async {
             // The actual complete root exists before identity/dial and every
             // checked mode. An expired clock never polls this allocation.
             let mut destination = Some(super::prepared_rsd::OwnedDestination::new(bank)?);
             clock.check()?;
-            let identity = source.identity().await?;
+            let identity = identity().await?;
             clock.check()?;
             let (catalogue, receipt, fee) =
                 crate::xpc::rsd::checked_handshake_prepared_with_parser(
-                    || async {
-                        clock.check().map_err(connection_error)?;
-                        let stream = source.dial(route).await.map_err(connection_error)?;
-                        clock.check().map_err(connection_error)?;
-                        let mut stream = clock.guard(stream);
-                        if route.proxy_port.is_some() {
-                            stream.write_all(&route.endpoint.ip().octets()).await?;
-                            stream
-                                .write_all(&(route.endpoint.port() as u32).to_le_bytes())
-                                .await?;
-                            stream.flush().await?;
+                    || {
+                        // Construct even a caller-provided dial future only
+                        // while the original deadline still admits work.
+                        let admitted = clock.check().map_err(connection_error);
+                        let dial = admitted.as_ref().ok().map(|_| connector());
+                        let clock = &clock;
+                        async move {
+                            admitted?;
+                            let stream = dial
+                                .expect("clock-admitted connector")
+                                .await
+                                .map_err(connection_error)?;
+                            clock.check().map_err(connection_error)?;
+                            let mut stream = clock.guard(stream);
+                            if let Some(endpoint) = prelude {
+                                stream.write_all(&endpoint.ip().octets()).await?;
+                                stream
+                                    .write_all(&(endpoint.port() as u32).to_le_bytes())
+                                    .await?;
+                                stream.flush().await?;
+                            }
+                            clock.check().map_err(connection_error)?;
+                            Ok(stream)
                         }
-                        clock.check().map_err(connection_error)?;
-                        Ok(stream)
                     },
                     identity,
                     deadline,
@@ -560,12 +594,19 @@ fn is_deadline_reached(error: &(dyn Error + 'static)) -> bool {
     false
 }
 
-struct Clock {
+pub(super) struct Clock {
     deadline: Instant,
     budget: Duration,
 }
 
 impl Clock {
+    pub(super) fn at(deadline: Instant) -> Self {
+        Self {
+            deadline,
+            budget: deadline.saturating_duration_since(Instant::now()),
+        }
+    }
+
     fn new(budget: Duration) -> Result<Self, CoreError> {
         let deadline = Instant::now().checked_add(budget).ok_or_else(|| {
             io::Error::new(
@@ -576,7 +617,7 @@ impl Clock {
         Ok(Self { deadline, budget })
     }
 
-    fn check(&self) -> Result<(), CoreError> {
+    pub(super) fn check(&self) -> Result<(), CoreError> {
         if Instant::now() >= self.deadline {
             Err(io::Error::new(io::ErrorKind::TimedOut, DeadlineReached).into())
         } else {
@@ -584,14 +625,14 @@ impl Clock {
         }
     }
 
-    fn guard(&self, stream: ServiceStream) -> ServiceStream {
-        Box::new(DeadlineStream {
+    pub(super) fn guard<S>(&self, stream: S) -> DeadlineStream<S> {
+        DeadlineStream {
             stream,
             deadline: self.deadline,
-        })
+        }
     }
 
-    async fn run<T>(
+    pub(super) async fn run<T>(
         &self,
         operation: impl Future<Output = Result<T, CoreError>>,
     ) -> Result<T, CoreError> {
@@ -614,12 +655,12 @@ impl Clock {
     }
 }
 
-struct DeadlineStream {
-    stream: ServiceStream,
+pub(super) struct DeadlineStream<S> {
+    stream: S,
     deadline: Instant,
 }
 
-impl AsyncRead for DeadlineStream {
+impl<S: AsyncRead + Unpin> AsyncRead for DeadlineStream<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -636,7 +677,7 @@ impl AsyncRead for DeadlineStream {
     }
 }
 
-impl AsyncWrite for DeadlineStream {
+impl<S: AsyncWrite + Unpin> AsyncWrite for DeadlineStream<S> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,

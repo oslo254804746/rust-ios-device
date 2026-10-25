@@ -1,5 +1,6 @@
 //! Public connection entry points and strategy selection.
 
+use super::activation_policy::{ActivationPolicy, Immediate};
 use super::lockdown_transport::{
     connect_via_lockdown_transport, load_pair_record, require_pair_record, try_load_pair_record,
 };
@@ -19,7 +20,7 @@ use crate::mux::MuxClient;
 use std::time::Duration;
 
 pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice, CoreError> {
-    connect_inner(udid, opts, None, None).await
+    connect_inner(udid, opts, None, None, Immediate).await
 }
 
 /// Connect with caller cleanup ownership established before native activation
@@ -29,15 +30,16 @@ pub async fn connect_with_owner(
     opts: ConnectOptions,
     owner: &dyn TunnelOwner,
 ) -> Result<ConnectedDevice, CoreError> {
-    connect_inner(udid, opts, Some(owner), None).await
+    connect_inner(udid, opts, Some(owner), None, Immediate).await
 }
 
-async fn connect_inner(
+async fn connect_inner<P: ActivationPolicy>(
     udid: &str,
     opts: ConnectOptions,
     owner: Option<&dyn TunnelOwner>,
     initial_rsd_bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
-) -> Result<ConnectedDevice, CoreError> {
+    policy: P,
+) -> Result<P::Output, CoreError> {
     let mut mux = MuxClient::connect().await?;
     let devices = mux.list_devices().await?;
     let dev = select_mux_device(devices, udid)
@@ -58,7 +60,7 @@ async fn connect_inner(
             device_id: dev.device_id,
         },
         opts,
-        super::tunnel_owner::InitialOwner::new(owner, initial_rsd_bank),
+        super::tunnel_owner::InitialOwner::new(owner, initial_rsd_bank).with_policy(policy),
     )
     .await
 }
@@ -68,7 +70,7 @@ pub async fn connect_direct_usb_tunnel(
     rsd_ip: Option<&str>,
     opts: ConnectOptions,
 ) -> Result<ConnectedDevice, CoreError> {
-    connect_direct_usb_tunnel_inner(udid, rsd_ip, opts, None, None).await
+    connect_direct_usb_tunnel_inner(udid, rsd_ip, opts, None, None, Immediate).await
 }
 
 /// Direct USB connection with per-target caller cleanup reservations.
@@ -78,16 +80,17 @@ pub async fn connect_direct_usb_tunnel_with_owner(
     opts: ConnectOptions,
     owner: &dyn TunnelOwner,
 ) -> Result<ConnectedDevice, CoreError> {
-    connect_direct_usb_tunnel_inner(udid, rsd_ip, opts, Some(owner), None).await
+    connect_direct_usb_tunnel_inner(udid, rsd_ip, opts, Some(owner), None, Immediate).await
 }
 
-async fn connect_direct_usb_tunnel_inner(
+async fn connect_direct_usb_tunnel_inner<P: ActivationPolicy>(
     udid: &str,
     rsd_ip: Option<&str>,
     opts: ConnectOptions,
     owner: Option<&dyn TunnelOwner>,
     initial_rsd_bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
-) -> Result<ConnectedDevice, CoreError> {
+    policy: P,
+) -> Result<P::Output, CoreError> {
     let mut mux = MuxClient::connect().await?;
     let devices = mux.list_devices().await?;
     let dev = select_mux_device(devices, udid)
@@ -106,7 +109,7 @@ async fn connect_direct_usb_tunnel_inner(
     if opts.skip_tunnel {
         let pair_record =
             require_pair_record(pair_record, udid, "direct USB lockdown access requires")?;
-        return Ok(ConnectedDevice {
+        return policy.without_tunnel(ConnectedDevice {
             info,
             tunnel: None,
             rsd: None,
@@ -150,7 +153,7 @@ async fn connect_direct_usb_tunnel_inner(
                 lockdown_transport.clone(),
                 opts.clone(),
                 target,
-                super::tunnel_owner::InitialOwner::new(owner, initial_rsd_bank),
+                super::tunnel_owner::InitialOwner::new(owner, initial_rsd_bank).with_policy(policy),
             )
             .await
             {
@@ -177,7 +180,7 @@ pub async fn connect_remote_pairing_tunnel(
     host: Option<&str>,
     opts: ConnectOptions,
 ) -> Result<ConnectedDevice, CoreError> {
-    connect_remote_pairing_tunnel_inner(udid, host, opts, None, None).await
+    connect_remote_pairing_tunnel_inner(udid, host, opts, None, None, Immediate).await
 }
 
 /// Existing-trust RemotePairing connection with per-target cleanup ownership.
@@ -189,16 +192,17 @@ pub async fn connect_remote_pairing_tunnel_with_owner(
     opts: ConnectOptions,
     owner: &dyn TunnelOwner,
 ) -> Result<ConnectedDevice, CoreError> {
-    connect_remote_pairing_tunnel_inner(udid, host, opts, Some(owner), None).await
+    connect_remote_pairing_tunnel_inner(udid, host, opts, Some(owner), None, Immediate).await
 }
 
-async fn connect_remote_pairing_tunnel_inner(
+async fn connect_remote_pairing_tunnel_inner<P: ActivationPolicy>(
     udid: &str,
     host: Option<&str>,
     opts: ConnectOptions,
     owner: Option<&dyn TunnelOwner>,
     initial_rsd_bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
-) -> Result<ConnectedDevice, CoreError> {
+    policy: P,
+) -> Result<P::Output, CoreError> {
     let pair_record = try_load_pair_record(udid, opts.pair_record_path.as_deref());
     let info = DeviceInfo {
         udid: udid.to_string(),
@@ -210,7 +214,7 @@ async fn connect_remote_pairing_tunnel_inner(
     if opts.skip_tunnel {
         let pair_record =
             require_pair_record(pair_record, udid, "remote pairing lockdown access requires")?;
-        return Ok(ConnectedDevice {
+        return policy.without_tunnel(ConnectedDevice {
             info,
             tunnel: None,
             rsd: None,
@@ -269,7 +273,8 @@ async fn connect_remote_pairing_tunnel_inner(
                     &remote_identifier,
                     &remote_host,
                     port,
-                    super::tunnel_owner::InitialOwner::new(owner, initial_rsd_bank),
+                    super::tunnel_owner::InitialOwner::new(owner, initial_rsd_bank)
+                        .with_policy(policy),
                 ),
             )
             .await
@@ -297,7 +302,7 @@ pub async fn connect_tcp_lockdown_tunnel(
     host: &str,
     opts: ConnectOptions,
 ) -> Result<ConnectedDevice, CoreError> {
-    connect_tcp_lockdown_tunnel_inner(udid, host, opts, None, None).await
+    connect_tcp_lockdown_tunnel_inner(udid, host, opts, None, None, Immediate).await
 }
 
 /// TCP lockdown connection with caller ownership before initial RSD probing.
@@ -307,16 +312,17 @@ pub async fn connect_tcp_lockdown_tunnel_with_owner(
     opts: ConnectOptions,
     owner: &dyn TunnelOwner,
 ) -> Result<ConnectedDevice, CoreError> {
-    connect_tcp_lockdown_tunnel_inner(udid, host, opts, Some(owner), None).await
+    connect_tcp_lockdown_tunnel_inner(udid, host, opts, Some(owner), None, Immediate).await
 }
 
-async fn connect_tcp_lockdown_tunnel_inner(
+async fn connect_tcp_lockdown_tunnel_inner<P: ActivationPolicy>(
     udid: &str,
     host: &str,
     opts: ConnectOptions,
     owner: Option<&dyn TunnelOwner>,
     initial_rsd_bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
-) -> Result<ConnectedDevice, CoreError> {
+    policy: P,
+) -> Result<P::Output, CoreError> {
     let pair_record = load_pair_record(udid, opts.pair_record_path.as_deref())?;
     let info = DeviceInfo {
         udid: udid.to_string(),
@@ -331,7 +337,7 @@ async fn connect_tcp_lockdown_tunnel_inner(
             host: host.to_string(),
         },
         opts,
-        super::tunnel_owner::InitialOwner::new(owner, initial_rsd_bank),
+        super::tunnel_owner::InitialOwner::new(owner, initial_rsd_bank).with_policy(policy),
     )
     .await
 }
@@ -368,7 +374,7 @@ pub async fn connect_owned_with_owner(
     owner: &dyn TunnelOwner,
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<super::OwnedConnectedDevice, CoreError> {
-    connect_inner(udid, opts, Some(owner), Some(bank))
+    connect_inner(udid, opts, Some(owner), Some(bank), Immediate)
         .await
         .map(super::OwnedConnectedDevice::new)
 }
@@ -384,7 +390,7 @@ pub async fn connect_direct_usb_tunnel_owned_with_owner(
     owner: &dyn TunnelOwner,
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<super::OwnedConnectedDevice, CoreError> {
-    connect_direct_usb_tunnel_inner(udid, rsd_ip, opts, Some(owner), Some(bank))
+    connect_direct_usb_tunnel_inner(udid, rsd_ip, opts, Some(owner), Some(bank), Immediate)
         .await
         .map(super::OwnedConnectedDevice::new)
 }
@@ -400,7 +406,7 @@ pub async fn connect_remote_pairing_tunnel_owned_with_owner(
     owner: &dyn TunnelOwner,
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<super::OwnedConnectedDevice, CoreError> {
-    connect_remote_pairing_tunnel_inner(udid, host, opts, Some(owner), Some(bank))
+    connect_remote_pairing_tunnel_inner(udid, host, opts, Some(owner), Some(bank), Immediate)
         .await
         .map(super::OwnedConnectedDevice::new)
 }
@@ -416,9 +422,96 @@ pub async fn connect_tcp_lockdown_tunnel_owned_with_owner(
     owner: &dyn TunnelOwner,
     bank: &std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<super::OwnedConnectedDevice, CoreError> {
-    connect_tcp_lockdown_tunnel_inner(udid, host, opts, Some(owner), Some(bank))
+    connect_tcp_lockdown_tunnel_inner(udid, host, opts, Some(owner), Some(bank), Immediate)
         .await
         .map(super::OwnedConnectedDevice::new)
+}
+
+/// Authenticate and check a private candidate without exposing native routes.
+/// Discovery, authentication and both RSD selectors share this exact deadline.
+#[cfg(feature = "tunnel-private-ip")]
+pub async fn prepare_owned_with_owner_at(
+    udid: &str,
+    opts: ConnectOptions,
+    owner: &dyn TunnelOwner,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    deadline: tokio::time::Instant,
+) -> Result<super::PreparedConnectedDevice, CoreError> {
+    super::existing_rsd::Clock::at(deadline)
+        .run(connect_inner(
+            udid,
+            opts,
+            Some(owner),
+            Some(bank),
+            super::activation_policy::Prepared { deadline, bank },
+        ))
+        .await
+}
+
+/// Private preparation through the existing direct USB RSD target selector.
+#[cfg(feature = "tunnel-private-ip")]
+pub async fn prepare_direct_usb_tunnel_owned_with_owner_at(
+    udid: &str,
+    rsd_ip: Option<&str>,
+    opts: ConnectOptions,
+    owner: &dyn TunnelOwner,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    deadline: tokio::time::Instant,
+) -> Result<super::PreparedConnectedDevice, CoreError> {
+    super::existing_rsd::Clock::at(deadline)
+        .run(connect_direct_usb_tunnel_inner(
+            udid,
+            rsd_ip,
+            opts,
+            Some(owner),
+            Some(bank),
+            super::activation_policy::Prepared { deadline, bank },
+        ))
+        .await
+}
+
+/// Private preparation through the existing trusted RemotePairing selector.
+#[cfg(feature = "tunnel-private-ip")]
+pub async fn prepare_remote_pairing_tunnel_owned_with_owner_at(
+    udid: &str,
+    host: Option<&str>,
+    opts: ConnectOptions,
+    owner: &dyn TunnelOwner,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    deadline: tokio::time::Instant,
+) -> Result<super::PreparedConnectedDevice, CoreError> {
+    super::existing_rsd::Clock::at(deadline)
+        .run(connect_remote_pairing_tunnel_inner(
+            udid,
+            host,
+            opts,
+            Some(owner),
+            Some(bank),
+            super::activation_policy::Prepared { deadline, bank },
+        ))
+        .await
+}
+
+/// Private preparation through the existing TCP lockdown authentication path.
+#[cfg(feature = "tunnel-private-ip")]
+pub async fn prepare_tcp_lockdown_tunnel_owned_with_owner_at(
+    udid: &str,
+    host: &str,
+    opts: ConnectOptions,
+    owner: &dyn TunnelOwner,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    deadline: tokio::time::Instant,
+) -> Result<super::PreparedConnectedDevice, CoreError> {
+    super::existing_rsd::Clock::at(deadline)
+        .run(connect_tcp_lockdown_tunnel_inner(
+            udid,
+            host,
+            opts,
+            Some(owner),
+            Some(bank),
+            super::activation_policy::Prepared { deadline, bank },
+        ))
+        .await
 }
 
 #[cfg(test)]

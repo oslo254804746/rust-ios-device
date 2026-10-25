@@ -153,7 +153,7 @@ fn direct_class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
     if error.is::<super::OperationCancelled>() {
         return Some(ErrorClass::Cancelled);
     }
-    #[cfg(feature = "tunnel-userspace")]
+    #[cfg(feature = "tunnel-private-ip")]
     if error.is::<crate::tunnel::tun::userspace::owned_buffer::BufferAdmission>() {
         return Some(ErrorClass::ResourceLimit);
     }

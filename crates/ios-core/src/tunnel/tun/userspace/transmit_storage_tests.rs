@@ -326,7 +326,7 @@ async fn transmit_actual_partial_duplex_write_keeps_full_packet_capacity_until_f
     };
     let ledger = Ledger::new();
     let handle = tokio::spawn(async move {
-        write_ios_packets_owned(&mut writer, ValidatedMtu::new(1280).unwrap(), rx).await
+        write_ios_packets_owned(&mut writer, ValidatedMtu::new(1280).unwrap(), rx, None).await
     });
     let task = OwnedTask::new(handle, ParentRole::Writer, ledger.clone());
     let pending = until(|| probe.pending.load(Ordering::SeqCst)).await;
@@ -413,6 +413,7 @@ async fn transmit_actual_runtime_quota_failure_stops_and_joins_all_original_work
     preamble.extend_from_slice(&62078u32.to_le_bytes());
     let write = tokio::time::timeout(OBSERVE, client.write_all(&preamble)).await;
     let stopped = until(|| !runtime.is_alive()).await;
+    #[cfg(feature = "tunnel-userspace")]
     let native = Arc::new(crate::TunnelHandle::new_userspace(
         "tx-quota-fixture".into(),
         crate::TunnelInfo {
@@ -423,6 +424,8 @@ async fn transmit_actual_runtime_quota_failure_stops_and_joins_all_original_work
         },
         runtime,
     ));
+    #[cfg(not(feature = "tunnel-userspace"))]
+    let native = Arc::new(runtime);
     let retained = Arc::clone(&native);
     let result = native.shutdown(OBSERVE).await;
     let tasks = alive();
