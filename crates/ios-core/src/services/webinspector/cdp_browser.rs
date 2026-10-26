@@ -869,7 +869,10 @@ impl JsContextCdpAdapter {
             }));
         }
         let method = message.get("method").and_then(Value::as_str);
-        if method == Some("Console.messageAdded") && self.context_announced {
+        if method == Some("Console.messageAdded")
+            && self.context_announced
+            && message["params"]["message"]["source"] == "console-api"
+        {
             if let Some(msg) = message.get("params").and_then(|p| p.get("message")) {
                 let text = msg.get("text").and_then(Value::as_str).unwrap_or("");
                 let level = msg.get("level").and_then(Value::as_str).unwrap_or("log");
@@ -1121,6 +1124,14 @@ mod tests {
                 .incoming(json!({"method":"Inspector.detached"}))
                 .len(),
             1
+        );
+        let network_message = json!({"method":"Console.messageAdded", "params":{"message":{
+            "source":"network", "text":"a network error", "level":"error", "timestamp":12.5
+        }}});
+        assert_eq!(
+            adapter.incoming(network_message.clone()),
+            vec![network_message],
+            "network diagnostics are not console API invocations"
         );
         let destroyed = adapter.context_destroyed().unwrap();
         assert_eq!(destroyed["params"]["executionContextId"], 1);
@@ -1383,7 +1394,7 @@ mod tests {
 
         let console_msg = adapter.incoming(json!({
             "method": "Console.messageAdded",
-            "params": {"message": {"text": "hello from app", "level": "warning", "timestamp":12.5}}
+            "params": {"message": {"source":"console-api", "text": "hello from app", "level": "warning", "timestamp":12.5}}
         }));
         assert_eq!(console_msg.len(), 2);
         assert_eq!(console_msg[1]["method"], "Runtime.consoleAPICalled");
