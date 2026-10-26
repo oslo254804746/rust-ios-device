@@ -11,7 +11,10 @@ use plist::{Dictionary, Value};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::Instant;
 
-use super::{error_mapping::native_error, RestoreError};
+use super::state_machine::{
+    failed_execution, RestoreExecutionReport, RestoreState, RestoreStateMachine,
+};
+use super::{error_mapping::native_error, RestoreError, RestoreLifecycleEvent};
 use crate::services::plist_frame::{read_plist_frame, write_xml_plist_frame};
 use crate::session::OperationCancel;
 
@@ -269,6 +272,154 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoredClient<S> {
             self.written = total;
         }
         Ok(())
+    }
+}
+
+/// Convert an incoming plist dictionary from restored into a typed lifecycle event.
+pub fn restore_event_from_plist(dict: &Dictionary) -> RestoreLifecycleEvent {
+    let msg_type = dict.get("MsgType").and_then(Value::as_string);
+    match msg_type {
+        Some("ProgressMsg") => RestoreLifecycleEvent::Progress {
+            operation: dict
+                .get("Operation")
+                .and_then(Value::as_string)
+                .map(ToString::to_string),
+            progress: dict.get("Progress").and_then(Value::as_unsigned_integer),
+        },
+        Some("StatusMsg") => {
+            let code = dict
+                .get("Status")
+                .and_then(Value::as_unsigned_integer)
+                .unwrap_or(0);
+            RestoreLifecycleEvent::Status {
+                code,
+                message: super::restore_status_message(code).map(ToString::to_string),
+                log: dict
+                    .get("Log")
+                    .and_then(Value::as_string)
+                    .map(ToString::to_string),
+                finished: code == 0,
+            }
+        }
+        Some("CheckpointMsg") => RestoreLifecycleEvent::Checkpoint {
+            name: dict
+                .get("Checkpoint")
+                .and_then(Value::as_string)
+                .map(ToString::to_string),
+            raw: indexmap::IndexMap::new(),
+        },
+        Some("DataRequestMsg") | Some("AsyncDataRequestMsg") => {
+            RestoreLifecycleEvent::DataRequest {
+                data_type: dict
+                    .get("DataType")
+                    .and_then(Value::as_string)
+                    .map(ToString::to_string),
+                data_port: dict.get("DataPort").and_then(Value::as_unsigned_integer),
+                async_request: msg_type == Some("AsyncDataRequestMsg"),
+                raw: indexmap::IndexMap::new(),
+            }
+        }
+        Some("CrashReportMsg") | Some("RestoredCrash") => RestoreLifecycleEvent::RestoredCrash {
+            backtrace: dict
+                .get("Backtrace")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_string)
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        },
+        _ => RestoreLifecycleEvent::Unknown {
+            msg_type: msg_type.map(ToString::to_string),
+            raw: indexmap::IndexMap::new(),
+        },
+    }
+}
+
+/// Run the restored Update execution loop over a recovery-mode connection.
+///
+/// Drives the state machine through StartRestore, real ProgressMsg, CheckpointMsg,
+/// chunked FirmwareUpdaterData transfers, and verified terminal status.
+pub async fn run_restored_update_loop<S, F>(
+    client: &mut RestoredClient<S>,
+    mut state_machine: RestoreStateMachine,
+    options: Dictionary,
+    mut firmware_provider: F,
+    cancel: &OperationCancel,
+) -> Result<RestoreExecutionReport, RestoreError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnMut(&str, &Dictionary) -> Result<(Dictionary, Vec<u8>), RestoreError>,
+{
+    let protocol_version = client.protocol_version().clone();
+    client.start_update(&protocol_version, options).await?;
+    state_machine.finish_tss_phase()?;
+
+    loop {
+        if cancel.is_cancelled() {
+            state_machine.cancel();
+            return Err(failed_execution(
+                &state_machine,
+                RestoreError::Io(std::io::Error::other(crate::OperationCancelled::new())),
+            ));
+        }
+
+        let incoming = match client.next_message().await {
+            Ok(msg) => msg,
+            Err(err) => {
+                state_machine.cancel();
+                return Err(failed_execution(&state_machine, err));
+            }
+        };
+
+        let event = restore_event_from_plist(&incoming);
+
+        if let RestoreLifecycleEvent::DataRequest {
+            data_type: Some(ref dt),
+            data_port,
+            ..
+        } = event
+        {
+            if dt == "FirmwareUpdaterData" {
+                let updater_name = incoming
+                    .get("Arguments")
+                    .and_then(Value::as_dictionary)
+                    .and_then(|args| args.get("UpdaterName"))
+                    .and_then(Value::as_string)
+                    .unwrap_or("UnknownUpdater");
+                let (header, firmware) = firmware_provider(updater_name, &incoming)?;
+                let fw_len = firmware.len();
+                client
+                    .send_firmware_response(&incoming, header, &firmware)
+                    .await?;
+                state_machine.record_bytes_transferred(fw_len);
+                state_machine.record_data_request_served(format!("{dt}:{updater_name}"));
+            } else if data_port.is_some() {
+                // Secondary data port request (e.g. ASR / FDR / AsyncDataRequest)
+                state_machine.record_data_request_served(format!("{dt}:DataPort"));
+            } else {
+                state_machine.record_data_request_served(dt.clone());
+            }
+        }
+
+        state_machine.process_event(&event)?;
+
+        if state_machine.is_terminal() {
+            match state_machine.state() {
+                RestoreState::Completed => {
+                    return Ok(state_machine.generate_report());
+                }
+                RestoreState::Failed(reason) => {
+                    return Err(failed_execution(
+                        &state_machine,
+                        RestoreError::Protocol(format!("restored execution failed: {:?}", reason)),
+                    ));
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }
 

@@ -32,6 +32,8 @@ pub struct IpswIdentitySelector<'a> {
 pub struct IpswPreflight<R: Read + Seek> {
     archive: zip::ZipArchive<R>,
     identity: plist::Dictionary,
+    product_version: Option<String>,
+    product_build_version: Option<String>,
 }
 
 impl<R: Read + Seek> IpswPreflight<R> {
@@ -61,9 +63,19 @@ impl<R: Read + Seek> IpswPreflight<R> {
                 e,
             )
         })?;
-        let identities = root
-            .as_dictionary()
-            .and_then(|value| value.get("BuildIdentities"))
+        let root_dict = root.as_dictionary().ok_or_else(|| {
+            RestoreError::Protocol("BuildManifest missing root dictionary".into())
+        })?;
+        let product_version = root_dict
+            .get("ProductVersion")
+            .and_then(plist::Value::as_string)
+            .map(ToString::to_string);
+        let product_build_version = root_dict
+            .get("ProductBuildVersion")
+            .and_then(plist::Value::as_string)
+            .map(ToString::to_string);
+        let identities = root_dict
+            .get("BuildIdentities")
             .and_then(plist::Value::as_array)
             .ok_or_else(|| {
                 RestoreError::Protocol("BuildManifest missing BuildIdentities array".into())
@@ -121,11 +133,46 @@ impl<R: Read + Seek> IpswPreflight<R> {
         Ok(Self {
             archive,
             identity: (*candidates[0]).clone(),
+            product_version,
+            product_build_version,
         })
     }
 
     pub fn identity(&self) -> &plist::Dictionary {
         &self.identity
+    }
+
+    /// Extracted ProductVersion from BuildManifest.plist when present (e.g. "17.5.1").
+    pub fn product_version(&self) -> Option<&str> {
+        self.product_version.as_deref()
+    }
+
+    /// Extracted ProductBuildVersion from BuildManifest.plist when present (e.g. "21F90").
+    pub fn product_build_version(&self) -> Option<&str> {
+        self.product_build_version.as_deref()
+    }
+
+    /// Validate target device version evidence against IPSW metadata.
+    pub fn verify_target_version(
+        &self,
+        device_version: Option<&str>,
+        device_build: Option<&str>,
+    ) -> Result<(), RestoreError> {
+        if let Some(device_ver) = device_version {
+            if device_ver.trim().is_empty() {
+                return Err(RestoreError::Protocol(
+                    "target device returned empty ProductVersion".into(),
+                ));
+            }
+        }
+        if let Some(device_bld) = device_build {
+            if device_bld.trim().is_empty() {
+                return Err(RestoreError::Protocol(
+                    "target device returned empty BuildVersion".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Read every file referenced by the selected identity to EOF. ZIP CRC,

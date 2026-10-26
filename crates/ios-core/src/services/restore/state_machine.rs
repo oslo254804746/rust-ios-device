@@ -464,6 +464,16 @@ impl RestoreStateMachine {
         self.state = RestoreState::Failed(RestoreFailure::Cancelled);
     }
 
+    /// Record firmware or data bytes transferred to the device.
+    pub fn record_bytes_transferred(&mut self, bytes: usize) {
+        self.total_data_bytes_transferred = self.total_data_bytes_transferred.saturating_add(bytes);
+    }
+
+    /// Record a served data request identifier.
+    pub fn record_data_request_served(&mut self, name: String) {
+        self.data_requests_served.push(name);
+    }
+
     /// Generate execution report.
     pub fn generate_report(&self) -> RestoreExecutionReport {
         RestoreExecutionReport {
@@ -513,7 +523,7 @@ impl std::error::Error for RestoreExecutionError {
     }
 }
 
-fn failed_execution(sm: &RestoreStateMachine, cause: RestoreError) -> RestoreError {
+pub fn failed_execution(sm: &RestoreStateMachine, cause: RestoreError) -> RestoreError {
     let kind = match sm.state() {
         RestoreState::Failed(RestoreFailure::Cancelled) => std::io::ErrorKind::Other,
         RestoreState::Failed(RestoreFailure::Timeout { .. }) => std::io::ErrorKind::TimedOut,
