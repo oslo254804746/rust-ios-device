@@ -669,3 +669,30 @@ async fn pinned_puppeteer_five_domain_workflow() {
     );
     assert_native_order(&evidence, &receipts);
 }
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; explicit F04 native iframe routing gate"]
+async fn pinned_puppeteer_same_and_cross_origin_iframe_navigation() {
+    let (capture, receipts, evidence) = gate("puppeteer", WEB_TARGET, "iframe-workflow").await;
+    let report = report(&capture, "puppeteer", "25.12.0", "iframe-workflow");
+    assert_eq!(report["commits"][0]["id"], "1.3");
+    assert_eq!(report["commits"][1]["id"], "1.5");
+    assert_native_order(&evidence, &receipts);
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; explicit F04 native memory metrics gate"]
+async fn pinned_puppeteer_device_memory_metrics_and_sampling_lifecycle() {
+    let (capture, receipts, evidence) = gate("puppeteer", WEB_TARGET, "metrics-workflow").await;
+    let report = report(&capture, "puppeteer", "25.12.0", "metrics-workflow");
+    assert_eq!(report["metrics"][0]["value"], 12.5);
+    assert_native_order(&evidence, &receipts);
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; explicit native Fetch lifecycle gate"]
+async fn pinned_puppeteer_fetch_continue_fulfill_fail_response_and_pending_disable() {
+    let (capture, receipts, evidence) = gate("puppeteer", WEB_TARGET, "fetch-workflow").await;
+    report(&capture, "puppeteer", "25.12.0", "fetch-workflow");
+    assert_native_order(&evidence, &receipts);
+}

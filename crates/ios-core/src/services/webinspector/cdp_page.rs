@@ -47,9 +47,24 @@ enum Translation {
     },
     Viewport,
     Screenshot,
-    FetchAdd,
-    FetchEnable,
+    FetchAdd {
+        stage: String,
+    },
+    FetchEnable {
+        stage: String,
+    },
     FetchDisable,
+    FetchRemove,
+    FetchRollback {
+        cause: Value,
+    },
+    PerformanceEnable,
+    PerformanceStart,
+    PerformanceStop,
+    PerformanceDisable,
+    PerformanceRollback {
+        cause: Value,
+    },
     FetchResume {
         request_id: String,
     },
@@ -66,11 +81,27 @@ pub struct PageCdpAdapter {
     pending: HashMap<i64, Pending>,
     timeout: Duration,
     frame_id: Option<String>,
+    frame_contexts: HashMap<String, i64>,
     fetch_enabled: bool,
+    fetch_stage: Option<String>,
     request_meta: HashMap<String, Value>,
     paused: HashMap<String, &'static str>,
+    performance_enabled: bool,
+    memory_metrics: Option<Value>,
 }
 impl PageCdpAdapter {
+    fn performance_changing(&self) -> bool {
+        self.pending.values().any(|p| {
+            matches!(
+                p.translation,
+                Translation::PerformanceEnable
+                    | Translation::PerformanceStart
+                    | Translation::PerformanceStop
+                    | Translation::PerformanceDisable
+                    | Translation::PerformanceRollback { .. }
+            )
+        })
+    }
     pub fn next_deadline(&self) -> Option<Instant> {
         self.pending.values().map(|pending| pending.deadline).min()
     }
@@ -80,9 +111,13 @@ impl PageCdpAdapter {
             pending: HashMap::new(),
             timeout,
             frame_id: None,
+            frame_contexts: HashMap::new(),
             fetch_enabled: false,
+            fetch_stage: None,
             request_meta: HashMap::new(),
             paused: HashMap::new(),
+            performance_enabled: false,
+            memory_metrics: None,
         }
     }
     fn issue(
@@ -145,7 +180,87 @@ impl PageCdpAdapter {
         if let Some(err) = unverified_page_error(&request) {
             return PageCdpOutput::client(err);
         }
+        if matches!(method.as_str(), "Fetch.enable" | "Fetch.disable")
+            && self.pending.values().any(|p| {
+                matches!(
+                    p.translation,
+                    Translation::FetchAdd { .. }
+                        | Translation::FetchEnable { .. }
+                        | Translation::FetchDisable
+                        | Translation::FetchRemove
+                        | Translation::FetchRollback { .. }
+                )
+            })
+        {
+            return PageCdpOutput::client(error(&request, -32000, "Fetch state change is pending"));
+        }
         match method.as_str() {
+            "HeapProfiler.collectGarbage" => {
+                self.issue(request, Translation::Pass, "Heap.gc", json!({}), None)
+            }
+            "Performance.enable" => {
+                if params
+                    .get("timeDomain")
+                    .is_some_and(|value| value != "timeTicks")
+                {
+                    return PageCdpOutput::client(error(
+                        &request,
+                        -32602,
+                        "only device elapsed-time metrics are available",
+                    ));
+                }
+                if self.performance_enabled {
+                    return PageCdpOutput::client(reply(&request, json!({})));
+                }
+                if self.performance_changing() {
+                    return PageCdpOutput::client(error(
+                        &request,
+                        -32000,
+                        "Performance state change is pending",
+                    ));
+                }
+                self.memory_metrics = None;
+                self.issue(
+                    request,
+                    Translation::PerformanceEnable,
+                    "Memory.enable",
+                    json!({}),
+                    None,
+                )
+            }
+            "Performance.disable" => {
+                if self.performance_changing() {
+                    return PageCdpOutput::client(error(
+                        &request,
+                        -32000,
+                        "Performance state change is pending",
+                    ));
+                }
+                if !self.performance_enabled {
+                    return PageCdpOutput::client(reply(&request, json!({})));
+                }
+                self.issue(
+                    request,
+                    Translation::PerformanceStop,
+                    "Memory.stopTracking",
+                    json!({}),
+                    None,
+                )
+            }
+            "Performance.getMetrics" => {
+                if let Some(metrics) = self
+                    .memory_metrics
+                    .as_ref()
+                    .filter(|_| self.performance_enabled)
+                {
+                    return PageCdpOutput::client(reply(&request, json!({"metrics":metrics})));
+                }
+                PageCdpOutput::client(error(
+                    &request,
+                    -32000,
+                    "enable Performance and wait for a device memory sample",
+                ))
+            }
             "Page.enable" | "Page.disable" | "Console.enable" | "Console.disable" => {
                 self.issue(request, Translation::Pass, &method, params, None)
             }
@@ -331,19 +446,26 @@ impl PageCdpAdapter {
                 };
                 self.issue(
                     request,
-                    Translation::FetchAdd,
+                    Translation::FetchAdd {
+                        stage: stage.to_owned(),
+                    },
                     "Network.addInterception",
                     json!({"url":".*","stage":stage,"isRegex":true}),
                     None,
                 )
             }
-            "Fetch.disable" => self.issue(
-                request,
-                Translation::FetchDisable,
-                "Network.setInterceptionEnabled",
-                json!({"enabled":false}),
-                None,
-            ),
+            "Fetch.disable" => {
+                if !self.fetch_enabled {
+                    return PageCdpOutput::client(reply(&request, json!({})));
+                }
+                self.issue(
+                    request,
+                    Translation::FetchDisable,
+                    "Network.setInterceptionEnabled",
+                    json!({"enabled":false}),
+                    None,
+                )
+            }
             "Fetch.continueRequest" | "Fetch.failRequest" | "Fetch.fulfillRequest" => {
                 let Some(request_id) = params
                     .get("requestId")
@@ -364,19 +486,57 @@ impl PageCdpAdapter {
                 }
                 let (wire_method, mut wire_params) = match method.as_str() {
                     "Fetch.continueRequest" => {
-                        if params
-                            .as_object()
-                            .unwrap()
-                            .keys()
-                            .any(|key| key != "requestId")
-                        {
-                            return PageCdpOutput::client(error(
-                                &request,
-                                -32602,
-                                "request overrides have no verified mapping",
-                            ));
+                        let options = params.as_object().unwrap();
+                        if options.len() == 1 {
+                            ("Network.interceptContinue", json!({"stage":stage}))
+                        } else {
+                            if stage != "request"
+                                || options.keys().any(|key| {
+                                    !["requestId", "url", "method", "headers", "postData"]
+                                        .contains(&key.as_str())
+                                })
+                            {
+                                return PageCdpOutput::client(error(
+                                    &request,
+                                    -32602,
+                                    "unsupported request override or response-stage override",
+                                ));
+                            }
+                            let mut native = json!({});
+                            for key in ["url", "method", "postData"] {
+                                if let Some(value) = params.get(key) {
+                                    let Some(text) = value
+                                        .as_str()
+                                        .filter(|text| text.len() <= MAX_SCREENSHOT_BYTES)
+                                    else {
+                                        return PageCdpOutput::client(error(
+                                            &request,
+                                            -32602,
+                                            "request override must be a bounded string",
+                                        ));
+                                    };
+                                    if key == "postData" && STANDARD.decode(text).is_err() {
+                                        return PageCdpOutput::client(error(
+                                            &request,
+                                            -32602,
+                                            "postData must be base64",
+                                        ));
+                                    }
+                                    native[key] = value.clone();
+                                }
+                            }
+                            if let Some(headers) = params.get("headers") {
+                                let Some(headers) = header_object(Some(headers)) else {
+                                    return PageCdpOutput::client(error(
+                                        &request,
+                                        -32602,
+                                        "invalid request headers",
+                                    ));
+                                };
+                                native["headers"] = json!(headers);
+                            }
+                            ("Network.interceptWithRequest", native)
                         }
-                        ("Network.interceptContinue", json!({"stage":stage}))
                     }
                     "Fetch.failRequest" => {
                         if stage != "request" {
@@ -412,13 +572,6 @@ impl PageCdpAdapter {
                         )
                     }
                     _ => {
-                        if stage != "request" {
-                            return PageCdpOutput::client(error(
-                                &request,
-                                -32602,
-                                "response-stage fulfill is not mapped",
-                            ));
-                        }
                         let Some(code) = params
                             .get("responseCode")
                             .and_then(Value::as_u64)
@@ -454,7 +607,11 @@ impl PageCdpAdapter {
                             .and_then(Value::as_str)
                             .unwrap_or("application/octet-stream");
                         (
-                            "Network.interceptRequestWithResponse",
+                            if stage == "request" {
+                                "Network.interceptRequestWithResponse"
+                            } else {
+                                "Network.interceptWithResponse"
+                            },
                             json!({"content":body,"base64Encoded":true,"mimeType":mime,"status":code,
                             "statusText":params.get("responsePhrase").and_then(Value::as_str).unwrap_or(""),"headers":headers}),
                         )
@@ -482,6 +639,33 @@ impl PageCdpAdapter {
                 return PageCdpOutput::default();
             };
             if let Some(cause) = message.get("error") {
+                if let Translation::FetchEnable { stage } = &pending.translation {
+                    return self.issue(
+                        pending.request,
+                        Translation::FetchRollback {
+                            cause: cause.clone(),
+                        },
+                        "Network.removeInterception",
+                        json!({"url":".*","stage":stage,"isRegex":true}),
+                        Some(pending.deadline),
+                    );
+                }
+                if matches!(pending.translation, Translation::PerformanceStart) {
+                    return self.issue(
+                        pending.request,
+                        Translation::PerformanceRollback {
+                            cause: cause.clone(),
+                        },
+                        "Memory.disable",
+                        json!({}),
+                        Some(pending.deadline),
+                    );
+                }
+                let cause = match &pending.translation {
+                    Translation::PerformanceRollback { cause } => cause,
+                    Translation::FetchRollback { cause } => cause,
+                    _ => cause,
+                };
                 let mut response = json!({"id":pending.request["id"],"error":cause});
                 if let Some(session) = pending.request.get("sessionId") {
                     response["sessionId"] = session.clone();
@@ -496,6 +680,37 @@ impl PageCdpAdapter {
                 ));
             };
             return match pending.translation {
+                Translation::PerformanceEnable => self.issue(
+                    pending.request,
+                    Translation::PerformanceStart,
+                    "Memory.startTracking",
+                    json!({}),
+                    Some(pending.deadline),
+                ),
+                Translation::PerformanceStart => {
+                    self.performance_enabled = true;
+                    PageCdpOutput::client(reply(&pending.request, json!({})))
+                }
+                Translation::PerformanceStop => {
+                    self.performance_enabled = false;
+                    self.memory_metrics = None;
+                    self.issue(
+                        pending.request,
+                        Translation::PerformanceDisable,
+                        "Memory.disable",
+                        json!({}),
+                        Some(pending.deadline),
+                    )
+                }
+                Translation::PerformanceDisable => {
+                    PageCdpOutput::client(reply(&pending.request, json!({})))
+                }
+                Translation::PerformanceRollback { cause } => {
+                    let mut response = reply(&pending.request, json!({}));
+                    response.as_object_mut().unwrap().remove("result");
+                    response["error"] = cause;
+                    PageCdpOutput::client(response)
+                }
                 Translation::Pass => PageCdpOutput::client(reply(&pending.request, result.clone())),
                 Translation::FrameTree => {
                     match result.get("frameTree").filter(|tree| valid_tree(tree)) {
@@ -522,19 +737,33 @@ impl PageCdpAdapter {
                         ));
                     };
                     let main_id = tree["frame"]["id"].as_str().unwrap().to_owned();
-                    if frame_id.as_ref().is_some_and(|id| id != &main_id) {
-                        return PageCdpOutput::client(error(
-                            &pending.request,
-                            -32601,
-                            "subframe navigation requires a verified execution-context mapping",
-                        ));
-                    }
-                    let effective_frame_id = main_id.clone();
+                    let effective_frame_id = frame_id.unwrap_or_else(|| main_id.clone());
+                    let context = if effective_frame_id != main_id {
+                        let context = self
+                            .frame_contexts
+                            .get(&effective_frame_id)
+                            .copied()
+                            .filter(|_| tree_contains_frame(tree, &effective_frame_id));
+                        let Some(context) = context else {
+                            return PageCdpOutput::client(error(
+                                &pending.request,
+                                -32601,
+                                "subframe navigation requires a verified execution-context mapping",
+                            ));
+                        };
+                        Some(context)
+                    } else {
+                        None
+                    };
                     self.frame_id = Some(main_id);
                     let expression = format!(
                         "window.location.assign({})",
                         serde_json::to_string(&url).unwrap()
                     );
+                    let mut params = json!({"expression": expression});
+                    if let Some(context) = context {
+                        params["contextId"] = json!(context);
+                    }
                     self.issue(
                         pending.request,
                         Translation::Navigate {
@@ -542,7 +771,7 @@ impl PageCdpAdapter {
                             url,
                         },
                         "Runtime.evaluate",
-                        json!({"expression": expression}),
+                        params,
                         Some(pending.deadline),
                     )
                 }
@@ -618,22 +847,42 @@ impl PageCdpAdapter {
                         )),
                     }
                 }
-                Translation::FetchAdd => self.issue(
+                Translation::FetchAdd { stage } => self.issue(
                     pending.request,
-                    Translation::FetchEnable,
+                    Translation::FetchEnable { stage },
                     "Network.setInterceptionEnabled",
                     json!({"enabled":true}),
                     Some(pending.deadline),
                 ),
-                Translation::FetchEnable => {
+                Translation::FetchEnable { stage } => {
                     self.fetch_enabled = true;
+                    self.fetch_stage = Some(stage);
                     PageCdpOutput::client(reply(&pending.request, result.clone()))
                 }
                 Translation::FetchDisable => {
                     self.fetch_enabled = false;
                     self.paused.clear();
                     self.request_meta.clear();
+                    let stage = self
+                        .fetch_stage
+                        .take()
+                        .expect("enabled interception has a stage");
+                    self.issue(
+                        pending.request,
+                        Translation::FetchRemove,
+                        "Network.removeInterception",
+                        json!({"url":".*","stage":stage,"isRegex":true}),
+                        Some(pending.deadline),
+                    )
+                }
+                Translation::FetchRemove => {
                     PageCdpOutput::client(reply(&pending.request, result.clone()))
+                }
+                Translation::FetchRollback { cause } => {
+                    let mut response = reply(&pending.request, json!({}));
+                    response.as_object_mut().unwrap().remove("result");
+                    response["error"] = cause;
+                    PageCdpOutput::client(response)
                 }
                 Translation::FetchResume { request_id } => {
                     self.paused.remove(&request_id);
@@ -642,6 +891,38 @@ impl PageCdpAdapter {
             };
         }
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+        if method == "Memory.trackingUpdate"
+            && (self.performance_enabled || self.performance_changing())
+        {
+            if let Some(metrics) = memory_metrics(&message["params"]["event"]) {
+                self.memory_metrics = Some(metrics.clone());
+                return PageCdpOutput::client(json!({"method":"Performance.metrics", "params":{
+                    "metrics":metrics,"title":"WebKit memory allocation sample"
+                }}));
+            }
+        }
+        if method == "Runtime.executionContextCreated" {
+            let context = &message["params"]["context"];
+            if context["type"] == "normal" || context["isPageContext"] == true {
+                if let (Some(frame), Some(id)) =
+                    (context["frameId"].as_str(), context["id"].as_i64())
+                {
+                    if self.frame_contexts.len() < MAX_PENDING
+                        || self.frame_contexts.contains_key(frame)
+                    {
+                        self.frame_contexts.insert(frame.to_owned(), id);
+                    }
+                }
+            }
+        }
+        if method == "Runtime.executionContextsCleared" {
+            self.frame_contexts.clear();
+        }
+        if method == "Runtime.executionContextDestroyed" {
+            if let Some(id) = message["params"]["executionContextId"].as_i64() {
+                self.frame_contexts.retain(|_, context| *context != id);
+            }
+        }
         if method == "Console.messageAdded" {
             // WebKit ConsoleMessage has no executionContextId. Neither a guessed
             // context 1 nor host wall time is valid Runtime.consoleAPICalled evidence.
@@ -694,6 +975,9 @@ impl PageCdpAdapter {
             return output;
         }
         if method == "Page.frameDetached" {
+            if let Some(frame) = message["params"]["frameId"].as_str() {
+                self.frame_contexts.remove(frame);
+            }
             let mut message = message;
             if let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) {
                 if !params.contains_key("reason") {
@@ -717,7 +1001,11 @@ impl PageCdpAdapter {
                 self.paused.remove(id);
             }
         }
-        if self.fetch_enabled
+        if (self.fetch_enabled
+            || self
+                .pending
+                .values()
+                .any(|p| matches!(p.translation, Translation::FetchEnable { .. })))
             && matches!(
                 method,
                 "Network.requestIntercepted" | "Network.responseIntercepted"
@@ -787,6 +1075,38 @@ impl PageCdpAdapter {
             .collect()
     }
 }
+fn memory_metrics(event: &Value) -> Option<Value> {
+    let timestamp = event["timestamp"]
+        .as_f64()
+        .filter(|n| n.is_finite() && *n >= 0.0)?;
+    let categories = event["categories"].as_array()?;
+    if categories.is_empty() || categories.len() > 6 {
+        return None;
+    }
+    let mut metrics = vec![json!({"name":"Timestamp", "value":timestamp})];
+    for category in categories {
+        // WebKit JavaScript includes GCHeap and GCOwned allocations: neither
+        // CDP JSHeapUsedSize nor JSHeapTotalSize describes it accurately.
+        let name = match category["type"].as_str()? {
+            "javascript" => "WebKitJavaScriptMemory",
+            "jit" => "WebKitJITMemory",
+            "images" => "WebKitImageMemory",
+            "layers" => "WebKitLayerMemory",
+            "page" => "WebKitPageMemory",
+            "other" => "WebKitOtherMemory",
+            _ => return None,
+        };
+        let size = category["size"]
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)?;
+        if metrics.iter().any(|metric| metric["name"] == name) {
+            return None;
+        }
+        metrics.push(json!({"name":name,"value":size}));
+    }
+    Some(json!(metrics))
+}
+
 fn valid_tree(tree: &Value) -> bool {
     fn validate(tree: &Value, depth: usize) -> bool {
         depth <= 64
@@ -800,6 +1120,13 @@ fn valid_tree(tree: &Value) -> bool {
             })
     }
     validate(tree, 0)
+}
+fn tree_contains_frame(tree: &Value, id: &str) -> bool {
+    tree["frame"]["id"].as_str() == Some(id)
+        || tree
+            .get("childFrames")
+            .and_then(Value::as_array)
+            .is_some_and(|frames| frames.iter().any(|frame| tree_contains_frame(frame, id)))
 }
 fn clean_frame_tree(tree: &Value) -> Value {
     let mut cleaned = serde_json::Map::new();
@@ -878,6 +1205,112 @@ fn valid_png(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_override_response_and_disable_remove_real_native_interception() {
+        let mut adapter = PageCdpAdapter::new(Duration::from_secs(1));
+        let add = adapter.outgoing(json!({"id":1,"method":"Fetch.enable","params":{"patterns":[{"requestStage":"Response"}]}}));
+        let enabled = adapter.incoming(json!({"id":add.wire[0]["id"],"result":{}}));
+        adapter.incoming(json!({"method":"Network.requestWillBeSent","params":{"requestId":"native","frameId":"frame","request":{"url":"https://a.test"}}}));
+        let paused = adapter.incoming(json!({"method":"Network.responseIntercepted","params":{"requestId":"native","response":{"status":200,"headers":{}}}}));
+        assert_eq!(
+            paused.client[0]["method"], "Fetch.requestPaused",
+            "native may pause before enable ACK"
+        );
+        adapter.incoming(json!({"id":enabled.wire[0]["id"],"result":{}}));
+        let fulfilled = adapter.outgoing(json!({"id":2,"method":"Fetch.fulfillRequest","params":{"requestId":"native","responseCode":201,"body":"b2s="}}));
+        assert_eq!(fulfilled.wire[0]["method"], "Network.interceptWithResponse");
+        assert_eq!(fulfilled.wire[0]["params"]["content"], "b2s=");
+        adapter.incoming(json!({"id":fulfilled.wire[0]["id"],"result":{}}));
+        let disable = adapter.outgoing(json!({"id":3,"method":"Fetch.disable"}));
+        let remove = adapter.incoming(json!({"id":disable.wire[0]["id"],"result":{}}));
+        assert_eq!(remove.wire[0]["method"], "Network.removeInterception");
+        assert_eq!(
+            remove.wire[0]["params"],
+            json!({"url":".*","stage":"response","isRegex":true})
+        );
+        adapter.incoming(json!({"id":remove.wire[0]["id"],"result":{}}));
+        let add = adapter.outgoing(json!({"id":4,"method":"Fetch.enable"}));
+        assert_eq!(add.wire[0]["method"], "Network.addInterception");
+    }
+
+    #[test]
+    fn performance_metrics_use_device_seconds_and_named_webkit_bytes_and_stop_sampling() {
+        let mut adapter = PageCdpAdapter::new(Duration::from_secs(1));
+        let early = adapter.outgoing(json!({"id":1,"method":"Performance.getMetrics"}));
+        assert_eq!(early.client[0]["error"]["code"], -32000);
+        let enabled = adapter.outgoing(json!({"id":2,"method":"Performance.enable"}));
+        assert_eq!(enabled.wire[0]["method"], "Memory.enable");
+        let start = adapter.incoming(json!({"id":enabled.wire[0]["id"],"result":{}}));
+        assert_eq!(start.wire[0]["method"], "Memory.startTracking");
+        adapter.incoming(json!({"id":start.wire[0]["id"],"result":{}}));
+        let sample = adapter.incoming(json!({"method":"Memory.trackingUpdate","params":{"event":{
+            "timestamp":12.5,"categories":[{"type":"javascript","size":4096},{"type":"images","size":1024}]
+        }}}));
+        assert_eq!(sample.client[0]["method"], "Performance.metrics");
+        let metrics = adapter.outgoing(json!({"id":3,"method":"Performance.getMetrics"}));
+        assert_eq!(
+            metrics.client[0]["result"]["metrics"],
+            json!([
+                {"name":"Timestamp","value":12.5},{"name":"WebKitJavaScriptMemory","value":4096.0},
+                {"name":"WebKitImageMemory","value":1024.0}
+            ])
+        );
+        assert!(
+            memory_metrics(&json!({"timestamp":1,"categories":[{"type":"unknown","size":0}]}))
+                .is_none()
+        );
+        let stop = adapter.outgoing(json!({"id":4,"method":"Performance.disable"}));
+        assert_eq!(stop.wire[0]["method"], "Memory.stopTracking");
+        let disable = adapter.incoming(json!({"id":stop.wire[0]["id"],"result":{}}));
+        assert_eq!(disable.wire[0]["method"], "Memory.disable");
+        adapter.incoming(json!({"id":disable.wire[0]["id"],"result":{}}));
+        assert!(adapter
+            .outgoing(json!({"id":5,"method":"Performance.getMetrics"}))
+            .client[0]
+            .get("error")
+            .is_some());
+        let gc = adapter.outgoing(json!({"id":6,"method":"HeapProfiler.collectGarbage"}));
+        assert_eq!(gc.wire[0]["method"], "Heap.gc");
+    }
+
+    #[test]
+    fn performance_start_failure_disables_native_domain_and_preserves_primary_error() {
+        let mut adapter = PageCdpAdapter::new(Duration::from_secs(1));
+        let enabled = adapter.outgoing(json!({"id":1,"method":"Performance.enable"}));
+        let start = adapter.incoming(json!({"id":enabled.wire[0]["id"],"result":{}}));
+        let original = json!({"code":-32000,"message":"native sampling unavailable"});
+        let rollback = adapter.incoming(json!({"id":start.wire[0]["id"],"error":original}));
+        assert_eq!(rollback.wire[0]["method"], "Memory.disable");
+        let output = adapter.incoming(json!({"id":rollback.wire[0]["id"],"result":{}}));
+        assert_eq!(output.client[0]["error"], original);
+        assert!(!adapter.performance_enabled);
+    }
+
+    #[test]
+    fn subframe_navigation_selects_native_normal_context_and_detach_removes_it() {
+        let mut adapter = PageCdpAdapter::new(Duration::from_secs(1));
+        adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{
+            "context":{"id":101,"type":"normal","frameId":"child","name":""}
+        }}));
+        let tree = json!({"frame":{"id":"main","url":"https://a.test"},"childFrames":[
+            {"frame":{"id":"child","parentId":"main","url":"https://b.test"}}
+        ]});
+        let request = adapter.outgoing(json!({"id":1,"method":"Page.navigate","params":{"url":"https://b.test/new","frameId":"child"}}));
+        let sent =
+            adapter.incoming(json!({"id":request.wire[0]["id"],"result":{"frameTree":tree}}));
+        assert_eq!(sent.wire[0]["method"], "Runtime.evaluate");
+        assert_eq!(sent.wire[0]["params"]["contextId"], 101);
+        let evaluated = adapter
+            .incoming(json!({"id":sent.wire[0]["id"],"result":{"result":{"type":"undefined"}}}));
+        assert!(evaluated.client.is_empty());
+        let wrong = adapter.incoming(json!({"method":"Page.frameNavigated","params":{"frame":{"id":"main","url":"https://b.test/new"}}}));
+        assert!(wrong.client.iter().all(|m| m.get("id").is_none()));
+        let committed = adapter.incoming(json!({"method":"Page.frameNavigated","params":{"frame":{"id":"child","parentId":"main","url":"https://b.test/new"}}}));
+        assert_eq!(committed.client[0]["result"]["frameId"], "child");
+        adapter.incoming(json!({"method":"Page.frameDetached","params":{"frameId":"child"}}));
+        assert!(!adapter.frame_contexts.contains_key("child"));
+    }
     fn adapter() -> PageCdpAdapter {
         PageCdpAdapter::new(Duration::from_secs(5))
     }
@@ -1015,7 +1448,6 @@ mod tests {
             "Input.dispatchMouseEvent",
             "Input.dispatchKeyEvent",
             "Memory.getDOMCounters",
-            "Performance.getMetrics",
         ] {
             assert_eq!(
                 adapter.outgoing(json!({"id":1,"method":method})).client[0]["error"]["code"],
