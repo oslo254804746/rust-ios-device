@@ -2,7 +2,7 @@
 //! Protocol evidence: pinned pymobiledevice3 cdp_target.py getResourceTree,
 //! snapshotRect, in-page navigation and Network interception adapters.
 //! Input is refused: in-page DOM synthesis cannot meet trusted CDP input semantics.
-use super::cdp_browser::{error, reply, unverified_page_method};
+use super::cdp_browser::{error, reply, unverified_page_error};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::{
@@ -37,14 +37,22 @@ impl PageCdpOutput {
 enum Translation {
     Pass,
     FrameTree,
-    NavigateTree { url: String },
-    Navigate { frame_id: String, url: String },
+    NavigateTree {
+        url: String,
+        frame_id: Option<String>,
+    },
+    Navigate {
+        frame_id: String,
+        url: String,
+    },
     Viewport,
     Screenshot,
     FetchAdd,
     FetchEnable,
     FetchDisable,
-    FetchResume { request_id: String },
+    FetchResume {
+        request_id: String,
+    },
 }
 #[derive(Debug)]
 struct Pending {
@@ -134,23 +142,8 @@ impl PageCdpAdapter {
         if !params.is_object() {
             return PageCdpOutput::client(error(&request, -32602, "params must be an object"));
         }
-        if unverified_page_method(&request) {
-            let err_msg = if let Some(m) = request.get("method").and_then(Value::as_str) {
-                if m.starts_with("Input.") {
-                    "Input domain native dispatch is not supported over WebInspector socket (JS dispatchEvent is not trusted native input)"
-                } else if m.starts_with("Memory.") {
-                    "Memory domain has no verified WebInspector memory allocation/DOM counters protocol counterpart"
-                } else if m.starts_with("Performance.") {
-                    "Performance domain has no verified WebInspector metrics sampling counterpart"
-                } else if m == "Runtime.evaluate" {
-                    "throwOnSideEffect has no verified WebInspector side-effect analysis counterpart"
-                } else {
-                    "CDP method has no verified WebInspector translation"
-                }
-            } else {
-                "CDP method has no verified WebInspector translation"
-            };
-            return PageCdpOutput::client(error(&request, -32601, err_msg));
+        if let Some(err) = unverified_page_error(&request) {
+            return PageCdpOutput::client(err);
         }
         match method.as_str() {
             "Page.enable" | "Page.disable" | "Console.enable" | "Console.disable" => {
@@ -193,7 +186,9 @@ impl PageCdpAdapter {
                         "navigate requires a bounded URL",
                     ));
                 };
-                if params.as_object().unwrap().keys().any(|key| key != "url") {
+                if params.as_object().unwrap().keys().any(|key| {
+                    !["url", "frameId", "referrer", "transitionType"].contains(&key.as_str())
+                }) {
                     return PageCdpOutput::client(error(
                         &request,
                         -32602,
@@ -212,10 +207,17 @@ impl PageCdpAdapter {
                         "a navigation is already pending",
                     ));
                 }
+                let target_frame_id = params
+                    .get("frameId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 let url = url.to_owned();
                 self.issue(
                     request,
-                    Translation::NavigateTree { url },
+                    Translation::NavigateTree {
+                        url,
+                        frame_id: target_frame_id,
+                    },
                     "Page.getResourceTree",
                     json!({}),
                     None,
@@ -364,18 +366,36 @@ impl PageCdpAdapter {
                         ("Network.interceptContinue", json!({"stage":stage}))
                     }
                     "Fetch.failRequest" => {
-                        if stage != "request"
-                            || params.get("errorReason").and_then(Value::as_str) != Some("Failed")
-                        {
+                        if stage != "request" {
                             return PageCdpOutput::client(error(
                                 &request,
                                 -32602,
-                                "only the verified general request failure is supported",
+                                "failRequest is only valid in request stage",
                             ));
                         }
+                        let reason = params
+                            .get("errorReason")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Failed");
+                        let error_type = match reason {
+                            "Failed" | "ConnectionFailed" | "ConnectionRefused"
+                            | "ConnectionReset" | "AddressUnreachable" => "General",
+                            "Aborted" | "ConnectionAborted" => "Cancellation",
+                            "TimedOut" => "Timeout",
+                            "AccessDenied" | "BlockedByClient" | "BlockedByResponse" => {
+                                "AccessControl"
+                            }
+                            _ => {
+                                return PageCdpOutput::client(error(
+                                    &request,
+                                    -32602,
+                                    "only verified request failure reasons are supported",
+                                ));
+                            }
+                        };
                         (
                             "Network.interceptRequestWithError",
-                            json!({"errorType":"General"}),
+                            json!({"errorType": error_type}),
                         )
                     }
                     _ => {
@@ -464,21 +484,23 @@ impl PageCdpAdapter {
             };
             return match pending.translation {
                 Translation::Pass => PageCdpOutput::client(reply(&pending.request, result.clone())),
-                Translation::FrameTree => match result
-                    .get("frameTree")
-                    .filter(|tree| valid_tree(tree))
-                {
-                    Some(tree) => {
-                        self.frame_id = tree["frame"]["id"].as_str().map(str::to_owned);
-                        PageCdpOutput::client(reply(&pending.request, json!({"frameTree":tree})))
+                Translation::FrameTree => {
+                    match result.get("frameTree").filter(|tree| valid_tree(tree)) {
+                        Some(tree) => {
+                            self.frame_id = tree["frame"]["id"].as_str().map(str::to_owned);
+                            PageCdpOutput::client(reply(
+                                &pending.request,
+                                json!({"frameTree": clean_frame_tree(tree)}),
+                            ))
+                        }
+                        None => PageCdpOutput::client(error(
+                            &pending.request,
+                            -32000,
+                            "WebInspector returned an invalid frame tree",
+                        )),
                     }
-                    None => PageCdpOutput::client(error(
-                        &pending.request,
-                        -32000,
-                        "WebInspector returned an invalid frame tree",
-                    )),
-                },
-                Translation::NavigateTree { url } => {
+                }
+                Translation::NavigateTree { url, frame_id } => {
                     let Some(tree) = result.get("frameTree").filter(|tree| valid_tree(tree)) else {
                         return PageCdpOutput::client(error(
                             &pending.request,
@@ -486,17 +508,21 @@ impl PageCdpAdapter {
                             "navigation requires a real frame tree",
                         ));
                     };
-                    let frame_id = tree["frame"]["id"].as_str().unwrap().to_owned();
-                    self.frame_id = Some(frame_id.clone());
+                    let main_id = tree["frame"]["id"].as_str().unwrap().to_owned();
+                    let effective_frame_id = frame_id.unwrap_or_else(|| main_id.clone());
+                    self.frame_id = Some(main_id);
                     let expression = format!(
                         "window.location.assign({})",
                         serde_json::to_string(&url).unwrap()
                     );
                     self.issue(
                         pending.request,
-                        Translation::Navigate { frame_id, url },
+                        Translation::Navigate {
+                            frame_id: effective_frame_id,
+                            url,
+                        },
                         "Runtime.evaluate",
-                        json!({"expression":expression}),
+                        json!({"expression": expression}),
                         Some(pending.deadline),
                     )
                 }
@@ -647,6 +673,15 @@ impl PageCdpAdapter {
             output.client.push(message);
             return output;
         }
+        if method == "Page.frameDetached" {
+            let mut message = message;
+            if let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) {
+                if !params.contains_key("reason") {
+                    params.insert("reason".into(), json!("remove"));
+                }
+            }
+            return PageCdpOutput::client(message);
+        }
         if method == "Network.requestWillBeSent" {
             if let Some(id) = message["params"]["requestId"].as_str() {
                 if self.request_meta.len() >= MAX_REQUESTS {
@@ -745,6 +780,17 @@ fn valid_tree(tree: &Value) -> bool {
             })
     }
     validate(tree, 0)
+}
+fn clean_frame_tree(tree: &Value) -> Value {
+    let mut cleaned = serde_json::Map::new();
+    if let Some(frame) = tree.get("frame") {
+        cleaned.insert("frame".into(), frame.clone());
+    }
+    if let Some(child_frames) = tree.get("childFrames").and_then(Value::as_array) {
+        let cleaned_children: Vec<Value> = child_frames.iter().map(clean_frame_tree).collect();
+        cleaned.insert("childFrames".into(), Value::Array(cleaned_children));
+    }
+    Value::Object(cleaned)
 }
 fn screenshot_rect(value: &Value) -> Option<Value> {
     if value

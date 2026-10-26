@@ -40,7 +40,7 @@ function arguments_() {
   assert.equal(endpoint.hostname, '127.0.0.1');
   assert(endpoint.port && endpoint.pathname === '/' && !endpoint.search && !endpoint.hash);
   assert(!endpoint.username && !endpoint.password);
-  assert(['initialization-rejection', 'runtime-workflow', 'native-page-closure', 'native-application-closure', 'native-discovery-page-closure', 'native-discovery-application-closure', 'native-discovery-race-closure'].includes(expectation));
+  assert(['initialization-rejection', 'runtime-workflow', 'console-workflow', 'five-domain-workflow', 'native-page-closure', 'native-application-closure', 'native-discovery-page-closure', 'native-discovery-application-closure', 'native-discovery-race-closure'].includes(expectation));
   return { client, endpoint: endpoint.origin, targetUrl, expectation };
 }
 
@@ -71,7 +71,16 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
       },
     });
     steps.push('initialized');
-    const target = await browser.waitForTarget(target => target.url() === targetUrl, { timeout: TIMEOUT });
+    let target;
+    try {
+      target = await browser.waitForTarget(target => target.url() === targetUrl, { timeout: 1000 });
+    } catch {
+      const { targetInfos } = await browser._connection.send('Target.getTargets');
+      const info = targetInfos.find(t => t.url === targetUrl);
+      assert(info, 'discovered target absent');
+      await browser._connection.send('Target.attachToTarget', { targetId: info.targetId, flatten: true });
+      target = await browser.waitForTarget(target => target.url() === targetUrl, { timeout: TIMEOUT });
+    }
     steps.push('discovered');
     session = await target.createCDPSession();
     steps.push('attached');
@@ -102,7 +111,82 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
     }
     assert(unknown, 'unknown context unexpectedly succeeded');
     assert.equal(unknown.method, 'Runtime.evaluate');
-    if (expectation.startsWith('native-')) {
+    if (expectation === 'console-workflow') {
+      const consolePromise = new Promise(resolve => session.once('Runtime.consoleAPICalled', resolve));
+      await session.send('Runtime.evaluate', { expression: 'fixture:console-log', contextId });
+      const event = await bounded(consolePromise);
+      assert.equal(event.type, 'log');
+      assert.equal(event.args[0].value, 'test console log from native');
+      assert.equal(event.executionContextId, contextId);
+      assert.equal(event.timestamp, 12345);
+      steps.push('console-verified');
+      await session.detach();
+      session = undefined;
+      steps.push('detached');
+      result = { status: 'console-workflow', steps, contexts, evaluated: 42, console_event: event };
+    } else if (expectation === 'five-domain-workflow') {
+      // Domain 1: Console / Runtime is already active and verified
+      // Domain 2: Page / iframe
+      const { frameTree } = await session.send('Page.getFrameTree');
+      assert(frameTree && frameTree.frame && frameTree.frame.id);
+      assert(Array.isArray(frameTree.childFrames));
+      steps.push('frame-tree-verified');
+
+      // Domain 3: Input & Screenshot
+      const screenshot = await session.send('Page.captureScreenshot', { format: 'png' });
+      assert(typeof screenshot.data === 'string' && screenshot.data.length > 0);
+      const pngHeader = Buffer.from(screenshot.data, 'base64').subarray(0, 8);
+      assert.deepEqual([...pngHeader], [137, 80, 78, 71, 13, 10, 26, 10]);
+      steps.push('screenshot-verified');
+
+      let inputRejected = false;
+      try {
+        await session.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 10, y: 10 });
+      } catch (err) {
+        inputRejected = true;
+      }
+      assert(inputRejected, 'native input injection must be rejected over WebInspector');
+      steps.push('input-rejected');
+
+      // Domain 4: Fetch & Download
+      await session.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
+      steps.push('fetch-enabled');
+      await session.send('Fetch.disable');
+      steps.push('fetch-disabled');
+
+      let downloadRejected = false;
+      try {
+        await session.send('Page.setDownloadBehavior', { behavior: 'allow' });
+      } catch (err) {
+        downloadRejected = true;
+      }
+      assert(downloadRejected, 'download behavior must be rejected');
+      steps.push('download-rejected');
+
+      // Domain 5: Memory & Performance
+      let perfRejected = false;
+      try {
+        await session.send('Performance.getMetrics');
+      } catch (err) {
+        perfRejected = true;
+      }
+      assert(perfRejected, 'performance metrics must be rejected');
+      steps.push('perf-rejected');
+
+      let memRejected = false;
+      try {
+        await session.send('Memory.getDOMCounters');
+      } catch (err) {
+        memRejected = true;
+      }
+      assert(memRejected, 'memory DOM counters must be rejected');
+      steps.push('mem-rejected');
+
+      await session.detach();
+      session = undefined;
+      steps.push('detached');
+      result = { status: 'five-domain-workflow', steps, contexts, evaluated: 42 };
+    } else if (expectation.startsWith('native-')) {
       const preserved = await session.send('Runtime.evaluate', { expression: 'fixture:unrelated', contextId });
       assert.equal(preserved.result.value, 42);
       steps.push('unrelated-preserved');
