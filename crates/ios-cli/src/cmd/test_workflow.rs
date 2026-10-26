@@ -2,16 +2,25 @@
 //! syslog streaming capture, JUnit XML reporting, cancellation recovery, and failure reruns (F02).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use ios_core::device::ConnectedDevice;
 use ios_core::testmanager::results::{TestCaseStatus, TestRunOutcome, TestRunSummary};
+use ios_core::testmanager::workflow::TestLaunchPlan;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
+
+use crate::cmd::runtest::{
+    connect_testmanager_device_scoped, incomplete_summary, start_test_plan_session_owned_until,
+    write_junit_diagnostic, write_junit_summary, xctest_wait_timeout, TestStartupCleanup,
+};
 
 pub(crate) mod crash;
 
@@ -848,15 +857,42 @@ pub async fn preflight_device_readiness(udid: &str, deadline: Instant) -> Result
         .context("test workflow preflight: deadline expired while checking device readiness")?
 }
 
-/// CLI preflight and explicit-install helper. Launch, collection and cleanup are
-/// still owned by runtest/runxctest; this is not the complete reusable F02 owner.
+/// Execution options for running the full test workflow orchestration.
+#[derive(Debug, Clone)]
+pub struct TestWorkflowRunOptions {
+    pub startup_timeout: Duration,
+    pub result_timeout: Duration,
+    pub json_output: bool,
+    pub untested_banner: bool,
+    pub untested_receipt: bool,
+    pub monitored_bundle_ids: Vec<String>,
+}
+
+pub(crate) fn print_receipt(json_output: bool, value: &serde_json::Value) -> Result<()> {
+    if json_output {
+        crate::output::outln!("{}", serde_json::to_string_pretty(value)?);
+    } else if let Some(status) = value.get("status").and_then(serde_json::Value::as_str) {
+        let pid = value
+            .get("pid")
+            .and_then(serde_json::Value::as_u64)
+            .map(|pid| format!(" (pid {pid})"))
+            .unwrap_or_default();
+        let status = if value.get("outcome").and_then(serde_json::Value::as_str) == Some("failed") {
+            "failed"
+        } else {
+            status
+        };
+        crate::output::outln!("XCTest {status}{pid}");
+    }
+    Ok(())
+}
+
+/// Unified, composable orchestrator for test execution workflows (F02).
 pub struct TestWorkflowEngine<'a> {
     pub udid: &'a str,
     pub workflow: &'a TestWorkflowArgs,
     pub deadline: Instant,
-    #[allow(dead_code)]
     pub wait: bool,
-    #[allow(dead_code)]
     pub junit_output: Option<&'a Path>,
 }
 
@@ -906,6 +942,506 @@ impl<'a> TestWorkflowEngine<'a> {
             .context("XCTest deadline expired during test runner package installation")??;
         }
         Ok(())
+    }
+
+    /// Execute the complete test workflow:
+    /// preflight -> baseline crashes -> install packages -> connect & resolve plan ->
+    /// start test session -> collect results -> rerun failed tests (without re-installing) ->
+    /// write JUnit & attempt sidecars -> graceful PID/session shutdown -> package uninstallation -> receipt output.
+    pub async fn run<F>(&self, options: TestWorkflowRunOptions, resolve_plan: F) -> Result<()>
+    where
+        F: for<'d> FnOnce(
+                &'d ConnectedDevice,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<(String, TestLaunchPlan)>> + Send + 'd>,
+            > + Send,
+    {
+        if let Err(error) = self.preflight().await {
+            let report_result =
+                write_junit_diagnostic(self.junit_output, &incomplete_summary(false), &error);
+            if let Err(report_error) = report_result {
+                return combine_results(
+                    Err(error),
+                    Err(report_error),
+                    "workflow diagnostic report failed",
+                );
+            }
+            return Err(error);
+        }
+
+        let mut app_tracker = AppLifecycleTracker::new(self.workflow.uninstall_on_finish);
+        let log_guard = if let Some(log_path) = self.workflow.log_output.clone() {
+            Some(LogCaptureGuard::start(self.udid, log_path).await)
+        } else {
+            None
+        };
+
+        let native = crate::cmd::tunnel::NativeScope::new()?;
+        let mut crashes = self.workflow.crash_output.as_deref().map(|root| {
+            crash::CrashCapture::new(root, options.monitored_bundle_ids.iter().cloned())
+        });
+
+        let mut workflow_sessions = Vec::new();
+        let mut startup_scopes = Vec::<TestStartupCleanup>::new();
+        let mut attempts = AttemptHistory::default();
+        let mut latest_summary = None;
+        let mut pending_startup = None;
+        let mut pending_finished = None;
+
+        let work = Box::pin(async {
+            if let Some(crashes) = &mut crashes {
+                crashes.baseline(self.udid, self.deadline, &native).await?;
+            }
+
+            if let Err(error) = self.install_explicit_packages(&mut app_tracker).await {
+                let report_result =
+                    write_junit_diagnostic(self.junit_output, &incomplete_summary(false), &error);
+                if let Err(report_error) = report_result {
+                    return combine_results(
+                        Err(error),
+                        Err(report_error),
+                        "workflow diagnostic report failed",
+                    );
+                }
+                return Err(error);
+            }
+
+            if options.untested_banner {
+                crate::output::write_error_line(format_args!(
+                    "UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet."
+                ))?;
+            }
+
+            let device = match Box::pin(connect_testmanager_device_scoped(self.udid, &native)).await
+            {
+                Ok(device) => device,
+                Err(error) => {
+                    let report_result = write_junit_diagnostic(
+                        self.junit_output,
+                        &incomplete_summary(false),
+                        &error,
+                    );
+                    if let Err(report_error) = report_result {
+                        return combine_results(
+                            Err(error),
+                            Err(report_error),
+                            "workflow diagnostic report failed",
+                        );
+                    }
+                    return Err(error);
+                }
+            };
+
+            let (configuration_name, plan) = match resolve_plan(&device).await {
+                Ok(plan) => plan,
+                Err(error) => {
+                    let report_result = write_junit_diagnostic(
+                        self.junit_output,
+                        &incomplete_summary(false),
+                        &error,
+                    );
+                    if let Err(report_error) = report_result {
+                        return combine_results(
+                            Err(error),
+                            Err(report_error),
+                            "workflow diagnostic report failed",
+                        );
+                    }
+                    return Err(error);
+                }
+            };
+
+            if self.wait {
+                attempts.start(plan.tests_to_run.clone());
+                startup_scopes.push(TestStartupCleanup::default());
+                let startup = tokio::time::timeout(
+                    options.startup_timeout,
+                    Box::pin(start_test_plan_session_owned_until(
+                        self.udid,
+                        plan.clone(),
+                        self.deadline,
+                        startup_scopes.last_mut().expect("startup owner admitted"),
+                        &native,
+                    )),
+                )
+                .await;
+                let session = match startup {
+                    Err(elapsed) => {
+                        let error =
+                            xctest_wait_timeout(elapsed, "timed out waiting for XCTest startup");
+                        let report_result = write_junit_diagnostic(
+                            self.junit_output,
+                            &incomplete_summary(false),
+                            &error,
+                        );
+                        if let Err(report_error) = report_result {
+                            return combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
+                    }
+                    Ok(Err(error)) => {
+                        let report_result = write_junit_diagnostic(
+                            self.junit_output,
+                            &incomplete_summary(false),
+                            &error,
+                        );
+                        if let Err(report_error) = report_result {
+                            return combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
+                    }
+                    Ok(Ok(session)) => session,
+                };
+
+                workflow_sessions.push(session);
+                let session = workflow_sessions.last_mut().expect("stored active session");
+                let result = session.startup_result().clone();
+                let result_wait =
+                    tokio::time::timeout(options.result_timeout, session.wait_for_results()).await;
+                let mut summary = match result_wait {
+                    Err(elapsed) => {
+                        session.terminate().await;
+                        let error =
+                            xctest_wait_timeout(elapsed, "timed out waiting for XCTest results");
+                        let report_result = write_junit_diagnostic(
+                            self.junit_output,
+                            &incomplete_summary(true),
+                            &error,
+                        );
+                        if let Err(report_error) = report_result {
+                            return combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
+                    }
+                    Ok(Err(error)) => {
+                        session.terminate().await;
+                        let report_result = write_junit_diagnostic(
+                            self.junit_output,
+                            &incomplete_summary(true),
+                            &error,
+                        );
+                        if let Err(report_error) = report_result {
+                            return combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
+                    }
+                    Ok(Ok(summary)) => summary,
+                };
+
+                let mut finished_receipt = serde_json::json!({
+                    "status": "finished",
+                    "configuration": configuration_name,
+                    "runner_bundle_id": result.runner_bundle_id,
+                    "target_bundle_id": result.target_bundle_id,
+                    "pid": result.pid,
+                    "protocol_version": result.protocol_version,
+                    "minimum_version": result.minimum_version,
+                });
+                if options.untested_receipt {
+                    finished_receipt["untested"] = serde_json::json!(true);
+                    finished_receipt["note"] = serde_json::json!(
+                        "Result event parsing is covered offline; real XCTest devices still need validation."
+                    );
+                }
+                pending_finished = Some(finished_receipt);
+                latest_summary = Some(summary.clone());
+                attempts.complete(&summary)?;
+                session.terminate().await;
+                if let Some(error) = session.take_termination_error() {
+                    return Err(error);
+                }
+
+                summary.terminal_outcome()?;
+
+                // Rerun failed tests if requested
+                if summary.failure_count() > 0 && self.workflow.rerun_failed > 0 {
+                    for rerun_idx in 0..self.workflow.rerun_failed {
+                        let failed_selectors = extract_failed_selectors(&summary);
+                        if failed_selectors.is_empty() {
+                            break;
+                        }
+                        tracing::info!(
+                            attempt = rerun_idx + 1,
+                            failed_count = failed_selectors.len(),
+                            "test workflow: rerunning failed test selectors"
+                        );
+                        let mut rerun_plan = plan.clone();
+                        attempts.start(failed_selectors.clone());
+                        rerun_plan.tests_to_run = failed_selectors;
+                        rerun_plan.tests_to_skip.clear();
+
+                        let rerun_session = match tokio::time::timeout(options.startup_timeout, {
+                            startup_scopes.push(TestStartupCleanup::default());
+                            Box::pin(start_test_plan_session_owned_until(
+                                self.udid,
+                                rerun_plan,
+                                self.deadline,
+                                startup_scopes
+                                    .last_mut()
+                                    .expect("rerun startup owner admitted"),
+                                &native,
+                            ))
+                        })
+                        .await
+                        {
+                            Ok(Ok(s)) => s,
+                            Ok(Err(error)) => return Err(error),
+                            Err(elapsed) => {
+                                return Err(xctest_wait_timeout(
+                                    elapsed,
+                                    "timed out restarting XCTest runner",
+                                ))
+                            }
+                        };
+
+                        workflow_sessions.push(rerun_session);
+                        let rerun_session = workflow_sessions
+                            .last_mut()
+                            .expect("stored active rerun session");
+                        let rerun_res = tokio::time::timeout(
+                            options.result_timeout,
+                            rerun_session.wait_for_results(),
+                        )
+                        .await;
+                        rerun_session.terminate().await;
+                        let rerun_summary = rerun_res.map_err(|elapsed| {
+                            xctest_wait_timeout(elapsed, "timed out waiting for rerun results")
+                        })??;
+                        attempts.complete(&rerun_summary)?;
+                        if let Some(error) = rerun_session.take_termination_error() {
+                            return Err(error);
+                        }
+                        merge_rerun_summary(&mut summary, rerun_summary)?;
+                        latest_summary = Some(summary.clone());
+                        if summary.failure_count() == 0 {
+                            break;
+                        }
+                    }
+                }
+
+                write_junit_summary(self.junit_output, &summary)?;
+
+                if summary.failure_count() > 0 {
+                    return Err(anyhow::anyhow!(
+                        "XCTest run completed with {} failed test(s)",
+                        summary.failure_count()
+                    ));
+                }
+                return Ok(());
+            }
+
+            // Not waiting: startup only
+            startup_scopes.push(TestStartupCleanup::default());
+            let session = tokio::time::timeout(
+                options.startup_timeout,
+                Box::pin(start_test_plan_session_owned_until(
+                    self.udid,
+                    plan,
+                    self.deadline,
+                    startup_scopes.last_mut().expect("startup owner admitted"),
+                    &native,
+                )),
+            )
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(error).context("timed out waiting for XCTest startup")
+            })??;
+
+            let result = session.startup_result().clone();
+            workflow_sessions.push(session);
+            let mut startup_receipt = serde_json::json!({
+                "status": "started",
+                "configuration": configuration_name,
+                "runner_bundle_id": result.runner_bundle_id,
+                "target_bundle_id": result.target_bundle_id,
+                "pid": result.pid,
+                "protocol_version": result.protocol_version,
+                "minimum_version": result.minimum_version,
+                "post_disconnect_lifetime": "unknown",
+                "note": "Startup was acknowledged. Service connections are closed before this receipt; continued runner or test execution after disconnect was not observed. Use --wait to collect result events in this invocation.",
+            });
+            if options.untested_receipt {
+                startup_receipt["untested"] = serde_json::json!(true);
+            }
+            pending_startup = Some(startup_receipt);
+
+            Ok(())
+        });
+
+        let mut outcome = tokio::select! {
+            result = tokio::time::timeout_at(self.deadline, work) => result
+                .map_err(|error| anyhow::Error::new(error).context("XCTest workflow deadline expired"))
+                .and_then(|result| result),
+            signal = tokio::signal::ctrl_c() => {
+                match signal {
+                    Ok(()) => Err(ios_core::OperationCancelled::new().into()),
+                    Err(error) => Err(anyhow::Error::new(error).context("waiting for XCTest cancellation")),
+                }
+            }
+        };
+
+        if let Err(error) = &outcome {
+            let partial = if attempts.attempt_count() == workflow_sessions.len() {
+                workflow_sessions
+                    .last()
+                    .map(|session| session.partial_summary())
+            } else {
+                None
+            };
+            let recorded = attempts.fail(error, partial.as_ref());
+            let diagnostic = latest_summary
+                .as_ref()
+                .or(partial.as_ref())
+                .cloned()
+                .unwrap_or_else(|| incomplete_summary(false));
+            latest_summary = Some(diagnostic.clone());
+            let reported = write_junit_diagnostic(self.junit_output, &diagnostic, error);
+            outcome = combine_results(outcome, recorded, "workflow attempt history failed");
+            outcome = combine_results(outcome, reported, "workflow diagnostic report failed");
+        }
+
+        for startup in &mut startup_scopes {
+            outcome = combine_results(
+                outcome,
+                startup.close().await,
+                "XCTest interrupted startup cleanup failed",
+            );
+        }
+
+        for session in &mut workflow_sessions {
+            if self.wait || outcome.is_err() {
+                session.terminate().await;
+            } else {
+                session.detach().await;
+            }
+            if let Some(error) = session.take_termination_error() {
+                outcome = combine_results(outcome, Err(error), "workflow runner cleanup failed");
+            }
+        }
+
+        let mut outcome = finish_workflow(self.udid, &app_tracker, log_guard, outcome).await;
+
+        if let Some(crashes) = &mut crashes {
+            outcome = combine_results(
+                outcome,
+                crashes.finish(self.udid, &native).await,
+                "workflow crash collection failed",
+            );
+        }
+
+        outcome = combine_results(
+            outcome,
+            native.close(Duration::from_secs(5)).await,
+            "workflow original native shutdown failed",
+        );
+
+        let recorded = if let Err(error) = &outcome {
+            let record = attempts.fail(error, None);
+            let diagnostic = latest_summary
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| incomplete_summary(false));
+            combine_results(
+                record,
+                write_junit_diagnostic(self.junit_output, &diagnostic, error),
+                "workflow final diagnostic failed",
+            )
+        } else {
+            Ok(())
+        };
+        outcome = combine_results(outcome, recorded, "workflow terminal history failed");
+        if let Err(error) = &outcome {
+            let recorded = attempts.fail(error, None);
+            outcome = combine_results(
+                outcome,
+                recorded,
+                "workflow final history classification failed",
+            );
+        }
+
+        let artifact_deadline = Instant::now() + Duration::from_secs(5);
+        let artifact = attempts
+            .write_until(self.junit_output, artifact_deadline)
+            .await;
+        let artifact_failed = artifact.is_err();
+        outcome = combine_results(outcome, artifact, "workflow attempt artifact failed");
+        if artifact_failed {
+            let diagnostic = latest_summary
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| incomplete_summary(false));
+            let reported = write_junit_diagnostic(
+                self.junit_output,
+                &diagnostic,
+                outcome.as_ref().expect_err("failed attempt artifact"),
+            );
+            outcome = combine_results(outcome, reported, "workflow artifact diagnostic failed");
+        }
+        if let Err(error) = &outcome {
+            let recorded = attempts.fail(error, None);
+            outcome = combine_results(
+                outcome,
+                recorded,
+                "workflow artifact failure classification failed",
+            );
+        }
+
+        if let Some(mut receipt) = pending_finished {
+            let output = (|| -> Result<()> {
+                finish_receipt(
+                    &mut receipt,
+                    latest_summary.as_ref().expect("observed finished summary"),
+                    &attempts,
+                    &outcome,
+                )?;
+                print_receipt(options.json_output, &receipt)
+            })();
+            return finish_output(
+                outcome,
+                output,
+                &mut attempts,
+                self.junit_output,
+                artifact_deadline,
+            )
+            .await;
+        }
+
+        if let Some(mut receipt) = pending_startup {
+            receipt["service_cleanup"] = serde_json::json!(if outcome.is_ok() {
+                "complete"
+            } else {
+                "failed"
+            });
+            receipt["cleanup_error_class"] = serde_json::to_value(
+                outcome
+                    .as_ref()
+                    .err()
+                    .map(|error| ios_core::classify_error(error.as_ref())),
+            )?;
+            return combine_results(
+                outcome,
+                print_receipt(options.json_output, &receipt),
+                "XCTest startup receipt output failed",
+            );
+        }
+
+        outcome
     }
 }
 
@@ -1686,5 +2222,68 @@ mod tests {
         };
 
         tokio::join!(server, client_work);
+    }
+
+    #[tokio::test]
+    async fn review_regression_unified_workflow_preflight_failure_writes_diagnostic_and_retains_cause(
+    ) {
+        let directory =
+            std::env::temp_dir().join(format!("workflow-diag-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let junit_path = directory.join("junit.xml");
+
+        let args = TestWorkflowArgs {
+            install_app: Some(PathBuf::from("non_existent_app_for_preflight_test.ipa")),
+            ..Default::default()
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let engine =
+            TestWorkflowEngine::new("dummy-udid-123", &args, deadline, true, Some(&junit_path));
+        let options = TestWorkflowRunOptions {
+            startup_timeout: Duration::from_secs(5),
+            result_timeout: Duration::from_secs(5),
+            json_output: true,
+            untested_banner: false,
+            untested_receipt: false,
+            monitored_bundle_ids: vec![],
+        };
+
+        let result = engine
+            .run(options, |_device| {
+                Box::pin(async move {
+                    panic!("resolve_plan should not be reached when preflight fails");
+                })
+            })
+            .await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("does not exist"));
+
+        // Diagnostic JUnit file must have been generated
+        assert!(junit_path.is_file());
+        let xml_content = std::fs::read_to_string(&junit_path).unwrap();
+        assert!(xml_content.contains("testsuite"));
+        assert!(xml_content.contains("failure"));
+
+        std::fs::remove_file(junit_path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn review_regression_unified_workflow_print_receipt_formats_correctly() {
+        let mut receipt = serde_json::json!({
+            "status": "finished",
+            "pid": 12345,
+            "outcome": "failed",
+        });
+        // Non-JSON output format: "XCTest failed (pid 12345)"
+        assert!(print_receipt(false, &receipt).is_ok());
+
+        receipt["outcome"] = serde_json::json!("passed");
+        assert!(print_receipt(false, &receipt).is_ok());
+
+        // JSON output format
+        assert!(print_receipt(true, &receipt).is_ok());
     }
 }
