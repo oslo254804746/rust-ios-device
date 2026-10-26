@@ -14,13 +14,15 @@ const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_TOTAL_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Default, Serialize)]
-pub(super) struct Metadata {
-    mounted_entries: usize,
-    developer_entries: usize,
-    manifests_returned: usize,
-    signature_bytes: usize,
-    manifest_bytes: usize,
-    complete: bool,
+pub(crate) struct Metadata {
+    pub(crate) mounted_entries: usize,
+    pub(crate) developer_entries: usize,
+    pub(crate) manifests_returned: usize,
+    pub(crate) signature_bytes: usize,
+    pub(crate) manifest_bytes: usize,
+    pub(crate) complete: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) target_manifest: Option<super::target_manifest::TargetManifestMetadata>,
 }
 
 pub(super) async fn inspect(source: &dyn Source, udid: &str, timeout: Duration) -> Check {
@@ -39,6 +41,29 @@ pub(super) async fn inspect(source: &dyn Source, udid: &str, timeout: Duration) 
             .await
     }
     .await;
+
+    // Observe local DDI BuildManifest matching against the explicit target
+    let mut search_paths = Vec::new();
+    if let Ok(env_path) = std::env::var("IOS_DDI_PATH") {
+        search_paths.push(std::path::PathBuf::from(env_path));
+    }
+    if let Some(home) = super::super::dirs_home() {
+        search_paths.push(home.join(".ios").join("ddi"));
+        search_paths.push(home.join(".ios-rs").join("ddi"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        search_paths.push(std::path::PathBuf::from(
+            "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/DeviceSupport",
+        ));
+    }
+    let evidence = super::target_manifest::TargetEvidence {
+        udid: udid.to_string(),
+        ..Default::default()
+    };
+    let target_meta = super::target_manifest::evaluate_target_manifest(&evidence, &search_paths);
+    metadata.target_manifest = Some(target_meta);
+
     let mut check = match result {
         Ok(value) => Check::observed(Probe::DdiManifests, value),
         Err(error) => Check::failure(Probe::DdiManifests, error),

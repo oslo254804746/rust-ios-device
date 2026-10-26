@@ -297,6 +297,14 @@ impl DoctorCmd {
                     check.id,
                     check.detail
                 );
+                if let Some(ref ddi_meta) = check.ddi_manifests {
+                    if let Some(ref tm) = ddi_meta.target_manifest {
+                        crate::output::outln!("       Target DDI: {}", tm.detail);
+                        if let Some(ref hint) = tm.hint {
+                            crate::output::outln!("       {hint}");
+                        }
+                    }
+                }
                 if let Some(hint) = check.hint {
                     crate::output::outln!("       {hint}");
                 }
@@ -544,7 +552,7 @@ async fn probe_usbmux() -> Check {
                 .filter(|device| device.connection_type == "Network")
                 .count();
             let check = Check::new("usbmuxd", Status::Ok, format!(
-                "Enumeration succeeded: {usb} USB, {network} network, {} other entries. Service connections were not tested.",
+                "Host usbmuxd enumeration snapshot: {usb} USB, {network} network, {} other entries. This host snapshot does not establish selected-device identity, trust or service connectivity.",
                 devices.len() - usb - network,
             ));
             if devices.is_empty() {
@@ -1007,6 +1015,7 @@ fn inspect_ddi_directories(search_paths: &[std::path::PathBuf]) -> Check {
         search_paths.iter().cloned().map(|path| (path, 0)).collect();
     let mut regular_images = 0usize;
     let mut signed_pairs = 0usize;
+    let mut build_manifests = 0usize;
     let mut inspected = 0usize;
     let mut unavailable = 0usize;
     let mut first_error = None;
@@ -1045,9 +1054,17 @@ fn inspect_ddi_directories(search_paths: &[std::path::PathBuf]) -> Check {
                 queue.push_back((entry.path(), depth + 1));
                 continue;
             }
-            if !kind.is_file()
-                || entry.path().extension().and_then(|value| value.to_str()) != Some("dmg")
+            if !kind.is_file() {
+                continue;
+            }
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("BuildManifest.plist")
             {
+                build_manifests += 1;
+            }
+            if entry.path().extension().and_then(|value| value.to_str()) != Some("dmg") {
                 continue;
             }
             let metadata = match entry.metadata() {
@@ -1070,7 +1087,7 @@ fn inspect_ddi_directories(search_paths: &[std::path::PathBuf]) -> Check {
             }
         }
     }
-    let detail = format!("Discovered {regular_images} nonempty regular DDI image files and {signed_pairs} nonempty signature companions; {unavailable} directory entries were unavailable. Target version/manifest matching and cryptographic acceptance remain unprobed.");
+    let detail = format!("Discovered {regular_images} nonempty regular DDI image files, {signed_pairs} nonempty signature companions, and {build_manifests} BuildManifest file(s); {unavailable} directory entries were unavailable. Target version/manifest matching and cryptographic acceptance remain unprobed.");
     let mut check = if let Some(error) = first_error {
         Check::io_failure(
             "ddi_directory",

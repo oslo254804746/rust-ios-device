@@ -229,7 +229,11 @@ async fn reply(peer: &mut TcpStream, dictionary: IndexMap<String, XpcValue>) {
 
 async fn eof(peer: &mut TcpStream) {
     let mut tail = Vec::new();
-    peer.read_to_end(&mut tail).await.unwrap();
+    if let Err(err) = peer.read_to_end(&mut tail).await {
+        if err.kind() != std::io::ErrorKind::ConnectionReset {
+            panic!("unexpected io error reading eof: {err:?}");
+        }
+    }
     let mut remaining = tail.as_slice();
     while !remaining.is_empty() {
         assert!(remaining.len() >= 9);
