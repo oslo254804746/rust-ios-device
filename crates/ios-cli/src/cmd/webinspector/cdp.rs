@@ -218,8 +218,8 @@ async fn handle_cdp_socket(
                     match inbound {
                         Some(Ok(Message::Text(text))) => {
                             let message: JsonValue = serde_json::from_str(text.as_ref())?;
-                            if cdp_browser::unverified_page_method(&message) {
-                                sender.send(Message::Text(cdp_browser::error(&message, -32601, "CDP domain not implemented").to_string())).await?;
+                            if let Some(error) = cdp_browser::unverified_page_error(&message) {
+                                sender.send(Message::Text(error.to_string())).await?;
                                 continue;
                             }
                             if let Some(error) = js_adapter.as_ref().and_then(|adapter| adapter.invalid_context_response(&message)) {
@@ -521,7 +521,12 @@ async fn handle_cdp_browser_socket(
                                     match open_cdp_browser_page_at(server, &target_id, &id, page_output_tx.clone(), identity).await {
                                         Ok(page) => {
                                             sessions.insert(id.clone(), page);
-                                            send_cdp_messages(&mut sender, vec![cdp_browser::reply(&request, json!({"sessionId": id}))]).await?;
+                                            let mut messages = Vec::new();
+                                            if let Some(event) = state.attached_event(&id) {
+                                                messages.push(event);
+                                            }
+                                            messages.push(cdp_browser::reply(&request, json!({"sessionId": id})));
+                                            send_cdp_messages(&mut sender, messages).await?;
                                         }
                                         Err(_) => {
                                             state.detach(&id, false);
@@ -800,8 +805,8 @@ async fn open_cdp_browser_page_at(
                 inbound = receiver.recv() => {
                     match inbound {
                         Some(message) => {
-                            if cdp_browser::unverified_page_method(&message) {
-                                output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message: cdp_browser::error(&message, -32601, "CDP domain not implemented") }).await?;
+                            if let Some(error) = cdp_browser::unverified_page_error(&message) {
+                                output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message: error }).await?;
                                 continue;
                             }
                             if let Some(error) = js_adapter.as_ref().and_then(|adapter| adapter.invalid_context_response(&message)) {

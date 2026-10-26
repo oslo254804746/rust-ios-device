@@ -8,16 +8,31 @@ const PUPPETEER: JsTarget = JsTarget {
     page: 1041,
     listing: "client-js-puppeteer",
     url: "https://example.invalid/owned-client-puppeteer",
+    is_web: false,
 };
 const PLAYWRIGHT: JsTarget = JsTarget {
     page: 1042,
     listing: "client-js-playwright",
     url: "https://example.invalid/owned-client-playwright",
+    is_web: false,
 };
 const ABORTED: JsTarget = JsTarget {
     page: 1043,
     listing: "client-js-aborted",
     url: "https://example.invalid/owned-client-aborted",
+    is_web: false,
+};
+const CONSOLE_TARGET: JsTarget = JsTarget {
+    page: 1051,
+    listing: "client-js-console",
+    url: "https://example.invalid/owned-client-console",
+    is_web: false,
+};
+const WEB_TARGET: JsTarget = JsTarget {
+    page: 1052,
+    listing: "client-web-page",
+    url: "https://example.invalid/owned-client-web",
+    is_web: true,
 };
 
 async fn denied_without_source_io(port: u16, source: &JsSource) -> Result<()> {
@@ -398,6 +413,7 @@ async fn native_closure_gate(client_name: &str, page: u64, closure: NativeClosur
         page,
         listing: "client-native-closure",
         url: "https://example.invalid/owned-native-closure",
+        is_web: false,
     };
     let expectation = match closure {
         NativeClosure::Page => "native-page-closure",
@@ -607,4 +623,49 @@ async fn pinned_playwright_native_discovery_application_closure_delivers_context
 #[ignore = "requires cached pinned Node clients; selected/discovery closure race"]
 async fn pinned_puppeteer_native_discovery_race_closure_destroys_context_once() {
     native_closure_gate("puppeteer", 1050, NativeClosure::DiscoveryRace).await;
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; explicit F04 console workflow gate"]
+async fn pinned_puppeteer_jscontext_console_workflow() {
+    let (capture, receipts, evidence) = gate("puppeteer", CONSOLE_TARGET, "console-workflow").await;
+    let report = report(&capture, "puppeteer", "25.12.0", "console-workflow");
+    assert_eq!(report["status"], "console-workflow");
+    assert_eq!(report["console_event"]["type"], "log");
+    assert_eq!(
+        report["console_event"]["args"][0]["value"],
+        "test console log from native"
+    );
+    assert_eq!(report["console_event"]["executionContextId"], 1);
+    assert_eq!(report["console_event"]["timestamp"], 12345);
+    assert_native_order(&evidence, &receipts);
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; explicit F04 five domain workflow gate"]
+async fn pinned_puppeteer_five_domain_workflow() {
+    let (capture, receipts, evidence) = gate("puppeteer", WEB_TARGET, "five-domain-workflow").await;
+    let report = report(&capture, "puppeteer", "25.12.0", "five-domain-workflow");
+    assert_eq!(report["status"], "five-domain-workflow");
+    assert_eq!(
+        report["steps"],
+        json!([
+            "initialized",
+            "discovered",
+            "attached",
+            "context-selected",
+            "evaluated",
+            "frame-tree-verified",
+            "screenshot-verified",
+            "input-rejected",
+            "fetch-enabled",
+            "fetch-disabled",
+            "download-rejected",
+            "perf-rejected",
+            "mem-rejected",
+            "detached",
+            "disconnected"
+        ])
+    );
+    assert_native_order(&evidence, &receipts);
 }

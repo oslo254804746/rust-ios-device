@@ -45,6 +45,7 @@ pub(super) struct JsTarget {
     pub(super) page: u64,
     pub(super) listing: &'static str,
     pub(super) url: &'static str,
+    pub(super) is_web: bool,
 }
 
 pub(super) struct JsSource {
@@ -353,9 +354,19 @@ async fn js_peer(
                 {
                     return Err(anyhow!("owned JSContext listing application mismatch"));
                 }
+                let page_type = if target.is_web {
+                    "WIRTypeWeb"
+                } else {
+                    "WIRTypeJavaScript"
+                };
+                let title = if target.is_web {
+                    "Owned WebPage"
+                } else {
+                    "Owned JSContext"
+                };
                 let mut page = strings(&[
-                    ("WIRTypeKey", "WIRTypeJavaScript"),
-                    ("WIRTitleKey", "Owned JSContext"),
+                    ("WIRTypeKey", page_type),
+                    ("WIRTitleKey", title),
                     ("WIRURLKey", target.url),
                 ]);
                 page.insert(
@@ -401,7 +412,26 @@ async fn js_peer(
                     return Err(anyhow!("owned JSContext setup mismatch"));
                 }
                 receipt.setups += 1;
-                // JSContext has no WebKit Target wrapper or targetCreated event.
+                if target.is_web {
+                    runtime_send(
+                        &mut stream,
+                        id,
+                        &evidence,
+                        json!({
+                            "method": "Target.targetCreated",
+                            "params": {
+                                "targetInfo": {
+                                    "targetId": format!("target-{}", target.page),
+                                    "type": "page",
+                                    "title": "Owned WebPage",
+                                    "url": target.url,
+                                    "isProvisional": false
+                                }
+                            }
+                        }),
+                    )
+                    .await?;
+                }
             }
             "_rpc_forwardSocketData:" => {
                 if receipt.setups != 1 || receipt.teardowns != 0 {
@@ -416,45 +446,196 @@ async fn js_peer(
                     &evidence,
                     json!({"event": "runtime_receive", "stream": id, "message": wire}),
                 )?;
-                let reply = match wire["method"].as_str() {
+                let nested = wire["method"] == "Target.sendMessageToTarget";
+                let (command, target_id) = if nested {
+                    let cmd_str = wire["params"]["message"]
+                        .as_str()
+                        .ok_or_else(|| anyhow!("missing inner message"))?;
+                    let cmd: JsonValue = serde_json::from_str(cmd_str)?;
+                    let tid = wire["params"]["targetId"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    (cmd, Some(tid))
+                } else {
+                    (wire.clone(), None)
+                };
+                let cmd_id = &command["id"];
+                let reply = match command["method"].as_str() {
                     Some("Runtime.enable") => {
                         receipt.runtime_enables += 1;
                         runtime_seen.notify_one();
                         if block_runtime {
                             continue;
                         }
-                        json!({"id": wire["id"], "result": {}})
+                        if target.is_web {
+                            let evt = json!({
+                                "method": "Runtime.executionContextCreated",
+                                "params": {
+                                    "context": {
+                                        "id": 1,
+                                        "origin": "https://example.invalid",
+                                        "name": "",
+                                        "uniqueId": "pagecontext.1",
+                                        "auxData": {
+                                            "isDefault": true,
+                                            "frameId": "1.1"
+                                        }
+                                    }
+                                }
+                            });
+                            let dispatch = if nested {
+                                json!({
+                                    "method": "Target.dispatchMessageFromTarget",
+                                    "params": {
+                                        "targetId": target_id.as_deref().unwrap_or(""),
+                                        "message": serde_json::to_string(&evt)?
+                                    }
+                                })
+                            } else {
+                                evt
+                            };
+                            runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                        }
+                        json!({"id": cmd_id, "result": {}})
                     }
                     Some("Console.enable") => {
                         receipt.console_enables += 1;
-                        json!({"id": wire["id"], "result": {}})
+                        json!({"id": cmd_id, "result": {}})
                     }
                     Some("Runtime.runIfWaitingForDebugger") => {
-                        json!({"id": wire["id"], "result": {}})
+                        json!({"id": cmd_id, "result": {}})
+                    }
+                    Some("Page.enable" | "Page.disable" | "Page.reload") => {
+                        json!({"id": cmd_id, "result": {}})
+                    }
+                    Some("Page.getResourceTree") => {
+                        json!({
+                            "id": cmd_id,
+                            "result": {
+                                "frameTree": {
+                                    "frame": {
+                                        "id": "1.1",
+                                        "loaderId": "1.2",
+                                        "url": target.url,
+                                        "securityOrigin": "https://example.invalid"
+                                    },
+                                    "resources": [],
+                                    "childFrames": [
+                                        {
+                                            "frame": {
+                                                "id": "1.3",
+                                                "parentId": "1.1",
+                                                "loaderId": "1.4",
+                                                "url": "https://example.invalid/child",
+                                                "securityOrigin": "https://example.invalid"
+                                            },
+                                            "resources": [],
+                                            "childFrames": []
+                                        }
+                                    ]
+                                }
+                            }
+                        })
+                    }
+                    Some("Page.snapshotRect") => {
+                        json!({
+                            "id": cmd_id,
+                            "result": {
+                                "dataURL": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                            }
+                        })
+                    }
+                    Some(
+                        "Network.addInterception"
+                        | "Network.setInterceptionEnabled"
+                        | "Network.interceptContinue",
+                    ) => {
+                        json!({"id": cmd_id, "result": {}})
+                    }
+                    Some(
+                        "Network.interceptRequestWithError"
+                        | "Network.interceptRequestWithResponse",
+                    ) => {
+                        json!({"id": cmd_id, "result": {}})
                     }
                     Some("Runtime.evaluate") => {
-                        if (wire["params"]["expression"] != "6*7"
-                            && !(closure.is_some()
-                                && matches!(
-                                    wire["params"]["expression"].as_str(),
-                                    Some("fixture:unrelated" | "fixture:native-close")
-                                )))
-                            || wire["params"].get("contextId").is_some()
-                            || wire["params"].get("uniqueContextId").is_some()
+                        if command["params"]
+                            .get("contextId")
+                            .and_then(JsonValue::as_u64)
+                            .is_some_and(|id| id != 1)
                         {
+                            json!({"id": cmd_id, "error": {"code": -32602, "message": "Cannot find context with specified id"}})
+                        } else if command["params"]["expression"] == "fixture:console-log" {
+                            receipt.evaluations += 1;
+                            let evt = json!({
+                                "method": "Console.messageAdded",
+                                "params": {
+                                    "message": {
+                                        "source": "console-api",
+                                        "level": "info",
+                                        "text": "test console log from native",
+                                        "type": "log",
+                                        "timestamp": 12.345
+                                    }
+                                }
+                            });
+                            let dispatch = if nested {
+                                json!({
+                                    "method": "Target.dispatchMessageFromTarget",
+                                    "params": {
+                                        "targetId": target_id.as_deref().unwrap_or(""),
+                                        "message": serde_json::to_string(&evt)?
+                                    }
+                                })
+                            } else {
+                                evt
+                            };
+                            runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                            json!({"id": cmd_id, "result": {"result": {"type": "string", "value": "logged"}}})
+                        } else if command["params"]["expression"]
+                            == "({x:window.scrollX,y:window.scrollY,width:window.innerWidth,height:window.innerHeight})"
+                        {
+                            json!({
+                                "id": cmd_id,
+                                "result": {
+                                    "result": {
+                                        "type": "object",
+                                        "value": {
+                                            "x": 0,
+                                            "y": 0,
+                                            "width": 800,
+                                            "height": 600
+                                        }
+                                    }
+                                }
+                            })
+                        } else if command["params"]["expression"] == "6*7"
+                            || (closure.is_some()
+                                && matches!(
+                                    command["params"]["expression"].as_str(),
+                                    Some("fixture:unrelated" | "fixture:native-close")
+                                ))
+                        {
+                            receipt.evaluations += 1;
+                            json!({"id": cmd_id, "result": {"result": {"type": "number", "value": 42}}})
+                        } else {
                             return Err(anyhow!("owned JSContext evaluate translation mismatch"));
                         }
-                        receipt.evaluations += 1;
-                        json!({"id": wire["id"], "result": {"result": {"type": "number", "value": 42}}})
                     }
                     // Puppeteer asks an auto-attached session to attach children.
                     // This native JSContext has no Target domain: preserve rejection.
                     Some("Target.setAutoAttach") => {
-                        json!({"id": wire["id"], "error": {"code": -32601, "message": "Target domain absent in owned JSContext"}})
+                        json!({"id": cmd_id, "error": {"code": -32601, "message": "Target domain absent in owned JSContext"}})
                     }
-                    _ => return Err(anyhow!("unexpected owned JSContext Runtime request")),
+                    _ => {
+                        return Err(anyhow!(
+                            "unexpected owned JSContext Runtime request: {}",
+                            command["method"]
+                        ))
+                    }
                 };
-                if wire["params"]["expression"] == "fixture:unrelated" {
+                if command["params"]["expression"] == "fixture:unrelated" {
                     // Unrelated application closure and a complete selected-app
                     // listing retaining the numeric page must not close it.
                     native_send(
@@ -491,8 +672,31 @@ async fn js_peer(
                     )
                     .await?;
                 }
-                runtime_send(&mut stream, id, &evidence, reply).await?;
-                if wire["params"]["expression"] == "fixture:native-close" {
+                if nested {
+                    runtime_send(
+                        &mut stream,
+                        id,
+                        &evidence,
+                        json!({"id": wire["id"], "result": {}}),
+                    )
+                    .await?;
+                    runtime_send(
+                        &mut stream,
+                        id,
+                        &evidence,
+                        json!({
+                            "method": "Target.dispatchMessageFromTarget",
+                            "params": {
+                                "targetId": target_id.as_deref().unwrap_or(""),
+                                "message": serde_json::to_string(&reply)?
+                            }
+                        }),
+                    )
+                    .await?;
+                } else {
+                    runtime_send(&mut stream, id, &evidence, reply).await?;
+                }
+                if command["params"]["expression"] == "fixture:native-close" {
                     closure_state
                         .closed
                         .store(true, std::sync::atomic::Ordering::SeqCst);

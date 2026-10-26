@@ -745,6 +745,7 @@ pub fn is_verified_page_domain_method(method: &str) -> bool {
             | "Page.getResourceTree"
             | "Page.navigate"
             | "Page.captureScreenshot"
+            | "Page.setDownloadBehavior"
             | "Console.enable"
             | "Console.disable"
             | "Fetch.enable"
@@ -773,6 +774,28 @@ pub fn unverified_page_method(message: &Value) -> bool {
                 .and_then(|params| params.get("throwOnSideEffect"))
                 .and_then(Value::as_bool)
                 == Some(true))
+}
+
+/// Detailed protocol error with verifiable rationale for unverified page domain methods.
+pub fn unverified_page_error(message: &Value) -> Option<Value> {
+    if !unverified_page_method(message) {
+        return None;
+    }
+    let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+    let err_msg = if method.starts_with("Input.") {
+        "Input domain native dispatch is not supported over WebInspector socket (JS dispatchEvent is not trusted native input)"
+    } else if method.starts_with("Memory.") {
+        "Memory domain has no verified WebInspector memory allocation/DOM counters protocol counterpart"
+    } else if method.starts_with("Performance.") {
+        "Performance domain has no verified WebInspector metrics sampling counterpart"
+    } else if method == "Page.setDownloadBehavior" {
+        "Page.setDownloadBehavior has no verified WebInspector download manager mapping"
+    } else if method == "Runtime.evaluate" {
+        "throwOnSideEffect has no verified WebInspector side-effect analysis counterpart"
+    } else {
+        "CDP method has no verified WebInspector translation"
+    };
+    Some(error(message, -32601, err_msg))
 }
 
 /// The JavaScriptCore inspector has one implicit execution context and no
@@ -855,11 +878,26 @@ impl JsContextCdpAdapter {
                     .and_then(Value::as_f64)
                     .filter(|time| time.is_finite() && *time >= 0.0)
                 {
+                    let args = if let Some(params) = msg
+                        .get("parameters")
+                        .and_then(Value::as_array)
+                        .filter(|p| !p.is_empty())
+                    {
+                        params.clone()
+                    } else {
+                        vec![json!({"type": "string", "value": text})]
+                    };
+                    let cdp_type = match msg.get("type").and_then(Value::as_str).unwrap_or(level) {
+                        "log" | "info" | "warning" | "error" | "debug" | "trace" | "clear"
+                        | "dir" | "dirxml" | "table" | "count" | "assert" | "profile"
+                        | "profileEnd" => msg.get("type").and_then(Value::as_str).unwrap_or(level),
+                        _ => level,
+                    };
                     messages.push(json!({
                         "method": "Runtime.consoleAPICalled",
                         "params": {
-                            "type": level,
-                            "args": [{"type": "string", "value": text}],
+                            "type": cdp_type,
+                            "args": args,
                             "executionContextId": 1,
                             "timestamp": timestamp * 1000.0
                         }
