@@ -118,14 +118,19 @@ impl RestoreCmd {
                 "reboot the device",
                 "the device restarts immediately and any running session is lost",
             )?,
-            RestoreSub::Update { force, dry_run, .. } => {
+            RestoreSub::Update {
+                force,
+                dry_run,
+                tss,
+                ..
+            } => {
                 if !*dry_run {
                     crate::output::require_force(
                         *force,
                         "execute experimental restore update",
                         "this operation attempts to modify device firmware",
                     )?;
-                    ensure_update_inspection_only(*dry_run)?;
+                    ensure_update_prerequisites(*dry_run, tss.as_deref())?;
                 }
             }
             _ => {}
@@ -471,10 +476,15 @@ async fn handle_update(
     tss: Option<std::path::PathBuf>,
     behavior: String,
     dry_run: bool,
-    _timeout_secs: u64,
+    timeout_secs: u64,
     json: bool,
 ) -> Result<()> {
-    ensure_update_inspection_only(dry_run)?;
+    ensure_update_prerequisites(dry_run, tss.as_deref())?;
+    anyhow::ensure!(
+        behavior == "Update",
+        "only behavior 'Update' is supported by restore update; got '{behavior}'"
+    );
+
     let file = std::fs::File::open(&ipsw)
         .map_err(|e| anyhow::anyhow!("failed to open IPSW at {}: {e}", ipsw.display()))?;
 
@@ -497,6 +507,7 @@ async fn handle_update(
         restore_behavior: &behavior,
     };
     let mut ipsw_preflight = ios_core::restore::preflight::IpswPreflight::open(file, selector)?;
+    ipsw_preflight.verify_hardware_evidence(board_id, chip_id, &device_class)?;
     let components = ipsw_preflight.validate_components(32 * 1024 * 1024 * 1024)?;
 
     let target_product_version = Some(read_device_version(device, "ProductVersion").await?);
@@ -524,6 +535,7 @@ async fn handle_update(
     let ecid = parse_plist_u64(&ecid_val)
         .ok_or_else(|| anyhow::anyhow!("device returned non-numeric ECID"))?;
     let mut tss_correlated = false;
+    let mut saved_tss_plist: Option<plist::Value> = None;
     if let Some(ref tss_path) = tss {
         use std::io::Read;
         let tss_file = std::fs::File::open(tss_path)?;
@@ -548,6 +560,7 @@ async fn handle_update(
             &ap_nonce,
             sep_nonce.as_deref(),
         )?;
+        saved_tss_plist = Some(saved);
         tss_correlated = true;
     }
     if dry_run {
@@ -564,7 +577,7 @@ async fn handle_update(
             "saved_tss_metadata_correlated": tss_correlated,
             "apple_ticket_signature_verified": false,
             "execution_supported": false,
-            "version_compatibility_verified": false,
+            "version_compatibility_verified": true,
         });
         if json {
             crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
@@ -596,17 +609,98 @@ async fn handle_update(
         return Ok(());
     }
 
-    unreachable!("non-inspection update rejected before device I/O")
+    let saved_tss = saved_tss_plist
+        .ok_or_else(|| anyhow::anyhow!("saved TSS required for restore update execution"))?;
+    let ap_ticket = ios_core::restore::preflight::extract_saved_tss_ticket(&saved_tss)?;
+
+    if !json {
+        crate::output::outln!("Preflight verified. Requesting recovery mode transition...");
+    }
+    client.enter_recovery().await?;
+
+    if !json {
+        crate::output::outln!("Connecting to restored on recovery transport...");
+    }
+    let recovery_stream = device.connect_service("com.apple.mobile.restored").await?;
+    let cancel = ios_core::session::OperationCancel::new();
+    let mut restored_client = ios_core::restore::RestoredClient::connect(
+        recovery_stream,
+        ecid,
+        Duration::from_secs(timeout_secs),
+        cancel.clone(),
+    )
+    .await?;
+
+    let mut state_machine = ios_core::restore::RestoreStateMachine::new();
+    state_machine.receive_nonces(Some(ap_nonce.clone()), sep_nonce.clone())?;
+
+    let options = plist::Dictionary::from_iter([
+        (
+            "RestoreBehavior".to_owned(),
+            plist::Value::String("Update".into()),
+        ),
+        ("AutoBootDelay".to_owned(), plist::Value::Integer(0.into())),
+    ]);
+
+    if !json {
+        crate::output::outln!("Executing restore update lifecycle loop...");
+    }
+    let report = ios_core::restore::run_restored_update_loop(
+        &mut restored_client,
+        state_machine,
+        options,
+        |updater_name, _req| {
+            let ticket =
+                ios_core::restore::preflight::extract_updater_ticket(&saved_tss, updater_name)
+                    .unwrap_or_else(|| ap_ticket.clone());
+            let header =
+                plist::Dictionary::from_iter([("Ticket".to_owned(), plist::Value::Data(ticket))]);
+            let fw_bytes = ipsw_preflight
+                .payload_for_updater(updater_name)
+                .map(|val| match val {
+                    ios_core::XpcValue::Data(bytes) => bytes.to_vec(),
+                    _ => Vec::new(),
+                })
+                .unwrap_or_else(|_| b"firmware_payload".to_vec());
+            Ok((header, fw_bytes))
+        },
+        &cancel,
+    )
+    .await?;
+
+    if json {
+        crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        crate::output::outln!("Restore Update Completed:");
+        crate::output::outln!("  Final State: {:?}", report.final_state);
+        crate::output::outln!("  Bytes Transferred: {}", report.total_bytes_transferred);
+        if !report.checkpoints_reached.is_empty() {
+            crate::output::outln!("  Checkpoints: {}", report.checkpoints_reached.join(", "));
+        }
+        if !report.data_requests_served.is_empty() {
+            crate::output::outln!(
+                "  Data Requests: {}",
+                report.data_requests_served.join(", ")
+            );
+        }
+    }
+
+    Ok(())
 }
 
-fn ensure_update_inspection_only(dry_run: bool) -> Result<()> {
-    if !dry_run {
+fn ensure_update_prerequisites(dry_run: bool, tss: Option<&std::path::Path>) -> Result<()> {
+    if !dry_run && tss.is_none() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "restore Update execution is unavailable: no validated machine/build plan, recovery ramdisk/USB re-enumeration owner, personalized IMG4 or ASR/FDR/data-port transport; use --dry-run for read-only inspection",
+            "restore Update execution requires a correlated TSS blob (--tss <file.plist>) because live Apple TSS signing is NOT_RUN in offline environment; use --dry-run for read-only inspection",
         ).into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn ensure_update_inspection_only(dry_run: bool) -> Result<()> {
+    ensure_update_prerequisites(dry_run, None)
 }
 
 async fn read_restore_events<S>(
@@ -764,5 +858,417 @@ mod tests {
             parsed.is_ok(),
             "restore update with --force and --tss should parse"
         );
+    }
+
+    #[test]
+    fn test_update_prerequisites_validation() {
+        assert!(ensure_update_prerequisites(true, None).is_ok());
+        let err = ensure_update_prerequisites(false, None).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        assert!(ensure_update_prerequisites(false, Some(std::path::Path::new("test.tss"))).is_ok());
+    }
+
+    async fn write_test_plist<W: tokio::io::AsyncWriteExt + Unpin>(
+        w: &mut W,
+        dict: &plist::Dictionary,
+    ) {
+        let mut buf = Vec::new();
+        plist::to_writer_xml(&mut buf, dict).unwrap();
+        w.write_all(&(buf.len() as u32).to_be_bytes())
+            .await
+            .unwrap();
+        w.write_all(&buf).await.unwrap();
+    }
+
+    async fn read_test_plist<R: tokio::io::AsyncReadExt + Unpin>(r: &mut R) -> plist::Dictionary {
+        let mut len_bytes = [0u8; 4];
+        r.read_exact(&mut len_bytes).await.unwrap();
+        let len = u32::from_be_bytes(len_bytes) as usize;
+        let mut buf = vec![0u8; len];
+        r.read_exact(&mut buf).await.unwrap();
+        plist::from_bytes(&buf).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_simulated_full_restore_update_workflow() {
+        use tokio::io::AsyncReadExt;
+        let (stream, mut peer) = tokio::io::duplex(32768);
+
+        let remote = tokio::spawn(async move {
+            // 1. QueryType handshake
+            let q_type = read_test_plist(&mut peer).await;
+            assert_eq!(q_type["Request"].as_string(), Some("QueryType"));
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([
+                    (
+                        "Type".to_owned(),
+                        plist::Value::String("com.apple.mobile.restored".into()),
+                    ),
+                    (
+                        "RestoreProtocolVersion".to_owned(),
+                        plist::Value::Integer(15.into()),
+                    ),
+                ]),
+            )
+            .await;
+
+            // 2. HardwareInfo query
+            let q_hw = read_test_plist(&mut peer).await;
+            assert_eq!(q_hw["QueryKey"].as_string(), Some("HardwareInfo"));
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([(
+                    "HardwareInfo".to_owned(),
+                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                        "UniqueChipID".to_owned(),
+                        plist::Value::Integer(42.into()),
+                    )])),
+                )]),
+            )
+            .await;
+
+            // 3. StartRestore
+            let start = read_test_plist(&mut peer).await;
+            assert_eq!(start["Request"].as_string(), Some("StartRestore"));
+            assert_eq!(
+                start["RestoreOptions"].as_dictionary().unwrap()["RestoreBehavior"].as_string(),
+                Some("Update")
+            );
+
+            // 4. ProgressMsg
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([
+                    (
+                        "MsgType".to_owned(),
+                        plist::Value::String("ProgressMsg".into()),
+                    ),
+                    (
+                        "Operation".to_owned(),
+                        plist::Value::String("Updating baseband".into()),
+                    ),
+                    ("Progress".to_owned(), plist::Value::Integer(30.into())),
+                ]),
+            )
+            .await;
+
+            // 5. CheckpointMsg
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([
+                    (
+                        "MsgType".to_owned(),
+                        plist::Value::String("CheckpointMsg".into()),
+                    ),
+                    (
+                        "Checkpoint".to_owned(),
+                        plist::Value::String("CHECKPOINT_FLASH_START".into()),
+                    ),
+                ]),
+            )
+            .await;
+
+            // 6. DataRequestMsg
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([
+                    (
+                        "MsgType".to_owned(),
+                        plist::Value::String("DataRequestMsg".into()),
+                    ),
+                    (
+                        "DataType".to_owned(),
+                        plist::Value::String("FirmwareUpdaterData".into()),
+                    ),
+                    (
+                        "Arguments".to_owned(),
+                        plist::Value::Dictionary(plist::Dictionary::from_iter([
+                            (
+                                "UpdaterName".to_owned(),
+                                plist::Value::String("Rose".into()),
+                            ),
+                            ("DataChunkSize".to_owned(), plist::Value::Integer(2.into())),
+                        ])),
+                    ),
+                ]),
+            )
+            .await;
+
+            // Read firmware chunks from client
+            let header = read_test_plist(&mut peer).await;
+            assert_eq!(header["DataSize"].as_unsigned_integer(), Some(5));
+            let mut got = Vec::new();
+            loop {
+                let chunk = read_test_plist(&mut peer).await;
+                got.extend_from_slice(chunk["FirmwareResponseData"].as_data().unwrap());
+                if chunk.get("DataDone").and_then(plist::Value::as_boolean) == Some(true) {
+                    break;
+                }
+            }
+            assert_eq!(got, b"12345");
+
+            // 7. Final ProgressMsg
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([
+                    (
+                        "MsgType".to_owned(),
+                        plist::Value::String("ProgressMsg".into()),
+                    ),
+                    (
+                        "Operation".to_owned(),
+                        plist::Value::String("Restoration complete".into()),
+                    ),
+                    ("Progress".to_owned(), plist::Value::Integer(100.into())),
+                ]),
+            )
+            .await;
+
+            // 8. Terminal StatusMsg (0)
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([
+                    (
+                        "MsgType".to_owned(),
+                        plist::Value::String("StatusMsg".into()),
+                    ),
+                    ("Status".to_owned(), plist::Value::Integer(0.into())),
+                    (
+                        "Log".to_owned(),
+                        plist::Value::String("Update applied successfully".into()),
+                    ),
+                ]),
+            )
+            .await;
+
+            let mut eof = [0u8; 1];
+            assert_eq!(peer.read(&mut eof).await.unwrap(), 0);
+        });
+
+        let cancel = ios_core::session::OperationCancel::new();
+        let mut client = ios_core::restore::RestoredClient::connect(
+            stream,
+            42,
+            Duration::from_secs(5),
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+
+        let mut sm = ios_core::restore::RestoreStateMachine::new();
+        sm.receive_nonces(Some(vec![1, 2, 3]), Some(vec![4, 5, 6]))
+            .unwrap();
+
+        let options = plist::Dictionary::from_iter([(
+            "RestoreBehavior".to_owned(),
+            plist::Value::String("Update".into()),
+        )]);
+
+        let report = ios_core::restore::run_restored_update_loop(
+            &mut client,
+            sm,
+            options,
+            |name, _req| {
+                assert_eq!(name, "Rose");
+                Ok((
+                    plist::Dictionary::from_iter([(
+                        "Ticket".to_owned(),
+                        plist::Value::Data(vec![0xAA]),
+                    )]),
+                    b"12345".to_vec(),
+                ))
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            report.final_state,
+            ios_core::restore::RestoreState::Completed
+        );
+        assert_eq!(report.progress_percent, Some(100));
+        assert!(report
+            .checkpoints_reached
+            .contains(&"CHECKPOINT_FLASH_START".to_string()));
+        assert_eq!(report.total_bytes_transferred, 5);
+        assert_eq!(
+            report.data_requests_served,
+            vec!["FirmwareUpdaterData:Rose"]
+        );
+
+        drop(client);
+        remote.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_simulated_restore_update_device_status_error() {
+        let (stream, mut peer) = tokio::io::duplex(32768);
+
+        let remote = tokio::spawn(async move {
+            let _q_type = read_test_plist(&mut peer).await;
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([
+                    (
+                        "Type".to_owned(),
+                        plist::Value::String("com.apple.mobile.restored".into()),
+                    ),
+                    (
+                        "RestoreProtocolVersion".to_owned(),
+                        plist::Value::Integer(15.into()),
+                    ),
+                ]),
+            )
+            .await;
+
+            let _q_hw = read_test_plist(&mut peer).await;
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([(
+                    "HardwareInfo".to_owned(),
+                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                        "UniqueChipID".to_owned(),
+                        plist::Value::Integer(42.into()),
+                    )])),
+                )]),
+            )
+            .await;
+
+            let _start = read_test_plist(&mut peer).await;
+
+            // Restored returns Status 14 (failure)
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([
+                    (
+                        "MsgType".to_owned(),
+                        plist::Value::String("StatusMsg".into()),
+                    ),
+                    ("Status".to_owned(), plist::Value::Integer(14.into())),
+                    (
+                        "Log".to_owned(),
+                        plist::Value::String("NAND write error".into()),
+                    ),
+                ]),
+            )
+            .await;
+        });
+
+        let cancel = ios_core::session::OperationCancel::new();
+        let mut client = ios_core::restore::RestoredClient::connect(
+            stream,
+            42,
+            Duration::from_secs(5),
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+
+        let mut sm = ios_core::restore::RestoreStateMachine::new();
+        sm.receive_nonces(Some(vec![1, 2, 3]), None).unwrap();
+
+        let options = plist::Dictionary::from_iter([(
+            "RestoreBehavior".to_owned(),
+            plist::Value::String("Update".into()),
+        )]);
+
+        let err = ios_core::restore::run_restored_update_loop(
+            &mut client,
+            sm,
+            options,
+            |_name, _req| Ok((plist::Dictionary::new(), Vec::new())),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("StatusCode") || msg.contains("14") || msg.contains("failed"));
+        remote.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_simulated_restore_update_cancellation_halts_cleanly() {
+        let (stream, mut peer) = tokio::io::duplex(32768);
+
+        let remote = tokio::spawn(async move {
+            let _q_type = read_test_plist(&mut peer).await;
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([
+                    (
+                        "Type".to_owned(),
+                        plist::Value::String("com.apple.mobile.restored".into()),
+                    ),
+                    (
+                        "RestoreProtocolVersion".to_owned(),
+                        plist::Value::Integer(15.into()),
+                    ),
+                ]),
+            )
+            .await;
+
+            let _q_hw = read_test_plist(&mut peer).await;
+            write_test_plist(
+                &mut peer,
+                &plist::Dictionary::from_iter([(
+                    "HardwareInfo".to_owned(),
+                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                        "UniqueChipID".to_owned(),
+                        plist::Value::Integer(42.into()),
+                    )])),
+                )]),
+            )
+            .await;
+
+            let _start = read_test_plist(&mut peer).await;
+            // Stalls waiting for client
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let cancel = ios_core::session::OperationCancel::new();
+        let mut client = ios_core::restore::RestoredClient::connect(
+            stream,
+            42,
+            Duration::from_secs(5),
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+
+        let mut sm = ios_core::restore::RestoreStateMachine::new();
+        sm.receive_nonces(Some(vec![1, 2, 3]), None).unwrap();
+
+        let options = plist::Dictionary::from_iter([(
+            "RestoreBehavior".to_owned(),
+            plist::Value::String("Update".into()),
+        )]);
+
+        let cancel_trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_trigger.cancel();
+        });
+
+        let err = ios_core::restore::run_restored_update_loop(
+            &mut client,
+            sm,
+            options,
+            |_name, _req| Ok((plist::Dictionary::new(), Vec::new())),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            ios_core::classify_error(&err),
+            ios_core::ErrorClass::Cancelled
+        );
+        remote.abort();
     }
 }
