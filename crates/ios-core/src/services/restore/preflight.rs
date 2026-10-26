@@ -170,10 +170,12 @@ impl<R: Read + Seek> IpswPreflight<R> {
             }
             if let Some(ipsw_ver) = self.product_version.as_deref() {
                 let trimmed_ipsw = ipsw_ver.trim();
-                if let (Some(dev_tuple), Some(ipsw_tuple)) = (
-                    parse_version_tuple(trimmed_dev),
-                    parse_version_tuple(trimmed_ipsw),
-                ) {
+                let dev_tuple = parse_version_tuple(trimmed_dev).ok_or_else(|| {
+                    RestoreError::Protocol("invalid target ProductVersion".into())
+                })?;
+                let ipsw_tuple = parse_version_tuple(trimmed_ipsw)
+                    .ok_or_else(|| RestoreError::Protocol("invalid IPSW ProductVersion".into()))?;
+                {
                     let behavior = self
                         .identity
                         .get("Info")
@@ -362,6 +364,9 @@ fn parse_version_tuple(version: &str) -> Option<(u64, u64, u64)> {
         Some(s) => s.parse::<u64>().ok()?,
         None => 0,
     };
+    if parts.next().is_some() {
+        return None;
+    }
     Some((major, minor, patch))
 }
 
@@ -1326,6 +1331,9 @@ mod tests {
 
         // Empty version string is rejected
         assert!(ipsw.verify_target_version(Some("  "), None).is_err());
+        for invalid in ["17.x", "17.5.1.9", "garbage"] {
+            assert!(ipsw.verify_target_version(Some(invalid), None).is_err());
+        }
     }
 
     #[test]

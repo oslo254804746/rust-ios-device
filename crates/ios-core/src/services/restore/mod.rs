@@ -22,11 +22,11 @@ pub use state_machine::{
     RestoreState, RestoreStateMachine, RestoreStepOutcome,
 };
 
-/// Upstream-verified reference target model and firmware profile for experimental restore Update.
+/// Reference fixture metadata only; this does not establish a supported Update executor.
 ///
 /// Provenance:
 /// - Upstream source: pymobiledevice3 (commit 03ba2270) & idevicerestore (v1.0.0+)
-/// - Device Class: iPhone 13 Pro ("d63ap", Marketing: iPhone14,3)
+/// - Device Class: iPhone 13 Pro ("d63ap", ProductType: iPhone14,2)
 /// - Target Architecture: Apple Silicon A15 Bionic (arm64e)
 /// - ApBoardID: 0x0c (12)
 /// - ApChipID: 0x8110 (33040)
