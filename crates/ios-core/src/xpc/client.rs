@@ -69,6 +69,36 @@ impl XpcClient {
         })
     }
 
+    /// Connect to an XPC service over an already-established stream with an overall budget.
+    ///
+    /// The budget is shared across H2 framing handshake and XPC initialization.
+    /// A zero budget rejects immediately before network IO.
+    pub async fn connect_stream_with_timeout<S>(
+        stream: S,
+        budget: std::time::Duration,
+    ) -> Result<Self, XpcError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        if budget.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "XPC stream connect budget is zero",
+            )
+            .into());
+        }
+        let stream: DynStream = Box::new(stream);
+        let mut framer = H2Framer::connect_with_timeout(stream, budget)
+            .await
+            .map_err(|e| h2_error("H2: ", e))?;
+        framer.set_operation_timeout(Some(budget));
+        initialize_xpc_connection_on_framer(&mut framer).await?;
+        Ok(Self {
+            inner: XpcConnection::new(framer),
+            reconnector: None,
+        })
+    }
+
     /// Supply a factory for a fresh, initialized connection to the same service.
     /// Custom stream transports should use this when a service requires one
     /// request per connection. The factory must preserve the tunnel route.
@@ -158,6 +188,17 @@ impl XpcClient {
         self.stream_invoke_with_flags(body, flags::WANTING_REPLY)
     }
 
+    /// Send an XPC request and yield each subsequent message under an operation budget.
+    pub fn stream_invoke_with_timeout(
+        &mut self,
+        body: XpcValue,
+        budget: std::time::Duration,
+    ) -> impl futures_core::Stream<Item = Result<XpcMessage, XpcError>> + '_ {
+        self.stream_invoke_mapped_with_timeout(body, flags::WANTING_REPLY, budget, |message| {
+            Ok(Some((message, false)))
+        })
+    }
+
     /// Send an XPC request and yield messages from the server-client stream
     /// without imposing a reply-correlation policy.
     ///
@@ -190,6 +231,33 @@ impl XpcClient {
     {
         async_stream::try_stream! {
             let mut operation = self.inner.begin_operation(None)?;
+            operation
+                .send_with_flags(body, extra_flags)
+                .await?;
+            loop {
+                let Some((value, finished)) = parse(operation.recv().await?)? else { continue };
+                if finished {
+                    operation.complete();
+                }
+                yield value;
+                if finished { return; }
+            }
+        }
+    }
+
+    /// Streaming invoke with a shared deadline across send and reception.
+    pub(crate) fn stream_invoke_mapped_with_timeout<'a, T: 'a, F>(
+        &'a mut self,
+        body: XpcValue,
+        extra_flags: u32,
+        budget: std::time::Duration,
+        mut parse: F,
+    ) -> impl futures_core::Stream<Item = Result<T, XpcError>> + 'a
+    where
+        F: FnMut(XpcMessage) -> Result<Option<(T, bool)>, XpcError> + 'a,
+    {
+        async_stream::try_stream! {
+            let mut operation = self.inner.begin_operation(Some(budget))?;
             operation
                 .send_with_flags(body, extra_flags)
                 .await?;
@@ -1611,5 +1679,35 @@ mod tests {
     fn decode_message_payload(bytes: &[u8]) -> (u32, u64) {
         let msg = crate::xpc::message::decode_message(Bytes::copy_from_slice(bytes)).unwrap();
         (msg.flags, msg.msg_id)
+    }
+
+    #[tokio::test]
+    async fn test_connect_stream_with_timeout_zero_budget_fails_without_io() {
+        let (client, _server) = tokio::io::duplex(64);
+        let res = XpcClient::connect_stream_with_timeout(client, Duration::ZERO).await;
+        match res {
+            Err(XpcError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::TimedOut),
+            other => panic!("expected TimedOut io error, got: {:?}", other.is_err()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_stream_with_timeout_expires_during_handshake() {
+        let (client, mut server) = tokio::io::duplex(1024);
+        let server_task = tokio::spawn(async move {
+            // Read client preface
+            let mut preface = [0u8; 24];
+            let _ = server.read_exact(&mut preface).await;
+            // Stall without replying
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        });
+
+        let res = XpcClient::connect_stream_with_timeout(client, Duration::from_millis(40)).await;
+        match res {
+            Err(XpcError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::TimedOut),
+            other => panic!("expected TimedOut io error, got: {:?}", other.is_err()),
+        }
+
+        let _ = server_task.await;
     }
 }

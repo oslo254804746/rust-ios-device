@@ -43,10 +43,13 @@ impl LocationCmd {
                     skip_tunnel: true,
                 };
                 let device = connect(&udid, opts).await?;
-                let mut stream = device
+                let stream = device
                     .connect_service(ios_core::simlocation::SERVICE_NAME)
                     .await?;
-                ios_core::simlocation::set_location(&mut *stream, &latitude, &longitude)
+                let mut client = ios_core::simlocation::SimLocationClient::new(stream);
+                client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+                client
+                    .set_location(&latitude, &longitude)
                     .await
                     .map_err(|e| anyhow::Error::new(e).context("simlocation set failed"))?;
                 crate::output::outln!("Location simulation set to {latitude}, {longitude}");
@@ -77,10 +80,13 @@ impl LocationCmd {
                     skip_tunnel: true,
                 };
                 let device = connect(&udid, opts).await?;
-                let mut stream = device
+                let stream = device
                     .connect_service(ios_core::simlocation::SERVICE_NAME)
                     .await?;
-                ios_core::simlocation::reset_location(&mut *stream)
+                let mut client = ios_core::simlocation::SimLocationClient::new(stream);
+                client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+                client
+                    .reset_location()
                     .await
                     .map_err(|e| anyhow::Error::new(e).context("simlocation reset failed"))?;
                 crate::output::outln!("Location simulation reset.");

@@ -38,6 +38,7 @@ impl PowerAssertCmd {
             .connect_service(ios_core::power_assertion::SERVICE_NAME)
             .await?;
         let mut client = ios_core::power_assertion::PowerAssertionClient::new(stream);
+        client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
         let response = client
             .create_assertion(
                 &self.assertion_type,
