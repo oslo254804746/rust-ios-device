@@ -726,7 +726,7 @@ impl KernelRuntime {
         }
         self.undo.join().await;
         if !self.control.undo_executed.load(Ordering::Acquire)
-            && self
+            || self
                 .control
                 .device
                 .read()
@@ -738,16 +738,19 @@ impl KernelRuntime {
         }
         self.control.undo_joined.store(true, Ordering::Release);
     }
-    pub(crate) fn release_flows(&self) {
-        if !self.control.work_joined.load(Ordering::Acquire)
-            || !self.control.undo_joined.load(Ordering::Acquire)
-            || self
+    pub(crate) fn is_terminal(&self) -> bool {
+        self.control.work_joined.load(Ordering::Acquire)
+            && self.control.undo_joined.load(Ordering::Acquire)
+            && self.control.undo_executed.load(Ordering::Acquire)
+            && self
                 .control
                 .device
                 .read()
                 .unwrap_or_else(|p| p.into_inner())
-                .is_some()
-        {
+                .is_none()
+    }
+    pub(crate) fn release_flows(&self) {
+        if !self.is_terminal() {
             return;
         }
         let mut state = match self.state.try_lock() {
@@ -1237,7 +1240,6 @@ fn ingest(
 }
 
 fn run_undo(control: &Control) {
-    control.undo_executed.store(true, Ordering::Release);
     let mut guard = control.device.write().unwrap_or_else(|p| p.into_inner());
     if let Some(mut device) = guard.take() {
         if let Some(route) = device.route_receipt() {
@@ -1258,6 +1260,7 @@ fn run_undo(control: &Control) {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .take();
+    control.undo_executed.store(true, Ordering::Release);
 }
 fn protocol(message: &'static str) -> TunnelError {
     TunnelError::Protocol(message.into())

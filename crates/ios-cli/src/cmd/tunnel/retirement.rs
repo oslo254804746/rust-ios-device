@@ -768,7 +768,12 @@ impl Registry {
         }
     }
 
-    fn certify_completed(&self, key: &Key, handle: &Arc<TunnelHandle>) {
+    fn certify_completed(&self, key: &Key, handle: &Arc<TunnelHandle>) -> bool {
+        // Joins certify acquisition of original results, not successful native
+        // undo. In particular, retain the same owner after a cleanup-body panic.
+        if handle.has_pending_native_cleanup() {
+            return false;
+        }
         let mut marker_headers = super::marker_identity::ReleaseFence::<2>::new();
         let mut state = self.lock();
         let same = Self::entry_mut(&mut state, key).is_some_and(|entry| {
@@ -778,7 +783,7 @@ impl Registry {
                     .as_ref()
                     .is_some_and(|original| Arc::ptr_eq(original, handle))
         });
-        if same {
+        let removed = if same {
             // Caller holds explicit native shutdown Ok or the first outer
             // shutdown report's joins_complete(). This certifies native joins,
             // not a successful/deadline-compliant attempt or remote ACK.
@@ -788,10 +793,16 @@ impl Registry {
                 .expect("same retired native entry");
             super::marker_identity::ReleaseMarkers::keep(&mut marker_headers, &entry.stamp.global);
             super::marker_identity::ReleaseMarkers::keep(&mut marker_headers, &entry.stamp.device);
-            state.slots[key.slot] = None;
-        }
+            state.slots[key.slot].take()
+        } else {
+            None
+        };
         drop(state);
+        // Metadata fees can wake arbitrary waiters as well as the handle's
+        // destructor. Neither may run under the Registry mutex.
+        drop(removed);
         self.changed.notify_waiters();
+        same
     }
 
     fn record_failure(&self, key: &Key, error: TunnelError) -> PayloadOutcome {
@@ -904,8 +915,9 @@ impl Registry {
                         // limits its minor relative-budget conversion rounding.
                         match handle.shutdown(clock.remaining()).await {
                             Ok(()) => {
-                                self.certify_completed(&key, &handle);
-                                joined += 1;
+                                if self.certify_completed(&key, &handle) {
+                                    joined += 1;
+                                }
                             }
                             Err(error) => {
                                 let complete = shutdown_joins_certified(&error);
@@ -914,8 +926,7 @@ impl Registry {
                                     .lock()
                                     .unwrap_or_else(|p| p.into_inner())
                                     .record(error);
-                                if complete {
-                                    self.certify_completed(&key, &handle);
+                                if complete && self.certify_completed(&key, &handle) {
                                     joined += 1;
                                 }
                             }

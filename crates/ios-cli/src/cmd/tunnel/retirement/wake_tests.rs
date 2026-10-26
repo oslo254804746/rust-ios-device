@@ -23,6 +23,75 @@ impl Wake for RegistryWake {
     }
 }
 
+#[tokio::test]
+async fn completed_owner_metadata_refund_wakes_only_after_registry_unlock() {
+    use super::super::{admission, metadata_lease};
+    let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let global = registry.byte_bank();
+    let published = Arc::new(Semaphore::new(65536));
+    let mut births = registry.prepare_births::<2>(&global).unwrap();
+    let stamp = OwnershipStamp::standalone(&registry, &mut births);
+    let (handle, _receiver) = TunnelHandle::new(
+        "metadata-refund-fixture".into(),
+        ios_core::TunnelInfo {
+            client_address: "fd00::1".into(),
+            server_address: "fd00::2".into(),
+            client_mtu: 1280,
+            server_rsd_port: 58783,
+        },
+        None,
+    );
+    let handle = Arc::new(handle);
+    let lease = registry
+        .reserve(stamp.clone())
+        .unwrap()
+        .attach(handle.clone());
+    let key = lease.key.clone();
+    let (metadata, global_metadata) = metadata_lease::PreparedPair::new(&global, &published)
+        .unwrap()
+        .finish(
+            admission::known_metadata_charge(&global, 7).unwrap(),
+            admission::known_metadata_charge(&published, 11).unwrap(),
+        )
+        .unwrap();
+    lease.retain_metadata(metadata.clone()).unwrap();
+    lease
+        .retain_global_metadata(global_metadata.clone())
+        .unwrap();
+    lease.publish(&stamp).unwrap();
+    drop((metadata, global_metadata, lease));
+    // Sender-only fixture: no native IO exists, and real empty joins complete.
+    // This tests the actual metadata destructors and semaphore wake boundary.
+    handle.shutdown(Duration::from_secs(1)).await.unwrap();
+    assert!(!handle.has_pending_native_cleanup());
+    let held = published
+        .clone()
+        .try_acquire_many_owned(published.available_permits() as u32)
+        .unwrap();
+    let observed = Arc::new(RegistryWake {
+        registry: registry.clone(),
+        calls: AtomicUsize::new(0),
+        unlocked: AtomicBool::new(true),
+    });
+    let waker = Waker::from(observed.clone());
+    let mut cx = Context::from_waker(&waker);
+    let mut waiter = std::pin::pin!(published.clone().acquire_owned());
+    assert!(waiter.as_mut().poll(&mut cx).is_pending());
+    assert!(registry.certify_completed(&key, &handle));
+    assert!(observed.calls.load(Ordering::SeqCst) > 0);
+    assert!(
+        observed.unlocked.load(Ordering::SeqCst),
+        "completed native metadata refunded under the Registry mutex"
+    );
+    let permit = match waiter.as_mut().poll(&mut cx) {
+        Poll::Ready(Ok(permit)) => permit,
+        _ => panic!("actual completed metadata fees did not wake the waiter"),
+    };
+    assert_eq!(registry.snapshot().occupied(), 0);
+    drop((permit, held));
+    assert_eq!(published.available_permits(), 65536);
+}
+
 #[test]
 fn empty_entry_marker_refund_wakes_public_original_bank_after_registry_guard_release() {
     let registry = Registry::small(NonZeroUsize::new(1).unwrap());

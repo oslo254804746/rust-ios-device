@@ -391,6 +391,34 @@ impl TunnelHandle {
         }
     }
 
+    /// Report an attached staged native phase whose cleanup is still incomplete.
+    /// This is independent of join/error evidence: a collected failed job is
+    /// not a completed native cleanup. Callers must also collect original joins.
+    #[cfg(feature = "tunnel-private-ip")]
+    pub fn has_pending_native_cleanup(&self) -> bool {
+        #[cfg(all(
+            feature = "tunnel-kernel",
+            any(target_os = "windows", target_os = "linux", target_os = "macos")
+        ))]
+        if let Some(kernel) = self.prepared_kernel() {
+            return !kernel.is_terminal();
+        }
+        false
+    }
+
+    #[cfg(all(
+        test,
+        feature = "tunnel-kernel",
+        any(target_os = "linux", target_os = "macos")
+    ))]
+    pub(crate) fn with_prepared_kernel_for_test(self, prepared: KernelRuntime) -> Self {
+        let TunnelRuntime::Prepared { kernel, .. } = &self._runtime else {
+            panic!("explicit prepared runtime required")
+        };
+        assert!(kernel.set(prepared).is_ok());
+        self
+    }
+
     /// Local admission state; false does not certify native joins or a peer ACK.
     pub fn is_alive(&self) -> bool {
         match &self._runtime {

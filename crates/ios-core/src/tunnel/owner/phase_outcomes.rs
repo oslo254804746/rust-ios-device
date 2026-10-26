@@ -647,6 +647,9 @@ impl PhaseFailure {
     pub fn pending_joins(&self) -> Option<usize> {
         self.snapshot.pending_joins()
     }
+    /// All selected joins were collected, including genuine failed joins.
+    /// This does not certify native undo. Also check the attached handle's
+    /// `has_pending_native_cleanup()` before releasing its retirement owner.
     pub fn joins_complete(&self) -> bool {
         self.snapshot.joins_complete()
     }

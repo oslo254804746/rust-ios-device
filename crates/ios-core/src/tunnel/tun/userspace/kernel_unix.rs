@@ -243,7 +243,11 @@ impl CleanupClock {
         }
     }
     fn set(&self, deadline: Instant) {
-        *self.deadline.lock().unwrap_or_else(|p| p.into_inner()) = Some(deadline);
+        let mut current = self.deadline.lock().unwrap_or_else(|p| p.into_inner());
+        // Every waiter has its own outer timer. A shorter later waiter cannot
+        // revoke the clock already granted to this same still-running job.
+        *current = Some(current.map_or(deadline, |previous| previous.max(deadline)));
+        drop(current);
         self.changed.notify_all();
     }
     fn live(&self) -> Instant {
@@ -294,6 +298,8 @@ struct Control {
     work_joined: AtomicBool,
     undo_joined: AtomicBool,
     undo_executed: AtomicBool,
+    #[cfg(test)]
+    before_undo: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     read_current: Mutex<Option<OwnedBuffer>>,
     write_current: Mutex<Option<OwnedBuffer>>,
     to_bridge: PipeRoot,
@@ -588,6 +594,8 @@ impl KernelRuntime {
                 work_joined: AtomicBool::new(false),
                 undo_joined: AtomicBool::new(false),
                 undo_executed: AtomicBool::new(false),
+                #[cfg(test)]
+                before_undo: Mutex::new(None),
                 read_current: Mutex::new(None),
                 write_current: Mutex::new(None),
                 to_bridge,
@@ -841,17 +849,18 @@ impl KernelRuntime {
             changed.await;
         }
         self.undo.join().await;
-        if self
-            .control
-            .device
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .is_some()
+        if !self.control.undo_executed.load(Ordering::Acquire)
+            || self
+                .control
+                .device
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_some()
         {
             self.control.capture_undo(
                 2,
                 NativeError::Conflict(
-                    "actual cleanup job ended with original native resource retained",
+                    "native cleanup body did not complete or retained its original resource",
                 ),
             );
         }
@@ -860,6 +869,7 @@ impl KernelRuntime {
     pub(crate) fn is_terminal(&self) -> bool {
         self.control.work_joined.load(Ordering::Acquire)
             && self.control.undo_joined.load(Ordering::Acquire)
+            && self.control.undo_executed.load(Ordering::Acquire)
             && self
                 .control
                 .device
@@ -1362,6 +1372,13 @@ fn ingest(
 }
 
 fn run_undo(control: &Control) {
+    #[cfg(test)]
+    {
+        let callback = control.before_undo.lock().unwrap().take();
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
     // This body runs only after the containing collector observed every
     // original/native work join. The same actual packet descriptor alias dies
     // before the original control owner is allowed to close its native fd.
