@@ -87,16 +87,14 @@ impl XpcClient {
             )
             .into());
         }
-        let stream: DynStream = Box::new(stream);
-        let mut framer = H2Framer::connect_with_timeout(stream, budget)
-            .await
-            .map_err(|e| h2_error("H2: ", e))?;
-        framer.set_operation_timeout(Some(budget));
-        initialize_xpc_connection_on_framer(&mut framer).await?;
-        Ok(Self {
-            inner: XpcConnection::new(framer),
-            reconnector: None,
-        })
+        // One outer clock owns both phases. Resetting a per-frame budget after
+        // H2 connect would let bootstrap consume a second full budget.
+        xpc_timeout(
+            budget,
+            "initialize XPC service",
+            Self::connect_stream(stream),
+        )
+        .await
     }
 
     /// Supply a factory for a fresh, initialized connection to the same service.
@@ -1679,6 +1677,45 @@ mod tests {
     fn decode_message_payload(bytes: &[u8]) -> (u32, u64) {
         let msg = crate::xpc::message::decode_message(Bytes::copy_from_slice(bytes)).unwrap();
         (msg.flags, msg.msg_id)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn review_regression_xpc_connect_has_one_clock_across_h2_and_bootstrap() {
+        let (stream, mut peer) = duplex(4096);
+        let start = tokio::time::Instant::now();
+        let (result, ()) = tokio::join!(
+            XpcClient::connect_stream_with_timeout(stream, Duration::from_millis(100)),
+            async {
+                let mut preface = [0; 58];
+                peer.read_exact(&mut preface).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                peer.write_all(&settings_frame()).await.unwrap();
+                assert_eq!(lifecycle_xpc_frame(&mut peer).await.0, FRAME_SETTINGS);
+                // H2 has completed, but the peer withholds the XPC response.
+                assert_eq!(lifecycle_xpc_frame(&mut peer).await.0, FRAME_HEADERS);
+                let mut rest = Vec::new();
+                peer.read_to_end(&mut rest).await.unwrap();
+            }
+        );
+        let error = result.err().expect("bootstrap must time out");
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        let XpcError::Io(io) = &error else {
+            panic!("expected native timeout IO")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        let mut cause = io
+            .get_ref()
+            .map(|value| value as &(dyn std::error::Error + 'static));
+        let mut found_elapsed = false;
+        while let Some(source) = cause {
+            found_elapsed |= source.is::<tokio::time::error::Elapsed>();
+            cause = source.source();
+        }
+        assert!(
+            found_elapsed,
+            "fixed phase context must retain native Elapsed"
+        );
+        assert_eq!(start.elapsed(), Duration::from_millis(100));
     }
 
     #[tokio::test]

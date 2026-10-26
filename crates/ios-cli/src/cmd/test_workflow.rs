@@ -916,7 +916,14 @@ impl<'a> TestWorkflowEngine<'a> {
     /// Execute read-only preflight checks (both arguments and device readiness).
     pub async fn preflight(&self) -> Result<()> {
         self.workflow.preflight()?;
-        preflight_device_readiness(self.udid, self.deadline).await
+        tokio::select! {
+            biased;
+            signal = tokio::signal::ctrl_c() => {
+                signal.context("waiting for XCTest preflight cancellation")?;
+                Err(ios_core::OperationCancelled::new().into())
+            }
+            result = preflight_device_readiness(self.udid, self.deadline) => result,
+        }
     }
 
     /// Install explicitly requested packages, recording them in `app_tracker`.

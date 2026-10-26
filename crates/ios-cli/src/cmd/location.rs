@@ -44,7 +44,10 @@ impl LocationCmd {
                 };
                 let device = connect(&udid, opts).await?;
                 let stream = device
-                    .connect_service(ios_core::simlocation::SERVICE_NAME)
+                    .connect_service_with_timeout(
+                        ios_core::simlocation::SERVICE_NAME,
+                        std::time::Duration::from_secs(30),
+                    )
                     .await?;
                 let mut client = ios_core::simlocation::SimLocationClient::new(stream);
                 client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
@@ -66,7 +69,10 @@ impl LocationCmd {
                 };
                 let device = connect(&udid, opts).await?;
                 let mut stream = device
-                    .connect_service(ios_core::simlocation::SERVICE_NAME)
+                    .connect_service_with_timeout(
+                        ios_core::simlocation::SERVICE_NAME,
+                        std::time::Duration::from_secs(30),
+                    )
                     .await?;
                 let count = ios_core::simlocation::replay_gpx_route(&mut *stream, &gpx)
                     .await
@@ -81,7 +87,10 @@ impl LocationCmd {
                 };
                 let device = connect(&udid, opts).await?;
                 let stream = device
-                    .connect_service(ios_core::simlocation::SERVICE_NAME)
+                    .connect_service_with_timeout(
+                        ios_core::simlocation::SERVICE_NAME,
+                        std::time::Duration::from_secs(30),
+                    )
                     .await?;
                 let mut client = ios_core::simlocation::SimLocationClient::new(stream);
                 client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
