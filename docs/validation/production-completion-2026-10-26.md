@@ -28,3 +28,9 @@
 GPX CLI 现在使用 SimLocationClient 的逐点写入 owner（30秒请求），计划轨迹等待属于可取消 idle，Ctrl-C 关闭原客户端；此前已发送的位置可能仍有效。保留旧 raw API 的兼容行为。
 
 Core installation30/0、simlocation11/0；CLI apps46/0、location定向通过，日志 `.git/completion-{install,gpx,apps-cli,location-cli}.log`。首次新fixture编译类型歧义已修，不作通过证据。既有H2/DTX/AFC等未变profiles复用交接证据；未凭这两个消费者声明全仓库L01完成。
+
+## F02 执行入口与未确认启动
+
+`ios-cli` 现在同时提供库，公开现有 TestWorkflowEngine/Args/RunOptions；binary仅调用同一run_cli。没有复制编排引擎，runtest/runxctest仍调用原run。XPC `call_observed` 在完整请求本地flush后记录submission；CoreDevice launch把此观察与已确认PID分开。现代启动在launch前保存同bundle旧PID基线，若已完整发送但PID未确认，cleanup在原服务reconnector上查询新进程，只对唯一、同bundle且不在旧基线的PID发送kill。未能查回不把关socket当成功，返回RunnerLaunchUnconfirmed或原重连/查询错误，继续testmanager/native收尾。
+
+验证：runtest12/0，统一engine22/0，runxctest10/0，XPC18/0（含真实duplex完整发送后caller Drop、不可复用及peer EOF）。日志 `.git/completion-{workflow,engine,runxctest,xpc}.log`。公开API外部集成测试已注册，最终批次执行。尚未用这些结果声称现代canonical/shim/DTX/AppService全阶段假服务已经全验收。

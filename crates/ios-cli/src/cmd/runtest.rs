@@ -222,10 +222,39 @@ pub(crate) struct TestStartupCleanup {
     pid: Option<u64>,
     device: Option<OwnedTestDevice>,
     instruments_device: Option<OwnedTestDevice>,
+    pending_runner: Option<(String, Vec<u64>)>,
+    launch_submitted: bool,
 }
 impl TestStartupCleanup {
     pub(crate) async fn close(&mut self) -> Result<()> {
         let mut result = Ok(());
+        if self.pid.is_none() && self.launch_submitted {
+            if let (Some(RunnerController::CoreDevice(controller)), Some((bundle, previous))) =
+                (&mut self.controller, self.pending_runner.take())
+            {
+                result = tokio::time::timeout(Duration::from_secs(2), async {
+                    controller.reconnect().await?;
+                    let processes = controller.list_processes().await?;
+                    let candidates: Vec<_> = processes
+                        .iter()
+                        .filter(|process| {
+                            process.bundle_id.as_deref() == Some(bundle.as_str())
+                                && !previous.contains(&process.pid)
+                        })
+                        .collect();
+                    if candidates.len() != 1 {
+                        return Err(anyhow::Error::new(RunnerLaunchUnconfirmed));
+                    }
+                    controller.kill_process(candidates[0].pid).await?;
+                    Ok(())
+                })
+                .await
+                .map_err(anyhow::Error::new)
+                .and_then(|result| result);
+            } else {
+                result = Err(anyhow::Error::new(RunnerLaunchUnconfirmed));
+            }
+        }
         if let (Some(controller), Some(pid)) = (&mut self.controller, self.pid.take()) {
             result = terminate_process(controller, pid).await;
         }
@@ -253,9 +282,20 @@ impl TestStartupCleanup {
         self.controller.take();
         self.instruments_device.take();
         self.device.take();
+        self.pending_runner = None;
+        self.launch_submitted = false;
         result
     }
 }
+
+#[derive(Debug)]
+pub struct RunnerLaunchUnconfirmed;
+impl std::fmt::Display for RunnerLaunchUnconfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("XCTest launch was submitted but its PID could not be reconciled; a runner may remain active on the selected device")
+    }
+}
+impl std::error::Error for RunnerLaunchUnconfirmed {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TestmanagerTransport {
@@ -610,14 +650,29 @@ async fn start_test_plan_session_inner(
                     terminate_existing: true,
                     standard_io_identifiers: Default::default(),
                 };
+                let previous = appservice
+                    .list_processes()
+                    .await?
+                    .into_iter()
+                    .filter(|process| {
+                        process.bundle_id.as_deref() == Some(plan.runner.bundle_id.as_str())
+                    })
+                    .map(|process| process.pid)
+                    .collect();
+                cleanup.pending_runner = Some((plan.runner.bundle_id.clone(), previous));
                 let pid = appservice
-                    .launch_application_with_options(&plan.runner.bundle_id, &options)
+                    .launch_application_observed(
+                        &plan.runner.bundle_id,
+                        &options,
+                        &mut cleanup.launch_submitted,
+                    )
                     .await
                     .map_err(|error| anyhow::Error::new(error).context("CoreDevice launch error"))?
                     .ok_or_else(|| {
                         anyhow::anyhow!("CoreDevice launch returned no PID for XCTest runner")
                     })?;
                 cleanup.pid = Some(pid);
+                cleanup.pending_runner = None;
                 Ok::<_, anyhow::Error>(pid)
             },
         )
@@ -1051,6 +1106,18 @@ pub(crate) fn xctest_wait_timeout(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn submitted_launch_without_pid_cannot_report_successful_cleanup() {
+        let mut cleanup = super::TestStartupCleanup {
+            launch_submitted: true,
+            ..Default::default()
+        };
+        let error = cleanup.close().await.unwrap_err();
+        assert!(error
+            .downcast_ref::<super::RunnerLaunchUnconfirmed>()
+            .is_some());
+        assert!(cleanup.close().await.is_ok(), "ownership is consumed once");
+    }
     #[tokio::test]
     async fn stream_contract_xctest_waits_preserve_actual_elapsed() {
         for phase in [
