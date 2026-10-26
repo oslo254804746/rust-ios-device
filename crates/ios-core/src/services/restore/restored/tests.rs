@@ -190,3 +190,184 @@ async fn wrong_ecid_and_timeout_do_not_start_restore() {
         crate::ErrorClass::Timeout
     );
 }
+
+#[tokio::test]
+async fn restored_update_loop_executes_full_lifecycle_and_verifies_terminal_status() {
+    let (stream, mut peer) = tokio::io::duplex(32768);
+    let remote = tokio::spawn(async move {
+        handshake(&mut peer, 42).await;
+        let start = read(&mut peer).await;
+        assert_eq!(start["Request"].as_string(), Some("StartRestore"));
+        assert_eq!(
+            start["RestoreOptions"].as_dictionary().unwrap()["RestoreBehavior"].as_string(),
+            Some("Update")
+        );
+
+        // 1. ProgressMsg
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("ProgressMsg".into())),
+                (
+                    "Operation".to_owned(),
+                    Value::String("Updating baseband".into()),
+                ),
+                ("Progress".to_owned(), Value::Integer(25.into())),
+            ]),
+        )
+        .await;
+
+        // 2. CheckpointMsg
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("CheckpointMsg".into())),
+                (
+                    "Checkpoint".to_owned(),
+                    Value::String("CHECKPOINT_FLASH_START".into()),
+                ),
+            ]),
+        )
+        .await;
+
+        // 3. DataRequestMsg for firmware
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("DataRequestMsg".into())),
+                (
+                    "DataType".to_owned(),
+                    Value::String("FirmwareUpdaterData".into()),
+                ),
+                (
+                    "Arguments".to_owned(),
+                    Value::Dictionary(Dictionary::from_iter([
+                        ("UpdaterName".to_owned(), Value::String("Rose".into())),
+                        ("DataChunkSize".to_owned(), Value::Integer(2.into())),
+                    ])),
+                ),
+            ]),
+        )
+        .await;
+
+        // Consume header and chunks
+        let header = read(&mut peer).await;
+        assert_eq!(header["DataSize"].as_unsigned_integer(), Some(5));
+        let mut data = Vec::new();
+        loop {
+            let chunk = read(&mut peer).await;
+            data.extend_from_slice(chunk["FirmwareResponseData"].as_data().unwrap());
+            if chunk.get("DataDone").and_then(Value::as_boolean) == Some(true) {
+                break;
+            }
+        }
+        assert_eq!(data, b"12345");
+
+        // 4. Final ProgressMsg
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("ProgressMsg".into())),
+                (
+                    "Operation".to_owned(),
+                    Value::String("Verifying filesystem".into()),
+                ),
+                ("Progress".to_owned(), Value::Integer(95.into())),
+            ]),
+        )
+        .await;
+
+        // 5. Terminal StatusMsg (status 0)
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("StatusMsg".into())),
+                ("Status".to_owned(), Value::Integer(0.into())),
+                (
+                    "Log".to_owned(),
+                    Value::String("Restore finished successfully".into()),
+                ),
+            ]),
+        )
+        .await;
+    });
+
+    let cancel = OperationCancel::new();
+    let mut client = RestoredClient::connect(stream, 42, Duration::from_secs(5), cancel.clone())
+        .await
+        .unwrap();
+
+    let mut sm = RestoreStateMachine::new();
+    sm.receive_nonces(Some(vec![1, 2, 3]), Some(vec![4, 5, 6]))
+        .unwrap();
+
+    let options =
+        Dictionary::from_iter([("RestoreBehavior".to_owned(), Value::String("Update".into()))]);
+    let report = run_restored_update_loop(
+        &mut client,
+        sm,
+        options,
+        |name, _req| {
+            assert_eq!(name, "Rose");
+            Ok((
+                Dictionary::from_iter([("Ticket".to_owned(), Value::Data(vec![0xAA]))]),
+                b"12345".to_vec(),
+            ))
+        },
+        &cancel,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.final_state, RestoreState::Completed);
+    assert_eq!(report.progress_percent, Some(95));
+    assert!(report
+        .checkpoints_reached
+        .contains(&"CHECKPOINT_FLASH_START".to_string()));
+    assert_eq!(report.total_bytes_transferred, 5);
+    remote.await.unwrap();
+}
+
+#[tokio::test]
+async fn restored_update_loop_handles_device_failure_status() {
+    let (stream, mut peer) = tokio::io::duplex(32768);
+    let remote = tokio::spawn(async move {
+        handshake(&mut peer, 42).await;
+        let _start = read(&mut peer).await;
+
+        // Terminal StatusMsg with non-zero failure code
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("StatusMsg".into())),
+                ("Status".to_owned(), Value::Integer(14.into())),
+                ("Log".to_owned(), Value::String("NAND write error".into())),
+            ]),
+        )
+        .await;
+    });
+
+    let cancel = OperationCancel::new();
+    let mut client = RestoredClient::connect(stream, 42, Duration::from_secs(5), cancel.clone())
+        .await
+        .unwrap();
+
+    let mut sm = RestoreStateMachine::new();
+    sm.receive_nonces(Some(vec![1, 2, 3]), None).unwrap();
+
+    let options =
+        Dictionary::from_iter([("RestoreBehavior".to_owned(), Value::String("Update".into()))]);
+    let err = run_restored_update_loop(
+        &mut client,
+        sm,
+        options,
+        |_name, _req| Ok((Dictionary::new(), Vec::new())),
+        &cancel,
+    )
+    .await
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(msg.contains("StatusCode") || msg.contains("14") || msg.contains("failed"));
+    remote.await.unwrap();
+}

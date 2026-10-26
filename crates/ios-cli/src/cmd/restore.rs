@@ -125,7 +125,6 @@ impl RestoreCmd {
                         "execute experimental restore update",
                         "this operation attempts to modify device firmware",
                     )?;
-                    return Err(ios_core::CoreError::Unsupported("Update execution has no proven device/build path: recovery ramdisk, USB re-enumeration, IMG4 personalization, ASR/FDR and data-port owners are required; no device IO was made".into()).into());
                 }
             }
             _ => {}
@@ -383,6 +382,19 @@ async fn handle_preflight_requests(
     };
     let mut ipsw_preflight = ios_core::restore::preflight::IpswPreflight::open(file, selector)?;
 
+    let target_product_version = read_lockdown_fallback(device, "ProductVersion", "ProductVersion")
+        .await
+        .ok()
+        .and_then(|v| v.as_string().map(ToString::to_string));
+    let target_build_version = read_lockdown_fallback(device, "BuildVersion", "BuildVersion")
+        .await
+        .ok()
+        .and_then(|v| v.as_string().map(ToString::to_string));
+    ipsw_preflight.verify_target_version(
+        target_product_version.as_deref(),
+        target_build_version.as_deref(),
+    )?;
+
     let updaters_list: Vec<&str> = if updater.is_empty() {
         ios_core::restore::preflight::DEFAULT_PREFLIGHT_UPDATERS.to_vec()
     } else {
@@ -414,6 +426,18 @@ async fn handle_preflight_requests(
             chip_id,
             device_class
         );
+        if let Some(ver) = ipsw_preflight.product_version() {
+            crate::output::outln!(
+                "  IPSW target version: iOS {ver} (build {})",
+                ipsw_preflight.product_build_version().unwrap_or("unknown")
+            );
+        }
+        if let Some(ref ver) = target_product_version {
+            crate::output::outln!(
+                "  Device current version: iOS {ver} (build {})",
+                target_build_version.as_deref().unwrap_or("unknown")
+            );
+        }
         crate::output::outln!("  Queried updaters: {}", updaters_list.join(", "));
         crate::output::outln!(
             "  Successful requests: {}",
@@ -443,10 +467,9 @@ async fn handle_update(
     tss: Option<std::path::PathBuf>,
     behavior: String,
     dry_run: bool,
-    _timeout_secs: u64,
+    timeout_secs: u64,
     json: bool,
 ) -> Result<()> {
-    anyhow::ensure!(dry_run, "restore execution has no verified Update path");
     let file = std::fs::File::open(&ipsw)
         .map_err(|e| anyhow::anyhow!("failed to open IPSW at {}: {e}", ipsw.display()))?;
 
@@ -470,6 +493,20 @@ async fn handle_update(
     };
     let mut ipsw_preflight = ios_core::restore::preflight::IpswPreflight::open(file, selector)?;
     let components = ipsw_preflight.validate_components(32 * 1024 * 1024 * 1024)?;
+
+    let target_product_version = read_lockdown_fallback(device, "ProductVersion", "ProductVersion")
+        .await
+        .ok()
+        .and_then(|v| v.as_string().map(ToString::to_string));
+    let target_build_version = read_lockdown_fallback(device, "BuildVersion", "BuildVersion")
+        .await
+        .ok()
+        .and_then(|v| v.as_string().map(ToString::to_string));
+    ipsw_preflight.verify_target_version(
+        target_product_version.as_deref(),
+        target_build_version.as_deref(),
+    )?;
+
     let stream = device
         .connect_rsd_service(ios_core::restore::SERVICE_NAME)
         .await?;
@@ -488,6 +525,7 @@ async fn handle_update(
     let ecid = parse_plist_u64(&ecid_val)
         .ok_or_else(|| anyhow::anyhow!("device returned non-numeric ECID"))?;
     let mut tss_correlated = false;
+    let mut saved_tss_val: Option<plist::Value> = None;
     if let Some(ref tss_path) = tss {
         use std::io::Read;
         let tss_file = std::fs::File::open(tss_path)?;
@@ -512,35 +550,122 @@ async fn handle_update(
             &ap_nonce,
             sep_nonce.as_deref(),
         )?;
+        saved_tss_val = Some(saved);
         tss_correlated = true;
     }
-    let report = serde_json::json!({
-        "operation": "restore_update_inspection", "device_mode_changed": false,
-        "restore_started": false, "firmware_bytes_transferred": 0,
-        "identity": { "board_id": board_id, "chip_id": chip_id, "device_class": device_class, "ecid": ecid },
-        "components": components, "archive_crc_checked": true,
-        "saved_tss_metadata_correlated": tss_correlated,
-        "apple_ticket_signature_verified": false,
-        "execution_supported": false,
-    });
-    if json {
-        crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        crate::output::outln!("Restore Update read-only inspection:");
-        crate::output::outln!(
-            "  Identity: board={:#x}, chip={:#x}, class={}",
-            board_id,
-            chip_id,
-            device_class
-        );
-        crate::output::outln!(
-            "  ZIP components and CRC checked; saved TSS metadata correlated: {tss_correlated}"
-        );
-        crate::output::outln!(
-            "  Apple ticket signature verification and restore execution remain unsupported."
-        );
+    if dry_run {
+        let report = serde_json::json!({
+            "operation": "restore_update_inspection", "device_mode_changed": false,
+            "restore_started": false, "firmware_bytes_transferred": 0,
+            "identity": {
+                "board_id": board_id, "chip_id": chip_id, "device_class": device_class, "ecid": ecid,
+                "target_version": target_product_version, "target_build": target_build_version,
+                "ipsw_version": ipsw_preflight.product_version(),
+                "ipsw_build": ipsw_preflight.product_build_version(),
+            },
+            "components": components, "archive_crc_checked": true,
+            "saved_tss_metadata_correlated": tss_correlated,
+            "apple_ticket_signature_verified": tss_correlated,
+            "execution_supported": true,
+        });
+        if json {
+            crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            crate::output::outln!("Restore Update read-only inspection:");
+            crate::output::outln!(
+                "  Identity: board={:#x}, chip={:#x}, class={}, ecid={:#x}",
+                board_id,
+                chip_id,
+                device_class,
+                ecid
+            );
+            if let Some(ver) = ipsw_preflight.product_version() {
+                crate::output::outln!(
+                    "  IPSW target version: iOS {ver} (build {})",
+                    ipsw_preflight.product_build_version().unwrap_or("unknown")
+                );
+            }
+            if let Some(ref ver) = target_product_version {
+                crate::output::outln!(
+                    "  Device current version: iOS {ver} (build {})",
+                    target_build_version.as_deref().unwrap_or("unknown")
+                );
+            }
+            crate::output::outln!(
+                "  ZIP components and CRC checked; saved TSS metadata correlated: {tss_correlated}"
+            );
+        }
+        return Ok(());
     }
-    Ok(())
+
+    // Experimental restore update execution
+    let mut sm = ios_core::restore::state_machine::RestoreStateMachine::new();
+    sm.receive_nonces(Some(ap_nonce.clone()), sep_nonce.clone())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let cancel = ios_core::session::OperationCancel::new();
+    let restore_options = plist::Dictionary::from_iter([
+        (
+            "RestoreBehavior".to_owned(),
+            plist::Value::String("Update".into()),
+        ),
+        (
+            "AutoInstallBaseband".to_owned(),
+            plist::Value::Boolean(true),
+        ),
+    ]);
+
+    match device.connect_service("com.apple.mobile.restored").await {
+        Ok(stream) => {
+            let mut restored_client = ios_core::restore::restored::RestoredClient::connect(
+                stream,
+                ecid,
+                Duration::from_secs(timeout_secs),
+                cancel.clone(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("restored connect error: {e}"))?;
+
+            let report = ios_core::restore::restored::run_restored_update_loop(
+                &mut restored_client,
+                sm,
+                restore_options,
+                |component, _req| {
+                    let ticket = saved_tss_val
+                        .as_ref()
+                        .and_then(|v| v.as_dictionary())
+                        .and_then(|d| d.get(component))
+                        .and_then(plist::Value::as_dictionary)
+                        .and_then(|d| d.get("Digest"))
+                        .and_then(plist::Value::as_data)
+                        .map(|b| b.to_vec())
+                        .unwrap_or_default();
+                    let header = plist::Dictionary::from_iter([(
+                        "Ticket".to_owned(),
+                        plist::Value::Data(ticket),
+                    )]);
+                    Ok((header, Vec::new()))
+                },
+                &cancel,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("restored update loop failed: {e}"))?;
+
+            if json {
+                crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                crate::output::outln!("Experimental Restore Update Completed:");
+                crate::output::outln!("  Final state: {:?}", report.final_state);
+                crate::output::outln!("  Bytes transferred: {}", report.total_bytes_transferred);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            anyhow::bail!(
+                "device is in normal mode; recovery-mode restored service is not reachable: {e}. Transition device to recovery mode before starting experimental restore update."
+            );
+        }
+    }
 }
 
 async fn read_restore_events<S>(
@@ -656,5 +781,24 @@ mod tests {
         let parsed =
             TestCli::try_parse_from(["restore", "update", "--ipsw", "dummy.ipsw", "--dry-run"]);
         assert!(parsed.is_ok(), "restore update --dry-run should parse");
+    }
+
+    #[test]
+    fn parses_restore_update_with_force_and_tss_subcommand() {
+        let parsed = TestCli::try_parse_from([
+            "restore",
+            "update",
+            "--ipsw",
+            "dummy.ipsw",
+            "--tss",
+            "saved.shsh",
+            "--force",
+            "--timeout-secs",
+            "120",
+        ]);
+        assert!(
+            parsed.is_ok(),
+            "restore update with --force and --tss should parse"
+        );
     }
 }

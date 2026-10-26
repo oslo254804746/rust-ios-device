@@ -198,6 +198,7 @@ mod tests {
             skipped_tests: 1,
             logs: vec!["stdout <ok>\u{1}".to_string()],
             debug_logs: vec!["stderr & detail".to_string()],
+            logs_truncated: false,
             suites: vec![TestSuiteSummary {
                 name: "Suite <主>&".to_string(),
                 started_at: None,
