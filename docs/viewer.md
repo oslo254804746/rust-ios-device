@@ -34,8 +34,7 @@ returns 501. There is no synthetic orientation success.
 Standalone `viewer clipboard` polls the device and local clipboard, starts with
 the device baseline, preserves actual text, and suppresses repeated/echoed
 content. Its policy owner uses `--vnc-token-file` and the selected `--port`
-(default 5900) scope. PNG/JPEG device clipboard writes remain unsupported and
-are rejected. The text limit is 1 MiB; extended clipboard parsing is bounded.
+(default 5900) scope. HTTP/device adapters contain generic PNG/JPEG UTI read/write paths, but device image interoperability has not been established. Treat those paths as experimental. Standard RFB image clipboard remains unsupported: bit 3 is DIB and bit 4 is files, not PNG/JPEG; the VNC owner advertises only text and rejects other formats. The text limit is 1 MiB; extended clipboard parsing is bounded.
 
 Encoded PNG frames are limited to 2 MiB and decoded BGRA pixels to 12 MiB.
 The device request queue has eight slots; HTTP has at most two multipart
@@ -56,3 +55,5 @@ F05 remains incomplete: HEVC video decoding, orientation, image clipboard,
 reconnect/desktop-platform coverage and actual standard VNC/device workflows
 need further implementation or acceptance evidence. No real device was
 operated during this repair. See the [repair scope](validation/viewer-cdp-repair-2026-10-10.md).
+
+The [2026-10-26 review](validation/remaining-six-review-2026-10-26.md) removed fabricated RFB PNG/JPEG production messages. The historical private-codec roundtrip is a unit regression only and does not establish RFB or device image support.

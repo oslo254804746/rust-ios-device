@@ -15,8 +15,8 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock};
 
 use super::clipboard::{
-    self, decode_classic_cut_text, encode_extended_caps, parse_extended_cut_text, ClipboardPayload,
-    ClipboardSource, ClipboardSyncState, ENC_EXTENDED_CLIPBOARD,
+    self, decode_classic_cut_text, encode_extended_caps, ClipboardPayload, ClipboardSource,
+    ClipboardSyncState, ENC_EXTENDED_CLIPBOARD,
 };
 
 pub const RFB_VERSION_3_8: &[u8; 12] = b"RFB 003.008\n";
@@ -376,17 +376,9 @@ impl VncSession {
                                     };
                                     self.stream.write_all(&message).await?;
                                 }
-                                ClipboardPayload::ImagePng(png) => {
-                                    if self.extended_clipboard {
-                                        let message = clipboard::encode_extended_provide_image(png, true)?;
-                                        self.stream.write_all(&message).await?;
-                                    }
-                                }
-                                ClipboardPayload::ImageJpeg(jpeg) => {
-                                    if self.extended_clipboard {
-                                        let message = clipboard::encode_extended_provide_image(jpeg, false)?;
-                                        self.stream.write_all(&message).await?;
-                                    }
+                                ClipboardPayload::ImagePng(_) | ClipboardPayload::ImageJpeg(_) => {
+                                    return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,
+                                        "VNC image clipboard requires DIB conversion; PNG/JPEG wire formats are unsupported").into());
                                 }
                             }
                         }
@@ -419,8 +411,8 @@ impl VncSession {
                         let enc = self.stream.read_i32().await?;
                         encs.push(enc);
                     }
-                    if encs.contains(&ENC_EXTENDED_CLIPBOARD) {
-                        self.extended_clipboard = true;
+                    self.extended_clipboard = encs.contains(&ENC_EXTENDED_CLIPBOARD);
+                    if self.extended_clipboard {
                         // Advertise extended clipboard caps
                         let caps = encode_extended_caps();
                         self.stream.write_all(&caps).await?;
@@ -726,7 +718,7 @@ impl VncSession {
             );
             let mut buf = vec![0u8; len];
             self.stream.read_exact(&mut buf).await?;
-            let ext = parse_extended_cut_text(&buf)?;
+            let ext = clipboard::parse_rfb_extended_cut_text(&buf)?;
 
             if let Some(text) = ext.text {
                 let payload = ClipboardPayload::Text(text);

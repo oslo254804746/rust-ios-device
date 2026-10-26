@@ -17,6 +17,7 @@ pub const ENC_EXTENDED_CLIPBOARD: i32 = -1063131698;
 pub const FORMAT_TEXT: u32 = 1 << 0;
 pub const FORMAT_RTF: u32 = 1 << 1;
 pub const FORMAT_HTML: u32 = 1 << 2;
+// Historical private codec only; RFB bit 3 is DIB, bit 4 is files.
 pub const FORMAT_IMAGE_PNG: u32 = 1 << 3;
 pub const FORMAT_IMAGE_JPEG: u32 = 1 << 4;
 pub const _FORMAT_MASK: u32 = 0xFFFF;
@@ -66,6 +67,8 @@ impl ClipboardPayload {
 
     pub fn sha256_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
+        hasher.update(self.uti().as_bytes());
+        hasher.update([0]);
         match self {
             Self::Text(s) => hasher.update(s.as_bytes()),
             Self::ImagePng(b) => hasher.update(b),
@@ -181,14 +184,8 @@ pub fn decode_classic_cut_text(bytes: &[u8]) -> Result<String> {
 
 /// Extended Clipboard caps advertisement.
 pub fn encode_extended_caps() -> Vec<u8> {
-    let flags = ACTION_CAPS
-        | ACTION_REQUEST
-        | ACTION_PEEK
-        | ACTION_NOTIFY
-        | ACTION_PROVIDE
-        | FORMAT_TEXT
-        | FORMAT_IMAGE_PNG
-        | FORMAT_IMAGE_JPEG;
+    let flags =
+        ACTION_CAPS | ACTION_REQUEST | ACTION_PEEK | ACTION_NOTIFY | ACTION_PROVIDE | FORMAT_TEXT;
     let mut body = flags.to_be_bytes().to_vec();
     body.extend_from_slice(&0u32.to_be_bytes()); // Unsolicited size 0
     let len_field = -(body.len() as i32);
@@ -221,7 +218,9 @@ pub fn encode_extended_notify(has_text: bool, has_png: bool) -> Vec<u8> {
     out
 }
 
-/// Extended Clipboard provide image (PNG or JPEG compressed).
+/// Historical private PNG/JPEG codec, retained only for the existing codec regression.
+/// It is not RFB Extended Clipboard and must never reach a production VNC peer.
+#[cfg(test)]
 pub fn encode_extended_provide_image(image_bytes: &[u8], is_png: bool) -> Result<Vec<u8>> {
     ensure!(
         image_bytes.len() <= MAX_IMAGE_BYTES,
@@ -323,22 +322,33 @@ pub fn parse_extended_cut_text(body: &[u8]) -> Result<ExtendedCutTextMessage> {
         let mut decompressed = Vec::new();
         let decoder = ZlibDecoder::new(compressed);
         decoder
-            .take((MAX_IMAGE_BYTES + 4) as u64)
+            .take((MAX_IMAGE_BYTES + 5) as u64)
             .read_to_end(&mut decompressed)
             .context("zlib decompression failed")?;
 
-        ensure!(decompressed.len() >= 4, "decompressed payload too short");
+        ensure!(
+            decompressed.len() >= 4 && decompressed.len() <= MAX_IMAGE_BYTES + 4,
+            "decompressed clipboard payload exceeds bounds"
+        );
         let reported_len = u32::from_be_bytes(decompressed[..4].try_into().unwrap()) as usize;
         let payload_bytes = &decompressed[4..];
         ensure!(
-            payload_bytes.len() >= reported_len,
-            "decompressed payload truncated"
+            payload_bytes.len() == reported_len,
+            "decompressed payload length mismatch"
         );
 
         if flags & FORMAT_TEXT != 0 {
             let text_bytes = &payload_bytes[..reported_len];
-            let clean = text_bytes.strip_suffix(b"\0").unwrap_or(text_bytes);
-            let s = String::from_utf8_lossy(clean).replace("\r\n", "\n");
+            let clean = text_bytes
+                .strip_suffix(b"\0")
+                .context("RFB text lacks terminating NUL")?;
+            ensure!(
+                clean.len() <= MAX_TEXT_BYTES,
+                "RFB text exceeds byte budget"
+            );
+            let s = std::str::from_utf8(clean)
+                .context("RFB text is not UTF-8")?
+                .replace("\r\n", "\n");
             msg.text = Some(s);
         } else if flags & FORMAT_IMAGE_PNG != 0 {
             msg.image_png = Some(payload_bytes[..reported_len].to_vec());
@@ -348,4 +358,55 @@ pub fn parse_extended_cut_text(body: &[u8]) -> Result<ExtendedCutTextMessage> {
     }
 
     Ok(msg)
+}
+
+/// RFB Extended Clipboard accepts only the implemented UTF-8 text format.
+/// Spec: rfbproto/rfbproto.rst, Extended Clipboard Pseudo-encoding.
+pub fn parse_rfb_extended_cut_text(body: &[u8]) -> Result<ExtendedCutTextMessage> {
+    ensure!(body.len() >= 4, "extended clipboard body too short");
+    let flags = u32::from_be_bytes(body[..4].try_into().unwrap());
+    if flags & ACTION_CAPS != 0 {
+        let formats = (flags & 0xffff).count_ones() as usize;
+        ensure!(
+            body.len() == 4 + 4 * formats,
+            "invalid RFB clipboard capability sizes"
+        );
+        return Ok(ExtendedCutTextMessage {
+            flags,
+            text: None,
+            image_png: None,
+            image_jpeg: None,
+        });
+    }
+    let action = flags & !0xffff;
+    ensure!(
+        matches!(
+            action,
+            ACTION_REQUEST | ACTION_PEEK | ACTION_NOTIFY | ACTION_PROVIDE
+        ),
+        "invalid RFB clipboard action"
+    );
+    if flags & 0xffff & !FORMAT_TEXT != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "RFB clipboard format unavailable: DIB/files/RTF/HTML are not PNG/JPEG",
+        )
+        .into());
+    }
+    if action == ACTION_PROVIDE {
+        ensure!(
+            flags & FORMAT_TEXT != 0 && body.len() > 4,
+            "RFB provide requires text data"
+        );
+    } else {
+        ensure!(body.len() == 4, "unexpected RFB clipboard action payload");
+    }
+    let message = parse_extended_cut_text(body)?;
+    if let Some(text) = &message.text {
+        ensure!(
+            text.len() <= MAX_TEXT_BYTES,
+            "RFB clipboard text exceeds budget"
+        );
+    }
+    Ok(message)
 }
