@@ -199,6 +199,7 @@ mod tests {
             logs: vec!["stdout <ok>\u{1}".to_string()],
             debug_logs: vec!["stderr & detail".to_string()],
             logs_truncated: false,
+            results_truncated: false,
             suites: vec![TestSuiteSummary {
                 name: "Suite <主>&".to_string(),
                 started_at: None,
@@ -259,6 +260,17 @@ mod tests {
     #[test]
     fn junit_xml_preserves_statuses_counts_and_escapes_invalid_text() {
         let xml = junit_fixture_summary().to_junit_xml();
+        let root = xml
+            .split("<testsuites")
+            .nth(1)
+            .unwrap()
+            .split('>')
+            .next()
+            .unwrap();
+        assert!(
+            root.contains("errors=\"1\""),
+            "unknown-status errors must not be duplicated as new diagnostic errors"
+        );
         assert!(xml.contains("tests=\"5\" failures=\"1\" errors=\"1\" skipped=\"2\""));
         assert!(xml.contains("name=\"Suite &lt;主&gt;&amp;\""));
         assert!(xml.contains("bad &lt;value&gt; &amp; &quot;quote&quot;�"));
