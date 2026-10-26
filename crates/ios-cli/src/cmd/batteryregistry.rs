@@ -15,10 +15,12 @@ impl BatteryregistryCmd {
             skip_tunnel: true,
         };
         let device = connect(&udid, opts).await?;
-        let mut stream = device
+        let stream = device
             .connect_service(ios_core::diagnostics::SERVICE_NAME)
             .await?;
-        let battery = ios_core::diagnostics::query_battery(&mut *stream).await?;
+        let mut client = ios_core::diagnostics::DiagnosticsClient::new(stream);
+        client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+        let battery = client.query_battery().await?;
 
         if json {
             crate::output::outln!("{}", serde_json::to_string_pretty(&battery)?);

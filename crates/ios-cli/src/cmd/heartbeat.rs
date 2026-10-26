@@ -40,17 +40,17 @@ pub(crate) async fn run_heartbeat(
         .connect_service(ios_core::heartbeat::SERVICE_NAME)
         .await?;
     let mut client = ios_core::heartbeat::HeartbeatClient::new(stream);
+    if let Some(t) = timeout {
+        client.set_idle_timeout(Some(Duration::from_secs(t)));
+        client.set_operation_timeout(Some(Duration::from_secs(t)));
+    } else {
+        client.set_idle_timeout(None);
+        client.set_operation_timeout(Some(Duration::from_secs(30)));
+    }
 
     let mut messages = Vec::with_capacity(count);
     for _ in 0..count {
-        let message = match timeout {
-            Some(timeout) => tokio::time::timeout(Duration::from_secs(timeout), client.ping())
-                .await
-                .map_err(|error| {
-                    anyhow::Error::new(error).context("timed out waiting for heartbeat")
-                })??,
-            None => client.ping().await?,
-        };
+        let message = client.ping().await?;
         messages.push(message);
     }
 

@@ -94,9 +94,11 @@ impl DiagnosticsCmd {
             skip_tunnel: true,
         };
         let device = connect(&udid, opts).await?;
-        let mut stream = device
+        let stream = device
             .connect_service(ios_core::diagnostics::SERVICE_NAME)
             .await?;
+        let mut client = ios_core::diagnostics::DiagnosticsClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_secs(30)));
 
         match sub {
             DiagnosticsSub::Reboot { force } => {
@@ -105,7 +107,7 @@ impl DiagnosticsCmd {
                     "reboot the device",
                     "the device restarts immediately and any running session is lost",
                 )?;
-                ios_core::diagnostics::reboot(&mut *stream).await?;
+                client.reboot().await?;
                 if json {
                     crate::output::outln!(
                         "{}",
@@ -118,12 +120,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Shutdown { .. } => {
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-                tokio::time::timeout_at(deadline, ios_core::diagnostics::shutdown(&mut *stream))
-                    .await
-                    .map_err(|error| {
-                        anyhow::Error::new(error).context("shutdown timed out after 30 seconds")
-                    })??;
+                client.shutdown().await?;
                 if json {
                     crate::output::outln!(
                         "{}",
@@ -136,7 +133,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Battery => {
-                let battery = ios_core::diagnostics::query_battery(&mut *stream).await?;
+                let battery = client.query_battery().await?;
                 if json {
                     crate::output::outln!("{}", serde_json::to_string_pretty(&battery)?);
                 } else {
@@ -148,7 +145,7 @@ impl DiagnosticsCmd {
                 let mut collected = 0u64;
 
                 while collected < limit {
-                    let battery = ios_core::diagnostics::query_battery(&mut *stream).await?;
+                    let battery = client.query_battery().await?;
                     if json {
                         crate::output::outln!("{}", serde_json::to_string(&battery)?);
                     } else {
@@ -166,11 +163,11 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::List => {
-                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
+                let value = client.query_all_values().await?;
                 crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
             }
             DiagnosticsSub::Show { name } => {
-                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
+                let value = client.query_all_values().await?;
                 let (resolved_name, entry) = resolve_named_diagnostics_entry(&value, &name)?;
                 if json {
                     crate::output::outln!("{}", serde_json::to_string_pretty(&entry)?);
@@ -179,7 +176,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Gasgauge => {
-                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
+                let value = client.query_all_values().await?;
                 let gas_gauge = extract_named_diagnostics_entry(&value, "GasGauge")?;
                 if json {
                     crate::output::outln!("{}", serde_json::to_string_pretty(&gas_gauge)?);
@@ -188,7 +185,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Hdmi => {
-                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
+                let value = client.query_all_values().await?;
                 let hdmi = extract_named_diagnostics_entry(&value, "HDMI")?;
                 if json {
                     crate::output::outln!("{}", serde_json::to_string_pretty(&hdmi)?);
@@ -197,7 +194,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Wifi => {
-                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
+                let value = client.query_all_values().await?;
                 let wifi = extract_named_diagnostics_entry(&value, "WiFi")?;
                 if json {
                     crate::output::outln!("{}", serde_json::to_string_pretty(&wifi)?);
@@ -206,7 +203,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Nand => {
-                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
+                let value = client.query_all_values().await?;
                 let nand = extract_named_diagnostics_entry(&value, "NAND")?;
                 if json {
                     crate::output::outln!("{}", serde_json::to_string_pretty(&nand)?);
@@ -219,15 +216,13 @@ impl DiagnosticsCmd {
                 entry_name,
                 plane,
             } => {
-                let value = ios_core::diagnostics::query_ioregistry_with(
-                    &mut *stream,
-                    ios_core::diagnostics::IoRegistryQuery {
+                let value = client
+                    .query_ioregistry_with(ios_core::diagnostics::IoRegistryQuery {
                         entry_class: entry_class.as_deref(),
                         entry_name: entry_name.as_deref(),
                         current_plane: plane.as_deref(),
-                    },
-                )
-                .await?;
+                    })
+                    .await?;
                 crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
             }
             DiagnosticsSub::Sysdiagnose => unreachable!("handled before diagnostics_relay connect"),

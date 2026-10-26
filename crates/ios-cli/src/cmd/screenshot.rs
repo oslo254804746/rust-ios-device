@@ -214,12 +214,14 @@ async fn take_legacy_screenshot(udid: &str) -> Result<ScreenshotImage> {
         skip_tunnel: true,
     };
     let device = ios_core::connect(udid, opts).await?;
-    let mut stream = device
+    let stream = device
         .connect_service(ios_core::screenshot::SERVICE_NAME)
         .await?;
 
     crate::output::write_error_line(format_args!("Capturing screenshot (legacy screenshotr)..."))?;
-    Ok(ios_core::screenshot::take_screenshot(&mut stream).await?)
+    let mut client = ios_core::screenshot::ScreenshotClient::new(stream);
+    client.set_operation_timeout(Some(Duration::from_secs(30)));
+    Ok(client.take_screenshot().await?)
 }
 
 async fn serve_stream_client(mut socket: TcpStream, udid: &str) -> Result<()> {

@@ -1372,7 +1372,8 @@ async fn upload_legacy_xctest_configuration(
     let stream = Box::pin(device.connect_service(ios_core::afc::house_arrest::SERVICE_NAME))
         .await
         .context("failed to connect legacy House Arrest for XCTest configuration")?;
-    let house_arrest = HouseArrestClient::new(stream);
+    let house_arrest = HouseArrestClient::new(stream)
+        .with_operation_timeout(Some(std::time::Duration::from_secs(30)));
     let mut container = house_arrest
         .vend_container(runner_bundle_id)
         .await
