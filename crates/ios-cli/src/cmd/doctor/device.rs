@@ -30,6 +30,7 @@ use super::Status;
 
 mod manifest;
 pub(super) mod rsd;
+pub(crate) mod target_manifest;
 
 pub(super) trait Source: Send + Sync {
     fn devices(&self) -> BoxFuture<'_, Result<Vec<DeviceInfo>>>;
@@ -111,7 +112,7 @@ pub(super) struct Check {
     #[serde(skip_serializing_if = "Option::is_none")]
     rsd: Option<rsd::Metadata>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    ddi_manifests: Option<manifest::Metadata>,
+    pub(crate) ddi_manifests: Option<manifest::Metadata>,
 }
 
 impl fmt::Debug for Check {
