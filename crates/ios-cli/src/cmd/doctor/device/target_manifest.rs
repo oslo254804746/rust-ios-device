@@ -28,6 +28,21 @@ pub(crate) struct TargetEvidence {
     pub(crate) build_version: Option<String>,
 }
 
+impl TargetEvidence {
+    pub(crate) fn from_identifiers(
+        udid: &str,
+        ids: &std::collections::HashMap<String, plist::Value>,
+    ) -> Self {
+        Self {
+            udid: udid.to_owned(),
+            board_id: ids.get("BoardId").and_then(parse_plist_int),
+            chip_id: ids.get("ChipID").and_then(parse_plist_int),
+            security_domain: ids.get("SecurityDomain").and_then(parse_plist_int),
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ComponentState {
@@ -201,7 +216,15 @@ fn evaluate_single_manifest(
 ) -> TargetManifestMetadata {
     let manifest_display = manifest_path.to_string_lossy().to_string();
 
-    let data = match std::fs::read(manifest_path) {
+    use std::io::Read;
+    let read = (|| {
+        let file = std::fs::File::open(manifest_path)?;
+        let mut data = Vec::new();
+        file.take(MAX_MANIFEST_PARSE_BYTES as u64 + 1)
+            .read_to_end(&mut data)?;
+        Ok::<_, std::io::Error>(data)
+    })();
+    let data = match read {
         Ok(d) => {
             if d.len() > MAX_MANIFEST_PARSE_BYTES {
                 return TargetManifestMetadata {
@@ -302,6 +325,19 @@ fn evaluate_single_manifest(
     let target_board = evidence.board_id;
     let target_chip = evidence.chip_id;
 
+    if target_board.is_none() || target_chip.is_none() {
+        return TargetManifestMetadata {
+            manifest_path: Some(manifest_display),
+            outcome: Some(MatchOutcome::MissingFields),
+            total_identities,
+            product_version,
+            product_build_version,
+            detail: "Target BoardId/ChipID were not observed; identity matching is unavailable."
+                .into(),
+            ..Default::default()
+        };
+    }
+
     // Filter identities matching board and chip
     let mut matching_identities = Vec::new();
 
@@ -324,19 +360,20 @@ fn evaluate_single_manifest(
 
         let board_matches = match (target_board, id_board) {
             (Some(tb), Some(ib)) => tb == ib,
-            (None, _) => true, // unprobed target accepts candidate
+            (None, _) => false,
             _ => false,
         };
 
         let chip_matches = match (target_chip, id_chip) {
             (Some(tc), Some(ic)) => tc == ic,
-            (None, _) => true,
+            (None, _) => false,
             _ => false,
         };
 
         let sec_matches = match (evidence.security_domain, id_sec_domain) {
             (Some(tsd), Some(isd)) => tsd == isd,
-            _ => true,
+            (Some(_), None) => false,
+            (None, _) => true,
         };
 
         if board_matches && chip_matches && sec_matches {
@@ -405,11 +442,15 @@ fn evaluate_single_manifest(
     let mut component_observations = Vec::new();
     let mut has_missing_file = false;
     let mut has_digest_mismatch = false;
+    let mut has_missing_fields = manifest_dict.is_empty();
 
     for (comp_name, comp_val) in manifest_dict {
         let comp_dict = match comp_val.as_dictionary() {
             Some(d) => d,
-            None => continue,
+            None => {
+                has_missing_fields = true;
+                continue;
+            }
         };
 
         let path_str = match comp_dict
@@ -418,8 +459,11 @@ fn evaluate_single_manifest(
             .and_then(|info| info.get("Path"))
             .and_then(plist::Value::as_string)
         {
-            Some(p) => p,
-            None => continue,
+            Some(p) if !p.is_empty() => p,
+            _ => {
+                has_missing_fields = true;
+                continue;
+            }
         };
 
         let safe_rel = match safe_relative_path(path_str) {
@@ -492,6 +536,7 @@ fn evaluate_single_manifest(
 
         let (state, observed_digest_hex) = if let Some(expected_bytes) = expected_digest_bytes {
             if file_size > MAX_COMPONENT_READ_BYTES {
+                has_digest_mismatch = true;
                 (ComponentState::DigestMismatch, None)
             } else {
                 match hash_file(&comp_path, expected_bytes.len()) {
@@ -553,11 +598,15 @@ fn evaluate_single_manifest(
             "BuildManifest identity matched, but one or more component digests do not match on disk.".into(),
             Some("Re-download or verify DDI bundle integrity; files may be corrupted.".into()),
         )
+    } else if has_missing_fields || evidence.security_domain.is_none() {
+        (MatchOutcome::MissingFields,
+            "Component paths or target SecurityDomain evidence are missing; no complete identity observation is available.".into(),
+            Some("Inspect the selected DDI manifest and target personalization identifiers.".into()))
     } else {
         (
             MatchOutcome::Matched,
             format!(
-                "Matched local DDI BuildManifest for target (board={:?}, chip={:?}): {} component(s) observed (file exists, digest matches, signature unverified, device availability unprobed).",
+                "Matched local DDI BuildManifest for target (board={:?}, chip={:?}): {} component(s) observed (file exists, digest matches, signature unverified, device availability unprobed; build compatibility unverified).",
                 target_board, target_chip, component_observations.len()
             ),
             None,
@@ -579,7 +628,8 @@ fn evaluate_single_manifest(
 
 fn hash_file(path: &Path, expected_digest_len: usize) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
+    let mut file = std::fs::File::open(path)?.take(MAX_COMPONENT_READ_BYTES + 1);
+    let mut read_bytes = 0u64;
     let mut buffer = [0u8; 64 * 1024];
 
     if expected_digest_len == 48 {
@@ -590,6 +640,10 @@ fn hash_file(path: &Path, expected_digest_len: usize) -> std::io::Result<Vec<u8>
             if n == 0 {
                 break;
             }
+            read_bytes += n as u64;
+            if read_bytes > MAX_COMPONENT_READ_BYTES {
+                return Err(std::io::Error::other("component read byte budget exceeded"));
+            }
             hasher.update(&buffer[..n]);
         }
         Ok(hasher.finalize().to_vec())
@@ -599,6 +653,10 @@ fn hash_file(path: &Path, expected_digest_len: usize) -> std::io::Result<Vec<u8>
             let n = file.read(&mut buffer)?;
             if n == 0 {
                 break;
+            }
+            read_bytes += n as u64;
+            if read_bytes > MAX_COMPONENT_READ_BYTES {
+                return Err(std::io::Error::other("component read byte budget exceeded"));
             }
             hasher.update(&buffer[..n]);
         }
@@ -618,6 +676,18 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_regression_unobserved_hardware_is_not_a_wildcard() {
+        let temp = std::env::temp_dir().join(format!("doctor-unobserved-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&temp).unwrap();
+        create_test_manifest(&temp, 16, 0x8101, Some(1), None, &[]);
+        let metadata =
+            evaluate_target_manifest(&TargetEvidence::default(), std::slice::from_ref(&temp));
+        assert_eq!(metadata.outcome, Some(MatchOutcome::MissingFields));
+        std::fs::remove_file(temp.join("BuildManifest.plist")).unwrap();
+        std::fs::remove_dir(temp).unwrap();
+    }
 
     fn create_test_manifest(
         dir: &Path,
@@ -683,7 +753,7 @@ mod tests {
             chip_id: Some(0x8101),
             ..Default::default()
         };
-        let meta = evaluate_target_manifest(&evidence, &[temp.clone()]);
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
         assert_eq!(meta.outcome, Some(MatchOutcome::NoManifestFound));
         assert!(!meta.is_ok());
         let _ = std::fs::remove_dir_all(temp);
@@ -720,7 +790,7 @@ mod tests {
             ..Default::default()
         };
 
-        let meta = evaluate_target_manifest(&evidence, &[temp.clone()]);
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
         assert_eq!(meta.outcome, Some(MatchOutcome::Matched));
         assert!(meta.is_ok());
         assert_eq!(meta.components.len(), 1);
@@ -761,7 +831,7 @@ mod tests {
             ..Default::default()
         };
 
-        let meta = evaluate_target_manifest(&evidence, &[temp.clone()]);
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
         assert_eq!(meta.outcome, Some(MatchOutcome::DigestMismatch));
         assert!(!meta.is_ok());
         assert_eq!(meta.components[0].state, ComponentState::DigestMismatch);
@@ -791,7 +861,7 @@ mod tests {
             ..Default::default()
         };
 
-        let meta = evaluate_target_manifest(&evidence, &[temp.clone()]);
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
         assert_eq!(meta.outcome, Some(MatchOutcome::MissingFile));
         assert!(!meta.is_ok());
         assert_eq!(meta.components[0].state, ComponentState::MissingFile);
@@ -814,7 +884,7 @@ mod tests {
             ..Default::default()
         };
 
-        let meta = evaluate_target_manifest(&evidence, &[temp.clone()]);
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
         assert_eq!(meta.outcome, Some(MatchOutcome::VersionMismatch));
         assert!(!meta.is_ok());
         assert!(meta.detail.contains("does not match device version"));
@@ -865,7 +935,7 @@ mod tests {
             ..Default::default()
         };
 
-        let meta = evaluate_target_manifest(&evidence, &[temp.clone()]);
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
         assert_eq!(meta.outcome, Some(MatchOutcome::AmbiguousIdentities));
         assert_eq!(meta.matched_identities, 2);
 
@@ -886,7 +956,7 @@ mod tests {
             ..Default::default()
         };
 
-        let meta = evaluate_target_manifest(&evidence, &[temp.clone()]);
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
         assert_eq!(meta.outcome, Some(MatchOutcome::NoMatchingIdentity));
         assert!(!meta.is_ok());
 

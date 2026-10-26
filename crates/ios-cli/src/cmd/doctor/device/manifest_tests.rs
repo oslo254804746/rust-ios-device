@@ -1,5 +1,108 @@
 use super::*;
 
+#[tokio::test]
+async fn review_regression_local_manifest_uses_selected_device_identifiers() {
+    let root = std::env::temp_dir().join(format!("doctor-selected-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("image.dmg"), b"offline-component").unwrap();
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(b"offline-component").to_vec();
+    let component = dictionary([
+        (
+            "Info",
+            plist::Value::Dictionary(dictionary([("Path", "image.dmg".into())])),
+        ),
+        ("Digest", plist::Value::Data(digest)),
+    ]);
+    let identity = dictionary([
+        ("ApBoardID", 16u64.into()),
+        ("ApChipID", 0x8101u64.into()),
+        ("ApSecurityDomain", 1u64.into()),
+        (
+            "Manifest",
+            plist::Value::Dictionary(dictionary([(
+                "PersonalizedDMG",
+                plist::Value::Dictionary(component),
+            )])),
+        ),
+    ]);
+    plist::Value::Dictionary(dictionary([(
+        "BuildIdentities",
+        plist::Value::Array(vec![plist::Value::Dictionary(identity)]),
+    )]))
+    .to_file_xml(root.join("BuildManifest.plist"))
+    .unwrap();
+    for board in [16u64, 17] {
+        let (lockdown, lockdown_peer) = tokio::io::duplex(65_536);
+        let (image, mut peer) = tokio::io::duplex(65_536);
+        let source = FakeSource::new(vec![(LOCKDOWN_PORT, lockdown), (IMAGE_PORT, image)]);
+        let (check, (), ()) = within(async {
+            tokio::join!(
+                super::super::manifest::inspect_with_paths(
+                    &source,
+                    UDID,
+                    Duration::from_secs(2),
+                    std::slice::from_ref(&root)
+                ),
+                serve_service(lockdown_peer, service_reply()),
+                async {
+                    let request: plist::Dictionary = recv_lockdown(&mut peer).await.unwrap();
+                    assert_eq!(
+                        request["Command"].as_string(),
+                        Some("QueryPersonalizationIdentifiers")
+                    );
+                    assert_eq!(
+                        request["PersonalizedImageType"].as_string(),
+                        Some("DeveloperDiskImage")
+                    );
+                    send_lockdown(
+                        &mut peer,
+                        &dictionary([(
+                            "PersonalizationIdentifiers",
+                            plist::Value::Dictionary(dictionary([
+                                ("BoardId", board.into()),
+                                ("ChipID", 0x8101u64.into()),
+                                ("SecurityDomain", 1u64.into()),
+                            ])),
+                        )]),
+                    )
+                    .await
+                    .unwrap();
+                    image_request(&mut peer, "CopyDevices", None).await;
+                    send_lockdown(
+                        &mut peer,
+                        &dictionary([("EntryList", plist::Value::Array(vec![]))]),
+                    )
+                    .await
+                    .unwrap();
+                }
+            )
+        })
+        .await;
+        if board != 16 {
+            assert_eq!(check.status, Status::Failed);
+        }
+        let output = serde_json::to_value(check).unwrap();
+        let local = &output["ddi_manifests"]["target_manifest"];
+        assert_eq!(
+            local["outcome"],
+            if board == 16 {
+                "matched"
+            } else {
+                "no_matching_identity"
+            }
+        );
+        if board == 16 {
+            assert_eq!(local["components"][0]["state"], "digest_matches");
+            assert_eq!(local["components"][0]["signature_verified"], false);
+            assert_eq!(local["components"][0]["device_availability_probed"], false);
+        }
+    }
+    for file in ["image.dmg", "BuildManifest.plist"] {
+        std::fs::remove_file(root.join(file)).unwrap();
+    }
+    std::fs::remove_dir(root).unwrap();
+}
+
 fn entry(signature: Vec<u8>) -> plist::Value {
     plist::Value::Dictionary(dictionary([
         ("DiskImageType", "Personalized".into()),

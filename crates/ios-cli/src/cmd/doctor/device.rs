@@ -36,11 +36,18 @@ pub(super) trait Source: Send + Sync {
     fn devices(&self) -> BoxFuture<'_, Result<Vec<DeviceInfo>>>;
     fn pair_record<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<Arc<PairRecord>>>;
     fn port(&self, device_id: u32, port: u16) -> BoxFuture<'_, Result<ServiceStream>>;
+    // Offline sources must not inherit the current host's DDI files.
+    fn ddi_search_paths(&self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
 }
 
 pub(super) struct NativeSource;
 
 impl Source for NativeSource {
+    fn ddi_search_paths(&self) -> Vec<std::path::PathBuf> {
+        manifest::search_paths()
+    }
     fn devices(&self) -> BoxFuture<'_, Result<Vec<DeviceInfo>>> {
         Box::pin(async {
             Ok(ios_core::MuxClient::connect()
