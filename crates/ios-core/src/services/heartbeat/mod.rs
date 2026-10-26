@@ -125,9 +125,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HeartbeatClient<S> {
         match result {
             Ok(val) => Ok(val),
             Err(err) => {
-                // If it is a protocol error or non-timeout IO error (like EOF), fail closed
-                if matches!(&err, HeartbeatError::Protocol(_))
-                    || matches!(&err, HeartbeatError::Io(e) if e.kind() != std::io::ErrorKind::TimedOut)
+                // Only an idle timeout retains partial framing. Decode failures
+                // must not leave the same malformed frame available for reuse.
+                if !matches!(&err, HeartbeatError::Io(e) if e.kind() == std::io::ErrorKind::TimedOut)
                 {
                     self.usable = false;
                     self.stream = None;
@@ -141,11 +141,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HeartbeatClient<S> {
     pub async fn send_polo(&mut self) -> Result<(), HeartbeatError> {
         self.ensure_usable()?;
         let deadline = self.deadline_for(self.operation_timeout)?;
-        let stream = self.stream.as_mut().expect("active heartbeat stream");
-
+        // Take ownership before the first poll. Dropping this future after any
+        // partial write closes the transport; a later Polo cannot append to it.
+        let mut stream = self.stream.take().expect("active heartbeat stream");
         let result = await_operation(deadline, async {
             send_plist(
-                stream,
+                &mut stream,
                 &plist::Value::Dictionary(plist::Dictionary::from_iter([(
                     "Command".to_string(),
                     plist::Value::String("Polo".into()),
@@ -157,7 +158,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HeartbeatClient<S> {
 
         if result.is_err() {
             self.usable = false;
-            self.stream = None;
+        } else {
+            self.stream = Some(stream);
         }
         result
     }
@@ -211,6 +213,31 @@ async fn await_operation<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn review_regression_cancelled_partial_polo_closes_transport() {
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut client = HeartbeatClient::new(stream);
+        let mut send = Box::pin(client.send_polo());
+        tokio::select! {
+            result = &mut send => panic!("partial send unexpectedly finished: {result:?}"),
+            result = peer.read_u8() => { result.unwrap(); }
+        }
+        drop(send);
+        assert!(
+            !client.is_usable(),
+            "cancelled partial frame cannot be reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_regression_malformed_plist_invalidates_heartbeat() {
+        let (stream, mut peer) = tokio::io::duplex(32);
+        peer.write_all(&[0, 0, 0, 1, 0xff]).await.unwrap();
+        let mut client = HeartbeatClient::new(stream);
+        assert!(client.recv_message().await.is_err());
+        assert!(!client.is_usable());
+    }
 
     #[tokio::test]
     async fn ping_reads_message_and_sends_polo() {
