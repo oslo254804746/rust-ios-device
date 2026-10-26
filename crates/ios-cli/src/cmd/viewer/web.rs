@@ -450,18 +450,33 @@ async fn handle_get_clipboard(
     if !state.share_clipboard {
         return Err(StatusCode::FORBIDDEN);
     }
-    let text = match state
+    let (text, uti, data_base64) = match state
         .submit(DeviceCommand::ReadClipboard, principal)
         .await?
     {
-        Some(ClipboardPayload::Text(text)) => Some(text),
-        None => None,
-        _ => return Err(StatusCode::NOT_IMPLEMENTED),
+        Some(ClipboardPayload::Text(text)) => (Some(text), UTI_PLAIN_TEXT.to_string(), None),
+        Some(ClipboardPayload::ImagePng(png)) => (
+            None,
+            super::clipboard::UTI_PNG.to_string(),
+            Some(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &png,
+            )),
+        ),
+        Some(ClipboardPayload::ImageJpeg(jpeg)) => (
+            None,
+            super::clipboard::UTI_JPEG.to_string(),
+            Some(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &jpeg,
+            )),
+        ),
+        None => (None, UTI_PLAIN_TEXT.to_string(), None),
     };
     Ok(Json(ClipboardResponse {
         text,
-        uti: UTI_PLAIN_TEXT.to_string(),
-        data_base64: None,
+        uti,
+        data_base64,
     }))
 }
 
@@ -487,8 +502,12 @@ async fn handle_set_clipboard(
         let raw = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
             .map_err(|_| StatusCode::BAD_REQUEST)?;
         ensure_within_limit(raw.len(), MAX_IMAGE_BYTES)?;
-        let _ = (req.uti, raw);
-        return Err(StatusCode::NOT_IMPLEMENTED);
+        let uti = req.uti.as_deref().unwrap_or(super::clipboard::UTI_PNG);
+        match uti {
+            super::clipboard::UTI_PNG => ClipboardPayload::ImagePng(raw),
+            super::clipboard::UTI_JPEG => ClipboardPayload::ImageJpeg(raw),
+            _ => return Err(StatusCode::BAD_REQUEST),
+        }
     } else {
         return Err(StatusCode::BAD_REQUEST);
     };

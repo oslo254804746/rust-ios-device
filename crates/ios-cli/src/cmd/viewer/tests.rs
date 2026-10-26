@@ -475,6 +475,13 @@ async fn clipboard_bounds_and_loop_suppression() {
     let oversized_png = vec![0u8; MAX_IMAGE_BYTES + 1];
     let oversized_img = ClipboardPayload::ImagePng(oversized_png);
     assert!(oversized_img.validate_bounds().is_err());
+
+    // 7. Image payload loop suppression
+    let img_payload = ClipboardPayload::ImagePng(vec![1, 2, 3, 4, 5]);
+    let prev_suppressions = state.suppression_count();
+    assert!(state.should_sync(&img_payload, ClipboardSource::Host));
+    assert!(!state.should_sync(&img_payload, ClipboardSource::Device));
+    assert_eq!(state.suppression_count(), prev_suppressions + 1);
 }
 
 #[test]
@@ -494,6 +501,110 @@ fn extended_clipboard_compression_round_trip() {
         parsed.text.as_deref(),
         Some("Testing Extended Clipboard with \n CRLF and special chars!")
     );
+}
+
+#[test]
+fn extended_clipboard_image_compression_round_trip() {
+    let png_bytes = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4];
+    let encoded_png = encode_extended_provide_image(&png_bytes, true).unwrap();
+    assert_eq!(encoded_png[0], SERVER_CUT_TEXT);
+    let len_bytes: [u8; 4] = encoded_png[4..8].try_into().unwrap();
+    let length = i32::from_be_bytes(len_bytes);
+    assert!(length < 0);
+    let parsed_png = parse_extended_cut_text(&encoded_png[8..]).unwrap();
+    assert_eq!(parsed_png.image_png.as_deref(), Some(png_bytes.as_slice()));
+    assert_eq!(parsed_png.image_jpeg, None);
+    assert_eq!(parsed_png.text, None);
+
+    let jpeg_bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46];
+    let encoded_jpeg = encode_extended_provide_image(&jpeg_bytes, false).unwrap();
+    assert_eq!(encoded_jpeg[0], SERVER_CUT_TEXT);
+    let parsed_jpeg = parse_extended_cut_text(&encoded_jpeg[8..]).unwrap();
+    assert_eq!(
+        parsed_jpeg.image_jpeg.as_deref(),
+        Some(jpeg_bytes.as_slice())
+    );
+    assert_eq!(parsed_jpeg.image_png, None);
+    assert_eq!(parsed_jpeg.text, None);
+}
+
+#[tokio::test]
+async fn web_viewer_image_clipboard_endpoints() {
+    let fixture = PolicyFixture::new(vec![grant(
+        TOKEN,
+        vec![Permission::Debug, Permission::Connect],
+    )]);
+    let access = AccessControl::from_file(fixture.path.clone())
+        .await
+        .unwrap();
+    let state = WebViewerState::new(access, DEVICE.into(), 12345, true);
+    let (base, handle, stop) = spawn_test_server(state.clone()).await;
+    let client = test_client();
+
+    let (sender, mut receiver) = mpsc::channel::<DeviceRequest>(4);
+    *state.backend.write().await = Some(sender);
+
+    // Mock device handler for image clipboard
+    let mock_png_bytes = vec![0x89, 0x50, 0x4e, 0x47, 0xaa, 0xbb];
+    let mock_png_bytes_clone = mock_png_bytes.clone();
+    let backend_task = tokio::spawn(async move {
+        while let Some(request) = receiver.recv().await {
+            match request.command {
+                DeviceCommand::ReadClipboard => {
+                    let _ = request.reply.send(Ok(Some(ClipboardPayload::ImagePng(
+                        mock_png_bytes_clone.clone(),
+                    ))));
+                }
+                DeviceCommand::Input(_action) => {
+                    let _ = request.reply.send(Ok(None));
+                }
+            }
+        }
+    });
+
+    // 1. GET /clipboard returns PNG base64 and uti
+    let response = client
+        .get(format!("{base}/clipboard"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let content: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(content["uti"], UTI_PNG);
+    let b64 = content["data_base64"].as_str().unwrap();
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap();
+    assert_eq!(decoded, mock_png_bytes);
+
+    // 2. POST /clipboard with PNG
+    let post_resp = client
+        .post(format!("{base}/clipboard"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({
+            "uti": UTI_PNG,
+            "data_base64": b64,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(post_resp.status(), StatusCode::OK);
+
+    // 3. POST /clipboard with invalid base64 returns BAD_REQUEST
+    let bad_b64 = client
+        .post(format!("{base}/clipboard"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({
+            "uti": UTI_PNG,
+            "data_base64": "!!!not-valid-base64@@@",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_b64.status(), StatusCode::BAD_REQUEST);
+
+    let _ = stop.send(());
+    let _ = handle.await;
+    backend_task.abort();
 }
 
 #[test]

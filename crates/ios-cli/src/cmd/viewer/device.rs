@@ -143,10 +143,20 @@ impl DeviceInput {
             .await?
             .get_snapshot(
                 ios_core::pasteboard::GENERAL_PASTEBOARD,
-                DataInclusionPolicy::Threshold(MAX_TEXT_BYTES as i64),
+                DataInclusionPolicy::Threshold(
+                    crate::cmd::viewer::clipboard::MAX_IMAGE_BYTES as i64,
+                ),
             )
             .await?;
-        let value = snapshot.text().map(ClipboardPayload::Text);
+        let value = if let Some(text) = snapshot.text() {
+            Some(ClipboardPayload::Text(text))
+        } else if let Some(png) = snapshot.data_for_uti(crate::cmd::viewer::clipboard::UTI_PNG) {
+            Some(ClipboardPayload::ImagePng(png.to_vec()))
+        } else {
+            snapshot
+                .data_for_uti(crate::cmd::viewer::clipboard::UTI_JPEG)
+                .map(|jpeg| ClipboardPayload::ImageJpeg(jpeg.to_vec()))
+        };
         if let Some(value) = &value {
             value.validate_bounds()?;
         }
@@ -267,12 +277,29 @@ impl DeviceInput {
             }
             VncInputAction::ClipboardOut(payload) => {
                 payload.validate_bounds()?;
-                let ClipboardPayload::Text(text) = payload else {
-                    anyhow::bail!(
-                        "image clipboard formats lack verified device interoperability evidence"
-                    );
-                };
-                self.pasteboard().await?.set_text(text).await?;
+                match payload {
+                    ClipboardPayload::Text(text) => {
+                        self.pasteboard().await?.set_text(text).await?;
+                    }
+                    ClipboardPayload::ImagePng(png) => {
+                        self.pasteboard()
+                            .await?
+                            .set(&[ios_core::pasteboard::data_item(
+                                crate::cmd::viewer::clipboard::UTI_PNG,
+                                png,
+                            )])
+                            .await?;
+                    }
+                    ClipboardPayload::ImageJpeg(jpeg) => {
+                        self.pasteboard()
+                            .await?
+                            .set(&[ios_core::pasteboard::data_item(
+                                crate::cmd::viewer::clipboard::UTI_JPEG,
+                                jpeg,
+                            )])
+                            .await?;
+                    }
+                }
             }
         }
         Ok(())

@@ -181,8 +181,14 @@ pub fn decode_classic_cut_text(bytes: &[u8]) -> Result<String> {
 
 /// Extended Clipboard caps advertisement.
 pub fn encode_extended_caps() -> Vec<u8> {
-    let flags =
-        ACTION_CAPS | ACTION_REQUEST | ACTION_PEEK | ACTION_NOTIFY | ACTION_PROVIDE | FORMAT_TEXT;
+    let flags = ACTION_CAPS
+        | ACTION_REQUEST
+        | ACTION_PEEK
+        | ACTION_NOTIFY
+        | ACTION_PROVIDE
+        | FORMAT_TEXT
+        | FORMAT_IMAGE_PNG
+        | FORMAT_IMAGE_JPEG;
     let mut body = flags.to_be_bytes().to_vec();
     body.extend_from_slice(&0u32.to_be_bytes()); // Unsolicited size 0
     let len_field = -(body.len() as i32);
@@ -213,6 +219,41 @@ pub fn encode_extended_notify(has_text: bool, has_png: bool) -> Vec<u8> {
     out.extend_from_slice(&len_field.to_be_bytes());
     out.extend_from_slice(&body);
     out
+}
+
+/// Extended Clipboard provide image (PNG or JPEG compressed).
+pub fn encode_extended_provide_image(image_bytes: &[u8], is_png: bool) -> Result<Vec<u8>> {
+    ensure!(
+        image_bytes.len() <= MAX_IMAGE_BYTES,
+        "extended image exceeds budget"
+    );
+    let mut uncompressed = Vec::with_capacity(4 + image_bytes.len());
+    uncompressed.extend_from_slice(&(image_bytes.len() as u32).to_be_bytes());
+    uncompressed.extend_from_slice(image_bytes);
+
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(&uncompressed)
+        .context("zlib compression failed")?;
+    let compressed = encoder.finish().context("zlib finish failed")?;
+
+    let format_flag = if is_png {
+        FORMAT_IMAGE_PNG
+    } else {
+        FORMAT_IMAGE_JPEG
+    };
+    let flags = ACTION_PROVIDE | format_flag;
+    let mut body = Vec::with_capacity(4 + compressed.len());
+    body.extend_from_slice(&flags.to_be_bytes());
+    body.extend_from_slice(&compressed);
+
+    let len_field = -(body.len() as i32);
+    let mut out = Vec::with_capacity(8 + body.len());
+    out.push(SERVER_CUT_TEXT);
+    out.extend_from_slice(&[0, 0, 0]);
+    out.extend_from_slice(&len_field.to_be_bytes());
+    out.extend_from_slice(&body);
+    Ok(out)
 }
 
 /// Extended Clipboard provide text (UTF-8 compressed).
