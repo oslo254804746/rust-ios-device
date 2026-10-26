@@ -91,6 +91,12 @@ pub(super) async fn inspect_with_paths(
                     "Inspect target_manifest details and configure a matching complete DDI bundle.",
                 );
             }
+            Some(MatchOutcome::PermissionDenied) => {
+                check.status = Status::Failed;
+                check.state = State::PermissionDenied;
+                check.detail = "Local DDI directory or file read permission was denied; check filesystem permissions.";
+                check.hint = Some("Grant read permissions to local DDI files and directories.");
+            }
             Some(MatchOutcome::MissingFields | MatchOutcome::MissingFile) => {
                 check.status = Status::Unknown;
                 check.state = State::MetadataMissing;
