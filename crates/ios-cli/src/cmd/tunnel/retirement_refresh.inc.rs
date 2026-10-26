@@ -61,6 +61,7 @@ pub(super) fn same_metadata(
     }
 }
 impl NativeLease {
+    #[cfg(test)]
     pub(super) fn capture_refresh(
         &self,
         stamp: OwnershipStamp,
