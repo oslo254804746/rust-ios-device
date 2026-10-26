@@ -528,6 +528,26 @@ fn extended_clipboard_image_compression_round_trip() {
     assert_eq!(parsed_jpeg.text, None);
 }
 
+#[test]
+fn review_regression_rfb_never_labels_png_as_dib_or_jpeg_as_files() {
+    let caps = encode_extended_caps();
+    let flags = u32::from_be_bytes(caps[8..12].try_into().unwrap());
+    assert_eq!(flags & 0xffff, FORMAT_TEXT);
+    assert_eq!(
+        caps.len(),
+        16,
+        "one format requires exactly one unsolicited size"
+    );
+    for bit in [1 << 3, 1 << 4] {
+        let body = (ACTION_PROVIDE | bit).to_be_bytes();
+        let error = parse_rfb_extended_cut_text(&body).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+    }
+}
+
 #[tokio::test]
 async fn web_viewer_image_clipboard_endpoints() {
     let fixture = PolicyFixture::new(vec![grant(

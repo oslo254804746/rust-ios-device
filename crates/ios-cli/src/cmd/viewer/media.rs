@@ -1,19 +1,9 @@
 //! Bounded video media pipeline for Viewer (F05).
 //!
-//! Media Architecture:
-//! - CoreDevice screencapture supplies bounded PNG screenshots which are converted to BGRA in-place
-//!   and consumed simultaneously by the Web Viewer (HTTP multipart/MJPEG) and VNC/RFB 3.8 servers.
-//! - CoreDevice Display RTP stream (`ios_core::display::RtpAssembler`) reassembles Annex-B HEVC NAL
-//!   access units.
-//! - Licensing & Platform Considerations for Full Pixel HEVC Decoding:
-//!   * HEVC/H.265 is subject to licensing patents (HEVC Advance / MPEG LA patent pool).
-//!   * On macOS: VideoToolbox (`VTDecompressionSession`) provides hardware zero-copy decoding without
-//!     third-party patent licensing encumbrances.
-//!   * On Windows: Media Foundation (MFT HEVC Video Decoder) or DirectX Video Acceleration (DXVA2).
-//!   * On Linux: VA-API or software `libde265` (LGPL 3.0).
-//!   * For portable cross-platform host binaries without native C linking, NAL units (VPS/SPS/PPS/IDR)
-//!     are validated and parsed with bounded ring buffers, while screenshot frame streaming utilizes
-//!     the verified native PNG path.
+//! Production accepts PNG screenshot/RTP payloads and publishes shared Web/VNC frames.
+//! HEVC NAL parsing and BoundedFrameQueue below are standalone helpers: no HEVC pixel
+//! decoder or Display HEVC -> decoder -> Web/VNC production path is implemented.
+//! A platform decoder, dependency/license review and packaging evidence remain OPEN.
 use std::collections::VecDeque;
 use std::io::Cursor;
 use std::sync::Arc;
