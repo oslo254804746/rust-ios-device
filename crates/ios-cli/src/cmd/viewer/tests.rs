@@ -9,6 +9,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 
 use super::clipboard::*;
+use super::media::*;
 use super::vnc::*;
 use super::web::*;
 use crate::access::test_support::{grant, JsonRequest, PolicyFixture, DEVICE, TOKEN};
@@ -757,4 +758,225 @@ async fn vnc_stop_wakes_original_silent_handshake_and_closes_socket() {
         .unwrap()
         .unwrap();
     assert_eq!(client.read(&mut version).await.unwrap(), 0);
+}
+
+const HEVC_SAMPLE: &[u8] = include_bytes!("hevc_sample.bin");
+
+#[test]
+fn hevc_decoder_real_decoding_and_dimension_verification() {
+    let probe = DecoderProbe::probe();
+    if !probe.available {
+        eprintln!("skipping real hevc decode test: ffmpeg unavailable in environment");
+        return;
+    }
+    let mut decoder = HevcDecoder::new().expect("hevc decoder initialization");
+    assert_eq!(decoder.probe.backend, "ffmpeg");
+    assert!(!decoder.probe.version.is_empty());
+
+    let frame = decoder
+        .decode_access_unit(HEVC_SAMPLE, 12345)
+        .expect("decode real hevc access unit");
+    assert_eq!(frame.width, 32);
+    assert_eq!(frame.height, 32);
+    assert_eq!(frame.timestamp_ms, 12345);
+    assert_eq!(frame.bgra.len(), 32 * 32 * 4);
+    assert_eq!(&frame.png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(decoder.last_width, 32);
+    assert_eq!(decoder.last_height, 32);
+}
+
+#[test]
+fn hevc_pipeline_bounded_frame_queue_and_slow_consumer_drop() {
+    let probe = DecoderProbe::probe();
+    if !probe.available {
+        return;
+    }
+    let mut pipeline = HevcPipeline::new(2).expect("hevc pipeline initialization");
+    assert_eq!(pipeline.dropped_count(), 0);
+
+    pipeline
+        .push_access_unit(HEVC_SAMPLE, 100)
+        .expect("frame 1");
+    pipeline
+        .push_access_unit(HEVC_SAMPLE, 200)
+        .expect("frame 2");
+    assert_eq!(pipeline.dropped_count(), 0);
+
+    // Push 3rd frame: queue capacity is 2, oldest (frame 1) is dropped
+    pipeline
+        .push_access_unit(HEVC_SAMPLE, 300)
+        .expect("frame 3");
+    assert_eq!(pipeline.dropped_count(), 1);
+
+    let pop1 = pipeline.pop_frame().expect("pop frame 2");
+    assert_eq!(pop1.timestamp_ms, 200);
+    let pop2 = pipeline.pop_frame().expect("pop frame 3");
+    assert_eq!(pop2.timestamp_ms, 300);
+    assert!(pipeline.pop_frame().is_none());
+}
+
+#[tokio::test]
+async fn hevc_decoded_frame_updates_web_and_vnc_endpoints() {
+    let probe = DecoderProbe::probe();
+    if !probe.available {
+        return;
+    }
+    let mut decoder = HevcDecoder::new().expect("hevc decoder initialization");
+    let frame = decoder
+        .decode_access_unit(HEVC_SAMPLE, 555)
+        .expect("decode sample frame");
+
+    // 1. Update WebViewerState
+    let fixture = PolicyFixture::new(vec![grant(
+        TOKEN,
+        vec![Permission::Debug, Permission::Connect],
+    )]);
+    let access = AccessControl::from_file(fixture.path.clone())
+        .await
+        .unwrap();
+    let web_state = WebViewerState::new(access, DEVICE.into(), 12345, true);
+    web_state
+        .push_frame(
+            "image/png",
+            frame.png.to_vec(),
+            frame.width as u32,
+            frame.height as u32,
+            frame.timestamp_ms,
+        )
+        .await;
+
+    {
+        let guard = web_state.frame.read().await;
+        let pushed = guard.as_ref().expect("pushed web frame");
+        assert_eq!(pushed.width, 32);
+        assert_eq!(pushed.height, 32);
+        assert_eq!(pushed.timestamp_ms, 555);
+        assert_eq!(&pushed.data[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    // 2. Update VncServerState
+    let (vnc_state, _observed) = test_vnc_state(None).await;
+    vnc_state
+        .update_frame(
+            frame.width,
+            frame.height,
+            (*frame.bgra).clone(),
+            frame.timestamp_ms,
+        )
+        .await;
+    {
+        let guard = vnc_state.frame.read().await;
+        assert_eq!(guard.width, 32);
+        assert_eq!(guard.height, 32);
+        assert_eq!(guard.timestamp_ms, 555);
+        assert_eq!(guard.bgra_data.len(), 32 * 32 * 4);
+    }
+}
+
+#[test]
+fn standard_dib_png_round_trip_conversion() {
+    let mut original_png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut original_png, 2, 2);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        // 2x2 image with distinct RGB pixels
+        writer
+            .write_image_data(&[
+                255, 0, 0, // top-left: Red
+                0, 255, 0, // top-right: Green
+                0, 0, 255, // bottom-left: Blue
+                255, 255, 0, // bottom-right: Yellow
+            ])
+            .unwrap();
+    }
+
+    // Convert PNG to standard DIB
+    let dib = png_to_dib(&original_png).expect("convert PNG to DIB");
+    // Verify DIB header
+    assert!(dib.len() >= 40);
+    let bi_size = u32::from_le_bytes(dib[0..4].try_into().unwrap());
+    assert_eq!(bi_size, 40);
+    let bi_width = i32::from_le_bytes(dib[4..8].try_into().unwrap());
+    assert_eq!(bi_width, 2);
+    let bi_height = i32::from_le_bytes(dib[8..12].try_into().unwrap());
+    assert_eq!(bi_height, 2); // Positive indicates bottom-up
+    let bi_bit_count = u16::from_le_bytes(dib[14..16].try_into().unwrap());
+    assert_eq!(bi_bit_count, 24);
+
+    // Convert DIB back to PNG
+    let recovered_png = dib_to_png(&dib).expect("convert DIB back to PNG");
+    assert_eq!(&recovered_png[..8], b"\x89PNG\r\n\x1a\n");
+
+    // Decode recovered PNG and verify pixels match
+    let decoder = png::Decoder::new(std::io::Cursor::new(recovered_png));
+    let mut reader = decoder.read_info().unwrap();
+    assert_eq!(reader.info().width, 2);
+    assert_eq!(reader.info().height, 2);
+    let mut pixels = vec![0u8; reader.output_buffer_size()];
+    reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(
+        &pixels[..12],
+        &[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]
+    );
+}
+
+#[test]
+fn rfb_extended_clipboard_dib_full_round_trip() {
+    let mut original_png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut original_png, 1, 1);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[128, 64, 32]).unwrap();
+    }
+
+    // Server encodes DIB cut text
+    let encoded = encode_extended_provide_dib(&original_png).expect("encode provide DIB");
+    assert_eq!(encoded[0], SERVER_CUT_TEXT);
+    let len_bytes: [u8; 4] = encoded[4..8].try_into().unwrap();
+    let length = i32::from_be_bytes(len_bytes);
+    assert!(length < 0);
+
+    // Client/server parses DIB cut text
+    let parsed = parse_rfb_extended_cut_text(&encoded[8..]).expect("parse provide DIB");
+    assert!(parsed.image_png.is_some());
+    let recovered_png = parsed.image_png.unwrap();
+    assert_eq!(&recovered_png[..8], b"\x89PNG\r\n\x1a\n");
+
+    let decoder = png::Decoder::new(std::io::Cursor::new(recovered_png));
+    let mut reader = decoder.read_info().unwrap();
+    assert_eq!(reader.info().width, 1);
+    assert_eq!(reader.info().height, 1);
+    let mut pixels = vec![0u8; reader.output_buffer_size()];
+    reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(&pixels[..3], &[128, 64, 32]);
+}
+
+#[tokio::test]
+async fn bidirectional_clipboard_device_and_vnc_sync_with_loop_suppression() {
+    let mut sync = ClipboardSyncState::new();
+    let text_payload = ClipboardPayload::Text("hello device".into());
+    let image_payload = ClipboardPayload::ImagePng(vec![1, 2, 3, 4]);
+
+    // 1. Initial write from Host
+    assert!(sync.should_sync(&text_payload, ClipboardSource::Host));
+    assert_eq!(sync.sync_count(), 1);
+
+    // 2. Echo from Device with identical hash is suppressed
+    assert!(!sync.should_sync(&text_payload, ClipboardSource::Device));
+    assert_eq!(sync.suppression_count(), 1);
+
+    // 3. Duplicate notification from Host is suppressed
+    assert!(!sync.should_sync(&text_payload, ClipboardSource::Host));
+
+    // 4. New Image from Device is accepted
+    assert!(sync.should_sync(&image_payload, ClipboardSource::Device));
+    assert_eq!(sync.sync_count(), 2);
+
+    // 5. Echo from Host with identical image is suppressed
+    assert!(!sync.should_sync(&image_payload, ClipboardSource::Host));
+    assert_eq!(sync.suppression_count(), 2);
 }
