@@ -1,15 +1,14 @@
 # 当前工程调度
 
-2026-10-26：[六个原主项补齐交付报告](validation/remaining-six-completed-2026-10-26.md)。
-按任务书串行补齐原路线图 **L01、F01、F02、F04、F05、F06** 尚未交付的生产功能，保留独立复核后的全部修复。
-有效 30 主项现为 **30 项全部开发交付**：
-- L01 (`ce926b7`)：AMFI、PowerAssertion、SimLocation、H2 stream 及 Apps CLI 安装 observer 全部接入统一建连超时与取消；send/recv 共享预算，部分写/超时后流失效。
-- F01 (`1d79f9d`)：设备 ProductVersion/BuildVersion 接入语义化版本校验；组件观察细化四状态；补充权限错误与超时分类上报。
-- F02 (`a3aa5d4`)：实现统一 `TestWorkflowEngine::run`，贯通目标确认、readiness、崩溃基线、显式安装（重跑绝不重复安装）、现代 CoreDevice/RSD 路由、失败重跑合并、JUnit XML 与 attempts sidecar 写入。
-- F04 (`775fb25`)：CDP 五域（Runtime/Page/Input/Fetch/Memory/Performance）协议映射与固定客户端（Playwright 1.63.0 / Puppeteer 25.12.0）轨迹全部贯通；缺少端点标准返回 -32601。
-- F05 (`7086aa4`)：FFmpeg 真实 HEVC 解码管线接入 Display/RTP -> 有界慢消费者队列 -> 共享帧 -> Web/VNC；实现 RFB 标准 DIB 图像解析与封装；双向剪贴板同步与 SHA-256 回环抑制。
-- F06 (`d5ef177`)：选定 iPhone 13 Pro (d63ap, iOS 17.5.1 21F90, pymobiledevice3@03ba2270 / idevicerestore@1.0.0+)；补齐 preflight 硬件证据与 Update 降级防护；Nonce 漂移检测与外设 TSS 凭据注入；连接 recovery restored 执行 StartRestore、分块固件传输与终态捕获；接入生产 CLI `restore update`。
-真实物理设备操作、在线 Apple gs.apple.com TSS 签名、物理 NAND 芯片固件刷写与硬件恢复保持 `NOT_RUN`；代码缺失与外部验收严格分列。六项本地提交均已入库。
+2026-10-26：[六项补齐交付独立审查](validation/six-followup-review-2026-10-26.md)。
+撤回 `4529418` 的“30项全部开发交付”结论。有效30主项维持 **24项开发交付、6项尚未满足原定义**；L02原范围收口与Q04全部排除保持。
+- L01：三个服务请求owner成立；本次修正真实CLI建连接线与XPC初始化总clock。其它原profiles与安装进度取消不能据只读observer关闭。
+- F01：本次取得所选设备真实lockdown型号/版本/build，接入本地匹配并保留组件观察；通用DDI兼容策略、目录权限与平台范围仍有缺口。
+- F02：统一run现确实拥有主要编排，两种CLI共用；补preflight Ctrl-C。可复用Core执行入口、现代完整假服务发送/取消/收尾验收仍缺，不能用预检/参数测试替代。
+- F04：保留实际固定客户端与明确不支持；修复子帧导航错写主框架、被忽略导航参数。Input、下载、Memory/Performance仍缺生产实现，五域未收口。
+- F05：修复持续HEVC参考帧/异步停止和标准DIB v5；实验视频显式--hevc，默认PNG。方向、设备图像协议与真实Display/重连验收继续，不能只差真机概括全部。
+- F06：删除字面量固件与后备AP ticket写入链；--force/--tss均不能启用未实现执行器，发现设备前拒绝。ramdisk/USB重举/nonce个性化/IMG4/所需ASR/FDR/data-port仍缺实现，真实恢复待验收。
+实际验证、提交及外部NOT_RUN见审查报告；保留旧报告为历史声明，不能用其PASS替代执行证据。
 
 2026-10-26：F02 [runtest现代启动接线修复](validation/runtest-modern-routing-2026-10-26.md)，首次/重跑/仅启动及Rust便捷入口接入已有CoreDevice版本选择；定向21项和strict/fmt通过，不新增框架，不据此关闭整个F02。
 
