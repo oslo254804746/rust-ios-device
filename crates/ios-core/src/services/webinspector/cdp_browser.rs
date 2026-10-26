@@ -367,8 +367,24 @@ impl BrowserCdpState {
             if !self.browser_sessions.contains(session_id) {
                 if self.page_sessions.contains_key(session_id) {
                     if unverified_page_method(&message) {
+                        let err_msg = if let Some(m) = message.get("method").and_then(Value::as_str)
+                        {
+                            if m.starts_with("Input.") {
+                                "Input domain native dispatch is not supported over WebInspector socket (JS dispatchEvent is not trusted native input)"
+                            } else if m.starts_with("Memory.") {
+                                "Memory domain has no verified WebInspector memory allocation/DOM counters protocol counterpart"
+                            } else if m.starts_with("Performance.") {
+                                "Performance domain has no verified WebInspector metrics sampling counterpart"
+                            } else if m == "Runtime.evaluate" {
+                                "throwOnSideEffect has no verified WebInspector side-effect analysis counterpart"
+                            } else {
+                                "CDP domain not implemented"
+                            }
+                        } else {
+                            "CDP domain not implemented"
+                        };
                         return BrowserCdpAction::Send(
-                            id.map(|_| vec![error(&message, -32601, "CDP domain not implemented")])
+                            id.map(|_| vec![error(&message, -32601, err_msg)])
                                 .unwrap_or_default(),
                         );
                     }
@@ -406,6 +422,13 @@ impl BrowserCdpState {
                 "userAgent": "ios-cli",
                 "jsVersion": "",
             }),
+            "Browser.setDownloadBehavior" => {
+                return BrowserCdpAction::Send(vec![error(
+                    &message,
+                    -32601,
+                    "Browser.setDownloadBehavior has no verified WebInspector download manager mapping",
+                )]);
+            }
             "Target.attachToBrowserTarget" => {
                 let session_id = Uuid::new_v4().to_string().to_uppercase();
                 self.browser_sessions.insert(session_id.clone());
@@ -717,10 +740,13 @@ pub fn is_verified_page_domain_method(method: &str) -> bool {
         method,
         "Page.enable"
             | "Page.disable"
+            | "Page.reload"
             | "Page.getFrameTree"
             | "Page.getResourceTree"
             | "Page.navigate"
             | "Page.captureScreenshot"
+            | "Console.enable"
+            | "Console.disable"
             | "Fetch.enable"
             | "Fetch.disable"
             | "Fetch.continueRequest"

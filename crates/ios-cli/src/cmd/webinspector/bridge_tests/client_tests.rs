@@ -544,7 +544,7 @@ async fn native_closure_gate(client_name: &str, page: u64, closure: NativeClosur
                 }
         })
         .map(|(index, _)| index)
-        .next_back()
+        .next()
         .unwrap();
     let teardown = records
         .iter()

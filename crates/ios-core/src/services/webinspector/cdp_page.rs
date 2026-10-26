@@ -135,16 +135,45 @@ impl PageCdpAdapter {
             return PageCdpOutput::client(error(&request, -32602, "params must be an object"));
         }
         if unverified_page_method(&request) {
-            return PageCdpOutput::client(error(
-                &request,
-                -32601,
-                "CDP method has no verified WebInspector translation",
-            ));
+            let err_msg = if let Some(m) = request.get("method").and_then(Value::as_str) {
+                if m.starts_with("Input.") {
+                    "Input domain native dispatch is not supported over WebInspector socket (JS dispatchEvent is not trusted native input)"
+                } else if m.starts_with("Memory.") {
+                    "Memory domain has no verified WebInspector memory allocation/DOM counters protocol counterpart"
+                } else if m.starts_with("Performance.") {
+                    "Performance domain has no verified WebInspector metrics sampling counterpart"
+                } else if m == "Runtime.evaluate" {
+                    "throwOnSideEffect has no verified WebInspector side-effect analysis counterpart"
+                } else {
+                    "CDP method has no verified WebInspector translation"
+                }
+            } else {
+                "CDP method has no verified WebInspector translation"
+            };
+            return PageCdpOutput::client(error(&request, -32601, err_msg));
         }
         match method.as_str() {
-            "Page.enable" | "Page.disable" => {
+            "Page.enable" | "Page.disable" | "Console.enable" | "Console.disable" => {
                 self.issue(request, Translation::Pass, &method, params, None)
             }
+            "Page.reload" => {
+                let ignore_cache = params
+                    .get("ignoreCache")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                self.issue(
+                    request,
+                    Translation::Pass,
+                    "Page.reload",
+                    json!({"ignoreCache": ignore_cache}),
+                    None,
+                )
+            }
+            "Page.setDownloadBehavior" => PageCdpOutput::client(error(
+                &request,
+                -32601,
+                "Page.setDownloadBehavior has no verified WebInspector download manager mapping",
+            )),
             "Page.getFrameTree" | "Page.getResourceTree" => self.issue(
                 request,
                 Translation::FrameTree,
@@ -567,6 +596,39 @@ impl PageCdpAdapter {
             };
         }
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+        if method == "Console.messageAdded" {
+            let mut output = PageCdpOutput::client(message.clone());
+            if let Some(msg) = message.get("params").and_then(|p| p.get("message")) {
+                let level = msg.get("level").and_then(Value::as_str).unwrap_or("log");
+                let cdp_type = match level {
+                    "warning" => "warning",
+                    "error" => "error",
+                    "info" => "info",
+                    "debug" => "debug",
+                    _ => "log",
+                };
+                let args = if let Some(params) = msg.get("parameters").and_then(Value::as_array) {
+                    params.clone()
+                } else {
+                    let text = msg.get("text").and_then(Value::as_str).unwrap_or("");
+                    vec![json!({"type": "string", "value": text})]
+                };
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as f64;
+                output.client.push(json!({
+                    "method": "Runtime.consoleAPICalled",
+                    "params": {
+                        "type": cdp_type,
+                        "args": args,
+                        "executionContextId": 1,
+                        "timestamp": timestamp,
+                    }
+                }));
+            }
+            return output;
+        }
         if method == "Page.frameNavigated" || method == "Page.navigatedWithinDocument" {
             let frame = message.get("params").and_then(|params| params.get("frame"));
             let frame_id = frame
@@ -915,5 +977,37 @@ mod tests {
                 .is_empty(),
             "late responses cannot turn timeouts into success"
         );
+    }
+
+    #[test]
+    fn page_reload_and_console_message_translation() {
+        let mut adapter = adapter();
+        let reload = adapter
+            .outgoing(json!({"id": 10, "method": "Page.reload", "params": {"ignoreCache": true}}));
+        assert_eq!(reload.wire[0]["method"], "Page.reload");
+        assert_eq!(reload.wire[0]["params"]["ignoreCache"], true);
+
+        let console_msg = json!({
+            "method": "Console.messageAdded",
+            "params": {
+                "message": {
+                    "source": "console-api",
+                    "level": "error",
+                    "text": "test console error message"
+                }
+            }
+        });
+        let output = adapter.incoming(console_msg);
+        assert_eq!(output.client.len(), 2);
+        assert_eq!(output.client[0]["method"], "Console.messageAdded");
+        assert_eq!(output.client[1]["method"], "Runtime.consoleAPICalled");
+        assert_eq!(output.client[1]["params"]["type"], "error");
+        assert_eq!(
+            output.client[1]["params"]["args"][0]["value"],
+            "test console error message"
+        );
+
+        let download = adapter.outgoing(json!({"id": 11, "method": "Page.setDownloadBehavior"}));
+        assert_eq!(download.client[0]["error"]["code"], -32601);
     }
 }
