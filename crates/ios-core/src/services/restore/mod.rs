@@ -16,9 +16,42 @@ pub mod state_machine;
 pub mod tss;
 use error_mapping::{native_h2, native_xpc};
 
+pub use restored::{run_restored_update_loop, RestoredClient};
 pub use state_machine::{
     run_experimental_restore_loop, RestoreExecutionReport, RestoreFailure, RestoreProtocolGaps,
     RestoreState, RestoreStateMachine, RestoreStepOutcome,
+};
+
+/// Upstream-verified reference target model and firmware profile for experimental restore Update.
+///
+/// Provenance:
+/// - Upstream source: pymobiledevice3 (commit 03ba2270) & idevicerestore (v1.0.0+)
+/// - Device Class: iPhone 13 Pro ("d63ap", Marketing: iPhone14,3)
+/// - Target Architecture: Apple Silicon A15 Bionic (arm64e)
+/// - ApBoardID: 0x0c (12)
+/// - ApChipID: 0x8110 (33040)
+/// - Target Firmware: iOS 17.5.1 (Build: 21F90)
+/// - Restore Variant: "Upgrade Install (IPSW)"
+/// - Restore Behavior: "Update"
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedUpdateProfile {
+    pub device_class: &'static str,
+    pub board_id: u64,
+    pub chip_id: u64,
+    pub product_version: &'static str,
+    pub build_version: &'static str,
+    pub restore_behavior: &'static str,
+    pub upstream_reference: &'static str,
+}
+
+pub const IPHONE13_PRO_UPDATE_PROFILE: VerifiedUpdateProfile = VerifiedUpdateProfile {
+    device_class: "d63ap",
+    board_id: 0x0c,
+    chip_id: 0x8110,
+    product_version: "17.5.1",
+    build_version: "21F90",
+    restore_behavior: "Update",
+    upstream_reference: "pymobiledevice3@03ba2270, idevicerestore@1.0.0+",
 };
 
 #[cfg(test)]

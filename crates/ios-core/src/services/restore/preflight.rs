@@ -152,19 +152,41 @@ impl<R: Read + Seek> IpswPreflight<R> {
         self.product_build_version.as_deref()
     }
 
-    /// Validate only the shape of observed current-device version strings.
-    /// This does not compare current and IPSW versions or establish an allowed
-    /// upgrade/downgrade path, signing availability, or machine/build support.
+    /// Verify target device version against IPSW target version and behavior constraints.
+    ///
+    /// For "Update" (in-place upgrade) restores, cross-major downgrades and minor downgrades
+    /// are rejected to avoid user data and APFS filesystem schema corruption.
     pub fn verify_target_version(
         &self,
         device_version: Option<&str>,
         device_build: Option<&str>,
     ) -> Result<(), RestoreError> {
         if let Some(device_ver) = device_version {
-            if device_ver.trim().is_empty() {
+            let trimmed_dev = device_ver.trim();
+            if trimmed_dev.is_empty() {
                 return Err(RestoreError::Protocol(
                     "target device returned empty ProductVersion".into(),
                 ));
+            }
+            if let Some(ipsw_ver) = self.product_version.as_deref() {
+                let trimmed_ipsw = ipsw_ver.trim();
+                if let (Some(dev_tuple), Some(ipsw_tuple)) = (
+                    parse_version_tuple(trimmed_dev),
+                    parse_version_tuple(trimmed_ipsw),
+                ) {
+                    let behavior = self
+                        .identity
+                        .get("Info")
+                        .and_then(plist::Value::as_dictionary)
+                        .and_then(|info| info.get("RestoreBehavior"))
+                        .and_then(plist::Value::as_string)
+                        .unwrap_or("Update");
+                    if behavior == "Update" && dev_tuple > ipsw_tuple {
+                        return Err(RestoreError::Protocol(format!(
+                            "cannot downgrade from iOS {trimmed_dev} to iOS {trimmed_ipsw} using Update behavior; downgrade requires Erase"
+                        )));
+                    }
+                }
             }
         }
         if let Some(device_bld) = device_build {
@@ -173,6 +195,44 @@ impl<R: Read + Seek> IpswPreflight<R> {
                     "target device returned empty BuildVersion".into(),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// Verify that the device hardware identifiers (BoardId, ChipID, DeviceClass)
+    /// strictly match the selected IPSW BuildManifest identity.
+    pub fn verify_hardware_evidence(
+        &self,
+        board_id: u64,
+        chip_id: u64,
+        device_class: &str,
+    ) -> Result<(), RestoreError> {
+        let manifest_board = plist_u64(&self.identity, "ApBoardID");
+        let manifest_chip = plist_u64(&self.identity, "ApChipID");
+        let manifest_class = self
+            .identity
+            .get("Info")
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|info| info.get("DeviceClass"))
+            .and_then(plist::Value::as_string);
+
+        if manifest_board != Some(board_id) {
+            return Err(RestoreError::Protocol(format!(
+                "device BoardId {board_id:#x} does not match IPSW identity ApBoardID {:?}",
+                manifest_board.map(|b| format!("{b:#x}"))
+            )));
+        }
+        if manifest_chip != Some(chip_id) {
+            return Err(RestoreError::Protocol(format!(
+                "device ChipID {chip_id:#x} does not match IPSW identity ApChipID {:?}",
+                manifest_chip.map(|c| format!("{c:#x}"))
+            )));
+        }
+        if manifest_class != Some(device_class) {
+            return Err(RestoreError::Protocol(format!(
+                "device HardwareModel {device_class} does not match IPSW identity DeviceClass {:?}",
+                manifest_class
+            )));
         }
         Ok(())
     }
@@ -291,6 +351,20 @@ pub struct ComponentInspection {
     pub sha256: String,
 }
 
+fn parse_version_tuple(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.trim().split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = match parts.next() {
+        Some(s) => s.parse::<u64>().ok()?,
+        None => 0,
+    };
+    let patch = match parts.next() {
+        Some(s) => s.parse::<u64>().ok()?,
+        None => 0,
+    };
+    Some((major, minor, patch))
+}
+
 /// Correlate a saved request/response envelope with the current hardware and
 /// nonce. This is metadata correlation only; Apple ticket signature and IMG4
 /// personalization are not implemented here. A raw ticket with no saved request
@@ -312,17 +386,29 @@ pub fn inspect_saved_tss(
         .get("Response")
         .and_then(plist::Value::as_dictionary)
         .ok_or_else(|| RestoreError::Protocol("saved TSS envelope missing Response".into()))?;
-    if ap_nonce.is_empty()
-        || plist_u64(request, "ApECID") != Some(ecid)
+    if ap_nonce.is_empty() {
+        return Err(RestoreError::Protocol(
+            "saved TSS validation requires non-empty ApNonce".into(),
+        ));
+    }
+    if plist_u64(request, "ApECID") != Some(ecid)
         || plist_u64(request, "ApBoardID") != Some(board)
         || plist_u64(request, "ApChipID") != Some(chip)
-        || request.get("ApNonce").and_then(plist::Value::as_data) != Some(ap_nonce)
-        || sep_nonce.is_some_and(|nonce| {
-            request.get("SepNonce").and_then(plist::Value::as_data) != Some(nonce)
-        })
     {
         return Err(RestoreError::Protocol(
-            "saved TSS request does not match current device/nonces".into(),
+            "saved TSS request does not match device hardware (ECID/Board/Chip)".into(),
+        ));
+    }
+    if request.get("ApNonce").and_then(plist::Value::as_data) != Some(ap_nonce) {
+        return Err(RestoreError::Protocol(
+            "saved TSS ApNonce does not match runtime ApNonce (nonce drift detected)".into(),
+        ));
+    }
+    if sep_nonce
+        .is_some_and(|nonce| request.get("SepNonce").and_then(plist::Value::as_data) != Some(nonce))
+    {
+        return Err(RestoreError::Protocol(
+            "saved TSS SepNonce does not match runtime SepNonce (nonce drift detected)".into(),
         ));
     }
     if !response
@@ -335,6 +421,35 @@ pub fn inspect_saved_tss(
         ));
     }
     Ok(())
+}
+
+/// Extract the AP IMG4 ticket from a validated saved TSS envelope.
+pub fn extract_saved_tss_ticket(envelope: &plist::Value) -> Result<Vec<u8>, RestoreError> {
+    let root = envelope
+        .as_dictionary()
+        .ok_or_else(|| RestoreError::Protocol("saved TSS envelope must be a dictionary".into()))?;
+    let response = root
+        .get("Response")
+        .and_then(plist::Value::as_dictionary)
+        .ok_or_else(|| RestoreError::Protocol("saved TSS envelope missing Response".into()))?;
+    response
+        .get("ApImg4Ticket")
+        .and_then(plist::Value::as_data)
+        .map(|t| t.to_vec())
+        .ok_or_else(|| RestoreError::Protocol("saved TSS response missing AP IMG4 ticket".into()))
+}
+
+/// Extract an updater-specific ticket from a saved TSS envelope, falling back to AP ticket if not present.
+pub fn extract_updater_ticket(envelope: &plist::Value, updater: &str) -> Option<Vec<u8>> {
+    let root = envelope.as_dictionary()?;
+    let response = root.get("Response").and_then(plist::Value::as_dictionary)?;
+    let key = format!("{updater},Ticket");
+    response
+        .get(&key)
+        .or_else(|| response.get("Ticket"))
+        .or_else(|| response.get("ApImg4Ticket"))
+        .and_then(plist::Value::as_data)
+        .map(|t| t.to_vec())
 }
 
 fn plist_u64(dict: &plist::Dictionary, key: &str) -> Option<u64> {
@@ -1120,5 +1235,234 @@ mod tests {
                 plist::Value::String(path.into()),
             )])),
         )]))
+    }
+
+    #[test]
+    fn test_verify_target_version_rejects_downgrade_on_update() {
+        let manifest = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                "ProductVersion".to_owned(),
+                plist::Value::String("17.5.1".into()),
+            ),
+            (
+                "ProductBuildVersion".to_owned(),
+                plist::Value::String("21F90".into()),
+            ),
+            (
+                "BuildIdentities".to_owned(),
+                plist::Value::Array(vec![plist::Value::Dictionary(
+                    plist::Dictionary::from_iter([
+                        ("ApBoardID".to_owned(), plist::Value::Integer(12.into())),
+                        ("ApChipID".to_owned(), plist::Value::Integer(0x8110.into())),
+                        (
+                            "Info".to_owned(),
+                            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                                (
+                                    "DeviceClass".to_owned(),
+                                    plist::Value::String("d63ap".into()),
+                                ),
+                                (
+                                    "RestoreBehavior".to_owned(),
+                                    plist::Value::String("Update".into()),
+                                ),
+                                (
+                                    "Variant".to_owned(),
+                                    plist::Value::String("Upgrade Install (IPSW)".into()),
+                                ),
+                            ])),
+                        ),
+                        (
+                            "Manifest".to_owned(),
+                            plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                                "OS".to_owned(),
+                                entry("Firmware/os.bin"),
+                            )])),
+                        ),
+                    ]),
+                )]),
+            ),
+        ]));
+        let mut manifest_bytes = Vec::new();
+        plist::to_writer_xml(&mut manifest_bytes, &manifest).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("BuildManifest.plist", options).unwrap();
+        writer.write_all(&manifest_bytes).unwrap();
+        writer.start_file("Firmware/os.bin", options).unwrap();
+        writer.write_all(b"os").unwrap();
+
+        let ipsw = IpswPreflight::open(
+            Cursor::new(writer.finish().unwrap().into_inner()),
+            IpswIdentitySelector {
+                board_id: 12,
+                chip_id: 0x8110,
+                device_class: "d63ap",
+                restore_behavior: "Update",
+            },
+        )
+        .unwrap();
+
+        // 18.0 -> 17.5.1 downgrade on Update must be rejected
+        let err = ipsw
+            .verify_target_version(Some("18.0"), Some("22A3354"))
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("cannot downgrade from iOS 18.0 to iOS 17.5.1 using Update behavior"));
+
+        // 17.6 -> 17.5.1 minor downgrade on Update must be rejected
+        let err = ipsw.verify_target_version(Some("17.6"), None).unwrap_err();
+        assert!(err.to_string().contains("cannot downgrade"));
+
+        // 17.4 -> 17.5.1 upgrade is allowed
+        assert!(ipsw
+            .verify_target_version(Some("17.4"), Some("21E219"))
+            .is_ok());
+
+        // 17.5.1 -> 17.5.1 same version repair is allowed
+        assert!(ipsw
+            .verify_target_version(Some("17.5.1"), Some("21F90"))
+            .is_ok());
+
+        // Empty version string is rejected
+        assert!(ipsw.verify_target_version(Some("  "), None).is_err());
+    }
+
+    #[test]
+    fn test_verify_hardware_evidence_strict_validation() {
+        let manifest = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "BuildIdentities".to_owned(),
+            plist::Value::Array(vec![plist::Value::Dictionary(
+                plist::Dictionary::from_iter([
+                    ("ApBoardID".to_owned(), plist::Value::Integer(12.into())),
+                    ("ApChipID".to_owned(), plist::Value::Integer(0x8110.into())),
+                    (
+                        "Info".to_owned(),
+                        plist::Value::Dictionary(plist::Dictionary::from_iter([
+                            (
+                                "DeviceClass".to_owned(),
+                                plist::Value::String("d63ap".into()),
+                            ),
+                            (
+                                "RestoreBehavior".to_owned(),
+                                plist::Value::String("Update".into()),
+                            ),
+                            (
+                                "Variant".to_owned(),
+                                plist::Value::String("Upgrade Install (IPSW)".into()),
+                            ),
+                        ])),
+                    ),
+                    (
+                        "Manifest".to_owned(),
+                        plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                            "OS".to_owned(),
+                            entry("Firmware/os.bin"),
+                        )])),
+                    ),
+                ]),
+            )]),
+        )]));
+        let mut manifest_bytes = Vec::new();
+        plist::to_writer_xml(&mut manifest_bytes, &manifest).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("BuildManifest.plist", options).unwrap();
+        writer.write_all(&manifest_bytes).unwrap();
+        writer.start_file("Firmware/os.bin", options).unwrap();
+        writer.write_all(b"os").unwrap();
+
+        let ipsw = IpswPreflight::open(
+            Cursor::new(writer.finish().unwrap().into_inner()),
+            IpswIdentitySelector {
+                board_id: 12,
+                chip_id: 0x8110,
+                device_class: "d63ap",
+                restore_behavior: "Update",
+            },
+        )
+        .unwrap();
+
+        // Exact match succeeds
+        assert!(ipsw.verify_hardware_evidence(12, 0x8110, "d63ap").is_ok());
+
+        // BoardId mismatch fails
+        assert!(ipsw.verify_hardware_evidence(16, 0x8110, "d63ap").is_err());
+
+        // ChipID mismatch fails
+        assert!(ipsw.verify_hardware_evidence(12, 0x8000, "d63ap").is_err());
+
+        // DeviceClass mismatch fails
+        assert!(ipsw.verify_hardware_evidence(12, 0x8110, "d64ap").is_err());
+    }
+
+    #[test]
+    fn test_saved_tss_nonce_drift_detected_and_rejected() {
+        let envelope = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                "Request".to_owned(),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("ApECID".to_owned(), plist::Value::Integer(100.into())),
+                    ("ApBoardID".to_owned(), plist::Value::Integer(12.into())),
+                    ("ApChipID".to_owned(), plist::Value::Integer(0x8110.into())),
+                    ("ApNonce".to_owned(), plist::Value::Data(vec![1, 2, 3])),
+                ])),
+            ),
+            (
+                "Response".to_owned(),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "ApImg4Ticket".to_owned(),
+                    plist::Value::Data(vec![0xAA, 0xBB]),
+                )])),
+            ),
+        ]));
+
+        // Matching nonce succeeds
+        assert!(inspect_saved_tss(&envelope, 100, 12, 0x8110, &[1, 2, 3], None).is_ok());
+
+        // Nonce drift detected
+        let err = inspect_saved_tss(&envelope, 100, 12, 0x8110, &[9, 9, 9], None).unwrap_err();
+        assert!(err.to_string().contains("nonce drift detected"));
+
+        // Hardware mismatch
+        let err = inspect_saved_tss(&envelope, 999, 12, 0x8110, &[1, 2, 3], None).unwrap_err();
+        assert!(err.to_string().contains("does not match device hardware"));
+    }
+
+    #[test]
+    fn test_extract_saved_tss_and_updater_tickets() {
+        let envelope = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                "Request".to_owned(),
+                plist::Value::Dictionary(plist::Dictionary::new()),
+            ),
+            (
+                "Response".to_owned(),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    (
+                        "ApImg4Ticket".to_owned(),
+                        plist::Value::Data(vec![0x11, 0x22]),
+                    ),
+                    (
+                        "Rose,Ticket".to_owned(),
+                        plist::Value::Data(vec![0x33, 0x44]),
+                    ),
+                ])),
+            ),
+        ]));
+
+        assert_eq!(
+            extract_saved_tss_ticket(&envelope).unwrap(),
+            vec![0x11, 0x22]
+        );
+        assert_eq!(
+            extract_updater_ticket(&envelope, "Rose").unwrap(),
+            vec![0x33, 0x44]
+        );
+        // Fallback to AP ticket when updater ticket not explicitly present
+        assert_eq!(
+            extract_updater_ticket(&envelope, "Baseband").unwrap(),
+            vec![0x11, 0x22]
+        );
     }
 }
