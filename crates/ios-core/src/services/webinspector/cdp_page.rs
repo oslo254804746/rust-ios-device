@@ -186,9 +186,12 @@ impl PageCdpAdapter {
                         "navigate requires a bounded URL",
                     ));
                 };
-                if params.as_object().unwrap().keys().any(|key| {
-                    !["url", "frameId", "referrer", "transitionType"].contains(&key.as_str())
-                }) {
+                if params
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .any(|key| !["url", "frameId"].contains(&key.as_str()))
+                {
                     return PageCdpOutput::client(error(
                         &request,
                         -32602,
@@ -205,6 +208,16 @@ impl PageCdpAdapter {
                         &request,
                         -32000,
                         "a navigation is already pending",
+                    ));
+                }
+                if params
+                    .get("frameId")
+                    .is_some_and(|id| id.as_str().map_or(true, |id| id.is_empty()))
+                {
+                    return PageCdpOutput::client(error(
+                        &request,
+                        -32602,
+                        "frameId must be a nonempty string",
                     ));
                 }
                 let target_frame_id = params
@@ -509,7 +522,14 @@ impl PageCdpAdapter {
                         ));
                     };
                     let main_id = tree["frame"]["id"].as_str().unwrap().to_owned();
-                    let effective_frame_id = frame_id.unwrap_or_else(|| main_id.clone());
+                    if frame_id.as_ref().is_some_and(|id| id != &main_id) {
+                        return PageCdpOutput::client(error(
+                            &pending.request,
+                            -32601,
+                            "subframe navigation requires a verified execution-context mapping",
+                        ));
+                    }
+                    let effective_frame_id = main_id.clone();
                     self.frame_id = Some(main_id);
                     let expression = format!(
                         "window.location.assign({})",
@@ -866,6 +886,26 @@ mod tests {
         "childFrames":[{"frame":{"id":"device-same-8","parentId":"device-top-31","loaderId":"same-loader","url":"https://host.test/sub"}},
             {"frame":{"id":"device-cross-72","parentId":"device-top-31","loaderId":"cross-loader","url":"https://another.test/"}}]})
     }
+    #[test]
+    fn review_regression_subframe_navigation_cannot_write_to_main_frame() {
+        let mut adapter = adapter();
+        for option in ["referrer", "transitionType"] {
+            let mut params = json!({"url":"https://host.test/new"});
+            params[option] = json!("ignored-before-review");
+            let rejected =
+                adapter.outgoing(json!({"id":1,"method":"Page.navigate","params":params}));
+            assert!(rejected.wire.is_empty());
+            assert_eq!(rejected.client[0]["error"]["code"], -32602);
+        }
+        let sent = adapter.outgoing(json!({"id":2,"method":"Page.navigate","params":{"url":"https://host.test/new","frameId":"child"}}));
+        let rejected = adapter.incoming(json!({"id":sent.wire[0]["id"],"result":{"frameTree":{"frame":{"id":"main","url":"https://host.test/"},"childFrames":[{"frame":{"id":"child","url":"https://other.test/"}}]}}}));
+        assert!(
+            rejected.wire.is_empty(),
+            "must not evaluate in the default main context"
+        );
+        assert_eq!(rejected.client[0]["error"]["code"], -32601);
+    }
+
     #[test]
     fn frame_tree_preserves_native_iframe_ids_and_navigate_waits_for_commit() {
         let mut adapter = adapter();
