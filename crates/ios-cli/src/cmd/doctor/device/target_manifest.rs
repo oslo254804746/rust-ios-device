@@ -68,6 +68,8 @@ pub(crate) enum ComponentState {
     DigestMismatch,
     MissingFile,
     PermissionDenied,
+    TimedOut,
+    ReadFailed,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,6 +96,7 @@ pub(crate) enum MatchOutcome {
     DigestMismatch,
     VersionMismatch,
     NoManifestFound,
+    TimedOut,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -215,6 +218,21 @@ pub(crate) fn evaluate_target_manifest(
     evidence: &TargetEvidence,
     search_paths: &[PathBuf],
 ) -> TargetManifestMetadata {
+    evaluate_target_manifest_until(evidence, search_paths, None)
+}
+
+pub(crate) fn evaluate_target_manifest_until(
+    evidence: &TargetEvidence,
+    search_paths: &[PathBuf],
+    deadline: Option<tokio::time::Instant>,
+) -> TargetManifestMetadata {
+    if checkpoint(deadline).is_err() {
+        return TargetManifestMetadata {
+            outcome: Some(MatchOutcome::TimedOut),
+            detail: "Local DDI observation deadline elapsed before inspection.".into(),
+            ..Default::default()
+        };
+    }
     let (manifests, errors) = discover_build_manifests(search_paths);
     if !errors.is_empty() {
         let denied = errors
@@ -257,7 +275,7 @@ pub(crate) fn evaluate_target_manifest(
     let mut last_metadata = None;
 
     for manifest_path in &manifests {
-        let metadata = evaluate_single_manifest(evidence, manifest_path);
+        let metadata = evaluate_single_manifest(evidence, manifest_path, deadline);
         if metadata.outcome == Some(MatchOutcome::Matched) {
             return metadata;
         }
@@ -270,6 +288,7 @@ pub(crate) fn evaluate_target_manifest(
 fn evaluate_single_manifest(
     evidence: &TargetEvidence,
     manifest_path: &Path,
+    deadline: Option<tokio::time::Instant>,
 ) -> TargetManifestMetadata {
     let manifest_display = manifest_path.to_string_lossy().to_string();
 
@@ -558,6 +577,7 @@ fn evaluate_single_manifest(
     let mut has_permission_denied = false;
     let mut has_digest_mismatch = false;
     let mut has_missing_fields = manifest_dict.is_empty();
+    let mut has_timeout = false;
 
     for (comp_name, comp_val) in manifest_dict {
         let comp_dict = match comp_val.as_dictionary() {
@@ -613,6 +633,20 @@ fn evaluate_single_manifest(
 
         let expected_digest_bytes = comp_dict.get("Digest").and_then(plist::Value::as_data);
         let expected_digest_hex = expected_digest_bytes.map(hex_encode);
+        if checkpoint(deadline).is_err() {
+            component_observations.push(ComponentObservation {
+                name: comp_name.clone(),
+                path: path_str.to_owned(),
+                state: ComponentState::TimedOut,
+                signature_verified: false,
+                device_availability_probed: false,
+                expected_digest: expected_digest_hex,
+                observed_digest: None,
+                size_bytes: None,
+            });
+            has_timeout = true;
+            break;
+        }
 
         let metadata = match std::fs::symlink_metadata(&comp_path) {
             Ok(m) => m,
@@ -645,10 +679,10 @@ fn evaluate_single_manifest(
 
         let (state, observed_digest_hex) = if let Some(expected_bytes) = expected_digest_bytes {
             if file_size > MAX_COMPONENT_READ_BYTES {
-                has_digest_mismatch = true;
-                (ComponentState::DigestMismatch, None)
+                has_missing_fields = true;
+                (ComponentState::ReadFailed, None)
             } else {
-                match hash_file(&comp_path, expected_bytes.len()) {
+                match hash_file(&comp_path, expected_bytes.len(), deadline) {
                     Ok(observed_bytes) => {
                         let matches = observed_bytes == expected_bytes;
                         if !matches {
@@ -668,9 +702,13 @@ fn evaluate_single_manifest(
                         has_permission_denied = true;
                         (ComponentState::PermissionDenied, None)
                     }
+                    Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                        has_timeout = true;
+                        (ComponentState::TimedOut, None)
+                    }
                     Err(_) => {
-                        has_digest_mismatch = true;
-                        (ComponentState::DigestMismatch, None)
+                        has_missing_fields = true;
+                        (ComponentState::ReadFailed, None)
                     }
                 }
             }
@@ -690,7 +728,16 @@ fn evaluate_single_manifest(
         });
     }
 
-    let (outcome, detail, hint) = if has_permission_denied {
+    let (outcome, detail, hint) = if has_timeout {
+        (
+            MatchOutcome::TimedOut,
+            "Local DDI observation timed out; completed component observations are partial.".into(),
+            Some(
+                "Retry with a larger diagnostic budget or inspect local storage performance."
+                    .into(),
+            ),
+        )
+    } else if has_permission_denied {
         (
             MatchOutcome::PermissionDenied,
             "BuildManifest identity matched, but component read permission was denied on disk."
@@ -746,16 +793,39 @@ fn evaluate_single_manifest(
     }
 }
 
-fn hash_file(path: &Path, expected_digest_len: usize) -> std::io::Result<Vec<u8>> {
+fn checkpoint(deadline: Option<tokio::time::Instant>) -> std::io::Result<()> {
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "local DDI observation deadline elapsed",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn hash_file(
+    path: &Path,
+    expected_digest_len: usize,
+    deadline: Option<tokio::time::Instant>,
+) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?.take(MAX_COMPONENT_READ_BYTES + 1);
     let mut read_bytes = 0u64;
     let mut buffer = [0u8; 64 * 1024];
+    checkpoint(deadline)?;
+    if ![32, 48].contains(&expected_digest_len) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "unsupported component digest algorithm",
+        ));
+    }
 
     if expected_digest_len == 48 {
         use sha2::Sha384;
         let mut hasher = Sha384::new();
         loop {
+            checkpoint(deadline)?;
             let n = file.read(&mut buffer)?;
             if n == 0 {
                 break;
@@ -770,6 +840,7 @@ fn hash_file(path: &Path, expected_digest_len: usize) -> std::io::Result<Vec<u8>
     } else {
         let mut hasher = Sha256::new();
         loop {
+            checkpoint(deadline)?;
             let n = file.read(&mut buffer)?;
             if n == 0 {
                 break;
@@ -796,6 +867,36 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn expired_component_observation_is_partial_and_never_a_digest_mismatch() {
+        let temp = std::env::temp_dir().join(format!("ddi-partial-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&temp).unwrap();
+        std::fs::write(temp.join("image.dmg"), b"image").unwrap();
+        let manifest = create_test_manifest(
+            &temp,
+            12,
+            0x8110,
+            Some(1),
+            Some("18.0"),
+            &[("PersonalizedDMG", "image.dmg", Some(&[0; 32]))],
+        );
+        let evidence = TargetEvidence {
+            board_id: Some(12),
+            chip_id: Some(0x8110),
+            security_domain: Some(1),
+            product_version: Some("17.4".into()),
+            ..Default::default()
+        };
+        let metadata =
+            evaluate_single_manifest(&evidence, &manifest, Some(tokio::time::Instant::now()));
+        assert_eq!(metadata.outcome, Some(MatchOutcome::TimedOut));
+        assert_eq!(metadata.components[0].state, ComponentState::TimedOut);
+        assert!(metadata.components[0].observed_digest.is_none());
+        std::fs::remove_file(manifest).unwrap();
+        std::fs::remove_file(temp.join("image.dmg")).unwrap();
+        std::fs::remove_dir(temp).unwrap();
+    }
 
     #[test]
     fn personalized_image_uses_hardware_across_os_and_build_versions() {

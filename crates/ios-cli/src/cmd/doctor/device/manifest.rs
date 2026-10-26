@@ -98,6 +98,13 @@ pub(super) async fn inspect_with_paths(
                 check.detail = "Local DDI directory or file read permission was denied; check filesystem permissions.";
                 check.hint = Some("Grant read permissions to local DDI files and directories.");
             }
+            Some(MatchOutcome::TimedOut) => {
+                check.status = Status::Unknown;
+                check.state = State::Unreachable;
+                check.error_class = Some(ios_core::ErrorClass::Timeout);
+                check.detail =
+                    "Local DDI inspection timed out; completed component observations are partial.";
+            }
             Some(MatchOutcome::MissingFields | MatchOutcome::MissingFile) => {
                 check.status = Status::Unknown;
                 check.state = State::MetadataMissing;
@@ -177,9 +184,10 @@ async fn observe(
         evidence.product_type = Some(versions[0].clone());
         evidence.product_version = Some(versions[1].clone());
         evidence.build_version = Some(versions[2].clone());
-        metadata.target_manifest = Some(super::target_manifest::evaluate_target_manifest(
+        metadata.target_manifest = Some(super::target_manifest::evaluate_target_manifest_until(
             &evidence,
             search_paths,
+            Some(clock.deadline),
         ));
         metadata.target_evidence = Some(evidence);
         clock.check()?;
