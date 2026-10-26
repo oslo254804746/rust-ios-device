@@ -35,7 +35,10 @@ impl PowerAssertCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_core::power_assertion::SERVICE_NAME)
+            .connect_service_with_timeout(
+                ios_core::power_assertion::SERVICE_NAME,
+                std::time::Duration::from_secs(30),
+            )
             .await?;
         let mut client = ios_core::power_assertion::PowerAssertionClient::new(stream);
         client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));

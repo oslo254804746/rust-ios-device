@@ -34,7 +34,12 @@ async fn reveal_developer_mode(udid: &str, json: bool) -> Result<()> {
         skip_tunnel: true,
     };
     let device = connect(udid, opts).await?;
-    let stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
+    let stream = device
+        .connect_service_with_timeout(
+            ios_core::amfi::SERVICE_NAME,
+            std::time::Duration::from_secs(30),
+        )
+        .await?;
     let mut client = ios_core::amfi::AmfiClient::new(stream);
     client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
     client
@@ -65,7 +70,12 @@ async fn enable_developer_mode(udid: &str, json: bool) -> Result<()> {
         skip_tunnel: true,
     };
     let device = connect(udid, opts).await?;
-    let stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
+    let stream = device
+        .connect_service_with_timeout(
+            ios_core::amfi::SERVICE_NAME,
+            std::time::Duration::from_secs(30),
+        )
+        .await?;
     let mut client = ios_core::amfi::AmfiClient::new(stream);
     client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
     client
