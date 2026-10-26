@@ -38,7 +38,19 @@ impl TargetEvidence {
             board_id: ids.get("BoardId").and_then(parse_plist_int),
             chip_id: ids.get("ChipID").and_then(parse_plist_int),
             security_domain: ids.get("SecurityDomain").and_then(parse_plist_int),
-            ..Default::default()
+            product_type: ids
+                .get("ProductType")
+                .and_then(plist::Value::as_string)
+                .map(String::from),
+            product_version: ids
+                .get("ProductVersion")
+                .and_then(plist::Value::as_string)
+                .map(String::from),
+            build_version: ids
+                .get("BuildVersion")
+                .or_else(|| ids.get("ProductBuildVersion"))
+                .and_then(plist::Value::as_string)
+                .map(String::from),
         }
     }
 }
@@ -72,6 +84,7 @@ pub(crate) enum MatchOutcome {
     AmbiguousIdentities,
     MissingFields,
     MissingFile,
+    PermissionDenied,
     DigestMismatch,
     VersionMismatch,
     NoManifestFound,
@@ -240,11 +253,20 @@ fn evaluate_single_manifest(
             d
         }
         Err(err) => {
+            let is_perm = err.kind() == std::io::ErrorKind::PermissionDenied;
             return TargetManifestMetadata {
                 manifest_path: Some(manifest_display),
-                outcome: Some(MatchOutcome::MissingFile),
+                outcome: Some(if is_perm {
+                    MatchOutcome::PermissionDenied
+                } else {
+                    MatchOutcome::MissingFile
+                }),
                 detail: format!("Failed to read BuildManifest: {err}"),
-                hint: Some("Check filesystem read permissions for DDI directories.".into()),
+                hint: Some(if is_perm {
+                    "Check filesystem read permissions for DDI directories.".into()
+                } else {
+                    "Verify BuildManifest file existence in DDI directories.".into()
+                }),
                 ..Default::default()
             };
         }
@@ -294,7 +316,9 @@ fn evaluate_single_manifest(
         let dev_major = device_ver.split('.').next().unwrap_or("");
         let man_major = manifest_ver.split('.').next().unwrap_or("");
         if !dev_major.is_empty() && !man_major.is_empty() && dev_major != man_major {
-            let detail = format!("DDI BuildManifest version ({manifest_ver}) does not match device version ({device_ver}).");
+            let detail = format!(
+                "DDI BuildManifest major version ({manifest_ver}) does not match device version ({device_ver}). Note: major version check only; does not require exact build equality."
+            );
             return TargetManifestMetadata {
                 manifest_path: Some(manifest_display),
                 outcome: Some(MatchOutcome::VersionMismatch),
@@ -441,6 +465,7 @@ fn evaluate_single_manifest(
     let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let mut component_observations = Vec::new();
     let mut has_missing_file = false;
+    let mut has_permission_denied = false;
     let mut has_digest_mismatch = false;
     let mut has_missing_fields = manifest_dict.is_empty();
 
@@ -516,7 +541,8 @@ fn evaluate_single_manifest(
 
         let metadata = match std::fs::symlink_metadata(&comp_path) {
             Ok(m) => m,
-            Err(_) => {
+            Err(err) => {
+                let is_perm = err.kind() == std::io::ErrorKind::PermissionDenied;
                 component_observations.push(ComponentObservation {
                     name: comp_name.clone(),
                     path: path_str.to_string(),
@@ -527,7 +553,11 @@ fn evaluate_single_manifest(
                     observed_digest: None,
                     size_bytes: None,
                 });
-                has_missing_file = true;
+                if is_perm {
+                    has_permission_denied = true;
+                } else {
+                    has_missing_file = true;
+                }
                 continue;
             }
         };
@@ -577,7 +607,14 @@ fn evaluate_single_manifest(
         });
     }
 
-    let (outcome, detail, hint) = if has_missing_file {
+    let (outcome, detail, hint) = if has_permission_denied {
+        (
+            MatchOutcome::PermissionDenied,
+            "BuildManifest identity matched, but component read permission was denied on disk."
+                .into(),
+            Some("Check filesystem read permissions for DDI component files.".into()),
+        )
+    } else if has_missing_file {
         (
             MatchOutcome::MissingFile,
             format!(

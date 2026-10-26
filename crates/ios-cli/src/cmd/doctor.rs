@@ -300,6 +300,20 @@ impl DoctorCmd {
                 if let Some(ref ddi_meta) = check.ddi_manifests {
                     if let Some(ref tm) = ddi_meta.target_manifest {
                         crate::output::outln!("       Target DDI: {}", tm.detail);
+                        for comp in &tm.components {
+                            let state_desc = match comp.state {
+                                super::doctor::device::target_manifest::ComponentState::DigestMatches => "digest matches",
+                                super::doctor::device::target_manifest::ComponentState::FileExists => "file exists",
+                                super::doctor::device::target_manifest::ComponentState::DigestMismatch => "digest mismatch",
+                                super::doctor::device::target_manifest::ComponentState::MissingFile => "missing file",
+                            };
+                            crate::output::outln!(
+                                "       - Component '{}' ({}): {}, signature unverified, device availability unprobed",
+                                comp.name,
+                                comp.path,
+                                state_desc,
+                            );
+                        }
                         if let Some(ref hint) = tm.hint {
                             crate::output::outln!("       {hint}");
                         }

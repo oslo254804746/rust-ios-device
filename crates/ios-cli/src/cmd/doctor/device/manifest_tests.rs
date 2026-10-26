@@ -452,3 +452,91 @@ async fn manifest_probe_cancellation_discards_the_owned_session_and_stops_readon
     assert!(result.unwrap_err().is::<ios_core::OperationCancelled>());
     assert!(source.ports.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn review_regression_ddi_manifest_version_mismatch_fails_check() {
+    let root = std::env::temp_dir().join(format!("doctor-ver-mismatch-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("image.dmg"), b"offline-component").unwrap();
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(b"offline-component").to_vec();
+    let component = dictionary([
+        (
+            "Info",
+            plist::Value::Dictionary(dictionary([("Path", "image.dmg".into())])),
+        ),
+        ("Digest", plist::Value::Data(digest)),
+    ]);
+    let identity = dictionary([
+        ("ApBoardID", 16u64.into()),
+        ("ApChipID", 0x8101u64.into()),
+        ("ApSecurityDomain", 1u64.into()),
+        (
+            "Manifest",
+            plist::Value::Dictionary(dictionary([(
+                "PersonalizedDMG",
+                plist::Value::Dictionary(component),
+            )])),
+        ),
+    ]);
+    plist::Value::Dictionary(dictionary([
+        (
+            "BuildIdentities",
+            plist::Value::Array(vec![plist::Value::Dictionary(identity)]),
+        ),
+        ("ProductVersion", plist::Value::String("17.0".into())),
+    ]))
+    .to_file_xml(root.join("BuildManifest.plist"))
+    .unwrap();
+
+    let (lockdown, lockdown_peer) = tokio::io::duplex(65_536);
+    let (image, mut peer) = tokio::io::duplex(65_536);
+    let source = FakeSource::new(vec![(LOCKDOWN_PORT, lockdown), (IMAGE_PORT, image)]);
+    let (check, (), ()) = within(async {
+        tokio::join!(
+            super::super::manifest::inspect_with_paths(
+                &source,
+                UDID,
+                Duration::from_secs(2),
+                std::slice::from_ref(&root)
+            ),
+            serve_service(lockdown_peer, service_reply()),
+            async {
+                let request: plist::Dictionary = recv_lockdown(&mut peer).await.unwrap();
+                assert_eq!(
+                    request["Command"].as_string(),
+                    Some("QueryPersonalizationIdentifiers")
+                );
+                send_lockdown(
+                    &mut peer,
+                    &dictionary([(
+                        "PersonalizationIdentifiers",
+                        plist::Value::Dictionary(dictionary([
+                            ("BoardId", 16u64.into()),
+                            ("ChipID", 0x8101u64.into()),
+                            ("SecurityDomain", 1u64.into()),
+                            ("ProductVersion", plist::Value::String("16.5".into())),
+                        ])),
+                    )]),
+                )
+                .await
+                .unwrap();
+                image_request(&mut peer, "CopyDevices", None).await;
+                send_lockdown(
+                    &mut peer,
+                    &dictionary([("EntryList", plist::Value::Array(vec![]))]),
+                )
+                .await
+                .unwrap();
+            }
+        )
+    })
+    .await;
+
+    assert_eq!(check.status, Status::Failed);
+    assert_eq!(check.state, State::Failed);
+    let output = serde_json::to_value(check).unwrap();
+    let local = &output["ddi_manifests"]["target_manifest"];
+    assert_eq!(local["outcome"], "version_mismatch");
+
+    let _ = std::fs::remove_dir_all(root);
+}
