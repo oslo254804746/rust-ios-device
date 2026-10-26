@@ -26,6 +26,31 @@ pub(crate) struct Metadata {
 }
 
 pub(super) async fn inspect(source: &dyn Source, udid: &str, timeout: Duration) -> Check {
+    inspect_with_paths(source, udid, timeout, &source.ddi_search_paths()).await
+}
+
+pub(super) fn search_paths() -> Vec<std::path::PathBuf> {
+    let mut search_paths = Vec::new();
+    if let Ok(env_path) = std::env::var("IOS_DDI_PATH") {
+        search_paths.push(std::path::PathBuf::from(env_path));
+    }
+    if let Some(home) = super::super::dirs_home() {
+        search_paths.push(home.join(".ios").join("ddi"));
+        search_paths.push(home.join(".ios-rs").join("ddi"));
+    }
+    #[cfg(target_os = "macos")]
+    search_paths.push(std::path::PathBuf::from(
+        "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/DeviceSupport",
+    ));
+    search_paths
+}
+
+pub(super) async fn inspect_with_paths(
+    source: &dyn Source,
+    udid: &str,
+    timeout: Duration,
+    search_paths: &[std::path::PathBuf],
+) -> Check {
     let mut metadata = Metadata::default();
     let result = async {
         validate_target(udid)?;
@@ -37,37 +62,43 @@ pub(super) async fn inspect(source: &dyn Source, udid: &str, timeout: Duration) 
         })?;
         let clock = Clock { deadline };
         clock
-            .run(observe(source, udid, &clock, &mut metadata))
+            .run(observe(source, udid, &clock, &mut metadata, search_paths))
             .await
     }
     .await;
-
-    // Observe local DDI BuildManifest matching against the explicit target
-    let mut search_paths = Vec::new();
-    if let Ok(env_path) = std::env::var("IOS_DDI_PATH") {
-        search_paths.push(std::path::PathBuf::from(env_path));
-    }
-    if let Some(home) = super::super::dirs_home() {
-        search_paths.push(home.join(".ios").join("ddi"));
-        search_paths.push(home.join(".ios-rs").join("ddi"));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        search_paths.push(std::path::PathBuf::from(
-            "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/DeviceSupport",
-        ));
-    }
-    let evidence = super::target_manifest::TargetEvidence {
-        udid: udid.to_string(),
-        ..Default::default()
-    };
-    let target_meta = super::target_manifest::evaluate_target_manifest(&evidence, &search_paths);
-    metadata.target_manifest = Some(target_meta);
 
     let mut check = match result {
         Ok(value) => Check::observed(Probe::DdiManifests, value),
         Err(error) => Check::failure(Probe::DdiManifests, error),
     };
+    if check.error.is_none() {
+        use super::target_manifest::MatchOutcome;
+        match metadata
+            .target_manifest
+            .as_ref()
+            .and_then(|value| value.outcome.as_ref())
+        {
+            Some(
+                MatchOutcome::NoMatchingIdentity
+                | MatchOutcome::AmbiguousIdentities
+                | MatchOutcome::DigestMismatch
+                | MatchOutcome::VersionMismatch,
+            ) => {
+                check.status = Status::Failed;
+                check.state = State::Failed;
+                check.detail = "Selected local DDI assets failed identity or integrity checks; remote manifest presence does not override that failure.";
+                check.hint = Some(
+                    "Inspect target_manifest details and configure a matching complete DDI bundle.",
+                );
+            }
+            Some(MatchOutcome::MissingFields | MatchOutcome::MissingFile) => {
+                check.status = Status::Unknown;
+                check.state = State::MetadataMissing;
+                check.detail = "Local DDI identity/component observation is incomplete; do not infer readiness from remote manifest presence.";
+            }
+            _ => {}
+        }
+    }
     check.ddi_manifests = Some(metadata);
     check
 }
@@ -81,6 +112,7 @@ async fn observe(
     udid: &str,
     clock: &Clock,
     metadata: &mut Metadata,
+    search_paths: &[std::path::PathBuf],
 ) -> Result<Option<bool>> {
     let (stream, pair_record, device_id) = session(source, udid, clock).await?;
     let (mut reader, mut writer) = tokio::io::split(stream);
@@ -102,6 +134,24 @@ async fn observe(
     } else {
         stream
     };
+    // Same selected-device service and clock as CopyDevices. Use the already
+    // implemented QueryPersonalizationIdentifiers wire, not UDID-only wildcard matching.
+    if !super::target_manifest::find_build_manifests(search_paths).is_empty() {
+        let mut client = ios_core::imagemounter::ImageMounterClient::new(&mut stream);
+        let ids = client.query_personalization_identifiers().await?;
+        clock.check()?;
+        let evidence = super::target_manifest::TargetEvidence::from_identifiers(udid, &ids);
+        metadata.target_manifest = Some(super::target_manifest::evaluate_target_manifest(
+            &evidence,
+            search_paths,
+        ));
+        clock.check()?;
+    } else {
+        metadata.target_manifest = Some(super::target_manifest::evaluate_target_manifest(
+            &super::target_manifest::TargetEvidence::default(),
+            search_paths,
+        ));
+    }
     send_lockdown(
         &mut stream,
         &plist::Dictionary::from_iter([("Command", plist::Value::String("CopyDevices".into()))]),
