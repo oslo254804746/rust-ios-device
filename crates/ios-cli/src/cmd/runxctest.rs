@@ -171,20 +171,14 @@ impl RunXcTestCmd {
         let mut pending_startup = None;
         let mut pending_finished = None;
         let work = Box::pin(async {
-            if let Some(crashes) = &mut crashes {
-                crashes.baseline(&udid, deadline, &native).await?;
-            }
-            if let Err(error) = tokio::time::timeout_at(
+            let engine = crate::cmd::test_workflow::TestWorkflowEngine::new(
+                &udid,
+                &self.workflow,
                 deadline,
-                crate::cmd::test_workflow::install_package_if_present(
-                    &udid,
-                    self.workflow.install_app.as_deref(),
-                    &mut app_tracker,
-                ),
-            )
-            .await
-            .context("XCTest deadline expired during package installation")?
-            {
+                self.wait,
+                junit_output,
+            );
+            if let Err(error) = engine.preflight().await {
                 let report_result =
                     write_junit_diagnostic(junit_output, &incomplete_summary(false), &error);
                 if let Err(report_error) = report_result {
@@ -197,17 +191,11 @@ impl RunXcTestCmd {
                 return Err(error);
             }
 
-            if let Err(error) = tokio::time::timeout_at(
-                deadline,
-                crate::cmd::test_workflow::install_package_if_present(
-                    &udid,
-                    self.workflow.install_runner.as_deref(),
-                    &mut app_tracker,
-                ),
-            )
-            .await
-            .context("XCTest deadline expired during package installation")?
-            {
+            if let Some(crashes) = &mut crashes {
+                crashes.baseline(&udid, deadline, &native).await?;
+            }
+
+            if let Err(error) = engine.install_explicit_packages(&mut app_tracker).await {
                 let report_result =
                     write_junit_diagnostic(junit_output, &incomplete_summary(false), &error);
                 if let Err(report_error) = report_result {

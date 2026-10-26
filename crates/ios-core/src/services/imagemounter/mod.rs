@@ -12,7 +12,7 @@ pub mod tss;
 
 pub use download::DdiDownloader;
 pub use manifest::BuildManifest;
-pub use protocol::{ImageMounterClient, ImageMounterError};
+pub use protocol::{ImageMounterClient, ImageMounterError, SERVICE_NAME};
 
 fn native_error(
     kind: std::io::ErrorKind,
