@@ -34,8 +34,11 @@ async fn reveal_developer_mode(udid: &str, json: bool) -> Result<()> {
         skip_tunnel: true,
     };
     let device = connect(udid, opts).await?;
-    let mut stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
-    ios_core::amfi::reveal_developer_mode(&mut stream)
+    let stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
+    let mut client = ios_core::amfi::AmfiClient::new(stream);
+    client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+    client
+        .reveal_developer_mode()
         .await
         .map_err(|e| anyhow::Error::new(e).context("amfi reveal-developer-mode failed"))?;
 
@@ -62,8 +65,11 @@ async fn enable_developer_mode(udid: &str, json: bool) -> Result<()> {
         skip_tunnel: true,
     };
     let device = connect(udid, opts).await?;
-    let mut stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
-    ios_core::amfi::enable_developer_mode(&mut stream)
+    let stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
+    let mut client = ios_core::amfi::AmfiClient::new(stream);
+    client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+    client
+        .enable_developer_mode()
         .await
         .map_err(|e| anyhow::Error::new(e).context("amfi enable-developer-mode failed"))?;
 

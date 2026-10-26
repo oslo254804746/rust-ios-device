@@ -83,3 +83,38 @@ fn device_connection_debug_hides_credential_paths_and_network_identity() {
     assert_eq!(paired.udid, secret);
     assert_eq!(options.pair_record_path, Some(PathBuf::from(secret)));
 }
+
+#[tokio::test]
+async fn connect_service_with_timeout_zero_budget_rejects_without_io() {
+    let device = super::ConnectedDevice {
+        info: crate::discovery::DeviceInfo {
+            udid: "zero-budget-device".into(),
+            device_id: 1,
+            connection_type: "USB".into(),
+            product_id: 0,
+        },
+        tunnel: None,
+        rsd: None,
+        #[cfg(feature = "tunnel")]
+        owned_initial_rsd: None,
+        #[cfg(feature = "tunnel")]
+        owned_initial_bank: None,
+        #[cfg(feature = "tunnel")]
+        prepared_rsd: None,
+        #[cfg(feature = "tunnel")]
+        owned_prepared_rsd: None,
+        initial_rsd_probe: super::InitialRsdProbe::skipped(
+            super::InitialRsdProbeSkipReason::TunnelSkipped,
+        ),
+        pair_record: None,
+        lockdown_transport: super::LockdownTransport::Usbmux { device_id: 1 },
+    };
+
+    let result = device
+        .connect_service_with_timeout("com.apple.test.service", std::time::Duration::ZERO)
+        .await;
+    match result {
+        Err(crate::CoreError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::TimedOut),
+        other => panic!("expected TimedOut io error, got: {:?}", other.is_err()),
+    }
+}

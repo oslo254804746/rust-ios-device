@@ -299,6 +299,32 @@ impl ConnectedDevice {
         }
     }
 
+    /// Open a lockdown service stream with an overall operation timeout.
+    ///
+    /// The budget is shared across lockdown connection, session establishment,
+    /// service start command, service port connection, and TLS handshake.
+    /// A zero budget rejects immediately before network IO.
+    pub async fn connect_service_with_timeout(
+        &self,
+        service_name: &str,
+        timeout: std::time::Duration,
+    ) -> Result<ServiceStream, CoreError> {
+        if timeout.is_zero() {
+            return Err(CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "connect_service budget is zero",
+            )));
+        }
+        tokio::time::timeout(timeout, self.connect_service(service_name))
+            .await
+            .map_err(|_| {
+                CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("connect_service('{service_name}') timed out after {timeout:?}"),
+                ))
+            })?
+    }
+
     /// Get the device's iOS version via lockdown.
     pub async fn product_version(&self) -> Result<semver::Version, CoreError> {
         let mut client = self.lockdown_client().await?;

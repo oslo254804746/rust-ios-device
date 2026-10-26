@@ -102,6 +102,15 @@ impl OwnedConnectedDevice {
     pub async fn connect_service(&self, service_name: &str) -> Result<ServiceStream, CoreError> {
         self.inner.connect_service(service_name).await
     }
+    pub async fn connect_service_with_timeout(
+        &self,
+        service_name: &str,
+        timeout: std::time::Duration,
+    ) -> Result<ServiceStream, CoreError> {
+        self.inner
+            .connect_service_with_timeout(service_name, timeout)
+            .await
+    }
     pub async fn product_version(&self) -> Result<semver::Version, CoreError> {
         self.inner.product_version().await
     }

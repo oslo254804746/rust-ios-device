@@ -45,7 +45,7 @@ pub(super) async fn run(
             ExistingRsdServiceKind::RemoteXpc,
             1024 * 1024,
         ).await?;
-        let client = XpcClient::connect_stream(connection.stream).await?;
+        let client = XpcClient::connect_stream_with_timeout(connection.stream, session.remaining_budget()).await?;
         let mut proxy = InstallCoordinationProxyClient::with_timeout(client, budget);
         let zero_started = std::time::Instant::now();
         match proxy.query_with_budget(bundle_id, Duration::ZERO).await {

@@ -511,6 +511,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         Ok(framer)
     }
 
+    /// Perform the HTTP/2 handshake under a shared operation budget.
+    ///
+    /// Zero budget rejects before IO. Timeout during connect drops the stream.
+    pub async fn connect_with_timeout(
+        stream: S,
+        budget: std::time::Duration,
+    ) -> Result<Self, H2Error> {
+        if budget.is_zero() {
+            return Err(H2Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "H2 connect budget is zero",
+            )));
+        }
+        tokio::time::timeout(budget, Self::connect(stream))
+            .await
+            .map_err(|_| {
+                H2Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("H2 connect timed out after {budget:?}"),
+                ))
+            })?
+    }
+
     /// Send the local HTTP/2 preface. RSD must be able to enqueue its XPC
     /// bootstrap before waiting for the peer's SETTINGS.
     pub(crate) async fn begin_connect(mut stream: S) -> Result<Self, H2Error> {
