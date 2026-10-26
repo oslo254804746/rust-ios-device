@@ -167,14 +167,14 @@ trait OrientationTransport {
     fn call<'a>(
         &'a mut self,
         request: XpcValue,
-    ) -> Pin<Box<dyn Future<Output = Result<XpcMessage, XpcError>> + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<XpcMessage, XpcError>> + Send + 'a>>;
 }
 
 impl OrientationTransport for XpcClient {
     fn call<'a>(
         &'a mut self,
         request: XpcValue,
-    ) -> Pin<Box<dyn Future<Output = Result<XpcMessage, XpcError>> + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<XpcMessage, XpcError>> + Send + 'a>> {
         Box::pin(XpcClient::call(self, request))
     }
 }
@@ -349,7 +349,7 @@ mod tests {
         fn call<'a>(
             &'a mut self,
             request: XpcValue,
-        ) -> Pin<Box<dyn Future<Output = Result<XpcMessage, XpcError>> + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<XpcMessage, XpcError>> + Send + 'a>> {
             self.requests.push(request);
             let response = self
                 .response

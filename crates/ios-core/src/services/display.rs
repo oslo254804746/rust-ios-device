@@ -220,6 +220,11 @@ impl DisplayServiceClient {
             f.is_empty() || f.iter().any(|x| x == START_MEDIA_FEATURE)
         })
     }
+    /// A control request may have reached the service, including interrupted
+    /// startup. This is not an acknowledgement that a stream exists.
+    pub fn request_may_have_executed(&self) -> bool {
+        self.request_sent
+    }
     fn ensure(&self, feature: &'static str) -> Result<(), DisplayError> {
         if self.envelope_mode == CoreDeviceEnvelopeMode::Legacy {
             return Err(DisplayError::LegacyUnsupported);
@@ -492,7 +497,25 @@ impl MediaStreamSession {
         Self::start(service, MediaKind::Audio, options).await
     }
     async fn start(
-        mut service: DisplayServiceClient,
+        service: DisplayServiceClient,
+        kind: MediaKind,
+        options: MediaStreamOptions,
+    ) -> Result<Self, DisplayError> {
+        Self::start_retained(&mut Some(service), kind, options).await
+    }
+
+    /// Keep the original service owner in the caller until negotiation succeeds.
+    /// On failure or future cancellation it can still issue a separately bounded
+    /// stop through the service's original reconnect factory.
+    pub async fn start_video_retained(
+        service: &mut Option<DisplayServiceClient>,
+        options: MediaStreamOptions,
+    ) -> Result<Self, DisplayError> {
+        Self::start_retained(service, MediaKind::Video, options).await
+    }
+
+    async fn start_retained(
+        service: &mut Option<DisplayServiceClient>,
         kind: MediaKind,
         options: MediaStreamOptions,
     ) -> Result<Self, DisplayError> {
@@ -505,12 +528,24 @@ impl MediaStreamSession {
         })?;
         validate_media_endpoint(ip, "receiver_ip")?;
         let socket = Arc::new(UdpSocket::bind(SocketAddr::new(ip, options.receiver_port)).await?);
+        Self::negotiate_session(service, kind, options, socket).await
+    }
+
+    async fn negotiate_session(
+        service: &mut Option<DisplayServiceClient>,
+        kind: MediaKind,
+        options: MediaStreamOptions,
+        socket: Arc<UdpSocket>,
+    ) -> Result<Self, DisplayError> {
         let port = socket.local_addr()?.port();
         let mut options = options;
         options.receiver_port = port;
+        let control = service
+            .as_mut()
+            .ok_or_else(|| DisplayError::Protocol("media startup service was consumed".into()))?;
         let start = match kind {
-            MediaKind::Video => service.start_video_stream(&options).await?,
-            MediaKind::Audio => service.start_audio_stream(&options).await?,
+            MediaKind::Video => control.start_video_stream(&options).await?,
+            MediaKind::Audio => control.start_audio_stream(&options).await?,
         };
         let sender = start.sender_port.map(|port| {
             options
@@ -559,7 +594,7 @@ impl MediaStreamSession {
             _ => None,
         };
         Ok(Self {
-            service: Some(service),
+            service: service.take(),
             socket,
             kind,
             id: start.client_session_id,
@@ -1485,6 +1520,93 @@ fn build_media_blob(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn cancelled_start_retains_original_reconnector_and_requires_real_stop_reply() {
+        let (client, mut original, _) = crate::test_native::connected_xpc_pair().await;
+        let (replacement, mut stop_peer, _) = crate::test_native::connected_xpc_pair().await;
+        let replacement = Arc::new(std::sync::Mutex::new(Some(replacement)));
+        let client = client.with_reconnector(move || {
+            let replacement = Arc::clone(&replacement);
+            async move {
+                Ok(replacement
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("one original reconnect"))
+            }
+        });
+        let mut service = Some(DisplayServiceClient::new(client));
+        let socket = Arc::new(UdpSocket::bind("[::1]:0").await.unwrap());
+        let options = MediaStreamOptions {
+            receiver_ip: "fd00::1".into(),
+            sender_ip: "fd00::2".into(),
+            ..Default::default()
+        };
+        {
+            // Inject only the owned localhost UDP socket; the production
+            // negotiation/ownership path and XPC requests remain unchanged.
+            let startup = MediaStreamSession::negotiate_session(
+                &mut service,
+                MediaKind::Video,
+                options,
+                socket,
+            );
+            tokio::pin!(startup);
+            tokio::select! {
+                result = &mut startup => panic!("start must await its reply: {}", result.is_ok()),
+                request = next_control_request(&mut original) => {
+                    assert_eq!(request.body.unwrap().as_dict().unwrap()["CoreDevice.featureIdentifier"].as_str(), Some(START_MEDIA_FEATURE));
+                }
+            }
+        }
+        assert!(service.as_ref().unwrap().request_may_have_executed());
+        let responder = tokio::spawn(async move {
+            let request = next_control_request(&mut stop_peer).await;
+            let body = request.body.as_ref().unwrap().as_dict().unwrap();
+            assert_eq!(
+                body["CoreDevice.featureIdentifier"].as_str(),
+                Some(STOP_MEDIA_FEATURE)
+            );
+            assert_eq!(
+                body["CoreDevice.input"].as_dict().unwrap()["stopAll"],
+                XpcValue::Bool(true)
+            );
+            let response = crate::encode_xpc_message(&crate::XpcMessage {
+                flags: crate::xpc_message_flags::ALWAYS_SET
+                    | crate::xpc_message_flags::DATA
+                    | crate::xpc_message_flags::REPLY,
+                msg_id: request.msg_id,
+                body: Some(dict([("CoreDevice.output", dict([]))])),
+            })
+            .unwrap();
+            let mut header = [0u8; 9];
+            header[..3].copy_from_slice(&(response.len() as u32).to_be_bytes()[1..]);
+            header[8] = 3;
+            stop_peer.write_all(&header).await.unwrap();
+            stop_peer.write_all(&response).await.unwrap();
+            stop_peer
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            service
+                .as_mut()
+                .unwrap()
+                .stop_media_streams_strict(true, &[]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(service);
+        let mut stop_peer = responder.await.unwrap();
+        for peer in [&mut original, &mut stop_peer] {
+            let mut tail = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut tail))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
 
     async fn next_control_request(peer: &mut tokio::io::DuplexStream) -> crate::XpcMessage {
         loop {

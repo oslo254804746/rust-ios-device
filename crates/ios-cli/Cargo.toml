@@ -48,6 +48,7 @@ rand = { workspace = true }
 subtle = { workspace = true }
 des = { workspace = true }
 png = { workspace = true }
+jpeg-decoder = { version = "=0.3.2", default-features = false }
 zip = { workspace = true }
 arboard = { workspace = true }
 

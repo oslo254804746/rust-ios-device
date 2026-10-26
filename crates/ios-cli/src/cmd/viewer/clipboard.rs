@@ -69,7 +69,10 @@ impl ClipboardPayload {
 
     pub fn sha256_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(self.uti().as_bytes());
+        hasher.update(match self {
+            Self::Text(_) => self.uti().as_bytes(),
+            _ => b"image/pixels",
+        });
         hasher.update([0]);
         match self {
             Self::Text(s) => hasher.update(s.replace("\r\n", "\n").as_bytes()),
@@ -81,7 +84,10 @@ impl ClipboardPayload {
                     Err(_) => hasher.update(b), // invalid/untransmittable payloads retain a stable identity
                 }
             }
-            Self::ImageJpeg(b) => hasher.update(b),
+            Self::ImageJpeg(b) => match jpeg_to_png(b).and_then(|png| png_to_dib(&png)) {
+                Ok(dib) => hasher.update(&dib),
+                Err(_) => hasher.update(b),
+            },
         }
         hasher.finalize().into()
     }
@@ -397,10 +403,8 @@ pub fn png_to_dib(png_bytes: &[u8]) -> Result<Vec<u8>> {
         "invalid image dimensions for DIB"
     );
 
-    let row_stride = (width as usize * 3 + 3) & !3;
-    let image_size = row_stride * height as usize;
     ensure!(
-        124 + image_size <= MAX_IMAGE_BYTES && reader.output_buffer_size() <= MAX_IMAGE_BYTES * 4,
+        reader.output_buffer_size() <= MAX_IMAGE_BYTES * 4,
         "decoded DIB exceeds image budget"
     );
     let mut raw_pixels = vec![0u8; reader.output_buffer_size()];
@@ -424,8 +428,17 @@ pub fn png_to_dib(png_bytes: &[u8]) -> Result<Vec<u8>> {
         "decoded PNG buffer length mismatch"
     );
 
-    let row_stride = (w * 3 + 3) & !3;
+    let alpha = matches!(
+        info.color_type,
+        png::ColorType::Rgba | png::ColorType::GrayscaleAlpha
+    );
+    let bytes_per_pixel = if alpha { 4 } else { 3 };
+    let row_stride = (w * bytes_per_pixel + 3) & !3;
     let image_size = row_stride * h;
+    ensure!(
+        124 + image_size <= MAX_IMAGE_BYTES,
+        "decoded DIB exceeds image budget"
+    );
     let mut dib = Vec::with_capacity(124 + image_size);
 
     // BITMAPV5HEADER (all little-endian; 24-bit BI_RGB subset).
@@ -433,22 +446,28 @@ pub fn png_to_dib(png_bytes: &[u8]) -> Result<Vec<u8>> {
     dib.extend_from_slice(&(width as i32).to_le_bytes()); // biWidth
     dib.extend_from_slice(&(height as i32).to_le_bytes()); // biHeight (positive = bottom-up)
     dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
-    dib.extend_from_slice(&24u16.to_le_bytes()); // biBitCount (24-bit BGR)
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biCompression (BI_RGB)
+    dib.extend_from_slice(&(if alpha { 32u16 } else { 24 }).to_le_bytes());
+    dib.extend_from_slice(&(if alpha { 3u32 } else { 0 }).to_le_bytes()); // BI_BITFIELDS / BI_RGB
     dib.extend_from_slice(&(image_size as u32).to_le_bytes()); // biSizeImage
     dib.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
     dib.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
     dib.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
     dib.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
 
-    dib.extend_from_slice(&[0; 16]); // masks unused for BI_RGB
+    for mask in if alpha {
+        [0x00ff0000u32, 0x0000ff00, 0x000000ff, 0xff000000]
+    } else {
+        [0; 4]
+    } {
+        dib.extend_from_slice(&mask.to_le_bytes());
+    }
     dib.extend_from_slice(&0x73524742u32.to_le_bytes()); // LCS_sRGB
     dib.extend_from_slice(&[0; 48]); // endpoints and gamma unused for sRGB
     dib.extend_from_slice(&4u32.to_le_bytes()); // LCS_GM_IMAGES
     dib.extend_from_slice(&[0; 12]); // no embedded profile; reserved = 0
 
     // Pixel rows bottom-up: from row h-1 down to 0
-    let padding_len = row_stride - (w * 3);
+    let padding_len = row_stride - (w * bytes_per_pixel);
     let padding = [0u8; 4];
     for y in (0..h).rev() {
         for x in 0..w {
@@ -469,11 +488,57 @@ pub fn png_to_dib(png_bytes: &[u8]) -> Result<Vec<u8>> {
             dib.push(b);
             dib.push(g);
             dib.push(r);
+            if alpha {
+                dib.push(raw_pixels[src_idx + channels - 1]);
+            }
         }
         dib.extend_from_slice(&padding[..padding_len]);
     }
 
     Ok(dib)
+}
+
+/// Bounded baseline/progressive RGB or grayscale JPEG decoding. CMYK and
+/// lossless 16-bit JPEG need a color/precision contract and remain rejected.
+pub fn jpeg_to_png(jpeg: &[u8]) -> Result<Vec<u8>> {
+    ensure!(jpeg.len() <= MAX_IMAGE_BYTES, "JPEG exceeds image budget");
+    let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(jpeg));
+    decoder.set_max_decoding_buffer_size(MAX_IMAGE_BYTES * 4);
+    decoder.read_info().context("read JPEG metadata")?;
+    let info = decoder.info().context("JPEG omitted image metadata")?;
+    let color = match info.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => png::ColorType::Rgb,
+        jpeg_decoder::PixelFormat::L8 => png::ColorType::Grayscale,
+        _ => anyhow::bail!("unsupported JPEG color space or precision"),
+    };
+    let stride = (usize::from(info.width) * 3 + 3) & !3;
+    ensure!(
+        info.width > 0
+            && info.height > 0
+            && 124 + stride * usize::from(info.height) <= MAX_IMAGE_BYTES,
+        "decoded JPEG exceeds DIB budget"
+    );
+    let pixels = decoder.decode().context("decode JPEG pixels")?;
+    let mut output = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut output, info.width.into(), info.height.into());
+        encoder.set_color(color);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header()?.write_image_data(&pixels)?;
+    }
+    ensure!(
+        output.len() <= MAX_IMAGE_BYTES,
+        "JPEG PNG representation exceeds image budget"
+    );
+    Ok(output)
+}
+
+pub fn encode_rfb_provide_image(payload: &ClipboardPayload) -> Result<Vec<u8>> {
+    match payload {
+        ClipboardPayload::ImagePng(png) => encode_extended_provide_dib(png),
+        ClipboardPayload::ImageJpeg(jpeg) => encode_extended_provide_dib(&jpeg_to_png(jpeg)?),
+        ClipboardPayload::Text(_) => anyhow::bail!("DIB requires an image"),
+    }
 }
 
 /// Convert a standard Microsoft Windows Device Independent Bitmap (DIB) into PNG image bytes.

@@ -519,6 +519,15 @@ async fn stop_stream_decoder(child: &mut tokio::process::Child) -> Result<()> {
     Ok(())
 }
 
+fn publish_decoded_png(
+    frames: &watch::Sender<Option<DecodedFrame>>,
+    png: Bytes,
+    timestamp_ms: u64,
+) -> Result<()> {
+    frames.send_replace(Some(decode_png(png, timestamp_ms)?));
+    Ok(())
+}
+
 async fn produce_hevc(
     udid: &str,
     frames: watch::Sender<Option<DecodedFrame>>,
@@ -526,8 +535,12 @@ async fn produce_hevc(
     native: &crate::cmd::tunnel::NativeScope,
 ) -> Result<()> {
     // The user explicitly selects this kernel/UDP path with --hevc.
+    let device = tokio::select! {
+        _ = stop.changed() => return Ok(()),
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), native.connect(udid, ios_core::TunMode::Kernel)) => result.context("Display connection deadline")??,
+    };
+    let mut starting_display = None;
     let startup = async {
-        let device = native.connect(udid, ios_core::TunMode::Kernel).await?;
         let sender_ip = device
             .server_address()
             .context("missing Display sender address")?
@@ -539,10 +552,10 @@ async fn produce_hevc(
         let (xpc, metadata) = device
             .connect_xpc_service_with_metadata(ios_core::display::SERVICE_NAME)
             .await?;
-        let display =
-            ios_core::display::DisplayServiceClient::from_resolved_metadata(xpc, &metadata)?;
-        let session = ios_core::display::MediaStreamSession::start_video(
-            display,
+        starting_display =
+            Some(ios_core::display::DisplayServiceClient::from_resolved_metadata(xpc, &metadata)?);
+        let session = ios_core::display::MediaStreamSession::start_video_retained(
+            &mut starting_display,
             ios_core::display::MediaStreamOptions {
                 sender_ip,
                 receiver_ip,
@@ -550,12 +563,35 @@ async fn produce_hevc(
             },
         )
         .await?;
-        Ok::<_, anyhow::Error>((device, session))
+        Ok::<_, anyhow::Error>(Some(session))
     };
-    let (device, mut session) = tokio::select! {
+    let started = tokio::select! {
         biased;
-        _ = stop.changed() => return Ok(()),
-        result = tokio::time::timeout(std::time::Duration::from_secs(10), startup) => result.context("Display startup deadline")??,
+        _ = stop.changed() => Ok(None),
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), startup) => result.context("Display startup deadline").and_then(|value| value),
+    };
+    let mut session = match started {
+        Ok(Some(session)) => session,
+        result => {
+            let mut primary = result.map(|_| ());
+            if let Some(mut display) = starting_display.take() {
+                if display.request_may_have_executed() {
+                    let cleanup = tokio::time::timeout(
+                        super::device::CLEANUP_TIMEOUT,
+                        display.stop_media_streams_strict(true, &[]),
+                    )
+                    .await
+                    .map_err(anyhow::Error::new)
+                    .and_then(|value| value.map(|_| ()).map_err(Into::into));
+                    primary = super::finish(primary, cleanup);
+                }
+            }
+            drop(device);
+            return super::finish(
+                primary,
+                native.collect(super::device::CLEANUP_TIMEOUT).await,
+            );
+        }
     };
     let mut child = match spawn_stream_decoder() {
         Ok(child) => child,
@@ -563,8 +599,9 @@ async fn produce_hevc(
             return super::finish(
                 Err(error),
                 session
-                    .stop(std::time::Duration::from_secs(3))
+                    .stop_strict(std::time::Duration::from_secs(3), true, &[])
                     .await
+                    .map(|_| ())
                     .map_err(Into::into),
             )
         }
@@ -600,8 +637,7 @@ async fn produce_hevc(
                 let timestamp_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)?
                     .as_millis() as u64;
-                let frame = decode_png(png, timestamp_ms)?;
-                frames.send_replace(Some(frame)); // one shared latest frame; slow consumers skip stale frames
+                publish_decoded_png(&frames, png, timestamp_ms)?;
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())
@@ -619,8 +655,9 @@ async fn produce_hevc(
     let result = super::finish(
         result,
         session
-            .stop(std::time::Duration::from_secs(3))
+            .stop_strict(std::time::Duration::from_secs(3), true, &[])
             .await
+            .map(|_| ())
             .map_err(Into::into),
     );
     drop((session, device));
@@ -657,6 +694,47 @@ pub async fn produce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "requires FFmpeg; actual production publisher with stalled subscribers"]
+    async fn production_decoder_publisher_retains_only_latest_for_slow_web_and_vnc() {
+        let mut child = spawn_stream_decoder().expect("explicit FFmpeg gate requires decoder");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let (frames, web) = watch::channel(None);
+        let vnc = web.clone();
+        let writer = async {
+            stdin
+                .write_all(include_bytes!("hevc_inter_sample.bin"))
+                .await
+                .unwrap();
+            drop(stdin);
+        };
+        let reader = async {
+            let mut first = None;
+            for timestamp in 0..6 {
+                let png = read_stream_png(&mut stdout).await.unwrap();
+                publish_decoded_png(&frames, png, timestamp).unwrap();
+                if timestamp == 0 {
+                    first = Some(Arc::downgrade(&frames.borrow().as_ref().unwrap().bgra));
+                }
+            }
+            assert!(
+                first.unwrap().upgrade().is_none(),
+                "slow receivers must not retain old pixel buffers"
+            );
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(writer, reader);
+        })
+        .await
+        .unwrap();
+        assert!(child.wait().await.unwrap().success());
+        let web = web.borrow();
+        let vnc = vnc.borrow();
+        let (web, vnc) = (web.as_ref().unwrap(), vnc.as_ref().unwrap());
+        assert_eq!(web.timestamp_ms, 5);
+        assert!(Arc::ptr_eq(&web.bgra, &vnc.bgra));
+    }
     #[tokio::test]
     #[ignore = "requires FFmpeg HEVC/PNG codecs; explicit offline media gate"]
     async fn review_regression_persistent_decoder_keeps_reference_frames_and_reaps_child() {
