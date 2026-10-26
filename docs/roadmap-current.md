@@ -1,5 +1,11 @@
 # 当前工程调度
 
+2026-10-26：按用户明确选择，[原始 L02 验收收口](validation/l02-original-acceptance-2026-10-26.md)。
+多设备协调、四路建连、A等待时B查询/停止1秒目标、重复建连/停止/拔插/退避逐条核对通过。
+修复并发shutdown期限覆盖、失败cleanup的错误完成凭证与retirement费用锁内释放；CLI1927/0/13原ignored、Linux actor11/0、Core245/0及严格/只读门禁通过。
+ESP/嵌套分片、任意native清理恢复与完整owner/模式扩展审计仍为明确欠账，后续单独处理，不算已完成、不再阻塞原L02。
+有效30主项：24项开发交付，仍6项 L01/F01/F02/F04/F05/F06；Q04全部排除。真实设备/macOS运行保持NOT_RUN。
+
 2026-10-26：L02 [独立复核与修复](validation/l02-review-2026-10-26.md)
 撤回旧“七包全部完成”结论：已修复替换事务 unwind/锁内退休、原 desired observation、自然结束旧行提前删除、
 原错误/候选 cause 保留、输出拒绝 Source0 与封装解析边界；真实背压和 closed-zero 用例已加强。

@@ -1,5 +1,7 @@
 # 项目工程回顾与后续实施计划
 
+> 2026-10-26范围更新：用户明确选择先收口本文件原L02，多设备原验收已完成；此前扩展到ESP/嵌套分片/完整owner审计的要求保留为欠账，后续单独处理。见[验收与边界](validation/l02-original-acceptance-2026-10-26.md)。
+
 日期：2026-09-30；代码基线：`572c297`。
 
 当前批次、下一批交付边界与外部缺口见[当前工程调度](roadmap-current.md)。
@@ -129,7 +131,7 @@ NOT_RUN不改写为PASS，也不推导平台/真机支持或发布授权。D01/D
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 完成（开发口径）：当前错误分类/机器输出及binding映射已交付；legacy兼容边界和平台/真机验证保留 |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：`655733c` 完成 AFC caller-limit 与有总期限/累计回复预算的 Browse，`f077674` 完成 Syslog 取消续读/terminal 原生前置主机验收；`2b906d7` 完成共同 owner/checked existing-trust 原生前置；`6f582c9` 完成有限 fresh device query/预算/TCP-Unix-TLS 主机子项；Python/C 句柄、绑定/示例及真机原验收尚未完成。见 [证据](validation/bounded-service-read-2026-10-08.md) |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：既有协议/CLI/session/native ownership 主机 profiles 已交付；本批完成 tunnel 全扫描 checked30s total、全局取消、paired/List 原错误跨 caller Drop 保留、8-slot 历史与退出报告，15s discovery/candidate 子期限保留；global retained metadata bytes、generic HTTP/upgrades/blocking/startup、physical freshness/reuse/restart/manual epoch、其余协议/清理及平台/真机原验收条件继续；`2b906d7` 完成原生 SDK owner 单一绝对期限/取消/准入子项。证据见 [扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：查询/停止隔离、同设备协调、4 个连接许可、snapshot admission、4096 failure/native retained owners 与 native joins 已交付；本批完成 whole-scan total/cancel、reconciliation/readiness waits、whole-clock publication/failure rollback 与 bounded discovery-error history，stop A 后 B 继续，whole expiry 不新增 backoff/ready；global metadata/bytes、physical freshness/reuse/restart/manual epoch、HTTP/upgrades/blocking/startup、CPU/平台/真机及其他原验收条件继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 原验收开发完成（2026-10-26用户确认按原范围收口）：设备协调/4并发、A等待时B查询停止1秒目标、重复建连/拔插停止竞态与扫描退避通过；见[逐条验收](validation/l02-original-acceptance-2026-10-26.md)。ESP/嵌套分片及完整owner等扩展欠账另列，未宣称完成；真实平台/设备证据仍NOT_RUN。 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 进行中：`1a604af` 完成 serve 可配置退避、持续预算/准确状态与原 owner/epoch 回收的主机子项验收；`8947fc1` 完成 manual 实际 route/原 grant 恢复、跨扫描 stop、过期发布回滚的主机子项；Darwin watch 基线/去重/断线语义及平台/真机验收继续。见 [证据](validation/manager-reconnect-2026-10-08.md) |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 进行中：同 fixture 修改前后 1/4/16、30s/104轮及独立60s资源归因主机子项已验收；文件/吞吐/长时间流/平台真机未完成 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 进行中：显式设备 existing-trust/Developer Mode/DDI signature 主机子项已验收，host schema1 保留、target schema2；`838c4ed` 完成显式既有 RSD route/完整目录/目标核对主机子项，未选择 route 时仍 not_probed；平台 USB/remoted/目录、DDI usability 与真机验收未完成。见 [RSD 证据](validation/doctor-rsd-syslog-2026-10-09.md) |

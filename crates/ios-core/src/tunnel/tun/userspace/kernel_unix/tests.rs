@@ -235,6 +235,259 @@ async fn renewed_clock_keeps_the_same_actual_blocking_join_after_real_elapsed_at
 }
 
 #[tokio::test]
+async fn shorter_concurrent_cleanup_waiter_cannot_strand_the_original_live_job() {
+    let bank = Arc::new(Semaphore::new(TOTAL));
+    let clock = RuntimeRoot::new(CleanupClock::new(), Some(&bank)).unwrap();
+    let slot = RuntimeRoot::new(BlockingSlot::new(), Some(&bank)).unwrap();
+    let ledger = Ledger::with_metadata(Some(&bank)).unwrap();
+    let entered = Arc::new(Notify::new());
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let body_clock = clock.clone();
+    let body_gate = gate.clone();
+    let body_entered = entered.clone();
+    let prepared = PreparedBlocking::prepare(&bank, || {
+        move || {
+            let _original = body_clock.live();
+            body_entered.notify_one();
+            let (lock, wake) = &*body_gate;
+            let mut open = lock.lock().unwrap();
+            while !*open {
+                open = wake.wait(open).unwrap();
+            }
+            drop(open);
+            // This is the same real job's next native boundary, reached only after
+            // another caller's shorter wait has actually elapsed.
+            let _still_live = body_clock.live();
+            Ok(())
+        }
+    })
+    .unwrap();
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    bank.close();
+    let original_deadline = Instant::now() + OBSERVE;
+    clock.set(original_deadline);
+    prepared.start(&slot, ParentRole::Smoltcp, ledger.clone());
+    entered.notified().await;
+    let shorter_deadline = Instant::now() + Duration::from_millis(30);
+    clock.set(shorter_deadline);
+    let short_elapsed = tokio::time::timeout_at(shorter_deadline, slot.join())
+        .await
+        .unwrap_err();
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_one();
+    let original_wait = tokio::time::timeout(Duration::from_millis(200), slot.join()).await;
+    let progressed_without_another_caller = original_wait.is_ok();
+    if !progressed_without_another_caller {
+        // Recover the original buggy job before asserting the red regression;
+        // never leave a parked blocking call behind on a failing test.
+        clock.set(Instant::now() + OBSERVE);
+        tokio::time::timeout(OBSERVE, slot.join()).await.unwrap();
+    }
+    ledger.result(None).unwrap();
+    drop((
+        short_elapsed,
+        original_wait,
+        clock,
+        slot,
+        ledger,
+        entered,
+        gate,
+        held,
+    ));
+    assert_eq!(bank.available_permits(), TOTAL);
+    assert!(
+        progressed_without_another_caller,
+        "a shorter waiter replaced the still-valid original cleanup deadline"
+    );
+}
+
+#[tokio::test]
+async fn collected_cleanup_panic_is_not_a_native_completion_certificate() {
+    let bank = Arc::new(Semaphore::new(TOTAL));
+    let (stream, mut peer) = tokio::io::duplex(1280);
+    let (engine, launch) = UserspaceTunDevice::prepare_private_validated_with_bank(
+        "fd00::2",
+        "fd00::1",
+        super::super::ValidatedMtu::new(1280).unwrap(),
+        stream,
+        bank.clone(),
+        1,
+        true,
+    )
+    .await
+    .unwrap();
+    launch().unwrap();
+    let native = KernelRuntime::prepare_with(
+        &engine,
+        bank.clone(),
+        plan(),
+        Instant::now() + OBSERVE,
+        |_| panic!("unstarted allocator must never be polled"),
+    )
+    .unwrap();
+    *native.control.before_undo.lock().unwrap() = Some(Box::new(|| {
+        std::panic::panic_any("actual original cleanup body panic");
+    }));
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    bank.close();
+    native.request_stop();
+    engine.request_stop();
+    tokio::join!(native.join_work(), engine.collect_original());
+    tokio::time::timeout(OBSERVE, native.undo_at(Instant::now() + OBSERVE))
+        .await
+        .unwrap();
+    assert!(native.undo.is_finished());
+    let error = native.work_result().unwrap_err();
+    let TunnelError::Phases(report) = &error else {
+        panic!("original phased JoinError required")
+    };
+    assert!(report
+        .primary_shared()
+        .unwrap()
+        .downcast_ref::<tokio::task::JoinError>()
+        .is_some_and(tokio::task::JoinError::is_panic));
+    let falsely_terminal = native.is_terminal();
+    native.release_flows();
+    let retained_flow = native.control.flow.lock().unwrap().is_some();
+    // Exercise the public handle boundary consumed by the CLI retirement
+    // registry: all joins can be certified while native cleanup is pending.
+    let handle = crate::TunnelHandle::new_prepared(
+        "unstarted-cleanup-panic-fixture".into(),
+        crate::TunnelInfo {
+            client_address: "fd00::2".into(),
+            server_address: "fd00::1".into(),
+            client_mtu: 1280,
+            server_rsd_port: 58783,
+        },
+        crate::TunMode::Kernel,
+        engine,
+    )
+    .with_prepared_kernel_for_test(native);
+    assert!(handle.has_pending_native_cleanup());
+    let public_error = handle.shutdown_status().unwrap_err();
+    let TunnelError::Phases(public_report) = &public_error else {
+        panic!("same phased original required")
+    };
+    assert!(public_report.joins_complete());
+    assert!(Arc::ptr_eq(
+        report.primary_shared().unwrap(),
+        public_report.primary_shared().unwrap()
+    ));
+    // The allocator trap was never called. Final Drop in this fixture releases
+    // only already joined transport/flow owners; it does not certify recovery
+    // of a real adapter after an exposed cleanup panic.
+    drop((error, public_error, handle, held));
+    assert_eq!(
+        tokio::time::timeout(OBSERVE, peer.read(&mut [0; 1]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    assert_eq!(bank.available_permits(), TOTAL);
+    assert!(!falsely_terminal && retained_flow,
+        "a genuine failed cleanup JoinError cannot certify native completion or free its flow lease");
+}
+
+#[tokio::test]
+async fn late_address_receipt_after_activation_expiry_is_undone_at_closed_zero() {
+    let bank = Arc::new(Semaphore::new(TOTAL));
+    let (stream, mut peer) = tokio::io::duplex(1280);
+    let (engine, launch) = UserspaceTunDevice::prepare_private_validated_with_bank(
+        "fd00::2",
+        "fd00::1",
+        super::super::ValidatedMtu::new(1280).unwrap(),
+        stream,
+        bank.clone(),
+        1,
+        true,
+    )
+    .await
+    .unwrap();
+    launch().unwrap();
+    let (device, observed) = LocalDevice::create(plan()).unwrap();
+    let gate = observed.delay_address_ack();
+    let deadline = Instant::now() + OBSERVE;
+    let native = KernelRuntime::prepare_with(&engine, bank.clone(), plan(), deadline, move |_| {
+        Ok(Device::from_local(device))
+    })
+    .unwrap();
+    let port = engine.quiesce_and_flush().await.unwrap();
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    bank.close();
+    let error = {
+        let mut activation =
+            std::pin::pin!(crate::tunnel::owner::phase_outcomes::activation_until(
+                deadline,
+                &native.control.hub,
+                engine.ledger(),
+                native.native_ledger(),
+                native.undo_ledger(),
+                native.activate(port),
+            ));
+        tokio::select! {
+            () = gate.entered() => {},
+            result = activation.as_mut() => panic!("activation ended before held original address result: {result:?}"),
+        }
+        activation.await.unwrap_err()
+    };
+    let TunnelError::Phases(report) = &error else {
+        panic!("actual activation expiry required")
+    };
+    assert!(report.elapsed().is_some());
+    assert!(!report.joins_complete());
+    assert!(!native.ready());
+    // Let the same in-flight native call return its genuine success receipt
+    // after the original caller expired, before any inverse or owner close.
+    gate.release();
+    tokio::time::timeout(OBSERVE, async {
+        tokio::join!(native.join_work(), engine.collect_original());
+        native.undo_at(Instant::now() + OBSERVE).await;
+    })
+    .await
+    .unwrap();
+    assert!(native.is_terminal());
+    let steps = observed.executed_steps();
+    assert_eq!(
+        steps
+            .iter()
+            .filter(|step| **step == LocalStep::AddAddress)
+            .count(),
+        1
+    );
+    assert!(!steps.contains(&LocalStep::AddRoute));
+    let undo = steps
+        .iter()
+        .position(|step| *step == LocalStep::UndoAddress)
+        .unwrap();
+    let close = steps
+        .iter()
+        .position(|step| *step == LocalStep::Close)
+        .unwrap();
+    assert!(undo < close);
+    engine.release_original();
+    native.release_flows();
+    assert_eq!(
+        tokio::time::timeout(OBSERVE, peer.read(&mut [0; 1]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    drop((error, gate, observed, native, engine, held));
+    assert_eq!(bank.available_permits(), TOTAL);
+}
+
+#[tokio::test]
 async fn successful_activation_and_bidirectional_packet_transfer() {
     let bank = Arc::new(Semaphore::new(TOTAL));
     let (stream, mut peer_stream) = tokio::io::duplex(1280);

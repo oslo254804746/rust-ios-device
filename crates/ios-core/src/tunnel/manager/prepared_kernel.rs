@@ -124,12 +124,6 @@ impl TunnelHandle {
                 kernel
                     .undo_at(cleanup_at.expect("validated same cleanup clock"))
                     .await;
-                #[cfg(target_os = "windows")]
-                {
-                    runtime.release_original();
-                    kernel.release_flows();
-                }
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 if kernel.is_terminal() {
                     runtime.release_original();
                     kernel.release_flows();

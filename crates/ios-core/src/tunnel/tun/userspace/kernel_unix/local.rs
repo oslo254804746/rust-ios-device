@@ -5,7 +5,7 @@
 use std::{
     os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd},
     os::unix::net::UnixDatagram,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     time::Instant,
 };
 
@@ -42,6 +42,29 @@ pub struct LocalHook {
     pub injected_error: Option<NativeError>,
     pub address_readiness: Option<AddressReadiness>,
     pub executed_steps: Vec<LocalStep>,
+    address_ack: Option<Arc<AddressAckState>>,
+}
+
+struct AddressAckState {
+    entered: tokio::sync::Notify,
+    open: Mutex<bool>,
+    changed: Condvar,
+}
+
+pub struct AddressAckGate(Arc<AddressAckState>);
+impl AddressAckGate {
+    pub async fn entered(&self) {
+        self.0.entered.notified().await;
+    }
+    pub fn release(&self) {
+        *self.0.open.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        self.0.changed.notify_all();
+    }
+}
+impl Drop for AddressAckGate {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 pub struct LocalDevice {
@@ -63,6 +86,17 @@ pub struct LocalHandle {
 }
 
 impl LocalHandle {
+    /// The original address call mutates its owned row, then waits before
+    /// returning that same call's receipt. No second request or fake join.
+    pub fn delay_address_ack(&self) -> AddressAckGate {
+        let state = Arc::new(AddressAckState {
+            entered: tokio::sync::Notify::new(),
+            open: Mutex::new(false),
+            changed: Condvar::new(),
+        });
+        self.hook.lock().unwrap().address_ack = Some(state.clone());
+        AddressAckGate(state)
+    }
     pub fn set_fail_at(&self, step: LocalStep, error: NativeError) {
         let mut guard = self.hook.lock().unwrap();
         guard.fail_at = Some(step);
@@ -80,6 +114,16 @@ impl LocalHandle {
 }
 
 impl LocalDevice {
+    fn wait_address_ack(&self) {
+        let state = self.hook.lock().unwrap().address_ack.take();
+        if let Some(state) = state {
+            state.entered.notify_one();
+            let mut open = state.open.lock().unwrap_or_else(|p| p.into_inner());
+            while !*open {
+                open = state.changed.wait(open).unwrap_or_else(|p| p.into_inner());
+            }
+        }
+    }
     pub fn create(plan: Plan) -> Result<(Self, LocalHandle), NativeError> {
         let (sock_a, sock_b) = UnixDatagram::pair().map_err(NativeError::from)?;
         sock_a.set_nonblocking(true).map_err(NativeError::from)?;
@@ -198,12 +242,14 @@ impl LocalDevice {
             let receipt = AddressReceipt::test_new(id, self.plan.client, self.plan.prefix, derived);
             self.address = Some(receipt);
             self.derived_local = Some(derived);
+            self.wait_address_ack();
             Ok(receipt)
         }
         #[cfg(target_os = "macos")]
         {
             let receipt = AddressReceipt::test_new(id, self.plan.client, self.plan.prefix);
             self.address = Some(receipt);
+            self.wait_address_ack();
             Ok(receipt)
         }
     }
