@@ -9,6 +9,7 @@ use crate::xpc::{XpcMessage, XpcValue};
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+pub mod asr;
 mod error_mapping;
 pub mod preflight;
 pub mod restored;

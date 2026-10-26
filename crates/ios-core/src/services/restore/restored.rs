@@ -207,6 +207,53 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoredClient<S> {
         self.receive().await
     }
 
+    /// Serve a real SystemImageData request through the separately selected ASR
+    /// port. `image` must be the selected identity's OS member extracted to a
+    /// seekable reader, never a preflight dictionary. Connect and transfer share
+    /// this restore's total deadline and cancellation token.
+    pub async fn send_system_image<R, DataStream, F, Fut>(
+        &mut self,
+        incoming: &Dictionary,
+        image: &mut R,
+        connect_port: F,
+    ) -> Result<super::asr::AsrTransferReceipt, RestoreError>
+    where
+        R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin,
+        DataStream: AsyncRead + AsyncWrite + Unpin,
+        F: FnOnce(u16) -> Fut,
+        Fut: Future<Output = Result<DataStream, RestoreError>>,
+    {
+        self.live()?;
+        if !self.started
+            || incoming.get("MsgType").and_then(Value::as_string) != Some("DataRequestMsg")
+            || incoming.get("DataType").and_then(Value::as_string) != Some("SystemImageData")
+        {
+            return Err(RestoreError::Protocol(
+                "unsupported ASR system-image route".into(),
+            ));
+        }
+        let port = match incoming.get("DataPort") {
+            None => super::asr::DEFAULT_PORT,
+            Some(value) => value
+                .as_unsigned_integer()
+                .and_then(|value| u16::try_from(value).ok())
+                .filter(|port| *port != 0)
+                .ok_or_else(|| RestoreError::Protocol("invalid ASR DataPort".into()))?,
+        };
+        // Once this request is being served, dropping the caller must not make
+        // an incomplete ASR transfer look reusable on the control connection.
+        self.terminal = true;
+        let result = bounded(self.deadline, &self.cancel, async {
+            let stream = connect_port(port).await?;
+            super::asr::send_image_until(stream, image, self.deadline, self.cancel.clone()).await
+        })
+        .await;
+        if result.is_ok() {
+            self.terminal = false;
+        }
+        result
+    }
+
     /// Respond to a correlated synchronous FirmwareUpdaterData request on the
     /// control transport. DataPort and AsyncDataRequest need a separate owner
     /// and are explicitly rejected. Tickets/header must already be personalized.

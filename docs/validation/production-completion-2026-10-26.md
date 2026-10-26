@@ -34,3 +34,11 @@ Core installation30/0、simlocation11/0；CLI apps46/0、location定向通过，
 `ios-cli` 现在同时提供库，公开现有 TestWorkflowEngine/Args/RunOptions；binary仅调用同一run_cli。没有复制编排引擎，runtest/runxctest仍调用原run。XPC `call_observed` 在完整请求本地flush后记录submission；CoreDevice launch把此观察与已确认PID分开。现代启动在launch前保存同bundle旧PID基线，若已完整发送但PID未确认，cleanup在原服务reconnector上查询新进程，只对唯一、同bundle且不在旧基线的PID发送kill。未能查回不把关socket当成功，返回RunnerLaunchUnconfirmed或原重连/查询错误，继续testmanager/native收尾。
 
 验证：runtest12/0，统一engine22/0，runxctest10/0，XPC18/0（含真实duplex完整发送后caller Drop、不可复用及peer EOF）。日志 `.git/completion-{workflow,engine,runxctest,xpc}.log`。公开API外部集成测试已注册，最终批次执行。尚未用这些结果声称现代canonical/shim/DTX/AppService全阶段假服务已经全验收。
+
+## F06 ASR 数据端口
+
+新增 `restore::asr::send_image`，实现固定上游的无长度头XML Initiate/offer、OOBData随机范围读取、Payload切换、128KiB分块和协商后每块SHA-1。复用调用方可seek镜像，仅保留一个块，不把ZIP预检字典或AP ticket替换成固件。`RestoredClient::send_system_image`实际解析SystemImageData/DataPort，通过调用方提供的同设备端口连接器执行；与原restored操作共用总deadline/cancel。开始服务该请求即将控制owner标为不可复用，完成后才恢复；caller Drop或失败不能继续接收迟到消息。ASR收据只描述本地发送，不能推进恢复到Completed。
+
+来源：[固定ASR实现](https://github.com/doronz88/pymobiledevice3/blob/03ba2270/pymobiledevice3/restore/asr.py)、[send_filesystem](https://github.com/doronz88/pymobiledevice3/blob/03ba2270/pymobiledevice3/restore/restore.py)。
+
+Core restore85/0（新增4个ASR wire与1个restored实际DataPort接线测试，包含OOB溢出、校验、timeout原Elapsed、取消/EOF）；`.git/completion-asr-final.log`。首轮泛型重名编译失败已修，不算通过。原未服务SystemImageData的旧恢复loop拒绝断言保留，新增API不声称该旧loop已支持所有data类型。没有接通CLI完整Update；USB recovery/ECID重新枚举、各组件IMG4/TBM/nonce-slot、FDR与完整firmware dispatch仍需实现。

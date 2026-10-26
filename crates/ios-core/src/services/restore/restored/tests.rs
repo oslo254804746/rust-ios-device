@@ -65,6 +65,75 @@ async fn review_regression_unserved_data_port_never_completes() {
 }
 use tokio::io::{AsyncReadExt, DuplexStream};
 
+#[tokio::test]
+async fn system_image_data_port_uses_actual_asr_transport_and_does_not_finish_restore() {
+    use tokio::io::AsyncWriteExt;
+    let (stream, mut peer) = tokio::io::duplex(8192);
+    let control = tokio::spawn(async move {
+        handshake(&mut peer, 42).await;
+        assert_eq!(
+            read(&mut peer).await["Request"].as_string(),
+            Some("StartRestore")
+        );
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType", Value::String("DataRequestMsg".into())),
+                ("DataType", Value::String("SystemImageData".into())),
+                ("DataPort", Value::Integer(4321u64.into())),
+            ]),
+        )
+        .await;
+        peer
+    });
+    let (data, mut data_peer) = tokio::io::duplex(8192);
+    let asr = tokio::spawn(async move {
+        data_peer.write_all(b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Command</key><string>Initiate</string></dict></plist>\n").await.unwrap();
+        let mut offer = Vec::new();
+        while !offer.ends_with(b"</plist>\n") {
+            offer.push(data_peer.read_u8().await.unwrap());
+        }
+        let offer: Dictionary = plist::from_bytes(&offer).unwrap();
+        assert_eq!(
+            offer["Payload"].as_dictionary().unwrap()["Size"].as_unsigned_integer(),
+            Some(3)
+        );
+        data_peer.write_all(b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Command</key><string>Payload</string></dict></plist>\n").await.unwrap();
+        let mut bytes = [0; 3];
+        data_peer.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"OS!");
+        assert_eq!(data_peer.read(&mut [0; 1]).await.unwrap(), 0);
+    });
+    let mut client =
+        RestoredClient::connect(stream, 42, Duration::from_secs(2), OperationCancel::new())
+            .await
+            .unwrap();
+    client
+        .start_update(
+            &Value::Integer(15u64.into()),
+            Dictionary::from_iter([("RestoreBehavior", Value::String("Update".into()))]),
+        )
+        .await
+        .unwrap();
+    let incoming = client.next_message().await.unwrap();
+    let receipt = client
+        .send_system_image(
+            &incoming,
+            &mut std::io::Cursor::new(b"OS!".to_vec()),
+            |port| async move {
+                assert_eq!(port, 4321);
+                Ok(data)
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.image_bytes_sent, 3);
+    assert!(!client.terminal);
+    drop(client);
+    drop(control.await.unwrap());
+    asr.await.unwrap();
+}
+
 async fn read(peer: &mut DuplexStream) -> Dictionary {
     read_plist_frame(peer, MAX_FRAME).await.unwrap()
 }
