@@ -1,4 +1,68 @@
 use super::*;
+
+#[test]
+fn review_regression_missing_status_is_not_success() {
+    let event = restore_event_from_plist(&Dictionary::from_iter([(
+        "MsgType".to_owned(),
+        Value::String("StatusMsg".into()),
+    )]));
+    assert!(!matches!(
+        event,
+        RestoreLifecycleEvent::Status {
+            code: 0,
+            finished: true,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn review_regression_unserved_data_port_never_completes() {
+    let (stream, mut peer) = tokio::io::duplex(32768);
+    let remote = tokio::spawn(async move {
+        handshake(&mut peer, 42).await;
+        let _ = read(&mut peer).await;
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("DataRequestMsg".into())),
+                (
+                    "DataType".to_owned(),
+                    Value::String("SystemImageData".into()),
+                ),
+                ("DataPort".to_owned(), Value::Integer(1234.into())),
+            ]),
+        )
+        .await;
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("StatusMsg".into())),
+                ("Status".to_owned(), Value::Integer(0.into())),
+            ]),
+        )
+        .await;
+    });
+    let cancel = OperationCancel::new();
+    let mut client = RestoredClient::connect(stream, 42, Duration::from_secs(5), cancel.clone())
+        .await
+        .unwrap();
+    let mut sm = RestoreStateMachine::new();
+    sm.receive_nonces(Some(vec![1]), None).unwrap();
+    let result = run_restored_update_loop(
+        &mut client,
+        sm,
+        Dictionary::from_iter([("RestoreBehavior".to_owned(), Value::String("Update".into()))]),
+        |_, _| panic!("unsupported route must not call firmware provider"),
+        &cancel,
+    )
+    .await;
+    remote.await.unwrap();
+    assert!(
+        result.is_err(),
+        "unserved data request must not count as a successful update"
+    );
+}
 use tokio::io::{AsyncReadExt, DuplexStream};
 
 async fn read(peer: &mut DuplexStream) -> Dictionary {

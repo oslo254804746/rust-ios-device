@@ -287,10 +287,12 @@ pub fn restore_event_from_plist(dict: &Dictionary) -> RestoreLifecycleEvent {
             progress: dict.get("Progress").and_then(Value::as_unsigned_integer),
         },
         Some("StatusMsg") => {
-            let code = dict
-                .get("Status")
-                .and_then(Value::as_unsigned_integer)
-                .unwrap_or(0);
+            let Some(code) = dict.get("Status").and_then(Value::as_unsigned_integer) else {
+                return RestoreLifecycleEvent::Unknown {
+                    msg_type: Some("MalformedStatusMsg".into()),
+                    raw: indexmap::IndexMap::new(),
+                };
+            };
             RestoreLifecycleEvent::Status {
                 code,
                 message: super::restore_status_message(code).map(ToString::to_string),
@@ -338,10 +340,11 @@ pub fn restore_event_from_plist(dict: &Dictionary) -> RestoreLifecycleEvent {
     }
 }
 
-/// Run the restored Update execution loop over a recovery-mode connection.
+/// Experimental restored transport loop for an already prepared recovery peer.
 ///
-/// Drives the state machine through StartRestore, real ProgressMsg, CheckpointMsg,
-/// chunked FirmwareUpdaterData transfers, and verified terminal status.
+/// This is not a complete Update executor: the caller must establish the machine/build
+/// plan, personalization, recovery transport and proven restore options. Unsupported
+/// requests fail rather than being counted as served. CLI execution remains disabled.
 pub async fn run_restored_update_loop<S, F>(
     client: &mut RestoredClient<S>,
     mut state_machine: RestoreStateMachine,
@@ -354,8 +357,8 @@ where
     F: FnMut(&str, &Dictionary) -> Result<(Dictionary, Vec<u8>), RestoreError>,
 {
     let protocol_version = client.protocol_version().clone();
-    client.start_update(&protocol_version, options).await?;
     state_machine.finish_tss_phase()?;
+    client.start_update(&protocol_version, options).await?;
 
     loop {
         if cancel.is_cancelled() {
@@ -369,7 +372,6 @@ where
         let incoming = match client.next_message().await {
             Ok(msg) => msg,
             Err(err) => {
-                state_machine.cancel();
                 return Err(failed_execution(&state_machine, err));
             }
         };
@@ -379,29 +381,57 @@ where
         if let RestoreLifecycleEvent::DataRequest {
             data_type: Some(ref dt),
             data_port,
+            async_request,
             ..
         } = event
         {
-            if dt == "FirmwareUpdaterData" {
+            if dt == "FirmwareUpdaterData" && data_port.is_none() && !async_request {
                 let updater_name = incoming
                     .get("Arguments")
                     .and_then(Value::as_dictionary)
                     .and_then(|args| args.get("UpdaterName"))
                     .and_then(Value::as_string)
-                    .unwrap_or("UnknownUpdater");
-                let (header, firmware) = firmware_provider(updater_name, &incoming)?;
-                let fw_len = firmware.len();
-                client
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| RestoreError::Protocol("missing restored UpdaterName".into()))?;
+                let (header, firmware) = firmware_provider(updater_name, &incoming)
+                    .map_err(|error| failed_execution(&state_machine, error))?;
+                if firmware.is_empty() {
+                    return Err(failed_execution(
+                        &state_machine,
+                        RestoreError::Protocol(
+                            "restored firmware provider returned no component bytes".into(),
+                        ),
+                    ));
+                }
+                let before = client.firmware_bytes_written();
+                let sent = client
                     .send_firmware_response(&incoming, header, &firmware)
-                    .await?;
-                state_machine.record_bytes_transferred(fw_len);
+                    .await;
+                state_machine
+                    .record_bytes_transferred((client.firmware_bytes_written() - before) as usize);
+                sent.map_err(|error| failed_execution(&state_machine, error))?;
                 state_machine.record_data_request_served(format!("{dt}:{updater_name}"));
-            } else if data_port.is_some() {
-                // Secondary data port request (e.g. ASR / FDR / AsyncDataRequest)
-                state_machine.record_data_request_served(format!("{dt}:DataPort"));
             } else {
-                state_machine.record_data_request_served(dt.clone());
+                return Err(failed_execution(
+                    &state_machine,
+                    RestoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        format!(
+                            "unserved restored data request: {dt}; no secondary transport owner"
+                        ),
+                    )),
+                ));
             }
+        } else if matches!(
+            event,
+            RestoreLifecycleEvent::DataRequest { .. } | RestoreLifecycleEvent::Unknown { .. }
+        ) {
+            return Err(failed_execution(
+                &state_machine,
+                RestoreError::Protocol(
+                    "malformed or unsupported restored lifecycle message".into(),
+                ),
+            ));
         }
 
         state_machine.process_event(&event)?;
