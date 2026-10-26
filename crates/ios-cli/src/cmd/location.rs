@@ -68,14 +68,21 @@ impl LocationCmd {
                     skip_tunnel: true,
                 };
                 let device = connect(&udid, opts).await?;
-                let mut stream = device
+                let stream = device
                     .connect_service_with_timeout(
                         ios_core::simlocation::SERVICE_NAME,
                         std::time::Duration::from_secs(30),
                     )
                     .await?;
-                let count = ios_core::simlocation::replay_gpx_route(&mut *stream, &gpx)
-                    .await
+                let mut client = ios_core::simlocation::SimLocationClient::new(stream);
+                client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+                let count = tokio::select! {
+                    result = client.replay_gpx_route(&gpx) => result,
+                    signal = tokio::signal::ctrl_c() => {
+                        signal?;
+                        return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "GPX replay cancelled; previously sent locations may remain active").into());
+                    }
+                }
                     .map_err(|e| anyhow::Error::new(e).context("simlocation GPX replay failed"))?;
                 crate::output::outln!("Replayed {count} GPX point(s) from {}", file.display());
             }

@@ -20,3 +20,11 @@
 协议来源：[固定 pymobiledevice3 mobile_image_mounter.py](https://github.com/doronz88/pymobiledevice3/blob/03ba2270/pymobiledevice3/services/mobile_image_mounter.py)，`request_personalization_manifest` 按 BoardId/ChipID 选择，不比较设备 build；`PERSONALIZED_IMAGE_MIN_VERSION` 为17。
 
 执行 `cargo test -p ios-cli --all-features cmd::doctor:: -- --test-threads=4`：72 PASS / 0 FAIL / 1 原 child fixture ignored。日志 `.git/completion-doctor.log`。六主项计数暂不调整，后续包完成后统一登记。
+
+## L01 安装与 GPX 生产消费者
+
+新增 InstallationProxy `install_with_timeout`/`upgrade_with_timeout`，请求与所有进度回复共享一个总 clock。实际 apps install/upgrade 使用30秒服务建连、300秒操作总期限与 Ctrl-C；停止不声明设备安装已回滚，已发送后效果可能未知。部分发送/等待取消使原连接不可复用，迟到 Complete 不能被下一操作消费。暂存路径清理独立5秒，原操作和原清理错误均保留。
+
+GPX CLI 现在使用 SimLocationClient 的逐点写入 owner（30秒请求），计划轨迹等待属于可取消 idle，Ctrl-C 关闭原客户端；此前已发送的位置可能仍有效。保留旧 raw API 的兼容行为。
+
+Core installation30/0、simlocation11/0；CLI apps46/0、location定向通过，日志 `.git/completion-{install,gpx,apps-cli,location-cli}.log`。首次新fixture编译类型歧义已修，不作通过证据。既有H2/DTX/AFC等未变profiles复用交接证据；未凭这两个消费者声明全仓库L01完成。

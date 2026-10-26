@@ -306,6 +306,101 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
         self.wait_for_completion().await
     }
 
+    /// Install with one total budget for the request and all progress replies.
+    /// Dropping after wire progress invalidates this connection. Expiry is not
+    /// an installation rollback: the remote effect remains unknown.
+    pub async fn install_with_timeout(
+        &mut self,
+        package_path: &str,
+        budget: std::time::Duration,
+    ) -> Result<(), IpError> {
+        self.mutate_with_timeout("Install", package_path, budget)
+            .await
+    }
+
+    /// Upgrade under the same ownership contract as `install_with_timeout`.
+    pub async fn upgrade_with_timeout(
+        &mut self,
+        package_path: &str,
+        budget: std::time::Duration,
+    ) -> Result<(), IpError> {
+        self.mutate_with_timeout("Upgrade", package_path, budget)
+            .await
+    }
+
+    async fn mutate_with_timeout(
+        &mut self,
+        command: &str,
+        package_path: &str,
+        budget: std::time::Duration,
+    ) -> Result<(), IpError> {
+        self.ensure_usable()?;
+        if budget.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "installation budget is zero",
+            )
+            .into());
+        }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(budget)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "installation deadline overflow",
+                )
+            })?;
+        let mut guard = BrowseGuard {
+            stream: &mut self.stream,
+            usable: &mut self.usable,
+            progressed: false,
+            failed: false,
+            completed: false,
+        };
+        let mut terminal = false;
+        let result = {
+            let mut io = BrowseIo {
+                inner: &mut *guard.stream,
+                progressed: &mut guard.progressed,
+                failed: &mut guard.failed,
+                deadline,
+            };
+            tokio::time::timeout_at(deadline, async {
+                send_plist(
+                    &mut io,
+                    &serde_json::json!({
+                        "Command": command, "PackagePath": package_path, "ClientOptions": {}
+                    }),
+                )
+                .await?;
+                loop {
+                    let data = recv_plist_raw(&mut io).await?;
+                    let reply: plist::Dictionary = plist::from_bytes(&data)?;
+                    terminal =
+                        reply.get("Status").and_then(plist::Value::as_string) == Some("Complete");
+                    if let Some(error) = reply.get("Error") {
+                        return Err(IpError::Install(format!(
+                            "{error:?}: {:?}",
+                            reply.get("ErrorDescription")
+                        )));
+                    }
+                    if terminal {
+                        return Ok(());
+                    }
+                    // Progress does not reset the total clock. Yield even for
+                    // an always-ready peer so cancellation/timers can run.
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|elapsed| {
+                IpError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed))
+            })?
+        };
+        guard.completed = terminal && !guard.failed;
+        result
+    }
+
     /// List all user-installed apps.
     pub async fn list_user_apps(&mut self) -> Result<Vec<AppInfo>, IpError> {
         self.browse("User", true, &[]).await
@@ -826,6 +921,97 @@ mod tests {
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn actual_install_progress_does_not_reset_total_and_late_reply_cannot_be_reused() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (stream, mut peer) = tokio::io::duplex(8192);
+        let service = tokio::spawn(async move {
+            let size = peer.read_u32().await.unwrap() as usize;
+            let mut bytes = vec![0; size];
+            peer.read_exact(&mut bytes).await.unwrap();
+            let request: plist::Dictionary = plist::from_bytes(&bytes).unwrap();
+            assert_eq!(request["Command"].as_string(), Some("Install"));
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            peer.write_all(&plist_frame(plist::Value::Dictionary(
+                plist::Dictionary::from_iter([
+                    ("Status", plist::Value::String("Installing".into())),
+                    ("PercentComplete", plist::Value::Integer(40u64.into())),
+                ]),
+            )))
+            .await
+            .unwrap();
+            peer
+        });
+        let mut proxy = InstallationProxy::new(stream);
+        let started = tokio::time::Instant::now();
+        let error = proxy
+            .install_with_timeout("/PublicStaging/a.ipa", Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(started.elapsed(), Duration::from_millis(100));
+        assert!(
+            matches!(&error, IpError::Io(e) if e.kind() == std::io::ErrorKind::TimedOut && e.get_ref().unwrap().is::<tokio::time::error::Elapsed>())
+        );
+        assert!(!proxy.is_usable());
+        let mut peer = service.await.unwrap();
+        peer.write_all(&plist_frame(plist::Value::Dictionary(
+            plist::Dictionary::from_iter([("Status", plist::Value::String("Complete".into()))]),
+        )))
+        .await
+        .unwrap();
+        assert!(proxy.install("/must-not-repeat").await.is_err());
+        drop(proxy);
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn actual_install_partial_send_drop_invalidates_and_zero_budget_does_no_io() {
+        use tokio::io::AsyncReadExt;
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut proxy = InstallationProxy::new(stream);
+        assert!(proxy
+            .install_with_timeout("/a", Duration::ZERO)
+            .await
+            .is_err());
+        assert!(proxy.is_usable());
+        {
+            let future = proxy.install_with_timeout("/a", Duration::from_secs(1));
+            tokio::pin!(future);
+            tokio::select! {
+                result = &mut future => panic!("unexpected completion: {result:?}"),
+                read = peer.read_u8() => { read.unwrap(); }
+            }
+        }
+        assert!(!proxy.is_usable());
+        assert!(proxy.upgrade("/a").await.is_err());
+        drop(proxy);
+        let mut remaining = Vec::new();
+        peer.read_to_end(&mut remaining).await.unwrap();
+        assert!(remaining.len() <= 1);
+    }
+
+    #[tokio::test]
+    async fn bounded_install_and_upgrade_consume_all_progress_and_preserve_completed_connection() {
+        let complete = || {
+            plist_frame(plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Status",
+                plist::Value::String("Complete".into()),
+            )])))
+        };
+        let stream = ResponseStream::with_frames(vec![complete(), complete()]);
+        let mut proxy = InstallationProxy::new(stream);
+        proxy
+            .install_with_timeout("/a", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(proxy.is_usable());
+        proxy
+            .upgrade_with_timeout("/a", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(proxy.is_usable());
+    }
 
     #[derive(Default)]
     struct RecordingStream {
