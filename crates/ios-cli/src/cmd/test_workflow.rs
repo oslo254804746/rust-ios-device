@@ -753,6 +753,147 @@ pub(crate) async fn finish_workflow(
     )
 }
 
+/// Read-only preflight on device using an active ImageMounter client:
+/// checks Developer Mode and DDI readiness, returning actionable diagnostics if requirements are not met.
+pub async fn preflight_device_readiness_with_client<S>(
+    client: &mut ios_core::imagemounter::ImageMounterClient<S>,
+    udid: &str,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
+    // 1. Check Developer Mode status
+    match client.query_developer_mode_status_checked().await {
+        Ok(Some(false)) => {
+            anyhow::bail!(
+                "Developer Mode is disabled on device '{udid}'. Enable it under Settings -> Privacy & Security -> Developer Mode and restart device before running tests."
+            );
+        }
+        Ok(Some(true)) | Ok(None) => {}
+        Err(e) => {
+            tracing::debug!(error = %e, "preflight: developer mode status query returned error, continuing");
+        }
+    }
+
+    // 2. Check DDI readiness: look up image signatures or CopyDevices
+    let dev_sig = client.lookup_image_signatures_checked("Developer").await;
+    let pers_sig = client.lookup_image_signatures_checked("Personalized").await;
+    let has_signatures = match (&dev_sig, &pers_sig) {
+        (Ok(Some(dev)), _) if dev.iter().any(|s| !s.is_empty()) => true,
+        (_, Ok(Some(pers))) if pers.iter().any(|s| !s.is_empty()) => true,
+        _ => false,
+    };
+    if !has_signatures {
+        let copy_devices = client.copy_devices().await;
+        let has_mounted = match copy_devices {
+            Ok(devices) => !devices.is_empty(),
+            Err(_) => false,
+        };
+        if !has_mounted && (dev_sig.is_ok() || pers_sig.is_ok()) {
+            anyhow::bail!(
+                "Developer Disk Image (DDI) is not mounted on device '{udid}'. Mount DDI using 'ios ddi mount' before running tests."
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Perform read-only preflight on the device at `udid` before modifying any state.
+pub async fn preflight_device_readiness(udid: &str, deadline: Instant) -> Result<()> {
+    let connect_opts = ios_core::device::ConnectOptions {
+        tun_mode: ios_core::TunMode::Userspace,
+        pair_record_path: None,
+        skip_tunnel: true,
+    };
+    let connect_fut = async {
+        let device = Box::pin(ios_core::connect(udid, connect_opts)).await?;
+        let stream = match Box::pin(device.connect_service(ios_core::imagemounter::SERVICE_NAME))
+            .await
+        {
+            Ok(stream) => stream,
+            Err(e) => {
+                tracing::debug!(error = %e, "preflight: unable to connect to image mounter, skipping readiness check");
+                return Ok(());
+            }
+        };
+        let mut client = ios_core::imagemounter::ImageMounterClient::new(stream);
+        preflight_device_readiness_with_client(&mut client, udid).await
+    };
+
+    tokio::time::timeout_at(deadline, connect_fut)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "test workflow preflight: deadline expired while checking device readiness"
+            )
+        })?
+}
+
+/// Reusable workflow orchestrator owner that coordinates execution across all phases (F02):
+/// 1. Preflight (arguments & read-only device checks)
+/// 2. Explicit opt-in installation (never replayed on retries)
+/// 3. Launch & result collection (with bounded recorder and failed selector retries)
+/// 4. Cleanup (service termination before native retirement)
+pub struct TestWorkflowEngine<'a> {
+    pub udid: &'a str,
+    pub workflow: &'a TestWorkflowArgs,
+    pub deadline: Instant,
+    #[allow(dead_code)]
+    pub wait: bool,
+    #[allow(dead_code)]
+    pub junit_output: Option<&'a Path>,
+}
+
+impl<'a> TestWorkflowEngine<'a> {
+    pub fn new(
+        udid: &'a str,
+        workflow: &'a TestWorkflowArgs,
+        deadline: Instant,
+        wait: bool,
+        junit_output: Option<&'a Path>,
+    ) -> Self {
+        Self {
+            udid,
+            workflow,
+            deadline,
+            wait,
+            junit_output,
+        }
+    }
+
+    /// Execute read-only preflight checks (both arguments and device readiness).
+    pub async fn preflight(&self) -> Result<()> {
+        self.workflow.preflight()?;
+        preflight_device_readiness(self.udid, self.deadline).await
+    }
+
+    /// Install explicitly requested packages, recording them in `app_tracker`.
+    /// Never called during retries to avoid duplicating side effects.
+    pub async fn install_explicit_packages(
+        &self,
+        app_tracker: &mut AppLifecycleTracker,
+    ) -> Result<()> {
+        if let Some(app_path) = self.workflow.install_app.as_deref() {
+            tokio::time::timeout_at(
+                self.deadline,
+                install_package_if_present(self.udid, Some(app_path), app_tracker),
+            )
+            .await
+            .context("XCTest deadline expired during application package installation")??;
+        }
+        if let Some(runner_path) = self.workflow.install_runner.as_deref() {
+            tokio::time::timeout_at(
+                self.deadline,
+                install_package_if_present(self.udid, Some(runner_path), app_tracker),
+            )
+            .await
+            .context("XCTest deadline expired during test runner package installation")??;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,6 +1236,7 @@ mod tests {
         let summary = TestRunSummary {
             began: true,
             finished: true,
+            logs_truncated: false,
             total_tests: 2,
             failed_tests: 1,
             skipped_tests: 0,
@@ -1140,6 +1282,7 @@ mod tests {
         let mut primary = TestRunSummary {
             began: true,
             finished: true,
+            logs_truncated: false,
             total_tests: 2,
             failed_tests: 1,
             skipped_tests: 0,
@@ -1179,6 +1322,7 @@ mod tests {
         let rerun = TestRunSummary {
             began: true,
             finished: true,
+            logs_truncated: false,
             total_tests: 1,
             failed_tests: 0,
             skipped_tests: 0,
@@ -1331,5 +1475,120 @@ mod tests {
                 .kind(),
             std::io::ErrorKind::PermissionDenied
         );
+    }
+
+    #[tokio::test]
+    async fn preflight_detects_disabled_developer_mode_and_returns_actionable_error() {
+        let (client_stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = ios_core::imagemounter::ImageMounterClient::new(client_stream);
+
+        let server = async move {
+            let req: plist::Dictionary = ios_core::recv_lockdown(&mut peer).await.unwrap();
+            assert_eq!(req["Command"].as_string(), Some("QueryDeveloperModeStatus"));
+            let mut resp = plist::Dictionary::new();
+            resp.insert("DeveloperModeStatus".into(), plist::Value::Boolean(false));
+            ios_core::send_lockdown(&mut peer, &resp).await.unwrap();
+        };
+
+        let client_work = async move {
+            let err = preflight_device_readiness_with_client(&mut client, "test-udid-123")
+                .await
+                .unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("Developer Mode is disabled on device 'test-udid-123'"));
+            assert!(err
+                .to_string()
+                .contains("Settings -> Privacy & Security -> Developer Mode"));
+        };
+
+        tokio::join!(server, client_work);
+    }
+
+    #[tokio::test]
+    async fn preflight_detects_unmounted_ddi_and_returns_actionable_error() {
+        let (client_stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = ios_core::imagemounter::ImageMounterClient::new(client_stream);
+
+        let server = async move {
+            // 1. QueryDeveloperModeStatus -> true
+            let req: plist::Dictionary = ios_core::recv_lockdown(&mut peer).await.unwrap();
+            assert_eq!(req["Command"].as_string(), Some("QueryDeveloperModeStatus"));
+            let mut resp = plist::Dictionary::new();
+            resp.insert("DeveloperModeStatus".into(), plist::Value::Boolean(true));
+            ios_core::send_lockdown(&mut peer, &resp).await.unwrap();
+
+            // 2. LookupImage Developer -> empty
+            let req: plist::Dictionary = ios_core::recv_lockdown(&mut peer).await.unwrap();
+            assert_eq!(req["Command"].as_string(), Some("LookupImage"));
+            let mut resp = plist::Dictionary::new();
+            resp.insert("ImageSignature".into(), plist::Value::Array(vec![]));
+            ios_core::send_lockdown(&mut peer, &resp).await.unwrap();
+
+            // 3. LookupImage Personalized -> empty
+            let req: plist::Dictionary = ios_core::recv_lockdown(&mut peer).await.unwrap();
+            assert_eq!(req["Command"].as_string(), Some("LookupImage"));
+            let mut resp = plist::Dictionary::new();
+            resp.insert("ImageSignature".into(), plist::Value::Array(vec![]));
+            ios_core::send_lockdown(&mut peer, &resp).await.unwrap();
+
+            // 4. CopyDevices -> empty EntryList
+            let req: plist::Dictionary = ios_core::recv_lockdown(&mut peer).await.unwrap();
+            assert_eq!(req["Command"].as_string(), Some("CopyDevices"));
+            let mut resp = plist::Dictionary::new();
+            resp.insert("EntryList".into(), plist::Value::Array(vec![]));
+            ios_core::send_lockdown(&mut peer, &resp).await.unwrap();
+        };
+
+        let client_work = async move {
+            let err = preflight_device_readiness_with_client(&mut client, "test-udid-456")
+                .await
+                .unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("Developer Disk Image (DDI) is not mounted on device 'test-udid-456'"));
+            assert!(err.to_string().contains("ios ddi mount"));
+        };
+
+        tokio::join!(server, client_work);
+    }
+
+    #[tokio::test]
+    async fn preflight_succeeds_when_developer_mode_and_ddi_are_ready() {
+        let (client_stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = ios_core::imagemounter::ImageMounterClient::new(client_stream);
+
+        let server = async move {
+            // 1. QueryDeveloperModeStatus -> true
+            let req: plist::Dictionary = ios_core::recv_lockdown(&mut peer).await.unwrap();
+            assert_eq!(req["Command"].as_string(), Some("QueryDeveloperModeStatus"));
+            let mut resp = plist::Dictionary::new();
+            resp.insert("DeveloperModeStatus".into(), plist::Value::Boolean(true));
+            ios_core::send_lockdown(&mut peer, &resp).await.unwrap();
+
+            // 2. LookupImage Developer -> has signature
+            let req: plist::Dictionary = ios_core::recv_lockdown(&mut peer).await.unwrap();
+            assert_eq!(req["Command"].as_string(), Some("LookupImage"));
+            let mut resp = plist::Dictionary::new();
+            resp.insert(
+                "ImageSignature".into(),
+                plist::Value::Array(vec![plist::Value::Data(vec![1, 2, 3, 4])]),
+            );
+            ios_core::send_lockdown(&mut peer, &resp).await.unwrap();
+
+            // 3. LookupImage Personalized -> empty
+            let req: plist::Dictionary = ios_core::recv_lockdown(&mut peer).await.unwrap();
+            assert_eq!(req["Command"].as_string(), Some("LookupImage"));
+            let mut resp = plist::Dictionary::new();
+            resp.insert("ImageSignature".into(), plist::Value::Array(vec![]));
+            ios_core::send_lockdown(&mut peer, &resp).await.unwrap();
+        };
+
+        let client_work = async move {
+            let result = preflight_device_readiness_with_client(&mut client, "test-udid-789").await;
+            assert!(result.is_ok());
+        };
+
+        tokio::join!(server, client_work);
     }
 }

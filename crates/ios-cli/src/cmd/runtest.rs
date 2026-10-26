@@ -120,16 +120,14 @@ impl RunTestCmd {
         let mut pending_startup = None;
         let mut pending_finished = None;
         let work = Box::pin(async {
-            if let Some(crashes) = &mut crashes {
-                crashes.baseline(&udid, deadline, &native).await?;
-            }
-            if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
+            let engine = crate::cmd::test_workflow::TestWorkflowEngine::new(
                 &udid,
-                self.workflow.install_app.as_deref(),
-                &mut app_tracker,
-            )
-            .await
-            {
+                &self.workflow,
+                deadline,
+                self.wait,
+                self.junit_output.as_deref(),
+            );
+            if let Err(error) = engine.preflight().await {
                 let report_result = write_junit_diagnostic(
                     self.junit_output.as_deref(),
                     &incomplete_summary(false),
@@ -145,13 +143,11 @@ impl RunTestCmd {
                 return Err(error);
             }
 
-            if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
-                &udid,
-                self.workflow.install_runner.as_deref(),
-                &mut app_tracker,
-            )
-            .await
-            {
+            if let Some(crashes) = &mut crashes {
+                crashes.baseline(&udid, deadline, &native).await?;
+            }
+
+            if let Err(error) = engine.install_explicit_packages(&mut app_tracker).await {
                 let report_result = write_junit_diagnostic(
                     self.junit_output.as_deref(),
                     &incomplete_summary(false),
@@ -653,6 +649,7 @@ pub(crate) fn incomplete_summary(began: bool) -> TestRunSummary {
         logs: Vec::new(),
         debug_logs: Vec::new(),
         suites: Vec::new(),
+        logs_truncated: false,
     }
 }
 

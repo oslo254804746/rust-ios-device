@@ -13,6 +13,23 @@ use serde::Serialize;
 const MAX_CAPTURED_LOG_MESSAGES: usize = 16_384;
 const MAX_CAPTURED_LOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_JUNIT_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+const MAX_SUITES: usize = 1024;
+const MAX_CASES_PER_SUITE: usize = 4096;
+const MAX_TOTAL_CASES: usize = 16_384;
+const MAX_NAME_LEN: usize = 512;
+const MAX_FAILURE_MESSAGE_BYTES: usize = 64 * 1024;
+const MAX_FAILURE_FILE_BYTES: usize = 1024;
+
+fn truncate_name(mut s: String, max: usize) -> String {
+    if s.len() > max {
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
 
 /// XCTest selector emitted when a test plan begins.
 pub const DID_BEGIN_EXECUTING_TEST_PLAN_SELECTOR: &str = "_XCT_didBeginExecutingTestPlan";
@@ -297,6 +314,9 @@ pub struct TestRunSummary {
     pub debug_logs: Vec<String>,
     /// Suite summaries.
     pub suites: Vec<TestSuiteSummary>,
+    /// Whether log output exceeded bounds and was truncated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub logs_truncated: bool,
 }
 
 /// Supported terminal test outcomes, independent of workflow cleanup or reporting.
@@ -454,9 +474,13 @@ pub struct TestRunRecorder {
     log_bytes: usize,
     debug_log_bytes: usize,
     suites: Vec<TestSuiteSummary>,
+    logs_truncated: bool,
 }
 
 impl TestRunRecorder {
+    fn total_cases(&self) -> usize {
+        self.suites.iter().map(|s| s.cases.len()).sum()
+    }
     /// Apply one event to the current run summary.
     pub fn apply(&mut self, event: TestExecutionEvent) {
         match event {
@@ -466,6 +490,10 @@ impl TestRunRecorder {
                 self.push_log(message, debug);
             }
             TestExecutionEvent::SuiteStarted { name, started_at } => {
+                if self.suites.len() >= MAX_SUITES {
+                    return;
+                }
+                let name = truncate_name(name, MAX_NAME_LEN);
                 self.suites.push(TestSuiteSummary {
                     name,
                     started_at,
@@ -508,10 +536,15 @@ impl TestRunRecorder {
                 class_name,
                 method_name,
             } => {
-                // XCTest can report a suite name different from its test class. The Go listener
-                // attaches such cases to the currently running suite rather than creating a
-                // second class-named suite.
+                if self.total_cases() >= MAX_TOTAL_CASES {
+                    return;
+                }
+                let class_name = truncate_name(class_name, MAX_NAME_LEN);
+                let method_name = truncate_name(method_name, MAX_NAME_LEN);
                 let suite = self.find_or_create_active_suite(&class_name);
+                if suite.cases.len() >= MAX_CASES_PER_SUITE {
+                    return;
+                }
                 suite.cases.push(TestCaseSummary {
                     class_name,
                     method_name,
@@ -527,8 +560,20 @@ impl TestRunRecorder {
                 file,
                 line,
             } => {
+                let class_name = truncate_name(class_name, MAX_NAME_LEN);
+                let method_name = truncate_name(method_name, MAX_NAME_LEN);
                 let case = self.find_or_create_case(&class_name, &method_name);
                 case.status = Some(TestCaseStatus::Failed);
+                let mut message = message;
+                if message.len() > MAX_FAILURE_MESSAGE_BYTES {
+                    let mut end = MAX_FAILURE_MESSAGE_BYTES;
+                    while end > 0 && !message.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    message.truncate(end);
+                    message.push_str("... [truncated]");
+                }
+                let file = file.map(|f| truncate_name(f, MAX_FAILURE_FILE_BYTES));
                 case.failure = Some(TestFailure {
                     message,
                     file,
@@ -603,6 +648,7 @@ impl TestRunRecorder {
             logs: self.logs.clone(),
             debug_logs: self.debug_logs.clone(),
             suites: self.suites.clone(),
+            logs_truncated: self.logs_truncated,
         }
     }
 
@@ -613,6 +659,12 @@ impl TestRunRecorder {
             (&mut self.logs, &mut self.log_bytes)
         };
         if logs.len() >= MAX_CAPTURED_LOG_MESSAGES || *used >= MAX_CAPTURED_LOG_BYTES {
+            if !self.logs_truncated {
+                self.logs_truncated = true;
+                if logs.len() < MAX_CAPTURED_LOG_MESSAGES && *used + 64 <= MAX_CAPTURED_LOG_BYTES {
+                    logs.push("[log output truncated: message or byte limit reached]".into());
+                }
+            }
             return;
         }
         let remaining = MAX_CAPTURED_LOG_BYTES - *used;
@@ -622,6 +674,8 @@ impl TestRunRecorder {
                 end -= 1;
             }
             message.truncate(end);
+            message.push_str("... [truncated]");
+            self.logs_truncated = true;
         }
         if message.is_empty() {
             return;
@@ -1239,5 +1293,56 @@ mod terminal_outcome_tests {
         };
         assert!(!format!("{error:?}").contains("private-suite-marker"));
         assert!(!error.to_string().contains("private-suite-marker"));
+    }
+
+    #[test]
+    fn test_recorder_bounds_and_truncation_markers() {
+        let mut recorder = TestRunRecorder::default();
+        recorder.apply(TestExecutionEvent::BeganPlan);
+
+        // Long suite name gets truncated
+        let long_name = "s".repeat(1000);
+        recorder.apply(TestExecutionEvent::SuiteStarted {
+            name: long_name.clone(),
+            started_at: None,
+        });
+        assert_eq!(recorder.suites[0].name.len(), MAX_NAME_LEN);
+
+        // Long case class and method get truncated
+        let long_case = "c".repeat(1000);
+        recorder.apply(TestExecutionEvent::CaseStarted {
+            class_name: long_case.clone(),
+            method_name: long_case.clone(),
+        });
+        assert_eq!(recorder.suites[0].cases[0].class_name.len(), MAX_NAME_LEN);
+        assert_eq!(recorder.suites[0].cases[0].method_name.len(), MAX_NAME_LEN);
+
+        // Long failure message gets truncated with marker
+        let long_message = "m".repeat(100_000);
+        recorder.apply(TestExecutionEvent::CaseFailed {
+            class_name: long_case.clone(),
+            method_name: long_case.clone(),
+            message: long_message,
+            file: Some("f".repeat(2000)),
+            line: Some(42),
+        });
+        let case = &recorder.suites[0].cases[0];
+        let failure = case.failure.as_ref().unwrap();
+        assert!(failure.message.ends_with("... [truncated]"));
+        assert!(failure.message.len() <= MAX_FAILURE_MESSAGE_BYTES + 32);
+        assert_eq!(failure.file.as_ref().unwrap().len(), MAX_FAILURE_FILE_BYTES);
+
+        // Huge log message gets truncated with marker
+        let huge_log = "L".repeat(9 * 1024 * 1024);
+        recorder.apply(TestExecutionEvent::Log {
+            message: huge_log,
+            debug: false,
+        });
+        assert!(recorder.logs_truncated);
+        assert!(recorder.logs.iter().any(|l| l.contains("truncated")));
+
+        recorder.apply(TestExecutionEvent::FinishedPlan);
+        let summary = recorder.summary();
+        assert!(summary.logs_truncated);
     }
 }
