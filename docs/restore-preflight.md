@@ -38,3 +38,5 @@ now implements bounded already-connected restored plist negotiation/ECID checks,
 StartRestore and real synchronous firmware responses; its peer fixtures do not
 substitute for recovery USB/ramdisk, ASR, FDR, ticket personalization or re-enumeration.
 See [repair scope and verification](validation/review-fixes-2026-10-10.md).
+
+The [2026-10-26 review](validation/remaining-six-review-2026-10-26.md) removed an unproven normal-mode/empty-firmware CLI execution path. Saved TSS metadata correlation never sets signature verification or execution support to true. Current-device and IPSW version strings are observations, not a validated compatibility policy. Unsupported restored data ports/types and malformed terminal statuses fail explicitly; no unserved request is counted as completed.

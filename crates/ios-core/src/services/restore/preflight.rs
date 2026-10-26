@@ -152,7 +152,9 @@ impl<R: Read + Seek> IpswPreflight<R> {
         self.product_build_version.as_deref()
     }
 
-    /// Validate target device version evidence against IPSW metadata.
+    /// Validate only the shape of observed current-device version strings.
+    /// This does not compare current and IPSW versions or establish an allowed
+    /// upgrade/downgrade path, signing availability, or machine/build support.
     pub fn verify_target_version(
         &self,
         device_version: Option<&str>,
