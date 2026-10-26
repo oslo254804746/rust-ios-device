@@ -446,13 +446,17 @@ impl AppsCmd {
 
                 let install_result: Result<()> = async {
                     let install_stream = device
-                        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
+                        .connect_service_with_timeout(ios_core::apps::INSTALLATION_PROXY_SERVICE, Duration::from_secs(30))
                         .await
                         .context("failed to connect installation proxy")?;
                     let mut proxy = ios_core::apps::InstallationProxy::new(install_stream);
-                    proxy
-                        .install(&install_paths.package_path)
-                        .await
+                    tokio::select! {
+                        result = proxy.install_with_timeout(&install_paths.package_path, Duration::from_secs(300)) => result,
+                        signal = tokio::signal::ctrl_c() => {
+                            signal?;
+                            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "installation cancelled; device effect unknown").into());
+                        }
+                    }
                         .context(format!(
                             "failed to install staged IPA {}",
                             install_paths.package_path
@@ -461,19 +465,18 @@ impl AppsCmd {
                 }
                 .await;
 
-                let cleanup_result =
-                    remove_staged_path(&mut afc, &staged_path.path, staged_path.is_directory).await;
-
-                if let Err(err) = install_result {
-                    if let Err(cleanup_err) = cleanup_result {
-                        return Err(err.context(format!(
-                            "failed to clean staged install payload after install error: {cleanup_err}"
-                        )));
-                    }
-                    return Err(err);
-                }
-
-                cleanup_result.context("installed app but failed to remove staged payload")?;
+                let cleanup_result = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    remove_staged_path(&mut afc, &staged_path.path, staged_path.is_directory),
+                )
+                .await
+                .map_err(anyhow::Error::new)
+                .and_then(|result| result);
+                crate::cmd::test_workflow::combine_results(
+                    install_result,
+                    cleanup_result,
+                    "staged install payload cleanup failed",
+                )?;
                 mutation_output::emit(
                     &Mutation::Install {
                         path: &ipa_path,
@@ -538,13 +541,17 @@ impl AppsCmd {
 
                 let upgrade_result: Result<()> = async {
                     let install_stream = device
-                        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
+                        .connect_service_with_timeout(ios_core::apps::INSTALLATION_PROXY_SERVICE, Duration::from_secs(30))
                         .await
                         .context("failed to connect installation proxy")?;
                     let mut proxy = ios_core::apps::InstallationProxy::new(install_stream);
-                    proxy
-                        .upgrade(&install_paths.package_path)
-                        .await
+                    tokio::select! {
+                        result = proxy.upgrade_with_timeout(&install_paths.package_path, Duration::from_secs(300)) => result,
+                        signal = tokio::signal::ctrl_c() => {
+                            signal?;
+                            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "upgrade cancelled; device effect unknown").into());
+                        }
+                    }
                         .context(format!(
                             "failed to upgrade staged IPA {}",
                             install_paths.package_path
@@ -553,19 +560,18 @@ impl AppsCmd {
                 }
                 .await;
 
-                let cleanup_result =
-                    remove_staged_path(&mut afc, &install_paths.final_remote_path, false).await;
-
-                if let Err(err) = upgrade_result {
-                    if let Err(cleanup_err) = cleanup_result {
-                        return Err(err.context(format!(
-                            "failed to clean staged upgrade payload after upgrade error: {cleanup_err}"
-                        )));
-                    }
-                    return Err(err);
-                }
-
-                cleanup_result.context("upgraded app but failed to remove staged payload")?;
+                let cleanup_result = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    remove_staged_path(&mut afc, &install_paths.final_remote_path, false),
+                )
+                .await
+                .map_err(anyhow::Error::new)
+                .and_then(|result| result);
+                crate::cmd::test_workflow::combine_results(
+                    upgrade_result,
+                    cleanup_result,
+                    "staged upgrade payload cleanup failed",
+                )?;
                 mutation_output::emit(&Mutation::Upgrade { path: &ipa_path }, json)?;
             }
             AppsSub::Archive { bundle_id } => {

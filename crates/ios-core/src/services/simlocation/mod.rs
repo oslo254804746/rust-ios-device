@@ -126,6 +126,20 @@ impl<S> SimLocationClient<S> {
 }
 
 impl<S: AsyncWrite + Unpin> SimLocationClient<S> {
+    /// Replay with the client's per-point write budget. Scheduled route delays
+    /// are idle time, so they do not consume a short request budget. The held
+    /// future is cancellable; a partially written point invalidates the client.
+    pub async fn replay_gpx_route(&mut self, gpx: &str) -> Result<usize, SimLocationError> {
+        let route = parse_gpx_route(gpx)?;
+        for point in &route {
+            if !point.delay_from_previous.is_zero() {
+                tokio::time::sleep(point.delay_from_previous).await;
+            }
+            self.set_location(&point.latitude, &point.longitude).await?;
+        }
+        Ok(route.len())
+    }
+
     pub async fn set_location(
         &mut self,
         latitude: &str,
@@ -416,6 +430,25 @@ mod tests {
     use tokio::io::AsyncWrite;
 
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn client_gpx_idle_is_not_a_short_request_timeout_and_blocked_point_is_bounded() {
+        let gpx = r#"<gpx><trk><trkseg>
+            <trkpt lat="1" lon="2"><time>2026-10-26T00:00:00Z</time></trkpt>
+            <trkpt lat="3" lon="4"><time>2026-10-26T00:00:02Z</time></trkpt>
+            </trkseg></trk></gpx>"#;
+        let mut client = SimLocationClient::new(Vec::<u8>::new());
+        client.set_operation_timeout(Some(Duration::from_millis(100)));
+        assert_eq!(client.replay_gpx_route(gpx).await.unwrap(), 2);
+        assert!(client.is_usable());
+        let (stream, _peer) = tokio::io::duplex(1);
+        let mut client = SimLocationClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_millis(100)));
+        let started = Instant::now();
+        assert!(client.replay_gpx_route(gpx).await.is_err());
+        assert_eq!(started.elapsed(), Duration::from_millis(100));
+        assert!(!client.is_usable());
+    }
 
     struct MockWriter {
         bytes: Vec<u8>,
