@@ -1,14 +1,14 @@
 # 当前待开发清单
 
-2026-10-26：[剩余六项工程实施完成 (L01/F01/F02/F04/F05/F06)](validation/remaining-six-implementation-2026-10-26.md)
-六个工作包均完成代码实施、门禁检验与独立本地提交（2d550bb, 0f4d407, 7160a91, ca4774f, 2519d1f, 735a447）。
-- L01：全局服务总期限、取消与连接失效完成主机端闭环，底层 cause 与重用防护验证通过；
-- F01：Doctor 区分 Personalized / DDI 版本支持并给出明确 EvidenceState，不再以 Ok(true) 冒充未验证状态；
-- F02：实现 TestWorkflowEngine 统一前置检查、有界结果收集与清理流程；
-- F04：完成 CDP 协议五域有证据映射并通过 pinned Playwright/Puppeteer 实际客户端端到端验证；
-- F05：完成 HEVC Annex-B 结构解析、慢消费者有界队列与 RFB Extended CutText 双向图像剪贴板；
-- F06：实现 IPSW BuildManifest 目标版本预检与基于 RestoredClient 的实验 Update 循环；
-真实设备操作、在线 Apple TSS 签名与硬件刷写继续保持 NOT_RUN，F06 保持待外部验收。
+2026-10-26：[剩余六项独立复核与修复](validation/remaining-six-review-2026-10-26.md)。
+撤回 `a703e81` 的“六项全部完成”声明。有效30主项仍为 **24项开发交付、6项缺开发**：L01/F01/F02/F04/F05/F06；原L02已按用户选择收口，Q04全部排除。
+- L01：五个实际服务的请求owner/CLI接线已复核，修复Heartbeat部分写取消与错误帧失效；所有原profiles尚不能总关闭。
+- F01：修复UDID-only通配匹配，接入所选设备只读personalization identifiers和本地组件观察；版本/完整平台范围仍OPEN。
+- F02：修复结果准入绕过、身份截断碰撞、不完整结果假通过及readiness吞错；完整可复用Rust owner/现代全流程仍缺。
+- F04：移除伪造console context/time；保留明确Unsupported。五域未完成，旧十例固定客户端主要验证已有关闭/拒绝路径。
+- F05：HEVC仅结构解析，未接像素解码；修正RFB把PNG/JPEG误标DIB/files的生产线格式，设备图像与方向仍缺证据/实现。
+- F06：撤回空固件执行路径，连接设备前拒绝CLI写入；dry-run不把TSS元数据相关当签名验证。模式转换/IMG4/USB重举/ASR/FDR/data-port执行器仍缺开发，真实恢复待验收。
+真实设备、在线TSS、硬件恢复、macOS/其它未运行平台保持NOT_RUN；代码缺失与外部验收分列。实际测试与提交见复核报告。
 
 2026-10-26：按用户明确选择，[原始 L02 验收收口](validation/l02-original-acceptance-2026-10-26.md)。
 多设备协调、四路建连、A等待时B查询/停止1秒目标、重复建连/停止/拔插/退避逐条核对通过。
