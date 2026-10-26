@@ -1,5 +1,7 @@
 # 当前待开发清单
 
+2026-10-26：F02 [runtest现代启动接线修复](validation/runtest-modern-routing-2026-10-26.md)，首次/重跑/仅启动及Rust便捷入口接入已有CoreDevice版本选择；定向21项和strict/fmt通过，不新增框架，不据此关闭整个F02。
+
 2026-10-26：[剩余六项独立复核与修复](validation/remaining-six-review-2026-10-26.md)。
 撤回 `a703e81` 的“六项全部完成”声明。有效30主项仍为 **24项开发交付、6项缺开发**：L01/F01/F02/F04/F05/F06；原L02已按用户选择收口，Q04全部排除。
 - L01：五个实际服务的请求owner/CLI接线已复核，修复Heartbeat部分写取消与错误帧失效；所有原profiles尚不能总关闭。

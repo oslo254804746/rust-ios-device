@@ -235,11 +235,10 @@ impl RunTestCmd {
                 startup_scopes.push(TestStartupCleanup::default());
                 let startup = tokio::time::timeout(
                     std::time::Duration::from_secs(self.startup_timeout_secs),
-                    Box::pin(start_test_plan_session_inner(
+                    Box::pin(start_test_plan_session_owned_until(
                         &udid,
                         plan.clone(),
-                        Some(deadline),
-                        false,
+                        deadline,
                         startup_scopes.last_mut().expect("startup owner admitted"),
                         &native,
                     )),
@@ -368,11 +367,10 @@ impl RunTestCmd {
                             std::time::Duration::from_secs(self.startup_timeout_secs),
                             {
                                 startup_scopes.push(TestStartupCleanup::default());
-                                Box::pin(start_test_plan_session_inner(
+                                Box::pin(start_test_plan_session_owned_until(
                                     &udid,
                                     rerun_plan,
-                                    Some(deadline),
-                                    false,
+                                    deadline,
                                     startup_scopes
                                         .last_mut()
                                         .expect("rerun startup owner admitted"),
@@ -436,11 +434,10 @@ impl RunTestCmd {
             startup_scopes.push(TestStartupCleanup::default());
             let session = tokio::time::timeout(
                 std::time::Duration::from_secs(self.startup_timeout_secs),
-                Box::pin(start_test_plan_session_inner(
+                Box::pin(start_test_plan_session_owned_until(
                     &udid,
                     plan,
-                    Some(deadline),
-                    false,
+                    deadline,
                     startup_scopes.last_mut().expect("startup owner admitted"),
                     &native,
                 )),
@@ -911,8 +908,7 @@ pub async fn start_test_plan(udid: &str, plan: TestLaunchPlan) -> Result<TestSta
 pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result<ActiveTestPlan> {
     let native = crate::cmd::tunnel::NativeScope::new()?;
     let mut cleanup = TestStartupCleanup::default();
-    let result =
-        start_test_plan_session_inner(udid, plan, None, false, &mut cleanup, &native).await;
+    let result = start_test_plan_session_inner(udid, plan, None, true, &mut cleanup, &native).await;
     let result = complete_startup(result, &mut cleanup).await;
     match result {
         Ok(session) => Ok(session),
