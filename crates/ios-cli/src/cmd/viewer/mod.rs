@@ -43,6 +43,9 @@ pub struct ViewerCmd {
     /// Enable bounded bidirectional text clipboard sharing.
     #[arg(long)]
     pub share_clipboard: bool,
+    /// Experimental Display/RTP HEVC via FFmpeg; requires a kernel tunnel. Default: PNG screenshots.
+    #[arg(long)]
+    pub hevc: bool,
 }
 #[derive(Clone, Copy, Subcommand)]
 pub enum ViewerSub {
@@ -66,6 +69,7 @@ impl ViewerCmd {
                     access,
                     self.boundary,
                     self.share_clipboard,
+                    self.hevc,
                 )
                 .await
             }
@@ -78,6 +82,7 @@ impl ViewerCmd {
                     self.password,
                     self.vnc_token_file,
                     self.share_clipboard,
+                    self.hevc,
                 )
                 .await
             }
@@ -189,6 +194,7 @@ async fn run_web_server(
     access: AccessControl,
     boundary: HttpBoundaryArgs,
     share_clipboard: bool,
+    hevc: bool,
 ) -> Result<()> {
     let listener = TcpListener::bind((loopback_address(host)?, port)).await?;
     let bound = listener.local_addr()?;
@@ -215,6 +221,7 @@ async fn run_web_server(
         frames,
         stop_rx.clone(),
         native.clone(),
+        hevc,
     ));
     let state_frames = state.clone();
     let mut forward_stop = stop_rx.clone();
@@ -314,6 +321,7 @@ impl std::fmt::Debug for ViewerCleanupFailure {
             .finish()
     }
 }
+#[allow(clippy::too_many_arguments)]
 async fn run_vnc_server(
     udid: String,
     host: &str,
@@ -322,6 +330,7 @@ async fn run_vnc_server(
     password: Option<String>,
     token: Option<PathBuf>,
     share_clipboard: bool,
+    hevc: bool,
 ) -> Result<()> {
     let policy_mode = access.authenticate(&axum::http::HeaderMap::new()).is_none();
     if policy_mode && password.is_none() {
@@ -349,7 +358,7 @@ async fn run_vnc_server(
         stop_rx.clone(),
         native.clone(),
     ));
-    let mut producer = tokio::spawn(media::produce(udid, frames, stop_rx, native.clone()));
+    let mut producer = tokio::spawn(media::produce(udid, frames, stop_rx, native.clone(), hevc));
     let mut sessions = JoinSet::new();
     crate::output::write_error_line(format_args!("VNC server listening on vnc://{bound}"))?;
     let mut producer_finished = false;

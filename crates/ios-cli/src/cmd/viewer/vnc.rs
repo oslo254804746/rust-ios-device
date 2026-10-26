@@ -185,6 +185,7 @@ pub struct VncSession {
     state: Arc<VncServerState>,
     encodings: Vec<i32>,
     extended_clipboard: bool,
+    clipboard_formats: u32,
     // Pointer state
     touch_pressed: bool,
     last_x: u16,
@@ -208,6 +209,7 @@ impl VncSession {
             state,
             encodings: Vec::new(),
             extended_clipboard: false,
+            clipboard_formats: clipboard::FORMAT_TEXT,
             touch_pressed: false,
             last_x: 0,
             last_y: 0,
@@ -366,30 +368,7 @@ impl VncSession {
                 _ = clipboard_poll.tick(), if self.state.share_clipboard => {
                     if let Some(payload) = self.state.request(DeviceCommand::ReadClipboard).await? {
                         if self.state.clipboard_sync.lock().await.should_sync(&payload, ClipboardSource::Device) {
-                            match &payload {
-                                ClipboardPayload::Text(text) => {
-                                    let message = if self.extended_clipboard {
-                                        clipboard::encode_extended_provide_text(text)?
-                                    } else {
-                                        ensure!(text.chars().all(|c| c as u32 <= 255), "classic RFB cannot encode this clipboard text; use extended clipboard");
-                                        clipboard::encode_classic_server_cut_text(text)
-                                    };
-                                    self.stream.write_all(&message).await?;
-                                }
-                                ClipboardPayload::ImagePng(png) => {
-                                    if self.extended_clipboard {
-                                        let message = clipboard::encode_extended_provide_dib(png)?;
-                                        self.stream.write_all(&message).await?;
-                                    }
-                                }
-                                ClipboardPayload::ImageJpeg(jpeg) => {
-                                    if self.extended_clipboard {
-                                        if let Ok(message) = clipboard::encode_extended_provide_dib(jpeg) {
-                                            self.stream.write_all(&message).await?;
-                                        }
-                                    }
-                                }
-                            }
+                            self.send_clipboard(&payload, false, self.clipboard_formats).await?;
                         }
                     }
                     continue;
@@ -421,6 +400,7 @@ impl VncSession {
                         encs.push(enc);
                     }
                     self.extended_clipboard = encs.contains(&ENC_EXTENDED_CLIPBOARD);
+                    self.clipboard_formats = clipboard::FORMAT_TEXT;
                     if self.extended_clipboard {
                         // Advertise extended clipboard caps
                         let caps = encode_extended_caps();
@@ -693,6 +673,45 @@ impl VncSession {
         Ok(())
     }
 
+    async fn send_clipboard(
+        &mut self,
+        payload: &ClipboardPayload,
+        requested: bool,
+        formats: u32,
+    ) -> Result<()> {
+        let format = match payload {
+            ClipboardPayload::Text(_) => clipboard::FORMAT_TEXT,
+            ClipboardPayload::ImagePng(_) => clipboard::FORMAT_DIB,
+            ClipboardPayload::ImageJpeg(_) => return Ok(()), // no JPEG -> DIB mapping
+        };
+        if self.extended_clipboard && formats & self.clipboard_formats & format != 0 {
+            let message = if !requested {
+                clipboard::encode_extended_notify(
+                    format == clipboard::FORMAT_TEXT,
+                    format == clipboard::FORMAT_DIB,
+                )
+            } else {
+                match payload {
+                    ClipboardPayload::Text(text) => clipboard::encode_extended_provide_text(text)?,
+                    ClipboardPayload::ImagePng(png) => clipboard::encode_extended_provide_dib(png)?,
+                    ClipboardPayload::ImageJpeg(_) => unreachable!(),
+                }
+            };
+            self.stream.write_all(&message).await?;
+        } else if !self.extended_clipboard {
+            if let ClipboardPayload::Text(text) = payload {
+                ensure!(
+                    text.chars().all(|c| c as u32 <= 255),
+                    "classic RFB cannot encode this clipboard text; use extended clipboard"
+                );
+                self.stream
+                    .write_all(&clipboard::encode_classic_server_cut_text(text))
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn handle_cut_text(&mut self, length: i32) -> Result<()> {
         ensure!(
             self.state.share_clipboard,
@@ -718,6 +737,10 @@ impl VncSession {
             }
         } else if length < 0 {
             // Extended clipboard
+            ensure!(
+                self.extended_clipboard,
+                "Extended Clipboard was not negotiated"
+            );
             let len = length
                 .checked_neg()
                 .context("invalid extended clipboard length")? as usize;
@@ -728,6 +751,41 @@ impl VncSession {
             let mut buf = vec![0u8; len];
             self.stream.read_exact(&mut buf).await?;
             let ext = clipboard::parse_rfb_extended_cut_text(&buf)?;
+            let formats = ext.flags & (clipboard::FORMAT_TEXT | clipboard::FORMAT_DIB);
+            match ext.action() {
+                clipboard::ACTION_CAPS => {
+                    self.clipboard_formats = formats;
+                    return Ok(());
+                }
+                clipboard::ACTION_REQUEST | clipboard::ACTION_PEEK => {
+                    if let Some(payload) = self.state.request(DeviceCommand::ReadClipboard).await? {
+                        self.send_clipboard(
+                            &payload,
+                            ext.action() == clipboard::ACTION_REQUEST,
+                            if ext.action() == clipboard::ACTION_PEEK {
+                                self.clipboard_formats
+                            } else {
+                                formats
+                            },
+                        )
+                        .await?;
+                    }
+                    return Ok(());
+                }
+                clipboard::ACTION_NOTIFY => {
+                    let requested = formats & (clipboard::FORMAT_TEXT | clipboard::FORMAT_DIB);
+                    if requested != 0 {
+                        let flags = clipboard::ACTION_REQUEST | requested;
+                        self.stream
+                            .write_all(&[clipboard::SERVER_CUT_TEXT, 0, 0, 0])
+                            .await?;
+                        self.stream.write_all(&(-4i32).to_be_bytes()).await?;
+                        self.stream.write_all(&flags.to_be_bytes()).await?;
+                    }
+                    return Ok(());
+                }
+                _ => {}
+            }
 
             if let Some(text) = ext.text {
                 let payload = ClipboardPayload::Text(text);

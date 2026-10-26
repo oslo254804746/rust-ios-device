@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
 
 pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
@@ -448,30 +449,99 @@ pub async fn capture_frame(
     super::finish(result, native.collect(super::device::CLEANUP_TIMEOUT).await)
 }
 
-pub async fn produce(
-    udid: String,
+fn spawn_stream_decoder() -> Result<tokio::process::Child> {
+    use std::process::Stdio;
+    tokio::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
+            "-f",
+            "hevc",
+            "-i",
+            "pipe:0",
+            "-threads",
+            "1",
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "-flush_packets",
+            "1",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("start persistent FFmpeg HEVC decoder")
+}
+
+async fn read_stream_png(stdout: &mut (impl tokio::io::AsyncRead + Unpin)) -> Result<Bytes> {
+    let mut png = vec![0; 8];
+    stdout
+        .read_exact(&mut png)
+        .await
+        .context("read FFmpeg PNG signature")?;
+    ensure!(png == b"\x89PNG\r\n\x1a\n", "invalid FFmpeg PNG signature");
+    loop {
+        let mut header = [0; 8];
+        stdout.read_exact(&mut header).await?;
+        let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        ensure!(
+            size <= MAX_ENCODED_BYTES.saturating_sub(png.len() + 12),
+            "FFmpeg PNG exceeds frame budget"
+        );
+        png.extend_from_slice(&header);
+        let offset = png.len();
+        png.resize(offset + size + 4, 0); // chunk payload and CRC
+        stdout.read_exact(&mut png[offset..]).await?;
+        if &header[4..] == b"IEND" {
+            return Ok(Bytes::from(png));
+        }
+    }
+}
+
+async fn stop_stream_decoder(child: &mut tokio::process::Child) -> Result<()> {
+    if child.try_wait()?.is_none() {
+        child.start_kill()?;
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+        .await
+        .context("FFmpeg shutdown deadline")??;
+    Ok(())
+}
+
+async fn produce_hevc(
+    udid: &str,
     frames: watch::Sender<Option<DecodedFrame>>,
     mut stop: watch::Receiver<bool>,
-    native: crate::cmd::tunnel::NativeScope,
+    native: &crate::cmd::tunnel::NativeScope,
 ) -> Result<()> {
-    let mut stream_stop = stop.clone();
-    // Attempt real Display/RTP video stream with HevcPipeline first if available
-    let video_stream = async {
-        let device = native.connect(&udid, ios_core::TunMode::Kernel).await?;
+    // The user explicitly selects this kernel/UDP path with --hevc.
+    let startup = async {
+        let device = native.connect(udid, ios_core::TunMode::Kernel).await?;
         let sender_ip = device
             .server_address()
-            .context("missing server address")?
+            .context("missing Display sender address")?
             .to_owned();
         let receiver_ip = device
             .client_address()
-            .context("missing client address")?
+            .context("missing Display receiver address")?
             .to_owned();
         let (xpc, metadata) = device
             .connect_xpc_service_with_metadata(ios_core::display::SERVICE_NAME)
             .await?;
         let display =
             ios_core::display::DisplayServiceClient::from_resolved_metadata(xpc, &metadata)?;
-        let mut session = ios_core::display::MediaStreamSession::start_video(
+        let session = ios_core::display::MediaStreamSession::start_video(
             display,
             ios_core::display::MediaStreamOptions {
                 sender_ip,
@@ -480,34 +550,93 @@ pub async fn produce(
             },
         )
         .await?;
-        let mut pipeline = HevcPipeline::new(4)?;
-        loop {
-            tokio::select! {
-                biased;
-                _ = stream_stop.changed() => return Ok::<(), anyhow::Error>(()),
-                au = session.recv_access_unit(std::time::Duration::from_secs(5)) => {
-                    if let Some(au) = au? {
-                        let timestamp_ms = (au.timestamp as u64) / 90;
-                        if let Ok(frame) = pipeline.push_access_unit(&au.data, timestamp_ms) {
-                            frames.send_replace(Some(frame));
-                        }
-                    }
-                }
-            }
-        }
+        Ok::<_, anyhow::Error>((device, session))
     };
-
-    tokio::select! {
+    let (device, mut session) = tokio::select! {
         biased;
         _ = stop.changed() => return Ok(()),
-        res = video_stream => {
-            if res.is_ok() {
-                return Ok(());
-            }
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), startup) => result.context("Display startup deadline")??,
+    };
+    let mut child = match spawn_stream_decoder() {
+        Ok(child) => child,
+        Err(error) => {
+            return super::finish(
+                Err(error),
+                session
+                    .stop(std::time::Duration::from_secs(3))
+                    .await
+                    .map_err(Into::into),
+            )
         }
-    }
+    };
+    let mut stdin = child.stdin.take().context("FFmpeg stdin missing")?;
+    let mut stdout = child.stdout.take().context("FFmpeg stdout missing")?;
+    let operation = async {
+        let input = async {
+            loop {
+                if let Some(au) = session
+                    .recv_access_unit(std::time::Duration::from_secs(5))
+                    .await?
+                {
+                    ensure!(
+                        au.data.len() <= MAX_ENCODED_BYTES,
+                        "HEVC access unit exceeds budget"
+                    );
+                    // One process retains parameter sets and all reference pictures.
+                    stdin
+                        .write_all(&au.data)
+                        .await
+                        .context("write HEVC access unit")?;
+                }
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+        let output = async {
+            loop {
+                let png = read_stream_png(&mut stdout).await?;
+                // Raw Annex-B carries no RTP timestamps through FFmpeg's PNG pipe.
+                // Report host decode wall time explicitly, never mislabel RTP ticks.
+                let timestamp_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_millis() as u64;
+                let frame = decode_png(png, timestamp_ms)?;
+                frames.send_replace(Some(frame)); // one shared latest frame; slow consumers skip stale frames
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+        tokio::select! {
+            biased;
+            _ = stop.changed() => Ok(()),
+            result = input => result,
+            result = output => result,
+        }
+    };
+    let result = operation.await;
+    drop((stdin, stdout));
+    let result = super::finish(result, stop_stream_decoder(&mut child).await);
+    let result = super::finish(
+        result,
+        session
+            .stop(std::time::Duration::from_secs(3))
+            .await
+            .map_err(Into::into),
+    );
+    drop((session, device));
+    super::finish(result, native.collect(super::device::CLEANUP_TIMEOUT).await)
+}
 
-    // Graceful fallback to polled screenshot when DisplayService kernel tunnel is unavailable
+pub async fn produce(
+    udid: String,
+    frames: watch::Sender<Option<DecodedFrame>>,
+    mut stop: watch::Receiver<bool>,
+    native: crate::cmd::tunnel::NativeScope,
+    hevc: bool,
+) -> Result<()> {
+    if hevc {
+        return produce_hevc(&udid, frames, stop, &native).await;
+    }
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -528,6 +657,59 @@ pub async fn produce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "requires FFmpeg HEVC/PNG codecs; explicit offline media gate"]
+    async fn review_regression_persistent_decoder_keeps_reference_frames_and_reaps_child() {
+        let sample = include_bytes!("hevc_inter_sample.bin");
+        assert!(parse_hevc_annex_b_nals(sample)
+            .iter()
+            .any(|(nal, _)| *nal == HevcNalType::CodedSliceTrail));
+        let mut child =
+            spawn_stream_decoder().expect("FFmpeg is required for this explicit HEVC gate");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let (first_frame, saw_first_frame) = tokio::sync::oneshot::channel();
+        let ((), decoded) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(
+                async {
+                    stdin.write_all(sample).await.unwrap();
+                    saw_first_frame.await.unwrap(); // a live stream must yield before EOF
+                    drop(stdin); // flush the offline fixture's final parser-delayed frame
+                },
+                async {
+                    let mut decoded = Vec::new();
+                    let mut first_frame = Some(first_frame);
+                    for timestamp in 0..6 {
+                        decoded.push(
+                            decode_png(read_stream_png(&mut stdout).await.unwrap(), timestamp)
+                                .unwrap(),
+                        );
+                        if let Some(sender) = first_frame.take() {
+                            sender.send(()).unwrap();
+                        }
+                    }
+                    decoded
+                }
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(decoded.len(), 6);
+        assert!(decoded.iter().all(|f| f.width == 32 && f.height == 32));
+        assert_ne!(
+            decoded[0].bgra, decoded[5].bgra,
+            "inter frames must update pixels"
+        );
+        assert!(child.wait().await.unwrap().success());
+        assert!(child.id().is_none());
+        let mut stalled = spawn_stream_decoder().unwrap();
+        stop_stream_decoder(&mut stalled).await.unwrap();
+        assert!(
+            stalled.id().is_none(),
+            "stop must wait for the original decoder process"
+        );
+    }
+
     #[test]
     fn actual_png_pixels_are_converted_and_oversized_headers_are_rejected() {
         let mut encoded = Vec::new();
