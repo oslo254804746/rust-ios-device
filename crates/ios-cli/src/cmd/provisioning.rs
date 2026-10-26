@@ -62,6 +62,7 @@ impl ProvisioningCmd {
             .connect_service(ios_core::misagent::SERVICE_NAME)
             .await?;
         let mut client = ios_core::misagent::MisagentClient::new(stream);
+        client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
 
         match self.sub {
             ProvisioningSub::List => {

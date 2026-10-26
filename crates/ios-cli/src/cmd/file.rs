@@ -195,7 +195,8 @@ impl FileCmd {
                 let stream = device
                     .connect_service(ios_core::afc::house_arrest::SERVICE_NAME)
                     .await?;
-                let house_arrest = ios_core::afc::house_arrest::HouseArrestClient::new(stream);
+                let house_arrest = ios_core::afc::house_arrest::HouseArrestClient::new(stream)
+                    .with_operation_timeout(Some(std::time::Duration::from_secs(30)));
                 if self.documents {
                     house_arrest.vend_documents(bundle_id).await?
                 } else {

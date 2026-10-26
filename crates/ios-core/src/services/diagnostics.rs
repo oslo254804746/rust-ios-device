@@ -5,9 +5,19 @@
 //!
 //! Protocol: lockdown plist framing (4-byte BE length prefix).
 
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
+
 use crate::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
+    time::Instant,
+};
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.diagnostics_relay";
 
@@ -85,6 +95,393 @@ impl<'a> IoRegistryQuery<'a> {
             entry_name: None,
             current_plane: None,
         }
+    }
+}
+
+/// Diagnostics relay client with explicit operation deadline and connection state.
+#[derive(Debug)]
+pub struct DiagnosticsClient<S> {
+    pub(crate) stream: Option<S>,
+    usable: bool,
+    operation_timeout: Option<Duration>,
+}
+
+impl<S> DiagnosticsClient<S> {
+    pub fn new(stream: S) -> Self {
+        Self {
+            stream: Some(stream),
+            usable: true,
+            operation_timeout: None,
+        }
+    }
+
+    pub fn is_usable(&self) -> bool {
+        self.usable && self.stream.is_some()
+    }
+
+    pub fn set_operation_timeout(&mut self, timeout: Option<Duration>) {
+        self.operation_timeout = timeout;
+    }
+
+    pub fn with_operation_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.set_operation_timeout(timeout);
+        self
+    }
+
+    fn ensure_usable(&self) -> Result<(), DiagnosticsError> {
+        if self.is_usable() {
+            Ok(())
+        } else {
+            Err(DiagnosticsError::Protocol(
+                "diagnostics connection is unusable; reconnect before another request".into(),
+            ))
+        }
+    }
+
+    fn deadline(&self) -> Result<Option<Instant>, DiagnosticsError> {
+        self.ensure_usable()?;
+        match self.operation_timeout {
+            Some(budget) if budget.is_zero() => Err(elapsed_budget()),
+            Some(budget) => Instant::now().checked_add(budget).map(Some).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "diagnostics operation deadline is too large",
+                )
+                .into()
+            }),
+            None => Ok(None),
+        }
+    }
+
+    fn begin_request(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> Result<DiagnosticsRequest<'_, S>, DiagnosticsError> {
+        self.ensure_usable()?;
+        let stream = self.stream.take();
+        Ok(DiagnosticsRequest {
+            client: self,
+            stream,
+            deadline,
+            progressed: false,
+            failed: false,
+        })
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> DiagnosticsClient<S> {
+    pub async fn query_mobile_gestalt(
+        &mut self,
+        keys: &[&str],
+    ) -> Result<plist::Value, DiagnosticsError> {
+        let deadline = self.deadline()?;
+        check_deadline(deadline, Ok(()))?;
+        let mut request = self.begin_request(deadline)?;
+        let result = await_operation(deadline, async {
+            let mut io = request.io();
+            send_plist(
+                &mut io,
+                &MobileGestaltRequest {
+                    request: "MobileGestalt",
+                    keys: keys.to_vec(),
+                },
+            )
+            .await?;
+            let response = recv_response_dict(&mut io).await?;
+            let diagnostics = extract_diagnostics_payload(&response)?;
+            extract_mobile_gestalt_payload(diagnostics)
+        })
+        .await;
+        request.finish(check_deadline(deadline, result), false)
+    }
+
+    pub async fn query_all_values(&mut self) -> Result<plist::Value, DiagnosticsError> {
+        let deadline = self.deadline()?;
+        check_deadline(deadline, Ok(()))?;
+        let mut request = self.begin_request(deadline)?;
+        let result = await_operation(deadline, async {
+            let mut io = request.io();
+            #[derive(Serialize)]
+            #[serde(rename_all = "PascalCase")]
+            struct AllRequest {
+                request: &'static str,
+            }
+            send_plist(&mut io, &AllRequest { request: "All" }).await?;
+            let response = recv_response_dict(&mut io).await?;
+            extract_diagnostics_payload(&response)
+        })
+        .await;
+        request.finish(check_deadline(deadline, result), false)
+    }
+
+    pub async fn query_battery(&mut self) -> Result<BatteryDiagnostics, DiagnosticsError> {
+        let io_registry = self.query_ioregistry("IOPMPowerSource").await?;
+        Ok(plist::from_value(&io_registry)?)
+    }
+
+    pub async fn query_ioregistry(
+        &mut self,
+        entry_class: &str,
+    ) -> Result<plist::Value, DiagnosticsError> {
+        self.query_ioregistry_with(IoRegistryQuery::by_class(entry_class))
+            .await
+    }
+
+    pub async fn query_ioregistry_with(
+        &mut self,
+        query: IoRegistryQuery<'_>,
+    ) -> Result<plist::Value, DiagnosticsError> {
+        if query.entry_class.is_none() && query.entry_name.is_none() {
+            return Err(DiagnosticsError::Protocol(
+                "IORegistry query requires EntryClass or EntryName".into(),
+            ));
+        }
+        let deadline = self.deadline()?;
+        check_deadline(deadline, Ok(()))?;
+        let mut request = self.begin_request(deadline)?;
+        let result = await_operation(deadline, async {
+            let mut io = request.io();
+            send_plist(
+                &mut io,
+                &IoRegistryRequest {
+                    request: "IORegistry",
+                    entry_class: query.entry_class,
+                    entry_name: query.entry_name,
+                    current_plane: query.current_plane,
+                },
+            )
+            .await?;
+            let response = recv_response_dict(&mut io).await?;
+            let diagnostics = extract_diagnostics_payload(&response)?;
+            let dict = diagnostics.into_dictionary().ok_or_else(|| {
+                DiagnosticsError::Protocol("diagnostics payload was not a dictionary".into())
+            })?;
+            let io_registry = dict.get("IORegistry").cloned().ok_or_else(|| {
+                DiagnosticsError::Protocol("diagnostics missing IORegistry".into())
+            })?;
+            Ok(io_registry)
+        })
+        .await;
+        request.finish(check_deadline(deadline, result), false)
+    }
+
+    pub async fn reboot(&mut self) -> Result<(), DiagnosticsError> {
+        let deadline = self.deadline()?;
+        check_deadline(deadline, Ok(()))?;
+        let mut request = self.begin_request(deadline)?;
+        let result = await_operation(deadline, async {
+            let mut io = request.io();
+            #[derive(Serialize)]
+            #[serde(rename_all = "PascalCase")]
+            struct Request {
+                request: &'static str,
+            }
+            send_plist(&mut io, &Request { request: "Restart" }).await?;
+            match recv_plist_raw(&mut io).await {
+                Ok(_) => Ok(()),
+                Err(DiagnosticsError::Io(err))
+                    if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        })
+        .await;
+        request.finish(check_deadline(deadline, result), true)
+    }
+
+    pub async fn shutdown(&mut self) -> Result<(), DiagnosticsError> {
+        let deadline = self.deadline()?;
+        check_deadline(deadline, Ok(()))?;
+        let mut request = self.begin_request(deadline)?;
+        let result = await_operation(deadline, async {
+            let mut io = request.io();
+            #[derive(Serialize)]
+            #[serde(rename_all = "PascalCase")]
+            struct Request {
+                request: &'static str,
+                wait_for_disconnect: bool,
+                display_fail: bool,
+                display_pass: bool,
+            }
+            send_plist(
+                &mut io,
+                &Request {
+                    request: "Shutdown",
+                    wait_for_disconnect: true,
+                    display_fail: true,
+                    display_pass: true,
+                },
+            )
+            .await?;
+            let response = recv_plist_raw(&mut io).await?;
+            let response: plist::Value = plist::from_bytes(&response)?;
+            let status = response
+                .as_dictionary()
+                .and_then(|dict| dict.get("Status"))
+                .and_then(plist::Value::as_string);
+            if status == Some("Success") {
+                Ok(())
+            } else {
+                Err(DiagnosticsError::Protocol(format!(
+                    "could not shutdown, response: {}",
+                    render_plist_value(&response)
+                )))
+            }
+        })
+        .await;
+        request.finish(check_deadline(deadline, result), true)
+    }
+}
+
+struct DiagnosticsRequest<'a, S> {
+    client: &'a mut DiagnosticsClient<S>,
+    stream: Option<S>,
+    deadline: Option<Instant>,
+    progressed: bool,
+    failed: bool,
+}
+
+impl<S> DiagnosticsRequest<'_, S> {
+    fn io(&mut self) -> DiagnosticsIo<'_, S> {
+        DiagnosticsIo {
+            inner: self.stream.as_mut().expect("active diagnostics stream"),
+            deadline: self.deadline,
+            progressed: &mut self.progressed,
+            failed: &mut self.failed,
+        }
+    }
+
+    fn finish<T>(
+        mut self,
+        result: Result<T, DiagnosticsError>,
+        terminal: bool,
+    ) -> Result<T, DiagnosticsError> {
+        if !self.failed && !terminal && (result.is_ok() || !self.progressed) {
+            self.client.stream = self.stream.take();
+        } else {
+            self.client.usable = false;
+        }
+        result
+    }
+}
+
+impl<S> Drop for DiagnosticsRequest<'_, S> {
+    fn drop(&mut self) {
+        if self.stream.is_none() {
+            return;
+        }
+        if self.progressed || self.failed {
+            self.client.usable = false;
+        } else {
+            self.client.stream = self.stream.take();
+        }
+    }
+}
+
+struct DiagnosticsIo<'a, S> {
+    inner: &'a mut S,
+    deadline: Option<Instant>,
+    progressed: &'a mut bool,
+    failed: &'a mut bool,
+}
+
+impl<S> DiagnosticsIo<'_, S> {
+    fn expired(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for DiagnosticsIo<'_, S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let before = buf.filled().len();
+        let requested = buf.remaining() > 0;
+        let result = Pin::new(&mut *self.inner).poll_read(cx, buf);
+        *self.progressed |= buf.filled().len() > before;
+        *self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (requested && matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() == before);
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for DiagnosticsIo<'_, S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_write(cx, bytes);
+        *self.progressed |= matches!(result, Poll::Ready(Ok(n)) if n > 0);
+        *self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (!bytes.is_empty() && matches!(result, Poll::Ready(Ok(0))));
+        result
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_flush(cx);
+        *self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_shutdown(cx);
+        *self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+}
+
+fn elapsed_budget() -> DiagnosticsError {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "diagnostics operation budget elapsed",
+    )
+    .into()
+}
+
+fn check_deadline<T>(
+    deadline: Option<Instant>,
+    result: Result<T, DiagnosticsError>,
+) -> Result<T, DiagnosticsError> {
+    if result.is_ok() && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Err(elapsed_budget())
+    } else {
+        result
+    }
+}
+
+async fn await_operation<T>(
+    deadline: Option<Instant>,
+    operation: impl Future<Output = Result<T, DiagnosticsError>>,
+) -> Result<T, DiagnosticsError> {
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, operation)
+            .await
+            .map_err(|error| {
+                DiagnosticsError::Io(crate::error::context::retained_io(
+                    std::io::ErrorKind::TimedOut,
+                    "diagnostics operation deadline",
+                    error,
+                ))
+            })?,
+        None => operation.await,
     }
 }
 
@@ -651,6 +1048,90 @@ mod tests {
         assert!(message.contains("LookupFailed"));
         assert!(message.contains("Entry not found"));
         assert!(message.contains("Diagnostics"));
+    }
+
+    #[tokio::test]
+    async fn diagnostics_client_zero_budget_fails_without_io_and_retains_stream() {
+        let stream = MockStream::eof();
+        let mut client = DiagnosticsClient::new(stream);
+        client.set_operation_timeout(Some(Duration::ZERO));
+        assert!(client.is_usable());
+
+        let err = client.query_all_values().await.unwrap_err();
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        assert!(client.is_usable());
+        assert!(client.stream.is_some());
+    }
+
+    #[tokio::test]
+    async fn diagnostics_client_query_success_keeps_stream_usable() {
+        let stream =
+            MockStream::with_response(plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Diagnostics".to_string(),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "ProductVersion".to_string(),
+                    plist::Value::String("26.0".into()),
+                )])),
+            )])));
+        let mut client = DiagnosticsClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_secs(5)));
+        let val = client
+            .query_mobile_gestalt(&["ProductVersion"])
+            .await
+            .unwrap();
+        let dict = val.into_dictionary().unwrap();
+        assert_eq!(dict["ProductVersion"].as_string(), Some("26.0"));
+        assert!(client.is_usable());
+        assert!(client.stream.is_some());
+    }
+
+    #[tokio::test]
+    async fn diagnostics_client_reboot_accepts_eof_and_retires_stream() {
+        let stream = MockStream::eof();
+        let mut client = DiagnosticsClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_secs(5)));
+        client.reboot().await.unwrap();
+        // Reboot is terminal even when accepting EOF
+        assert!(!client.is_usable());
+        assert!(client.stream.is_none());
+
+        // Subsequent call fails because client is unusable
+        let err = client.query_all_values().await.unwrap_err();
+        assert!(matches!(err, DiagnosticsError::Protocol(msg) if msg.contains("unusable")));
+    }
+
+    #[tokio::test]
+    async fn diagnostics_client_shutdown_accepts_success_and_retires_stream() {
+        let stream =
+            MockStream::with_response(plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Status".to_string(),
+                plist::Value::String("Success".into()),
+            )])));
+        let mut client = DiagnosticsClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_secs(5)));
+        client.shutdown().await.unwrap();
+        // Shutdown is terminal on success
+        assert!(!client.is_usable());
+        assert!(client.stream.is_none());
+    }
+
+    #[tokio::test]
+    async fn diagnostics_client_progress_timeout_retires_stream() {
+        let (client_side, mut server_side) = tokio::io::duplex(1024);
+        let mut client = DiagnosticsClient::new(client_side);
+        client.set_operation_timeout(Some(Duration::from_millis(50)));
+
+        tokio::spawn(async move {
+            // Read request header, then stall
+            let mut buf = [0u8; 4];
+            let _ = server_side.read_exact(&mut buf).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let err = client.query_all_values().await.unwrap_err();
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        assert!(!client.is_usable());
+        assert!(client.stream.is_none());
     }
 }
 

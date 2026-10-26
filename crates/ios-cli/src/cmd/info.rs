@@ -189,10 +189,12 @@ enum CoreDeviceInfoKind {
 async fn query_diagnostics_display_info(
     device: &ios_core::device::ConnectedDevice,
 ) -> Result<plist::Value> {
-    let mut stream = device
+    let stream = device
         .connect_service(ios_core::diagnostics::SERVICE_NAME)
         .await?;
-    Ok(ios_core::diagnostics::query_ioregistry(&mut *stream, "IOMobileFramebuffer").await?)
+    let mut client = ios_core::diagnostics::DiagnosticsClient::new(stream);
+    client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+    Ok(client.query_ioregistry("IOMobileFramebuffer").await?)
 }
 
 async fn query_coredevice_info(udid: &str, kind: CoreDeviceInfoKind) -> Result<plist::Value> {
