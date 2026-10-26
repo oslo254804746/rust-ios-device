@@ -1,5 +1,27 @@
 use super::*;
 
+async fn serve_manifest_service(peer: DuplexStream, version: &str) {
+    let mut tls = tls_session(peer).await;
+    for (key, value) in [
+        ("ProductType", "iPhone13,1"),
+        ("ProductVersion", version),
+        ("BuildVersion", "21E219"),
+    ] {
+        let query = request(&mut tls, "GetValue", &["Label", "Request", "Key"]).await;
+        assert_eq!(query["Key"].as_string(), Some(key));
+        send_lockdown(&mut tls, &dictionary([("Value", value.into())]))
+            .await
+            .unwrap();
+    }
+    let service = request(&mut tls, "StartService", &["Label", "Request", "Service"]).await;
+    assert_eq!(
+        service["Service"].as_string(),
+        Some(ios_core::imagemounter::SERVICE_NAME)
+    );
+    send_lockdown(&mut tls, &service_reply()).await.unwrap();
+    eof(&mut tls).await;
+}
+
 #[tokio::test]
 async fn review_regression_local_manifest_uses_selected_device_identifiers() {
     let root = std::env::temp_dir().join(format!("doctor-selected-{}", uuid::Uuid::new_v4()));
@@ -43,7 +65,7 @@ async fn review_regression_local_manifest_uses_selected_device_identifiers() {
                     Duration::from_secs(2),
                     std::slice::from_ref(&root)
                 ),
-                serve_service(lockdown_peer, service_reply()),
+                serve_manifest_service(lockdown_peer, "17.4"),
                 async {
                     let request: plist::Dictionary = recv_lockdown(&mut peer).await.unwrap();
                     assert_eq!(
@@ -82,6 +104,19 @@ async fn review_regression_local_manifest_uses_selected_device_identifiers() {
             assert_eq!(check.status, Status::Failed);
         }
         let output = serde_json::to_value(check).unwrap();
+        assert_eq!(
+            output["ddi_manifests"]["target_evidence"]["product_type"],
+            "iPhone13,1"
+        );
+        assert_eq!(
+            output["ddi_manifests"]["target_evidence"]["product_version"],
+            "17.4"
+        );
+        assert_eq!(
+            output["ddi_manifests"]["target_evidence"]["build_version"],
+            "21E219"
+        );
+        assert_ne!(output["ddi_manifests"]["target_evidence"]["udid"], UDID);
         let local = &output["ddi_manifests"]["target_manifest"];
         assert_eq!(
             local["outcome"],
@@ -499,7 +534,7 @@ async fn review_regression_ddi_manifest_version_mismatch_fails_check() {
                 Duration::from_secs(2),
                 std::slice::from_ref(&root)
             ),
-            serve_service(lockdown_peer, service_reply()),
+            serve_manifest_service(lockdown_peer, "16.5"),
             async {
                 let request: plist::Dictionary = recv_lockdown(&mut peer).await.unwrap();
                 assert_eq!(
@@ -514,7 +549,7 @@ async fn review_regression_ddi_manifest_version_mismatch_fails_check() {
                             ("BoardId", 16u64.into()),
                             ("ChipID", 0x8101u64.into()),
                             ("SecurityDomain", 1u64.into()),
-                            ("ProductVersion", plist::Value::String("16.5".into())),
+                            ("ProductVersion", plist::Value::String("17.0".into())),
                         ])),
                     )]),
                 )
