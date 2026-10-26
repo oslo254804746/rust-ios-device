@@ -145,30 +145,47 @@ fn safe_relative_path(path_str: &str) -> Option<PathBuf> {
 
 /// Search for BuildManifest.plist files across the given root paths.
 pub(crate) fn find_build_manifests(search_paths: &[PathBuf]) -> Vec<PathBuf> {
+    discover_build_manifests(search_paths).0
+}
+
+fn discover_build_manifests(search_paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<std::io::Error>) {
     let mut discovered = Vec::new();
+    let mut errors = Vec::new();
     let mut inspected = 0usize;
 
     for base in search_paths {
-        if !base.is_dir() {
-            continue;
-        }
         let mut queue = std::collections::VecDeque::new();
         queue.push_back((base.clone(), 0usize));
 
         while let Some((dir, depth)) = queue.pop_front() {
             let entries = match std::fs::read_dir(&dir) {
                 Ok(entries) => entries,
-                Err(_) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    errors.push(error);
+                    continue;
+                }
             };
 
-            for entry in entries.flatten() {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        errors.push(error);
+                        continue;
+                    }
+                };
                 inspected += 1;
                 if inspected > 4096 {
-                    return discovered;
+                    errors.push(std::io::Error::other("DDI directory entry limit reached"));
+                    return (discovered, errors);
                 }
                 let kind = match entry.file_type() {
                     Ok(k) => k,
-                    Err(_) => continue,
+                    Err(error) => {
+                        errors.push(error);
+                        continue;
+                    }
                 };
 
                 if kind.is_dir() && depth < 2 {
@@ -189,7 +206,8 @@ pub(crate) fn find_build_manifests(search_paths: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
 
-    discovered
+    discovered.sort();
+    (discovered, errors)
 }
 
 /// Evaluate target evidence against local DDI BuildManifest assets.
@@ -197,7 +215,27 @@ pub(crate) fn evaluate_target_manifest(
     evidence: &TargetEvidence,
     search_paths: &[PathBuf],
 ) -> TargetManifestMetadata {
-    let manifests = find_build_manifests(search_paths);
+    let (manifests, errors) = discover_build_manifests(search_paths);
+    if !errors.is_empty() {
+        let denied = errors
+            .iter()
+            .any(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        return TargetManifestMetadata {
+            outcome: Some(if denied {
+                MatchOutcome::PermissionDenied
+            } else {
+                MatchOutcome::MissingFields
+            }),
+            detail: format!(
+                "Local DDI search was incomplete ({} directory errors, {} manifests found): {}",
+                errors.len(),
+                manifests.len(),
+                errors[0]
+            ),
+            hint: Some("Check configured DDI directory paths and read permissions.".into()),
+            ..Default::default()
+        };
+    }
     if manifests.is_empty() {
         return TargetManifestMetadata {
             manifest_path: None,
@@ -314,16 +352,62 @@ fn evaluate_single_manifest(
         .and_then(plist::Value::as_string)
         .map(str::to_string);
 
-    // Check version match if device version is available
+    // A SupportedProductTypes list, when supplied, is an additional model
+    // constraint. Board/chip identity matching below is still mandatory.
+    if let Some(models) = dict
+        .get("SupportedProductTypes")
+        .and_then(plist::Value::as_array)
+    {
+        if !evidence
+            .product_type
+            .as_deref()
+            .is_some_and(|model| models.iter().any(|value| value.as_string() == Some(model)))
+        {
+            return TargetManifestMetadata {
+                manifest_path: Some(manifest_display),
+                outcome: Some(MatchOutcome::NoMatchingIdentity),
+                detail:
+                    "Target ProductType is absent from SupportedProductTypes or was not observed."
+                        .into(),
+                ..Default::default()
+            };
+        }
+    }
+
+    // Personalized DDIs are selected by hardware, not by the device build or
+    // matching OS major. Upstream request_personalization_manifest selects the
+    // board/chip identity; this image-mounter profile is available from iOS17.
+    let personalized = dict
+        .get("BuildIdentities")
+        .and_then(plist::Value::as_array)
+        .is_some_and(|ids| {
+            ids.iter().any(|id| {
+                id.as_dictionary()
+                    .and_then(|id| id.get("Manifest"))
+                    .and_then(plist::Value::as_dictionary)
+                    .is_some_and(|m| m.contains_key("PersonalizedDMG"))
+            })
+        });
     if let (Some(device_ver), Some(manifest_ver)) = (
         evidence.product_version.as_deref(),
         product_version.as_deref(),
     ) {
         let dev_major = device_ver.split('.').next().unwrap_or("");
-        let man_major = manifest_ver.split('.').next().unwrap_or("");
-        if !dev_major.is_empty() && !man_major.is_empty() && dev_major != man_major {
+        let incompatible = if personalized {
+            dev_major.parse::<u64>().map_or(true, |major| major < 17)
+        } else {
+            // A version-specific legacy image needs the same major/minor.
+            let release = |s: &str| {
+                s.split('.')
+                    .take(2)
+                    .map(str::parse::<u64>)
+                    .collect::<Result<Vec<_>, _>>()
+            };
+            !matches!((release(device_ver), release(manifest_ver)), (Ok(a), Ok(b)) if a.len() == 2 && a == b)
+        };
+        if incompatible {
             let detail = format!(
-                "DDI BuildManifest major version ({manifest_ver}) does not match device version ({device_ver}). Note: major version check only; does not require exact build equality."
+                "DDI version profile ({manifest_ver}) does not match device version ({device_ver}); personalized images require iOS17+, legacy images require the same major/minor. Build equality is not required."
             );
             return TargetManifestMetadata {
                 manifest_path: Some(manifest_display),
@@ -334,7 +418,7 @@ fn evaluate_single_manifest(
                 product_build_version,
                 components: Vec::new(),
                 detail,
-                hint: Some("Select a DDI matching the target iOS major version.".into()),
+                hint: Some("Select a hardware-compatible personalized DDI for iOS17+, or a version-specific legacy DDI.".into()),
             };
         }
     }
@@ -530,21 +614,6 @@ fn evaluate_single_manifest(
         let expected_digest_bytes = comp_dict.get("Digest").and_then(plist::Value::as_data);
         let expected_digest_hex = expected_digest_bytes.map(hex_encode);
 
-        if !comp_path.is_file() {
-            component_observations.push(ComponentObservation {
-                name: comp_name.clone(),
-                path: path_str.to_string(),
-                state: ComponentState::MissingFile,
-                signature_verified: false,
-                device_availability_probed: false,
-                expected_digest: expected_digest_hex,
-                observed_digest: None,
-                size_bytes: None,
-            });
-            has_missing_file = true;
-            continue;
-        }
-
         let metadata = match std::fs::symlink_metadata(&comp_path) {
             Ok(m) => m,
             Err(err) => {
@@ -727,6 +796,59 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personalized_image_uses_hardware_across_os_and_build_versions() {
+        let temp = std::env::temp_dir().join(format!("ddi-policy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&temp).unwrap();
+        std::fs::write(temp.join("image.dmg"), b"image").unwrap();
+        create_test_manifest(
+            &temp,
+            12,
+            0x8110,
+            Some(1),
+            Some("18.0"),
+            &[("PersonalizedDMG", "image.dmg", None)],
+        );
+        let mut evidence = TargetEvidence {
+            board_id: Some(12),
+            chip_id: Some(0x8110),
+            security_domain: Some(1),
+            product_type: Some("iPhone14,2".into()),
+            product_version: Some("17.4.1".into()),
+            build_version: Some("21E236".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            evaluate_target_manifest(&evidence, std::slice::from_ref(&temp)).outcome,
+            Some(MatchOutcome::Matched)
+        );
+        evidence.board_id = Some(14);
+        assert_eq!(
+            evaluate_target_manifest(&evidence, std::slice::from_ref(&temp)).outcome,
+            Some(MatchOutcome::NoMatchingIdentity)
+        );
+        evidence.board_id = Some(12);
+        evidence.product_version = Some("16.6".into());
+        assert_eq!(
+            evaluate_target_manifest(&evidence, std::slice::from_ref(&temp)).outcome,
+            Some(MatchOutcome::VersionMismatch)
+        );
+        std::fs::remove_file(temp.join("BuildManifest.plist")).unwrap();
+        std::fs::remove_file(temp.join("image.dmg")).unwrap();
+        std::fs::remove_dir(temp).unwrap();
+    }
+
+    #[test]
+    fn unreadable_search_is_incomplete_instead_of_no_manifest() {
+        let file = std::env::temp_dir().join(format!("ddi-not-directory-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, b"not a directory").unwrap();
+        let metadata =
+            evaluate_target_manifest(&TargetEvidence::default(), std::slice::from_ref(&file));
+        assert_eq!(metadata.outcome, Some(MatchOutcome::MissingFields));
+        assert!(metadata.detail.contains("search was incomplete"));
+        std::fs::remove_file(file).unwrap();
+    }
 
     #[test]
     fn review_regression_unobserved_hardware_is_not_a_wildcard() {
