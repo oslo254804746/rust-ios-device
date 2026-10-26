@@ -67,14 +67,14 @@ enum RestoreSub {
         /// Explicit ApChipID (hex or decimal) override if not querying device
         #[arg(long)]
         chip_id: Option<String>,
-        /// Explicit DeviceClass override (e.g. d63ap, iphone14,3) if not querying device
+        /// Explicit hardware DeviceClass override (e.g. d63ap) if not querying device
         #[arg(long)]
         device_class: Option<String>,
         /// Total deadline in seconds, including connection and all updater requests
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
     },
-    /// Experimental restore update execution state machine
+    /// Read-only restore Update inspection; execution is not implemented
     Update {
         /// Path to local IPSW ZIP archive
         #[arg(long)]
@@ -476,7 +476,7 @@ async fn handle_update(
     tss: Option<std::path::PathBuf>,
     behavior: String,
     dry_run: bool,
-    timeout_secs: u64,
+    _timeout_secs: u64,
     json: bool,
 ) -> Result<()> {
     ensure_update_prerequisites(dry_run, tss.as_deref())?;
@@ -535,7 +535,6 @@ async fn handle_update(
     let ecid = parse_plist_u64(&ecid_val)
         .ok_or_else(|| anyhow::anyhow!("device returned non-numeric ECID"))?;
     let mut tss_correlated = false;
-    let mut saved_tss_plist: Option<plist::Value> = None;
     if let Some(ref tss_path) = tss {
         use std::io::Read;
         let tss_file = std::fs::File::open(tss_path)?;
@@ -560,7 +559,6 @@ async fn handle_update(
             &ap_nonce,
             sep_nonce.as_deref(),
         )?;
-        saved_tss_plist = Some(saved);
         tss_correlated = true;
     }
     if dry_run {
@@ -577,7 +575,8 @@ async fn handle_update(
             "saved_tss_metadata_correlated": tss_correlated,
             "apple_ticket_signature_verified": false,
             "execution_supported": false,
-            "version_compatibility_verified": true,
+            "version_compatibility_verified": false,
+            "update_downgrade_check": "product_version_only",
         });
         if json {
             crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
@@ -609,90 +608,14 @@ async fn handle_update(
         return Ok(());
     }
 
-    let saved_tss = saved_tss_plist
-        .ok_or_else(|| anyhow::anyhow!("saved TSS required for restore update execution"))?;
-    let ap_ticket = ios_core::restore::preflight::extract_saved_tss_ticket(&saved_tss)?;
-
-    if !json {
-        crate::output::outln!("Preflight verified. Requesting recovery mode transition...");
-    }
-    client.enter_recovery().await?;
-
-    if !json {
-        crate::output::outln!("Connecting to restored on recovery transport...");
-    }
-    let recovery_stream = device.connect_service("com.apple.mobile.restored").await?;
-    let cancel = ios_core::session::OperationCancel::new();
-    let mut restored_client = ios_core::restore::RestoredClient::connect(
-        recovery_stream,
-        ecid,
-        Duration::from_secs(timeout_secs),
-        cancel.clone(),
-    )
-    .await?;
-
-    let mut state_machine = ios_core::restore::RestoreStateMachine::new();
-    state_machine.receive_nonces(Some(ap_nonce.clone()), sep_nonce.clone())?;
-
-    let options = plist::Dictionary::from_iter([
-        (
-            "RestoreBehavior".to_owned(),
-            plist::Value::String("Update".into()),
-        ),
-        ("AutoBootDelay".to_owned(), plist::Value::Integer(0.into())),
-    ]);
-
-    if !json {
-        crate::output::outln!("Executing restore update lifecycle loop...");
-    }
-    let report = ios_core::restore::run_restored_update_loop(
-        &mut restored_client,
-        state_machine,
-        options,
-        |updater_name, _req| {
-            let ticket =
-                ios_core::restore::preflight::extract_updater_ticket(&saved_tss, updater_name)
-                    .unwrap_or_else(|| ap_ticket.clone());
-            let header =
-                plist::Dictionary::from_iter([("Ticket".to_owned(), plist::Value::Data(ticket))]);
-            let fw_bytes = ipsw_preflight
-                .payload_for_updater(updater_name)
-                .map(|val| match val {
-                    ios_core::XpcValue::Data(bytes) => bytes.to_vec(),
-                    _ => Vec::new(),
-                })
-                .unwrap_or_else(|_| b"firmware_payload".to_vec());
-            Ok((header, fw_bytes))
-        },
-        &cancel,
-    )
-    .await?;
-
-    if json {
-        crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        crate::output::outln!("Restore Update Completed:");
-        crate::output::outln!("  Final State: {:?}", report.final_state);
-        crate::output::outln!("  Bytes Transferred: {}", report.total_bytes_transferred);
-        if !report.checkpoints_reached.is_empty() {
-            crate::output::outln!("  Checkpoints: {}", report.checkpoints_reached.join(", "));
-        }
-        if !report.data_requests_served.is_empty() {
-            crate::output::outln!(
-                "  Data Requests: {}",
-                report.data_requests_served.join(", ")
-            );
-        }
-    }
-
-    Ok(())
+    ensure_update_prerequisites(false, tss.as_deref())
 }
 
-fn ensure_update_prerequisites(dry_run: bool, tss: Option<&std::path::Path>) -> Result<()> {
-    if !dry_run && tss.is_none() {
+fn ensure_update_prerequisites(dry_run: bool, _tss: Option<&std::path::Path>) -> Result<()> {
+    if !dry_run {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "restore Update execution requires a correlated TSS blob (--tss <file.plist>) because live Apple TSS signing is NOT_RUN in offline environment; use --dry-run for read-only inspection",
+            "restore Update execution is not implemented: recovery ramdisk boot, USB re-identification, component personalization and required restore data services are missing; --tss metadata and --force do not enable execution; use --dry-run for read-only inspection",
         ).into());
     }
     Ok(())
@@ -764,6 +687,29 @@ mod tests {
             std::io::ErrorKind::Unsupported
         );
         assert!(ensure_update_inspection_only(true).is_ok());
+    }
+
+    #[tokio::test]
+    async fn review_regression_saved_tss_cannot_enable_unimplemented_update() {
+        let cmd = RestoreCmd {
+            sub: RestoreSub::Update {
+                ipsw: "missing.ipsw".into(),
+                tss: Some("missing-but-supplied.plist".into()),
+                behavior: "Update".into(),
+                force: true,
+                dry_run: false,
+                timeout_secs: 1,
+            },
+        };
+        let error = cmd
+            .run(Some("offline-selected-device".into()), true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        assert!(error.to_string().contains("recovery ramdisk"));
     }
 
     #[derive(Parser)]
@@ -868,7 +814,10 @@ mod tests {
             err.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::Unsupported
         );
-        assert!(ensure_update_prerequisites(false, Some(std::path::Path::new("test.tss"))).is_ok());
+        // Saved metadata cannot supply the missing recovery executor.
+        assert!(
+            ensure_update_prerequisites(false, Some(std::path::Path::new("test.tss"))).is_err()
+        );
     }
 
     async fn write_test_plist<W: tokio::io::AsyncWriteExt + Unpin>(
