@@ -1313,7 +1313,28 @@ impl TunnelAgentState {
                 };
                 let mut releases = marker_identity::ReleaseFence::<2>::new();
                 let _serial = ticket.serial().await;
-                if let Some(_record) = self.get_record(udid).await? {
+                let (existing, current_record) = if self.inner.source.observes_freshness() {
+                    // Keep a naturally ended exact row until replacement commits;
+                    // get_record() prunes it and destroys its replacement proof.
+                    let rows = self.inner.tunnels.read().await;
+                    match rows.get(udid) {
+                        Some(row) => (
+                            true,
+                            if row.is_alive() && row.device.record_fields_available() {
+                                // Output refusal must precede the existing RSD Source,
+                                // just as the original cached-record shortcut did.
+                                Some(row.record(&self.inner.global_metadata_bytes)?)
+                            } else {
+                                None
+                            },
+                        ),
+                        None => (false, None),
+                    }
+                } else {
+                    let record = self.get_record(udid).await?;
+                    (record.is_some(), record)
+                };
+                if existing {
                     match self
                         .try_refresh_existing(
                             udid,
@@ -1351,12 +1372,10 @@ impl TunnelAgentState {
                                 }
                             }
                             self.try_manual_success(udid, &ticket, &deadline, &mut releases);
-                            return self
-                                .get_record(udid)
-                                .await?
-                                .ok_or_else(lifecycle::cancelled);
+                            return current_record.ok_or_else(lifecycle::cancelled);
                         }
                         freshness::RefreshAttempt::ProbeFailed(recovery) => {
+                            drop(current_record);
                             let old = recovery.old;
                             let probe_failure = recovery.probe_failure;
                             match self
@@ -1376,17 +1395,22 @@ impl TunnelAgentState {
                                 Ok(new_record) => return Ok(new_record),
                                 Err(candidate_err) => {
                                     deadline.check()?;
-                                    if !ticket.is_current() {
+                                    if !ticket.is_current() || !old.observed_ticket.is_current() {
                                         return Err(lifecycle::cancelled());
                                     }
                                     if let Some(manual) = &manual {
                                         manual.authority.check_clock()?;
                                     }
-                                    return Err(probe_failure.context(candidate_err));
+                                    return Err(freshness::CandidateFailure::attach(
+                                        probe_failure,
+                                        candidate_err,
+                                        recovery.candidate_failure,
+                                    ));
                                 }
                             }
                         }
                         freshness::RefreshAttempt::Ended(old) => {
+                            drop(current_record);
                             return self
                                 .connect_with_fallback(
                                     udid,
@@ -1627,224 +1651,78 @@ impl TunnelAgentState {
         )?;
         let mut attempt = None;
         let mut manual_version = None;
-        let result = async {
-            let metadata_destinations = metadata_lease::PreparedPair::new(
-                &self.inner.global_metadata_bytes,
-                &self.inner.metadata_bytes,
-            )
-            .map_err(ownership::before_source)?;
-            let publication_ticket = publication::TicketOwner::new(
-                ticket,
-                &self.inner.global_metadata_bytes,
-                &self.inner.metadata_bytes,
-            )
-            .map_err(ownership::before_source)?;
-            let observed_route = observed_route::Observed::new(
-                route,
-                input.as_ref(),
-                &self.inner.global_metadata_bytes,
-            )?;
-            let mut source = self
-                .inner
-                .source
-                .prepare_owned(
-                    udid,
-                    observed_route.route().into(),
-                    self.inner.tun_mode,
-                    &ownership,
+        let result = {
+            let mut operation = std::pin::pin!(async {
+                let metadata_destinations = metadata_lease::PreparedPair::new(
                     &self.inner.global_metadata_bytes,
-                    deadline,
+                    &self.inner.metadata_bytes,
                 )
                 .map_err(ownership::before_source)?;
-            manual_version = if retry.is_none() {
-                ticket
-                    .commit(|| Ok(self.inner.retry.version(udid, ticket)))
-                    .map_err(ownership::before_source)?
-            } else {
-                None
-            };
-            // Both capacity admissions succeeded. No rejected owner/permit consumes
-            // a retry or starts the total clock; Source is the next polled operation.
-            let prepared_attempt = retry
-                .map(|(identity, slot)| {
-                    ticket.commit(|| {
-                        if let Some(deadline) = deadline {
-                            deadline.check()?;
-                        }
-                        self.inner.retry.start(udid, identity, ticket, slot)
-                    })
-                })
-                .transpose();
-            self.inner.retry.emit_pending(udid, ticket);
-            attempt = prepared_attempt.map_err(ownership::before_source)?;
-            if let (Some(attempt), Some(deadline)) = (&attempt, deadline) {
-                if let Some(at) = attempt.deadline() {
-                    deadline.clamp_retry(at);
-                }
-            }
-            if let Some(deadline) = deadline {
-                deadline.check()?;
-            }
-            let mut emitted = false;
-            let completed = std::future::poll_fn(|cx| {
-                let result = std::future::Future::poll(std::pin::Pin::new(&mut source), cx);
-                if !emitted {
-                    emitted = true;
-                    if let Some(attempt) = &attempt {
-                        attempt.emit_start();
-                    }
-                }
-                // A ready Source error already exists. Commit its prepaid
-                // receipt in this poll, before Source Drop can change epochs
-                // or run arbitrary cleanup; neither step needs new quota.
-                result.map(|result| {
-                    result.map_err(|error| {
-                        let error = match &input {
-                            Some(input) => error.context(candidate_input::SourceInputContext {
-                                input: input.clone(),
-                            }),
-                            None => error,
-                        };
-                        match &attempt {
-                            Some(attempt) => attempt.source_failed(error),
-                            None => error,
-                        }
-                    })
-                })
-            })
-            .await;
-            // Release the original finished Box and its fee before unrelated
-            // device/output admission. Pending cancellation uses the same Drop.
-            drop(source);
-            let candidate = completed?;
-            if let Some(deadline) = deadline {
-                deadline.check()?;
-            }
-            let metadata_size =
-                managed_metadata_bytes(&candidate, udid, &route_intent, &observed_route)?;
-            let independently_owned =
-                candidate.owned_body_bytes(&self.inner.global_metadata_bytes)?;
-            let global_size = metadata_size
-                .checked_sub(route_intent.text_bytes())
-                .and_then(|size| size.checked_sub(observed_route.text_bytes()))
-                .and_then(|size| size.checked_sub(independently_owned))
-                .and_then(|size| size.checked_sub(metadata_lease::Lease::pair_bytes()))
-                .ok_or_else(|| {
-                    crate::output::resource_decision(
-                        "tunnel independently owned metadata size mismatch",
-                    )
-                })?;
-            let global_metadata =
-                admission::known_metadata_charge(&self.inner.global_metadata_bytes, global_size)?;
-            let publication_fields = metadata_size
-                .checked_sub(metadata_lease::Lease::pair_bytes())
-                .ok_or_else(|| {
-                    crate::output::resource_decision("tunnel prepaid metadata size mismatch")
-                })?;
-            let metadata = self
-                .inner
-                .metadata_bytes
-                .clone()
-                .try_acquire_many_owned(u32::try_from(publication_fields).map_err(|_| {
-                    crate::output::resource_decision("tunnel metadata admission overflow")
-                })?)
-                .map_err(|_| {
-                    crate::output::resource_decision(
-                        "tunnel published metadata byte limit exceeded",
-                    )
-                })?;
-            let native = match candidate.native_handle() {
-                Some(handle) => Some(ownership.take_completed(handle)?),
-                None => {
-                    #[cfg(not(test))]
-                    return Err(lifecycle::cancelled().context("native tunnel handle missing"));
-                    #[cfg(test)]
-                    {
-                        if matches!(
-                            candidate,
-                            prepared_source::Candidate::Fixture(ManagedDevice::Native(_))
-                        ) {
-                            return Err(
-                                lifecycle::cancelled().context("native tunnel handle missing")
-                            );
-                        }
-                        None
-                    }
-                }
-            };
-            let (metadata, global_metadata) =
-                metadata_destinations.finish(global_metadata, metadata)?;
-            if let Some(native) = &native {
-                native.retain_metadata(metadata.clone())?;
-                native.retain_global_metadata(global_metadata.clone())?;
-            }
-            let fresh_metadata = candidate.stage_catalogue(
-                &self.inner.global_metadata_bytes,
-                &self.inner.metadata_bytes,
-            )?;
-            if let (Some(native), Some(fresh)) = (&native, &fresh_metadata) {
-                native.retain_prepared_catalogue(fresh.clone())?;
-            }
-            if let Some(deadline) = deadline {
-                deadline.check()?;
-            }
-            if expected_id.is_some_and(|expected| expected != candidate.device_id()) {
-                return Err(lifecycle::cancelled().context("tunnel attachment snapshot changed"));
-            }
-            let record =
-                candidate.record(self.inner.tun_mode, &self.inner.global_metadata_bytes)?;
-            if authority.is_some() && record.udid != udid {
-                return Err(ios_core::CoreError::Protocol(
-                    "tunnel Source identity differs from authorized device".into(),
+                let publication_ticket = publication::TicketOwner::new(
+                    ticket,
+                    &self.inner.global_metadata_bytes,
+                    &self.inner.metadata_bytes,
                 )
-                .into());
-            }
-            if let Some(deadline) = deadline {
-                deadline.check()?;
-            }
-            let witness = match (expectation, &native) {
-                (PublicationExpectation::Replace(_), Some(native)) => {
-                    Some(native.publication_witness()?)
+                .map_err(ownership::before_source)?;
+                let observed_route = observed_route::Observed::new(
+                    route,
+                    input.as_ref(),
+                    &self.inner.global_metadata_bytes,
+                )?;
+                let mut source = self
+                    .inner
+                    .source
+                    .prepare_owned(
+                        udid,
+                        observed_route.route().into(),
+                        self.inner.tun_mode,
+                        &ownership,
+                        &self.inner.global_metadata_bytes,
+                        deadline,
+                    )
+                    .map_err(ownership::before_source)?;
+                manual_version = if retry.is_none() {
+                    ticket
+                        .commit(|| Ok(self.inner.retry.version(udid, ticket)))
+                        .map_err(ownership::before_source)?
+                } else {
+                    None
+                };
+                // Both capacity admissions succeeded. No rejected owner/permit consumes
+                // a retry or starts the total clock; Source is the next polled operation.
+                let prepared_attempt = retry
+                    .map(|(identity, slot)| {
+                        ticket.commit(|| {
+                            if let Some(deadline) = deadline {
+                                deadline.check()?;
+                            }
+                            self.inner.retry.start(udid, identity, ticket, slot)
+                        })
+                    })
+                    .transpose();
+                self.inner.retry.emit_pending(udid, ticket);
+                attempt = prepared_attempt.map_err(ownership::before_source)?;
+                if let (Some(attempt), Some(deadline)) = (&attempt, deadline) {
+                    if let Some(at) = attempt.deadline() {
+                        deadline.clamp_retry(at);
+                    }
                 }
-                _ => None,
-            };
-            if let PublicationExpectation::Replace(old) = expectation {
-                let tunnels = self.inner.tunnels.read().await;
-                let (key, current) = tunnels
-                    .get_key_value(udid)
-                    .ok_or_else(lifecycle::cancelled)?;
-                anyhow::ensure!(
-                    old.matches_locked(key, current, ticket),
-                    lifecycle::cancelled()
-                );
-                drop(tunnels);
-            }
-            // Every output, catalogue, publication and native attachment owner
-            // above exists before the real finalizer can expose an interface.
-            // This concrete F lives in the original paid connection frame.
-            let admit_activation = || {
-                ticket.commit(|| {
-                    if let Some(deadline) = deadline {
-                        deadline.check()?;
+                if let Some(deadline) = deadline {
+                    deadline.check()?;
+                }
+                let mut emitted = false;
+                let completed = std::future::poll_fn(|cx| {
+                    let result = std::future::Future::poll(std::pin::Pin::new(&mut source), cx);
+                    if !emitted {
+                        emitted = true;
+                        if let Some(attempt) = &attempt {
+                            attempt.emit_start();
+                        }
                     }
-                    anyhow::ensure!(
-                        self.inner.access.permits_device(udid),
-                        lifecycle::cancelled()
-                    );
-                    if let PublicationExpectation::Replace(old) = expectation {
-                        old.registry.check_replacement()?;
-                    }
-                    Ok(())
-                })
-            };
-            match &authority {
-                Some(authority) => authority.commit(udid, admit_activation)?,
-                None => admit_activation()?,
-            }
-            let completed = {
-                let mut finish = std::pin::pin!(candidate.finish(deadline));
-                std::future::poll_fn(|cx| {
-                    std::future::Future::poll(finish.as_mut(), cx).map(|result| {
+                    // A ready Source error already exists. Commit its prepaid
+                    // receipt in this poll, before Source Drop can change epochs
+                    // or run arbitrary cleanup; neither step needs new quota.
+                    result.map(|result| {
                         result.map_err(|error| {
                             let error = match &input {
                                 Some(input) => error.context(candidate_input::SourceInputContext {
@@ -1859,94 +1737,108 @@ impl TunnelAgentState {
                         })
                     })
                 })
-                .await
-            };
-            let device = completed?;
-            if let Some(deadline) = deadline {
-                deadline.check()?;
-            }
-            if !device.is_alive()
-                || device
-                    .native_handle()
-                    .is_some_and(|handle| !handle.ready_for_publication())
-            {
-                return Err(lifecycle::cancelled().context("tunnel inactive at admission"));
-            }
-            if let Some(native) = &native {
-                anyhow::ensure!(
-                    device
-                        .native_handle()
-                        .is_some_and(|handle| native.matches_runtime(handle)),
-                    lifecycle::cancelled()
-                );
-            }
-            if let Some(fresh) = &fresh_metadata {
-                anyhow::ensure!(
-                    retirement::same_optional(device.freshness_catalogue(), Some(&fresh.catalogue)),
-                    lifecycle::cancelled()
-                );
-            }
-            if usbmux {
+                .await;
+                // Release the original finished Box and its fee before unrelated
+                // device/output admission. Pending cancellation uses the same Drop.
+                drop(source);
+                let candidate = completed?;
                 if let Some(deadline) = deadline {
                     deadline.check()?;
                 }
-                // Keep the completed device owned while the current daemon view is
-                // checked, within the caller's existing permit/deadline/cancellation.
-                let snapshot = self
+                let metadata_size =
+                    managed_metadata_bytes(&candidate, udid, &route_intent, &observed_route)?;
+                let independently_owned =
+                    candidate.owned_body_bytes(&self.inner.global_metadata_bytes)?;
+                let global_size = metadata_size
+                    .checked_sub(route_intent.text_bytes())
+                    .and_then(|size| size.checked_sub(observed_route.text_bytes()))
+                    .and_then(|size| size.checked_sub(independently_owned))
+                    .and_then(|size| size.checked_sub(metadata_lease::Lease::pair_bytes()))
+                    .ok_or_else(|| {
+                        crate::output::resource_decision(
+                            "tunnel independently owned metadata size mismatch",
+                        )
+                    })?;
+                let global_metadata = admission::known_metadata_charge(
+                    &self.inner.global_metadata_bytes,
+                    global_size,
+                )?;
+                let publication_fields = metadata_size
+                    .checked_sub(metadata_lease::Lease::pair_bytes())
+                    .ok_or_else(|| {
+                        crate::output::resource_decision("tunnel prepaid metadata size mismatch")
+                    })?;
+                let metadata = self
                     .inner
-                    .source
-                    .usb_devices_owned(&self.inner.global_metadata_bytes)?
-                    .await;
-                match snapshot {
-                    UsbSnapshot::Devices(devices) => {
-                        let _snapshot_charge = admission::retain_usb_snapshot(
-                            &self.inner.global_metadata_bytes,
-                            &devices,
-                        )?;
-                        if !devices.iter().any(|attached| {
-                            attached.udid == udid && attached.device_id == device.device_id()
-                        }) {
-                            return Err(lifecycle::cancelled()
-                                .context("tunnel attachment absent before publication"));
+                    .metadata_bytes
+                    .clone()
+                    .try_acquire_many_owned(u32::try_from(publication_fields).map_err(|_| {
+                        crate::output::resource_decision("tunnel metadata admission overflow")
+                    })?)
+                    .map_err(|_| {
+                        crate::output::resource_decision(
+                            "tunnel published metadata byte limit exceeded",
+                        )
+                    })?;
+                let native = match candidate.native_handle() {
+                    Some(handle) => Some(ownership.take_completed(handle)?),
+                    None => {
+                        #[cfg(not(test))]
+                        return Err(lifecycle::cancelled().context("native tunnel handle missing"));
+                        #[cfg(test)]
+                        {
+                            if matches!(
+                                candidate,
+                                prepared_source::Candidate::Fixture(ManagedDevice::Native(_))
+                            ) {
+                                return Err(
+                                    lifecycle::cancelled().context("native tunnel handle missing")
+                                );
+                            }
+                            None
                         }
                     }
-                    UsbSnapshot::ConnectError(error) | UsbSnapshot::ListError(error) => {
-                        return Err(error.context("check tunnel attachment before publication"));
-                    }
+                };
+                let (metadata, global_metadata) =
+                    metadata_destinations.finish(global_metadata, metadata)?;
+                if let Some(native) = &native {
+                    native.retain_metadata(metadata.clone())?;
+                    native.retain_global_metadata(global_metadata.clone())?;
                 }
-            }
-            #[cfg(test)]
-            {
-                let gate = self.inner.publication_before_write.lock().unwrap().clone();
-                if let Some(gate) = gate {
-                    gate.acquire().await?.forget();
+                let fresh_metadata = candidate.stage_catalogue(
+                    &self.inner.global_metadata_bytes,
+                    &self.inner.metadata_bytes,
+                )?;
+                if let (Some(native), Some(fresh)) = (&native, &fresh_metadata) {
+                    native.retain_prepared_catalogue(fresh.clone())?;
                 }
-            }
-            let mut tunnels = self.inner.tunnels.write().await;
-            if !ticket.is_current() {
-                return Err(lifecycle::cancelled());
-            }
-            anyhow::ensure!(
-                self.inner.access.permits_device(udid),
-                lifecycle::cancelled()
-            );
-            if !device.is_alive() {
-                return Err(lifecycle::cancelled().context("tunnel inactive before publication"));
-            }
-            // Keep the acquired guard outside the action so a rejected commit
-            // retires it after lifecycle watch/table guards have been released.
-            let mut acquired = Some((device, native));
-            let mut late_record = None;
-            let publish = || {
                 if let Some(deadline) = deadline {
                     deadline.check()?;
                 }
-                let publication_slot = tunnels.destination(
-                    publication_destination
-                        .as_ref()
-                        .expect("pre-Source destination"),
-                )?;
+                if expected_id.is_some_and(|expected| expected != candidate.device_id()) {
+                    return Err(
+                        lifecycle::cancelled().context("tunnel attachment snapshot changed")
+                    );
+                }
+                let record =
+                    candidate.record(self.inner.tun_mode, &self.inner.global_metadata_bytes)?;
+                if authority.is_some() && record.udid != udid {
+                    return Err(ios_core::CoreError::Protocol(
+                        "tunnel Source identity differs from authorized device".into(),
+                    )
+                    .into());
+                }
+                if let Some(deadline) = deadline {
+                    deadline.check()?;
+                }
+                let witness = match (expectation, &native) {
+                    (PublicationExpectation::Replace(_), Some(native)) => {
+                        Some(native.publication_witness()?)
+                    }
+                    _ => None,
+                };
                 if let PublicationExpectation::Replace(old) = expectation {
+                    let tunnels = self.inner.tunnels.read().await;
                     let (key, current) = tunnels
                         .get_key_value(udid)
                         .ok_or_else(lifecycle::cancelled)?;
@@ -1954,94 +1846,270 @@ impl TunnelAgentState {
                         old.matches_locked(key, current, ticket),
                         lifecycle::cancelled()
                     );
+                    drop(tunnels);
                 }
-                if expectation.is_ordinary() {
-                    if let Some(native) = &acquired.as_ref().expect("unpublished owner").1 {
-                        native.publish(ownership.stamp())?;
-                    }
+                // Every output, catalogue, publication and native attachment owner
+                // above exists before the real finalizer can expose an interface.
+                // This concrete F lives in the original paid connection frame.
+                let activation_ticket = match expectation {
+                    PublicationExpectation::Replace(old) => &old.observed_ticket,
+                    PublicationExpectation::Ordinary => ticket,
+                };
+                let admit_activation = || {
+                    activation_ticket.commit(|| {
+                        if let Some(deadline) = deadline {
+                            deadline.check()?;
+                        }
+                        anyhow::ensure!(
+                            self.inner.access.permits_device(udid),
+                            lifecycle::cancelled()
+                        );
+                        if let PublicationExpectation::Replace(old) = expectation {
+                            old.registry.check_replacement()?;
+                        }
+                        Ok(())
+                    })
+                };
+                match &authority {
+                    Some(authority) => authority.commit(udid, admit_activation)?,
+                    None => admit_activation()?,
                 }
+                let completed = {
+                    let mut finish = std::pin::pin!(candidate.finish(deadline));
+                    std::future::poll_fn(|cx| {
+                        std::future::Future::poll(finish.as_mut(), cx).map(|result| {
+                            result.map_err(|error| {
+                                let error = match &input {
+                                    Some(input) => {
+                                        error.context(candidate_input::SourceInputContext {
+                                            input: input.clone(),
+                                        })
+                                    }
+                                    None => error,
+                                };
+                                match &attempt {
+                                    Some(attempt) => attempt.source_failed(error),
+                                    None => error,
+                                }
+                            })
+                        })
+                    })
+                    .await
+                };
+                let device = completed?;
                 if let Some(deadline) = deadline {
                     deadline.check()?;
                 }
-                let (device, native) = acquired.take().expect("single publication");
-                let publish_action = || {
-                    let change = tunnels.publish(
-                        publication_slot,
-                        publication_destination.take().expect("single destination"),
-                        ManagedTunnel {
-                            device,
-                            publication,
-                            usbmux,
-                            native,
-                            route_intent: route_intent.clone(),
-                            observed_route,
-                            _ticket: publication_ticket,
-                            _metadata: metadata,
-                            _global_metadata: global_metadata,
-                            _input: input.clone(),
-                            _fresh_metadata: fresh_metadata,
-                        },
+                if !device.is_alive()
+                    || device
+                        .native_handle()
+                        .is_some_and(|handle| !handle.ready_for_publication())
+                {
+                    return Err(lifecycle::cancelled().context("tunnel inactive at admission"));
+                }
+                if let Some(native) = &native {
+                    anyhow::ensure!(
+                        device
+                            .native_handle()
+                            .is_some_and(|handle| native.matches_runtime(handle)),
+                        lifecycle::cancelled()
                     );
-                    #[cfg(test)]
-                    {
-                        let callback = self.inner.publication_after_insert.lock().unwrap().take();
-                        if let Some(callback) = callback {
-                            callback();
+                }
+                if let Some(fresh) = &fresh_metadata {
+                    anyhow::ensure!(
+                        retirement::same_optional(
+                            device.freshness_catalogue(),
+                            Some(&fresh.catalogue)
+                        ),
+                        lifecycle::cancelled()
+                    );
+                }
+                if usbmux {
+                    if let Some(deadline) = deadline {
+                        deadline.check()?;
+                    }
+                    // Keep the completed device owned while the current daemon view is
+                    // checked, within the caller's existing permit/deadline/cancellation.
+                    let snapshot = self
+                        .inner
+                        .source
+                        .usb_devices_owned(&self.inner.global_metadata_bytes)?
+                        .await;
+                    match snapshot {
+                        UsbSnapshot::Devices(devices) => {
+                            let _snapshot_charge = admission::retain_usb_snapshot(
+                                &self.inner.global_metadata_bytes,
+                                &devices,
+                            )?;
+                            if !devices.iter().any(|attached| {
+                                attached.udid == udid && attached.device_id == device.device_id()
+                            }) {
+                                return Err(lifecycle::cancelled()
+                                    .context("tunnel attachment absent before publication"));
+                            }
+                        }
+                        UsbSnapshot::ConnectError(error) | UsbSnapshot::ListError(error) => {
+                            return Err(error.context("check tunnel attachment before publication"));
                         }
                     }
-                    let late = deadline
-                        .map_or(Ok(()), |deadline| deadline.check())
-                        .and_then(|()| {
-                            authority
-                                .as_ref()
-                                .map_or(Ok(()), |authority| authority.check_clock())
-                        })
-                        .and_then(|()| {
-                            if let Some(manual) = manual {
-                                ticket.establish_manual_shared(
-                                    route_intent,
-                                    manual.authority.clone(),
-                                    previous_failure,
-                                    deadline,
-                                    manual_births
-                                        .as_deref_mut()
-                                        .expect("prepared manual publication birth"),
-                                )?;
-                            }
-                            Ok(())
-                        });
-                    if let Err(error) = late {
-                        // Nothing has observed this row while the table and epoch
-                        // fences are held. Restore the displaced original row and
-                        // retire the late runtime only after releasing those guards.
-                        late_record = Some(tunnels.rollback(change));
-                        return Err(error);
-                    }
-                    Ok(change)
-                };
-                let change = match (expectation, &witness) {
-                    (PublicationExpectation::Replace(old), Some(witness)) => old
-                        .registry
-                        .publish_replacement(witness, ownership.stamp(), publish_action)?,
-                    _ => publish_action()?,
-                };
-                Ok((record, change.finish()))
-            };
-            let result = ticket.commit(|| {
-                if let Some(authority) = &authority {
-                    authority.commit(udid, publish)
-                } else {
-                    publish()
                 }
+                #[cfg(test)]
+                {
+                    let gate = self.inner.publication_before_write.lock().unwrap().clone();
+                    if let Some(gate) = gate {
+                        gate.acquire().await?.forget();
+                    }
+                }
+                // Every destructible owner and transaction outcome must be outside
+                // the table and nested registry guards, including during unwind.
+                let mut pending_row = Some(ManagedTunnel {
+                    device,
+                    publication,
+                    usbmux,
+                    native,
+                    route_intent: route_intent.clone(),
+                    observed_route,
+                    _ticket: publication_ticket,
+                    _metadata: metadata,
+                    _global_metadata: global_metadata,
+                    _input: input.clone(),
+                    _fresh_metadata: fresh_metadata,
+                });
+                let mut change = None;
+                let mut late_record = None;
+                let mut tunnels = self.inner.tunnels.write().await;
+                if !ticket.is_current() {
+                    return Err(lifecycle::cancelled());
+                }
+                anyhow::ensure!(
+                    self.inner.access.permits_device(udid),
+                    lifecycle::cancelled()
+                );
+                if !pending_row.as_ref().expect("unpublished row").is_alive() {
+                    return Err(
+                        lifecycle::cancelled().context("tunnel inactive before publication")
+                    );
+                }
+                let publish = || {
+                    if let Some(deadline) = deadline {
+                        deadline.check()?;
+                    }
+                    let publication_slot = tunnels.destination(
+                        publication_destination
+                            .as_ref()
+                            .expect("pre-Source destination"),
+                    )?;
+                    if let PublicationExpectation::Replace(old) = expectation {
+                        let (key, current) = tunnels
+                            .get_key_value(udid)
+                            .ok_or_else(lifecycle::cancelled)?;
+                        anyhow::ensure!(
+                            old.matches_locked(key, current, ticket),
+                            lifecycle::cancelled()
+                        );
+                    }
+                    if expectation.is_ordinary() {
+                        if let Some(native) = &pending_row.as_ref().expect("unpublished row").native
+                        {
+                            native.publish(ownership.stamp())?;
+                        }
+                    }
+                    if let Some(deadline) = deadline {
+                        deadline.check()?;
+                    }
+                    let publish_action = || {
+                        let mut transaction = tunnels.transaction(&mut change, &mut late_record);
+                        transaction.publish(
+                            publication_slot,
+                            publication_destination.take().expect("single destination"),
+                            pending_row.take().expect("single unpublished row"),
+                        );
+                        #[cfg(test)]
+                        {
+                            let callback =
+                                self.inner.publication_after_insert.lock().unwrap().take();
+                            if let Some(callback) = callback {
+                                callback();
+                            }
+                        }
+                        let late = deadline
+                            .map_or(Ok(()), |deadline| deadline.check())
+                            .and_then(|()| {
+                                authority
+                                    .as_ref()
+                                    .map_or(Ok(()), |authority| authority.check_clock())
+                            })
+                            .and_then(|()| {
+                                if let Some(manual) = manual {
+                                    let births = manual_births
+                                        .as_deref_mut()
+                                        .expect("prepared manual publication birth");
+                                    match expectation {
+                                        PublicationExpectation::Replace(old) => ticket
+                                            .establish_manual_shared_observed(
+                                                route_intent,
+                                                manual.authority.clone(),
+                                                previous_failure,
+                                                deadline,
+                                                births,
+                                                &old.observed_ticket,
+                                            )?,
+                                        PublicationExpectation::Ordinary => ticket
+                                            .establish_manual_shared(
+                                                route_intent,
+                                                manual.authority.clone(),
+                                                previous_failure,
+                                                deadline,
+                                                births,
+                                            )?,
+                                    }
+                                }
+                                Ok(())
+                            });
+                        // The borrowed transaction restores the original on
+                        // both error and unwind; all refused owners outlive locks.
+                        late?;
+                        transaction.commit();
+                        Ok(())
+                    };
+                    match (expectation, &witness) {
+                        (PublicationExpectation::Replace(old), Some(witness)) => old
+                            .registry
+                            .publish_replacement(witness, ownership.stamp(), publish_action)?,
+                        _ => publish_action()?,
+                    };
+                    Ok(())
+                };
+                // A replacement without a new manual selector retains the exact
+                // observation through publication. Manual cutover validates that
+                // version under its own intent lock instead of reentering it.
+                let commit_ticket = if manual.is_none() {
+                    activation_ticket
+                } else {
+                    ticket
+                };
+                let result = commit_ticket.commit(|| {
+                    if let Some(authority) = &authority {
+                        authority.commit(udid, publish)
+                    } else {
+                        publish()
+                    }
+                });
+                drop(tunnels);
+                drop(late_record);
+                result.map(|()| {
+                    let old = change.take().expect("committed publication").finish();
+                    drop(old);
+                    record
+                })
             });
-            drop(tunnels);
-            drop(late_record);
-            result.map(|(record, old)| {
-                drop(old);
-                record
-            })
-        }
-        .await;
+            match expectation {
+                PublicationExpectation::Replace(old) => {
+                    old.observed_ticket.run(operation.as_mut()).await
+                }
+                PublicationExpectation::Ordinary => operation.as_mut().await,
+            }
+        };
         if let Some(attempt) = attempt {
             attempt.finish(&result);
         }
@@ -2248,27 +2316,6 @@ impl TunnelAgentState {
             deadline
                 .run(async {
                     let _serial = ticket.serial().await;
-                    let existing = {
-                        let tunnels = self.inner.tunnels.read().await;
-                        deadline.check()?;
-                        tunnels.contains_key(udid)
-                    };
-                    let old_holder = if existing {
-                        match self
-                            .try_refresh_existing(udid, ticket, &deadline, refresh_session, None)
-                            .await?
-                        {
-                            freshness::RefreshAttempt::Current => return Ok(()),
-                            freshness::RefreshAttempt::ProbeFailed(recovery) => Some(recovery.old),
-                            freshness::RefreshAttempt::Ended(old) => Some(old),
-                        }
-                    } else {
-                        None
-                    };
-                    let expectation = match &old_holder {
-                        Some(old) => PublicationExpectation::Replace(old),
-                        None => PublicationExpectation::Ordinary,
-                    };
                     let (skip, previous_version) = self
                         .inner
                         .failed_attempts
@@ -2290,6 +2337,34 @@ impl TunnelAgentState {
                     if skip {
                         return Ok(());
                     }
+                    let existing = {
+                        let tunnels = self.inner.tunnels.read().await;
+                        deadline.check()?;
+                        tunnels.get(udid).is_some_and(|row| {
+                            self.inner.source.observes_freshness() || row.is_alive()
+                        })
+                    };
+                    let mut probe_failure = None;
+                    let old_holder = if existing {
+                        match self
+                            .try_refresh_existing(udid, ticket, &deadline, refresh_session, None)
+                            .await?
+                        {
+                            freshness::RefreshAttempt::Current => return Ok(()),
+                            freshness::RefreshAttempt::ProbeFailed(recovery) => {
+                                probe_failure =
+                                    Some((recovery.probe_failure, recovery.candidate_failure));
+                                Some(recovery.old)
+                            }
+                            freshness::RefreshAttempt::Ended(old) => Some(old),
+                        }
+                    } else {
+                        None
+                    };
+                    let expectation = match &old_holder {
+                        Some(old) => PublicationExpectation::Replace(old),
+                        None => PublicationExpectation::Ordinary,
+                    };
                     prepared
                         .as_mut()
                         .expect("pre-Source failure node")
@@ -2300,22 +2375,42 @@ impl TunnelAgentState {
                         Some(slot.clone());
                     let _permit = self.inner.lifecycle.connects.acquire().await?;
                     deadline.check()?;
-                    self.connect_and_store_with_context(
-                        udid,
-                        route,
-                        ticket,
-                        ConnectionContext {
-                            expected_id,
-                            deadline: Some(&deadline),
-                            retry: Some((identity.clone(), slot)),
-                            manual: None,
-                            manual_births: None,
-                            releases: &mut releases,
-                            input: input.clone(),
-                            expectation,
-                        },
-                    )
-                    .await?;
+                    let candidate = self
+                        .connect_and_store_with_context(
+                            udid,
+                            route,
+                            ticket,
+                            ConnectionContext {
+                                expected_id,
+                                deadline: Some(&deadline),
+                                retry: Some((identity.clone(), slot)),
+                                manual: None,
+                                manual_births: None,
+                                releases: &mut releases,
+                                input: input.clone(),
+                                expectation,
+                            },
+                        )
+                        .await;
+                    if let Err(candidate) = candidate {
+                        deadline.check()?;
+                        anyhow::ensure!(ticket.is_current(), lifecycle::cancelled());
+                        if let Some(old) = &old_holder {
+                            anyhow::ensure!(
+                                old.observed_ticket.is_current(),
+                                lifecycle::cancelled()
+                            );
+                        }
+                        if let Some(authority) = &authority {
+                            authority.check_clock()?;
+                        }
+                        return Err(match probe_failure {
+                            Some((probe, destination)) => {
+                                freshness::CandidateFailure::attach(probe, candidate, destination)
+                            }
+                            None => candidate,
+                        });
+                    }
                     // Publication completed within the candidate budget.
                     // Contested cleanup must not queue a writer while later
                     // candidates still need failure-table reads, or turn a

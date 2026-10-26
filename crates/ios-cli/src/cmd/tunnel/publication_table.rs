@@ -370,6 +370,51 @@ pub(super) struct Change<T> {
     displaced: Option<(T, u64)>,
     unused: Option<OwnedNode<T>>,
 }
+
+/// Only borrows destinations whose owners outlive every publication guard.
+/// Unwind restores the original table row and moves the refused row outside
+/// the commit locks before its destructor can retire a native lease.
+pub(super) struct Transaction<'a, T> {
+    table: &'a mut Table<T>,
+    change: &'a mut Option<Change<T>>,
+    retired: &'a mut Option<Retired<T>>,
+    committed: bool,
+}
+
+impl<T> Table<T> {
+    pub(super) fn transaction<'a>(
+        &'a mut self,
+        change: &'a mut Option<Change<T>>,
+        retired: &'a mut Option<Retired<T>>,
+    ) -> Transaction<'a, T> {
+        Transaction {
+            table: self,
+            change,
+            retired,
+            committed: false,
+        }
+    }
+}
+
+impl<T> Transaction<'_, T> {
+    pub(super) fn publish(&mut self, slot: usize, prepared: OwnedNode<T>, value: T) {
+        assert!(self.change.is_none() && self.retired.is_none());
+        *self.change = Some(self.table.publish(slot, prepared, value));
+    }
+    pub(super) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl<T> Drop for Transaction<'_, T> {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Some(change) = self.change.take() {
+                *self.retired = Some(self.table.rollback(change));
+            }
+        }
+    }
+}
 impl<T> Change<T> {
     pub(super) fn finish(mut self) -> Retired<T> {
         Retired {

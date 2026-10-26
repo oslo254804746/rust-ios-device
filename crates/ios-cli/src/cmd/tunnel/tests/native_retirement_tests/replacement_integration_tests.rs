@@ -8,11 +8,28 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const CLOCK: Duration = Duration::from_secs(8);
 
+#[derive(Debug)]
+struct ProbeIo(Arc<io::Error>);
+impl std::fmt::Display for ProbeIo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for ProbeIo {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
 struct ReplacementSource {
     handles: StdMutex<Vec<Arc<TunnelHandle>>>,
     currents: StdMutex<Vec<PreparedRsdOwner>>,
     peers: StdMutex<Vec<tokio::task::JoinHandle<ScriptedTunnelReport>>>,
     refresh_fails: AtomicBool,
+    probe_error: Arc<io::Error>,
+    refresh_calls: AtomicUsize,
+    on_prepared: StdMutex<Option<Box<dyn FnOnce() + Send>>>,
+    held: StdMutex<Option<tokio::sync::OwnedSemaphorePermit>>,
     candidate_fails: AtomicBool,
     prepare_count: AtomicUsize,
     usb: StdMutex<Vec<source::UsbDevice>>,
@@ -25,6 +42,13 @@ impl Default for ReplacementSource {
             currents: StdMutex::new(Vec::new()),
             peers: StdMutex::new(Vec::new()),
             refresh_fails: AtomicBool::new(false),
+            probe_error: Arc::new(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "scripted RSD refresh probe failed",
+            )),
+            refresh_calls: AtomicUsize::new(0),
+            on_prepared: StdMutex::new(None),
+            held: StdMutex::new(None),
             candidate_fails: AtomicBool::new(false),
             prepare_count: AtomicUsize::new(0),
             usb: StdMutex::new(vec![source::UsbDevice {
@@ -54,11 +78,13 @@ impl Source for ReplacementSource {
         bank: &'a Arc<Semaphore>,
     ) -> Result<future_storage::Dynamic<'a, Result<ios_core::device::PreparedRsdOwner>>> {
         let should_fail = self.refresh_fails.load(Ordering::SeqCst);
+        self.refresh_calls.fetch_add(1, Ordering::SeqCst);
         let current = self.currents.lock().unwrap().first().cloned();
+        let original = self.probe_error.clone();
         future_storage::Dynamic::new(
             async move {
                 if should_fail {
-                    Err(anyhow::anyhow!("scripted RSD refresh probe failed"))
+                    Err(anyhow::Error::new(ProbeIo(original)))
                 } else {
                     current.ok_or_else(|| anyhow::anyhow!("no current RSD catalogue"))
                 }
@@ -112,6 +138,10 @@ impl Source for ReplacementSource {
                         .lock()
                         .unwrap()
                         .push(device.current_rsd_catalogue().clone());
+                    let callback = self.on_prepared.lock().unwrap().take();
+                    if let Some(callback) = callback {
+                        callback();
+                    }
                     Ok(prepared_source::Candidate::Native {
                         device: prepared.place(device),
                         output,
@@ -181,6 +211,8 @@ async fn probe_failure_triggers_exact_replacement_returning_new_paid_record() {
 
     // Verify record returned is NEW.
     assert_eq!(record2.udid, record1.udid);
+    assert_eq!(record2.userspace_port, handle2.userspace_port);
+    assert_ne!(record2.userspace_port, record1.userspace_port);
 
     // Verify publication table still has exactly one entry at the same slot with new incarnation.
     let (new_proof, new_incarnation) = {
@@ -227,6 +259,7 @@ async fn natural_runtime_death_triggers_exact_replacement() {
     let record1 = state.ensure_tunnel(DEVICE, None, None).await.unwrap();
     let handle1 = source.handle(0);
     assert!(handle1.is_alive());
+    let old_proof = state.inner.tunnels.read().await.proof(DEVICE).unwrap();
 
     // 2. Simulate natural death of runtime #1 by aborting its duplex peer.
     source.peers.lock().unwrap()[0].abort();
@@ -239,6 +272,16 @@ async fn natural_runtime_death_triggers_exact_replacement() {
     }
     assert!(!handle1.is_alive());
 
+    source.candidate_fails.store(true, Ordering::SeqCst);
+    let refusal = state.ensure_tunnel(DEVICE, None, None).await.unwrap_err();
+    assert_eq!(
+        state.inner.tunnels.read().await.proof(DEVICE).unwrap(),
+        old_proof,
+        "a failed candidate cannot prune the ended exact old row"
+    );
+    drop(refusal);
+    source.candidate_fails.store(false, Ordering::SeqCst);
+
     // 3. Ensure tunnel: detects ended runtime -> replaces with candidate #2.
     let record2 = state.ensure_tunnel(DEVICE, None, None).await.unwrap();
     let handle2 = source.handle(1);
@@ -250,6 +293,12 @@ async fn natural_runtime_death_triggers_exact_replacement() {
         let tunnels = state.inner.tunnels.read().await;
         assert_eq!(tunnels.len(), 1);
         assert!(tunnels[DEVICE].is_alive());
+        let new_proof = tunnels.proof(DEVICE).unwrap();
+        assert_eq!(
+            old_proof.0, new_proof.0,
+            "natural death retains the original table node"
+        );
+        assert_ne!(old_proof.1, new_proof.1);
     }
 
     terminal.shutdown(&state);
@@ -266,6 +315,119 @@ async fn natural_runtime_death_triggers_exact_replacement() {
     drop(source);
     drop(terminal);
     drop(state);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+async fn collect_replacement_peers(
+    state: &TunnelAgentState,
+    source: &ReplacementSource,
+    terminal: &mut PreparedTerminal,
+) {
+    terminal.shutdown(state);
+    state.drain_native(CLOCK).await.unwrap();
+    terminal.clear(state).await;
+    let peers = std::mem::take(&mut *source.peers.lock().unwrap());
+    for peer in peers {
+        let report = tokio::time::timeout(CLOCK, peer).await.unwrap().unwrap();
+        assert!(
+            report.literal_eof,
+            "the actual original transport must close with Ok(0)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn replacement_panic_restores_old_row_without_retiring_a_lease_under_registry_lock() {
+    use futures_util::FutureExt;
+    let source = Arc::new(ReplacementSource::default());
+    let state = replacement_state(source.clone());
+    let bank = state.inner.global_metadata_bytes.clone();
+    let mut terminal = PreparedTerminal::new(&state);
+    let record = state.ensure_tunnel(DEVICE, None, None).await.unwrap();
+    let original = source.handle(0);
+    let proof = state.inner.tunnels.read().await.proof(DEVICE).unwrap();
+    source.refresh_fails.store(true, Ordering::SeqCst);
+    *state.inner.publication_after_insert.lock().unwrap() = Some(Box::new(|| {
+        panic!("regression: unwind after joint registry/table publication");
+    }));
+    let panic = std::panic::AssertUnwindSafe(state.ensure_tunnel(DEVICE, None, None))
+        .catch_unwind()
+        .await;
+    assert!(panic.is_err());
+    {
+        let rows = state.inner.tunnels.read().await;
+        assert_eq!(rows.proof(DEVICE).unwrap(), proof);
+        assert!(Arc::ptr_eq(
+            rows[DEVICE].device.native_handle().unwrap(),
+            &original
+        ));
+    }
+    // A poisoned mutex is recoverable; a lease destructor that reenters the
+    // still-held registry would never reach this actual snapshot/collection.
+    assert_eq!(state.inner.native.snapshot().active, 1);
+    assert!(original.is_alive());
+    collect_replacement_peers(&state, &source, &mut terminal).await;
+    drop((panic, record, original, terminal, state, source));
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
+async fn replacement_preserves_probe_desired_observation_before_activation() {
+    let source = Arc::new(ReplacementSource::default());
+    let state = replacement_state(source.clone());
+    let bank = state.inner.global_metadata_bytes.clone();
+    let mut terminal = PreparedTerminal::new(&state);
+    let record = state.ensure_tunnel(DEVICE, None, None).await.unwrap();
+    let proof = state.inner.tunnels.read().await.proof(DEVICE).unwrap();
+    let ticket = state.inner.lifecycle.ticket(DEVICE).await.unwrap();
+    let mut births = ticket.prepare_manual_births::<1>(&bank).unwrap();
+    source.refresh_fails.store(true, Ordering::SeqCst);
+    *source.on_prepared.lock().unwrap() = Some(Box::new(move || {
+        ticket.replace_desired_for_test(intent::Desired::Automatic, &mut births);
+    }));
+    let error = state.ensure_tunnel(DEVICE, None, None).await.unwrap_err();
+    assert!(error.is::<ios_core::OperationCancelled>());
+    assert_eq!(
+        state.inner.tunnels.read().await.proof(DEVICE).unwrap(),
+        proof
+    );
+    assert!(!source.handle(1).ready_for_publication());
+    collect_replacement_peers(&state, &source, &mut terminal).await;
+    drop((error, record, terminal, state, source));
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
+async fn existing_prepared_record_refusal_precedes_refresh_source_and_keeps_old_row() {
+    let source = Arc::new(ReplacementSource::default());
+    let state = replacement_state(source.clone());
+    let bank = state.inner.global_metadata_bytes.clone();
+    let mut terminal = PreparedTerminal::new(&state);
+    let record = state.ensure_tunnel(DEVICE, None, None).await.unwrap();
+    let proof = state.inner.tunnels.read().await.proof(DEVICE).unwrap();
+    let charged = bank.clone();
+    let captured = source.clone();
+    let hook = record_owner::on_before_admission(move || {
+        *captured.held.lock().unwrap() = Some(
+            charged
+                .clone()
+                .try_acquire_many_owned(charged.available_permits() as u32)
+                .unwrap(),
+        );
+        charged.close();
+    });
+    let error = state.ensure_tunnel(DEVICE, None, None).await.unwrap_err();
+    assert!(error.is::<record_owner::CopyAdmission>());
+    assert_eq!(source.refresh_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.prepare_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state.inner.tunnels.read().await.proof(DEVICE).unwrap(),
+        proof
+    );
+    drop(hook);
+    drop(source.held.lock().unwrap().take());
+    collect_replacement_peers(&state, &source, &mut terminal).await;
+    drop((error, record, terminal, state, source));
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 
@@ -292,11 +454,18 @@ async fn candidate_failure_during_replacement_preserves_exact_old_row() {
 
     // 3. Ensure tunnel fails because candidate refused.
     let err = state.ensure_tunnel(DEVICE, None, None).await.unwrap_err();
-    let message = format!("{err:#}");
-    assert!(
-        message.contains("scripted RSD refresh probe failed")
-            || message.contains("scripted candidate connection refusal")
-    );
+    let primary = err
+        .downcast_ref::<freshness::Failure>()
+        .unwrap()
+        .original()
+        .downcast_ref::<ProbeIo>()
+        .unwrap();
+    assert!(Arc::ptr_eq(&primary.0, &source.probe_error));
+    let candidate = err
+        .downcast_ref::<freshness::CandidateFailure>()
+        .unwrap()
+        .candidate();
+    assert!(format!("{candidate:#}").contains("scripted candidate connection refusal"));
 
     // 4. Old row was NOT displaced or lost.
     {

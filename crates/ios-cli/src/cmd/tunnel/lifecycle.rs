@@ -1043,6 +1043,15 @@ impl Ticket {
         self.gate.intent.snapshot()
     }
 
+    #[cfg(test)]
+    pub(super) fn replace_desired_for_test(
+        &self,
+        desired: super::intent::Desired,
+        context: &mut impl BirthContext,
+    ) {
+        self.gate.intent.replace(desired, context);
+    }
+
     pub(super) fn prepare_manual_births<const N: usize>(
         &self,
         bank: &Arc<Semaphore>,
@@ -1085,6 +1094,35 @@ impl Ticket {
             deadline,
             context,
         )
+    }
+
+    /// An explicit recovery still owns an unfenced Ticket, but its selector
+    /// must match the failed probe at the same locked manual cutover.
+    pub(super) fn establish_manual_shared_observed(
+        &self,
+        route: super::intent::RouteOwner,
+        authority: crate::access::DeviceAuthority,
+        failure: Option<FailureVersion>,
+        deadline: Option<&ConnectionDeadline>,
+        context: &mut impl BirthContext,
+        observation: &Ticket,
+    ) -> Result<()> {
+        debug_assert!(self.intent_version.is_none());
+        anyhow::ensure!(self.same_incarnation(observation), cancelled());
+        let version = observation.intent_version.as_ref().ok_or_else(cancelled)?;
+        self.gate.intent.checked_replace_observed(
+            || self.gate.intent.manual_shared(route, authority.clone()),
+            failure,
+            || {
+                if let Some(deadline) = deadline {
+                    deadline.check()?;
+                }
+                authority.check_clock()
+            },
+            context,
+            Some(version),
+        )?;
+        Ok(())
     }
 
     fn establish_manual_with(

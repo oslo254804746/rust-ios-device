@@ -366,9 +366,23 @@ impl Cell {
         check: impl Fn() -> anyhow::Result<()>,
         context: &mut impl BirthContext,
     ) -> anyhow::Result<ControlIdentity> {
+        self.checked_replace_observed(desired, failure, check, context, None)
+    }
+
+    pub(super) fn checked_replace_observed(
+        &self,
+        desired: impl FnOnce() -> anyhow::Result<Desired>,
+        failure: Option<FailureVersion>,
+        check: impl Fn() -> anyhow::Result<()>,
+        context: &mut impl BirthContext,
+        observed: Option<&ControlIdentity>,
+    ) -> anyhow::Result<ControlIdentity> {
         #[cfg(test)]
         Self::run_replace_callback(&self.before_checked_replace);
         let mut state = self.lock();
+        if observed.is_some_and(|version| !ControlIdentity::ptr_eq(version, &state.version)) {
+            return Err(super::lifecycle::cancelled());
+        }
         let mut pending = self
             .pending_success
             .lock()

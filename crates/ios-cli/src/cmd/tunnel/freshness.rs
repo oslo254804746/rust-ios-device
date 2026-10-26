@@ -222,6 +222,39 @@ impl OldRow {
 pub(super) struct RecoveryInput {
     pub(super) old: OldRow,
     pub(super) probe_failure: anyhow::Error,
+    pub(super) candidate_failure: super::owned_box::Destination<anyhow::Error>,
+}
+
+/// A typed context keeps the probe's original anyhow downcasts/source chain
+/// primary, while exposing the entire independent candidate failure explicitly.
+pub(super) struct CandidateFailure {
+    candidate: super::owned_box::Owner<anyhow::Error>,
+}
+impl CandidateFailure {
+    pub(super) fn attach(
+        primary: anyhow::Error,
+        candidate: anyhow::Error,
+        destination: super::owned_box::Destination<anyhow::Error>,
+    ) -> anyhow::Error {
+        primary.context(Self {
+            candidate: destination.place(candidate),
+        })
+    }
+    #[cfg(test)]
+    pub(super) fn candidate(&self) -> &anyhow::Error {
+        &self.candidate
+    }
+}
+impl std::fmt::Display for CandidateFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "replacement candidate failed: {}", &*self.candidate)
+    }
+}
+impl std::fmt::Debug for CandidateFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplacementCandidateFailure")
+            .finish_non_exhaustive()
+    }
 }
 
 pub(super) enum RefreshAttempt {
@@ -230,48 +263,11 @@ pub(super) enum RefreshAttempt {
     Ended(OldRow),
 }
 
-struct ProbeFailedError {
+struct RecoveryPending {
     old: OldRow,
-    report: anyhow::Error,
+    candidate_failure: super::owned_box::Destination<anyhow::Error>,
+    receipt: ReceiptOwner,
 }
-
-impl std::fmt::Debug for ProbeFailedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProbeFailedError")
-            .field("report", &self.report)
-            .finish()
-    }
-}
-
-impl std::fmt::Display for ProbeFailedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RSD refresh probe failed: {}", self.report)
-    }
-}
-
-impl std::error::Error for ProbeFailedError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.report.as_ref())
-    }
-}
-
-struct EndedError {
-    old: OldRow,
-}
-
-impl std::fmt::Debug for EndedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EndedError").finish()
-    }
-}
-
-impl std::fmt::Display for EndedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("existing tunnel runtime has ended")
-    }
-}
-
-impl std::error::Error for EndedError {}
 
 fn invoke<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
     work()
@@ -297,29 +293,36 @@ impl TunnelAgentState {
             (None, super::intent::Desired::Stopped) => return Err(lifecycle::cancelled()),
             (None, super::intent::Desired::Automatic) => None,
         };
-        let work = observation.run(deadline.run(self.try_refresh_existing_inner(
-            udid,
-            &observation,
-            deadline,
-            session,
-            authority.as_ref(),
-        )));
-        let result = match &authority {
-            Some(authority) => authority.run(work).await,
-            None => work.await,
+        let mut recovery = None;
+        let result = {
+            let mut work = std::pin::pin!(observation.run(deadline.run(
+                self.try_refresh_existing_inner(
+                    udid,
+                    &observation,
+                    deadline,
+                    session,
+                    authority.as_ref(),
+                    &mut recovery,
+                )
+            )));
+            match &authority {
+                Some(authority) => authority.run(work.as_mut()).await,
+                None => work.as_mut().await,
+            }
         };
-        match result {
-            Ok(()) => Ok(RefreshAttempt::Current),
-            Err(err) => match err.downcast::<ProbeFailedError>() {
-                Ok(failed) => Ok(RefreshAttempt::ProbeFailed(RecoveryInput {
-                    old: failed.old,
-                    probe_failure: failed.report,
-                })),
-                Err(err) => match err.downcast::<EndedError>() {
-                    Ok(ended) => Ok(RefreshAttempt::Ended(ended.old)),
-                    Err(err) => Err(err),
-                },
-            },
+        match (result, recovery) {
+            (Err(error), Some(pending))
+                if error
+                    .downcast_ref::<Failure>()
+                    .is_some_and(|failure| failure.payload.receipt.ptr_eq(&pending.receipt)) =>
+            {
+                Ok(RefreshAttempt::ProbeFailed(RecoveryInput {
+                    old: pending.old,
+                    probe_failure: error,
+                    candidate_failure: pending.candidate_failure,
+                }))
+            }
+            (result, _) => result,
         }
     }
 
@@ -330,7 +333,8 @@ impl TunnelAgentState {
         deadline: &lifecycle::ConnectionDeadline,
         session: Option<&super::scan::Session<'_>>,
         authority: Option<&crate::access::DeviceAuthority>,
-    ) -> Result<()> {
+        recovery: &mut Option<RecoveryPending>,
+    ) -> Result<RefreshAttempt> {
         anyhow::ensure!(
             self.inner.access.permits_device(udid),
             lifecycle::cancelled()
@@ -342,7 +346,7 @@ impl TunnelAgentState {
                 .get_key_value(udid)
                 .ok_or_else(lifecycle::cancelled)?;
             let Some(route) = row.device.freshness_route()? else {
-                return Ok(());
+                return Ok(RefreshAttempt::Current);
             };
             let runtime = row
                 .device
@@ -362,25 +366,14 @@ impl TunnelAgentState {
             let capture = || {
                 ticket.commit(|| {
                     deadline.check()?;
-                    if is_alive {
-                        native.capture_refresh(
-                            ticket.ownership_stamp(),
-                            runtime,
-                            &row._metadata,
-                            &row._global_metadata,
-                            row._fresh_metadata.as_ref(),
-                            &self.inner.global_metadata_bytes,
-                        )
-                    } else {
-                        native.capture_existing(
-                            ticket.ownership_stamp(),
-                            runtime,
-                            &row._metadata,
-                            &row._global_metadata,
-                            row._fresh_metadata.as_ref(),
-                            &self.inner.global_metadata_bytes,
-                        )
-                    }
+                    native.capture_existing(
+                        ticket.ownership_stamp(),
+                        runtime,
+                        &row._metadata,
+                        &row._global_metadata,
+                        row._fresh_metadata.as_ref(),
+                        &self.inner.global_metadata_bytes,
+                    )
                 })
             };
             let proof = match authority {
@@ -402,9 +395,11 @@ impl TunnelAgentState {
             observed_ticket: ticket.clone(),
         };
         if !alive {
-            return Err(anyhow::Error::new(EndedError { old }));
+            return Ok(RefreshAttempt::Ended(old));
         }
         // Allocate the cause capsule and two output owners before any Source poll.
+        let candidate_failure =
+            super::owned_box::Destination::new(&self.inner.global_metadata_bytes)?;
         let receipt = Receipt::prepare(&self.inner.global_metadata_bytes)?;
         let permit = self.inner.lifecycle.connects.acquire().await?;
         deadline.check()?;
@@ -418,9 +413,17 @@ impl TunnelAgentState {
             Some(authority) => authority.commit(udid, admit),
             None => admit(),
         };
-        if still_alive.is_err() {
+        if let Err(cause) = still_alive {
             drop(permit);
-            return Err(anyhow::Error::new(EndedError { old }));
+            deadline.check()?;
+            if let Some(authority) = authority {
+                authority.check_clock()?;
+            }
+            ticket.commit(|| old.registry.check_replacement())?;
+            if old.registry.runtime().is_alive() {
+                return Err(cause);
+            }
+            return Ok(RefreshAttempt::Ended(old));
         }
         let mut source = self.inner.source.refresh_existing_rsd(
             route,
@@ -450,10 +453,15 @@ impl TunnelAgentState {
         let catalogue = match result {
             Ok(catalogue) => catalogue,
             Err(probe_failure) => {
-                return Err(anyhow::Error::new(ProbeFailedError {
+                // Preserve Ready(Err) through the original deadline/authority
+                // wrappers. Encoding this as Ok(ProbeFailed) here would let a
+                // crossed clock erase the already acquired native cause.
+                *recovery = Some(RecoveryPending {
                     old,
-                    report: probe_failure,
-                }));
+                    candidate_failure,
+                    receipt,
+                });
+                return Err(probe_failure);
             }
         };
         deadline.check()?;
@@ -534,12 +542,13 @@ impl TunnelAgentState {
         // Every displaced cache/fee/error owner drops after all commit locks.
         result.map(|displaced| {
             drop(displaced);
+            RefreshAttempt::Current
         })
     }
 
     /// Caller owns the original device serial guard. Nested cancellation/clock
     /// guards include the permit wait; no new deadline is started here.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(super) async fn refresh_alive_rsd(
         &self,
         udid: &str,

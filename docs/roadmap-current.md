@@ -1,11 +1,11 @@
 # 当前工程调度
 
-2026-10-25：L02 [多设备隔离交付与验收收口](validation/l02-closeout-2026-10-25.md)
-CLI 私有准备/发布与精确旧行替换接入生产，Linux/macOS Unix actor 经本地双向包传输与逆序撤销闭环；
-RFC 2473 IP-in-IP 私有流丢弃与合法流量转发接通；全链路 128MiB 准入额度与 closed-zero 保障通过；
-1923 完整 CLI、121 native 退休、8 Unix actor、16 过滤器用例及 host 5/0/22 通过；生成 ios.exe 指纹一致；
-ESP 载荷解密与 128MiB 物理 heap 上界保留为明确 OPEN，macOS 驱动级原生运行与硬件变更保持 NOT_RUN；
-L02 七包开发与独立验收完成，交付 Codex 独立 review，停止扩展到其余六个主项。
+2026-10-26：L02 [独立复核与修复](validation/l02-review-2026-10-26.md)
+撤回旧“七包全部完成”结论：已修复替换事务 unwind/锁内退休、原 desired observation、自然结束旧行提前删除、
+原错误/候选 cause 保留、输出拒绝 Source0 与封装解析边界；真实背压和 closed-zero 用例已加强。
+最终 CLI1926/0/13原ignored、替换集成9/0；同源 Core245/activation16、Linux actor8、双平台filter20及严格检查通过。
+ESP/未知变换与内层分片隔离、Unix剩余清理边界、全owner及全模式逐项审计仍OPEN，L02主项未关闭。
+128MiB仍为已知对象池范围，不要求或宣称整个heap/RSS上限；设备/真实接口与macOS实际运行保持NOT_RUN。
 
 2026-10-25：L02 [明文扩展头与分片身份修复](validation/tunnel-filter-plaintext-2026-10-25.md)
 HAO/RH2/SRH/AH 明文端点、offset-zero canonical/key 分离、atomic/首次 ingest TTL 已接入原过滤器。
