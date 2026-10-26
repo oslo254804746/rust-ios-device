@@ -535,7 +535,7 @@ async fn address_dad_tentative_blocks_readiness_and_conflict_fails() {
 #[tokio::test]
 async fn packet_backpressure_and_strict_eof_under_full_pipe() {
     let bank = Arc::new(Semaphore::new(TOTAL));
-    let (stream, peer_stream) = tokio::io::duplex(1280);
+    let (stream, mut peer_stream) = tokio::io::duplex(1280);
     let (engine, launch) = UserspaceTunDevice::prepare_private_validated_with_bank(
         "fd00::2",
         "fd00::1",
@@ -563,8 +563,65 @@ async fn packet_backpressure_and_strict_eof_under_full_pipe() {
     native.activate(port).await.unwrap();
     assert!(native.ready());
 
-    // Drop peer stream to trigger EOF on reader:
+    // Do not drain the native peer. Fill the genuine datagram send buffer,
+    // block the actual native writer and fill its one-packet bridge pipe.
+    // Merely dropping an otherwise idle peer did not test backpressure.
+    let packet = make_ipv6_packet(plan().server, plan().client, &[0; 1200]);
+    let burst = packet.repeat(1024);
+    tokio::time::timeout(OBSERVE, async {
+        let send = peer_stream.write_all(&burst);
+        tokio::pin!(send);
+        let full = async {
+            loop {
+                let pipe_full = native
+                    .control
+                    .to_native
+                    .full_send_observed
+                    .load(Ordering::Acquire);
+                // The real blocked writer deliberately retains this mutex
+                // across send(). Observing it must never block the executor
+                // that will deliver EOF and enforce the test deadline.
+                let writer_holds = native
+                    .control
+                    .write_current
+                    .try_lock()
+                    .map_or(true, |current| current.is_some());
+                let writable = {
+                    use std::os::fd::AsRawFd;
+                    let packet = native.control.packet.read().unwrap();
+                    let fd = packet.as_ref().unwrap().test_fd();
+                    let mut poll = libc::pollfd {
+                        fd: fd.as_raw_fd(),
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    // SAFETY: the read guard retains this exact packet alias;
+                    // poll only observes readiness and cannot configure it.
+                    assert!(unsafe { libc::poll(&mut poll, 1, 0) } >= 0);
+                    poll.revents & libc::POLLOUT != 0
+                };
+                if pipe_full && writer_holds && !writable {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::select! {
+            result = &mut send => panic!("burst must still be blocked: {result:?}"),
+            () = full => {},
+        }
+    })
+    .await
+    .expect("native TX and bridge pipe never became full");
+    // Cancel the still-blocked peer write above, then deliver actual EOF while
+    // both native TX destinations are full. No explicit request_stop here.
     drop(peer_stream);
+
+    // Collection requests stop itself; wait first so it cannot manufacture
+    // the interruption that this regression attributes to original EOF.
+    tokio::time::timeout(OBSERVE, native.control.stopped())
+        .await
+        .expect("original EOF hidden behind full native TX pipe");
 
     // Bridge and transport detect EOF and signal stop:
     tokio::time::timeout(OBSERVE, async {
@@ -612,6 +669,13 @@ async fn stop_signal_and_orderly_reverse_join() {
     let port = engine.quiesce_and_flush().await.unwrap();
     native.activate(port).await.unwrap();
     assert!(native.ready());
+
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    bank.close();
+    assert_eq!(bank.available_permits(), 0);
 
     // Explicitly call request_stop()
     native.request_stop();
@@ -663,6 +727,6 @@ async fn stop_signal_and_orderly_reverse_join() {
         0
     );
 
-    drop((native, engine, handle));
+    drop((native, engine, handle, held));
     assert_eq!(bank.available_permits(), TOTAL);
 }
