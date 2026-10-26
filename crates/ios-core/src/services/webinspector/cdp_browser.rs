@@ -753,6 +753,10 @@ pub fn is_verified_page_domain_method(method: &str) -> bool {
             | "Fetch.continueRequest"
             | "Fetch.failRequest"
             | "Fetch.fulfillRequest"
+            | "Performance.enable"
+            | "Performance.disable"
+            | "Performance.getMetrics"
+            | "HeapProfiler.collectGarbage"
     )
 }
 
@@ -1332,6 +1336,10 @@ mod tests {
             "Page.captureScreenshot",
             "Fetch.enable",
             "Fetch.continueRequest",
+            "Performance.enable",
+            "Performance.getMetrics",
+            "Performance.disable",
+            "HeapProfiler.collectGarbage",
         ] {
             assert!(
                 matches!(
@@ -1345,8 +1353,6 @@ mod tests {
             "Input.dispatchMouseEvent",
             "Input.dispatchKeyEvent",
             "Memory.getDOMCounters",
-            "Performance.enable",
-            "Performance.getMetrics",
         ] {
             let responses = sent(
                 &mut state,

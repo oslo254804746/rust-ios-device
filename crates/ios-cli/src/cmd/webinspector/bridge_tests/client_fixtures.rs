@@ -474,6 +474,8 @@ async fn js_peer(
                                 "params": {
                                     "context": {
                                         "id": 1,
+                                        "type": "normal",
+                                        "frameId": "1.1",
                                         "origin": "https://example.invalid",
                                         "name": "",
                                         "uniqueId": "pagecontext.1",
@@ -496,12 +498,42 @@ async fn js_peer(
                                 evt
                             };
                             runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                            for (context, frame) in [(101, "1.3"), (102, "1.5")] {
+                                let evt = json!({"method":"Runtime.executionContextCreated", "params":{
+                                    "context":{"id":context,"type":"normal","frameId":frame,"name":""}
+                                }});
+                                let dispatch = if nested {
+                                    json!({"method":"Target.dispatchMessageFromTarget","params":{
+                                        "targetId":target_id.as_deref().unwrap_or(""), "message":serde_json::to_string(&evt)?
+                                    }})
+                                } else {
+                                    evt
+                                };
+                                runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                            }
                         }
                         json!({"id": cmd_id, "result": {}})
                     }
                     Some("Console.enable") => {
                         receipt.console_enables += 1;
                         json!({"id": cmd_id, "result": {}})
+                    }
+                    Some(
+                        "Memory.enable" | "Memory.disable" | "Memory.stopTracking" | "Heap.gc",
+                    ) => json!({"id":cmd_id,"result":{}}),
+                    Some("Memory.startTracking") => {
+                        let evt = json!({"method":"Memory.trackingUpdate","params":{"event":{
+                            "timestamp":12.5,"categories":[{"type":"javascript","size":4096},{"type":"images","size":1024}]
+                        }}});
+                        let dispatch = if nested {
+                            json!({"method":"Target.dispatchMessageFromTarget","params":{
+                                "targetId":target_id.as_deref().unwrap_or(""),"message":serde_json::to_string(&evt)?
+                            }})
+                        } else {
+                            evt
+                        };
+                        runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                        json!({"id":cmd_id,"result":{}})
                     }
                     Some("Runtime.runIfWaitingForDebugger") => {
                         json!({"id": cmd_id, "result": {}})
@@ -532,7 +564,10 @@ async fn js_peer(
                                             },
                                             "resources": [],
                                             "childFrames": []
-                                        }
+                                        },
+                                        {"frame":{"id":"1.5","parentId":"1.1","loaderId":"1.6",
+                                            "url":"https://cross.invalid/child","securityOrigin":"https://cross.invalid"},
+                                            "resources":[],"childFrames":[]}
                                     ]
                                 }
                             }
@@ -548,6 +583,7 @@ async fn js_peer(
                     }
                     Some(
                         "Network.addInterception"
+                        | "Network.removeInterception"
                         | "Network.setInterceptionEnabled"
                         | "Network.interceptContinue",
                     ) => {
@@ -555,17 +591,73 @@ async fn js_peer(
                     }
                     Some(
                         "Network.interceptRequestWithError"
-                        | "Network.interceptRequestWithResponse",
+                        | "Network.interceptRequestWithResponse"
+                        | "Network.interceptWithResponse"
+                        | "Network.interceptWithRequest",
                     ) => {
+                        match command["method"].as_str().unwrap() {
+                            "Network.interceptWithRequest" => {
+                                assert_eq!(command["params"]["method"], "POST");
+                                assert_eq!(command["params"]["postData"], "b2s=");
+                                assert_eq!(command["params"]["headers"]["X-Fixture"], "request");
+                            }
+                            "Network.interceptRequestWithError" => {
+                                assert_eq!(command["params"]["errorType"], "Cancellation")
+                            }
+                            _ => {
+                                assert_eq!(command["params"]["status"], 201);
+                                assert_eq!(command["params"]["content"], "b2s=");
+                                assert_eq!(command["params"]["base64Encoded"], true);
+                            }
+                        }
                         json!({"id": cmd_id, "result": {}})
                     }
                     Some("Runtime.evaluate") => {
                         if command["params"]
                             .get("contextId")
                             .and_then(JsonValue::as_u64)
-                            .is_some_and(|id| id != 1)
+                            .is_some_and(|id| ![1, 101, 102].contains(&id))
                         {
                             json!({"id": cmd_id, "error": {"code": -32602, "message": "Cannot find context with specified id"}})
+                        } else if let Some(kind) = command["params"]["expression"].as_str().and_then(|s| s.strip_prefix("fixture:fetch:")) {
+                            let request_id = format!("native-{kind}");
+                            let request = json!({"url":"https://example.invalid/resource","method":"GET","headers":{}});
+                            let metadata = json!({"method":"Network.requestWillBeSent","params":{
+                                "requestId":request_id,"frameId":"1.1","type":"Fetch","request":request
+                            }});
+                            let paused = if kind == "response" || kind == "cancelled" {
+                                json!({"method":"Network.responseIntercepted","params":{"requestId":request_id,
+                                    "response":{"status":200,"statusText":"OK","headers":{"Content-Type":"text/plain"}}
+                                }})
+                            } else {
+                                json!({"method":"Network.requestIntercepted","params":{"requestId":request_id,"request":request}})
+                            };
+                            for evt in [metadata,paused] {
+                                let dispatch = if nested {
+                                    json!({"method":"Target.dispatchMessageFromTarget","params":{
+                                        "targetId":target_id.as_deref().unwrap_or(""),"message":serde_json::to_string(&evt)?
+                                    }})
+                                } else { evt };
+                                runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                            }
+                            json!({"id":cmd_id,"result":{"result":{"type":"undefined"}}})
+                        } else if let Some(url) = command["params"]["expression"].as_str()
+                            .and_then(|s| s.strip_prefix("window.location.assign("))
+                            .and_then(|s| s.strip_suffix(')')) {
+                            let url: String = serde_json::from_str(url)?;
+                            let frame = match command["params"]["contextId"].as_u64() {
+                                Some(101) => "1.3", Some(102) => "1.5", _ => "1.1",
+                            };
+                            let evt = json!({"method":"Page.frameNavigated","params":{
+                                "frame":{"id":frame,"parentId":"1.1","url":url,"loaderId":"new-loader"}
+                            }});
+                            let dispatch = if nested {
+                                json!({"method":"Target.dispatchMessageFromTarget","params":{
+                                    "targetId":target_id.as_deref().unwrap_or(""),"message":serde_json::to_string(&evt)?
+                                }})
+                            } else { evt };
+                            runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                            json!({"id":cmd_id,"result":{"result":{"type":"undefined"}}})
                         } else if command["params"]["expression"] == "fixture:console-log" {
                             receipt.evaluations += 1;
                             let evt = json!({

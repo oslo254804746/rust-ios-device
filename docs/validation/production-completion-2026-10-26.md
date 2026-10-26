@@ -55,6 +55,18 @@ Display新增retained startup，caller取消仍保留原服务及reconnect facto
 
 有alpha的PNG现在输出32位BI_BITFIELDS DIB v5，保留RGBA；RGB保留原24位输出。JPEG通过固定jpeg-decoder0.3.2（MSRV1.61，MIT/Apache2，无默认rayon）解码RGB/灰度再转DIB，CMYK/16位明确拒绝。JPEG和PNG按实际传输像素去重。样本由本机FFmpeg lavfi红色16x16生成，SHA256 `ad92fb5cf7f4fcdb500c5f0a6e03c8117fd6c44fc013dc4087f3d7597c5f2255`。
 
-验证：Core Display23/0、orientation6/0；CLI完整1969/0/19ignored，含viewer28通过/2显式ignored；准确新制品`ios_cli-e7a77098f7474c2d.exe`显式HEVC2/0，包含持续解码与实际生产publisher在Web/VNC订阅者均不消费时只保留最新共享像素、旧Weak释放。日志`.git/completion-{cli-final,display-final,orientation,hevc-correct}.log`。旧二进制门禁结果作废，不混为本次新功能证据。
+验证：Core Display23/0、orientation6/0；CLI完整1969/0/19ignored，含viewer26通过/2显式ignored；准确新制品`ios_cli-e7a77098f7474c2d.exe`显式HEVC2/0，包含持续解码与实际生产publisher在Web/VNC订阅者均不消费时只保留最新共享像素、旧Weak释放。日志`.git/completion-{cli-final,display-final,orientation,hevc-correct}.log`。旧二进制门禁结果作废，不混为本次新功能证据。
 
 完整CLI首轮默认测试并发为1966通过/3失败/18ignored：旧方向501断言已随真实后端行为更新并增加非法方向无派发；两个未改动的tunnel时序fixture单独复跑通过，之后四线程完整批次通过。没有放宽期限/删除断言/忽略失败。
+
+## F04 iframe、内存采样与Fetch
+
+Page适配器保存WebKit原生`ExecutionContextDescription.id/frameId/type=normal`，只对frame-tree内且存在正常world映射的子帧求值导航；没有映射继续拒绝，明确未知context不转向主框架。真实Puppeteer分别选择同源与跨源子帧context、求值、导航并等待对应原生commit。
+
+Performance.enable/disable实际调用Memory.enable/startTracking/stopTracking/disable，getMetrics只返回实际采样：Timestamp为设备inspector elapsed秒，WebKitJavaScriptMemory/JIT/Image/Layer/Page/OtherMemory为原生bytes，缺失分类不补零。JavaScript分类包括GCHeap+GCOwned，未冒称Chrome JSHeapUsedSize/TotalSize。HeapProfiler.collectGarbage映射Heap.gc；DOM/listener计数等无对应仍拒绝。启动采样失败会disable并保留原错误。WebKit断开frontend时亦执行disable移除observer。
+
+Fetch增加native interceptWithRequest（url/method/headers/base64 postData）、响应阶段interceptWithResponse；fail保留Cancellation等实际映射。disable先由native关闭拦截、继续pending请求，再removeInterception精确原stage/regex，重启用不残留旧pattern。enable失败移除本次filter，原错误保留；pending状态禁止重叠更改。假服务不把客户端CDP消息直回，仍经现有Rust桥和WebInspector plist。
+
+来源：[WebKit Runtime协议](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/JavaScriptCore/inspector/protocol/Runtime.json)、[Memory协议](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/JavaScriptCore/inspector/protocol/Memory.json)、[InspectorMemoryAgent](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/WebCore/inspector/agents/InspectorMemoryAgent.cpp)、[Network协议](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/JavaScriptCore/inspector/protocol/Network.json)、[InspectorNetworkAgent](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/WebCore/inspector/agents/InspectorNetworkAgent.cpp)。
+
+执行：Core CDP22/0（之后Fetch移除增量新增fixture在最终批次补验），CLI WebInspector184/0/15客户端ignored；准确当前制品显式客户端15/0/0ignored（Playwright1.63.0/Puppeteer25.12.0，包含新iframe/metrics/Fetch三个流程）。`.git/completion-{cdp-core,web-final,cdp-clients-all}.log`。首次新iframe gate13/1失败，原因为测试把navigate回复当作异步事件也已送达；保留全部断言并显式等待匹配事件，随后单项和最终15全组通过。Input/下载和不等价的Chrome专有计数未实现，不能由这些流程宣称五域完成。

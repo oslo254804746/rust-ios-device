@@ -40,7 +40,7 @@ function arguments_() {
   assert.equal(endpoint.hostname, '127.0.0.1');
   assert(endpoint.port && endpoint.pathname === '/' && !endpoint.search && !endpoint.hash);
   assert(!endpoint.username && !endpoint.password);
-  assert(['initialization-rejection', 'runtime-workflow', 'console-workflow', 'five-domain-workflow', 'native-page-closure', 'native-application-closure', 'native-discovery-page-closure', 'native-discovery-application-closure', 'native-discovery-race-closure'].includes(expectation));
+  assert(['initialization-rejection', 'runtime-workflow', 'console-workflow', 'fetch-workflow', 'metrics-workflow', 'iframe-workflow', 'five-domain-workflow', 'native-page-closure', 'native-application-closure', 'native-discovery-page-closure', 'native-discovery-application-closure', 'native-discovery-race-closure'].includes(expectation));
   return { client, endpoint: endpoint.origin, targetUrl, expectation };
 }
 
@@ -124,6 +124,77 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
       session = undefined;
       steps.push('detached');
       result = { status: 'console-workflow', steps, contexts, evaluated: 42, console_event: event };
+    } else if (expectation === 'fetch-workflow') {
+      async function pause(kind) {
+        const paused = new Promise(resolve => session.once('Fetch.requestPaused', resolve));
+        await session.send('Runtime.evaluate', {expression:`fixture:fetch:${kind}`});
+        const event = await bounded(paused);
+        assert.equal(event.requestId, `native-${kind}`);
+        return event;
+      }
+      await session.send('Fetch.enable');
+      const continued = await pause('continue');
+      await session.send('Fetch.continueRequest', {requestId:continued.requestId, method:'POST', postData:'b2s=', headers:[{name:'X-Fixture',value:'request'}]});
+      await assert.rejects(session.send('Fetch.continueRequest', {requestId:continued.requestId}));
+      const fulfilled = await pause('fulfill');
+      await session.send('Fetch.fulfillRequest', {requestId:fulfilled.requestId,responseCode:201,body:'b2s='});
+      const failed = await pause('failed');
+      await session.send('Fetch.failRequest', {requestId:failed.requestId,errorReason:'Aborted'});
+      await session.send('Fetch.disable');
+      await session.send('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Response'}]});
+      const response = await pause('response');
+      assert.equal(response.responseStatusCode, 200);
+      await session.send('Fetch.fulfillRequest',{requestId:response.requestId,responseCode:201,body:'b2s='});
+      const cancelled = await pause('cancelled');
+      await session.send('Fetch.disable');
+      await assert.rejects(session.send('Fetch.continueRequest',{requestId:cancelled.requestId}));
+      steps.push('continue-verified','fulfill-verified','fail-verified','response-verified','pending-disabled');
+      await session.detach(); session = undefined; steps.push('detached');
+      result = {status:'fetch-workflow',steps,contexts};
+    } else if (expectation === 'metrics-workflow') {
+      const sample = new Promise(resolve => session.once('Performance.metrics', resolve));
+      await session.send('Performance.enable');
+      const event = await bounded(sample);
+      const resultMetrics = await session.send('Performance.getMetrics');
+      assert.deepEqual(resultMetrics.metrics, event.metrics);
+      assert.equal(event.metrics.find(m => m.name === 'Timestamp').value, 12.5);
+      assert.equal(event.metrics.find(m => m.name === 'WebKitJavaScriptMemory').value, 4096);
+      assert(!event.metrics.some(m => m.name === 'JSHeapUsedSize'));
+      await session.send('HeapProfiler.collectGarbage');
+      await session.send('Performance.disable');
+      await assert.rejects(session.send('Performance.getMetrics'));
+      steps.push('metrics-verified', 'tracking-stopped');
+      await session.detach(); session = undefined; steps.push('detached');
+      result = {status:'metrics-workflow', steps, contexts, metrics:event.metrics};
+    } else if (expectation === 'iframe-workflow') {
+      const { frameTree } = await session.send('Page.getFrameTree');
+      assert.equal(frameTree.childFrames[0].frame.securityOrigin, frameTree.frame.securityOrigin);
+      assert.notEqual(frameTree.childFrames[1].frame.securityOrigin, frameTree.frame.securityOrigin);
+      const commits = [];
+      session.on('Page.frameNavigated', event => commits.push(event.frame));
+      for (const [frameId, context, url] of [
+        ['1.3', 101, 'https://example.invalid/navigated-child'],
+        ['1.5', 102, 'https://cross.invalid/navigated-child'],
+      ]) {
+        const evaluated = await session.send('Runtime.evaluate', {expression:'6*7', contextId:context, returnByValue:true});
+        assert.equal(evaluated.result.value, 42);
+        const committed = new Promise(resolve => {
+          const listener = event => {
+            if (event.frame.id === frameId && event.frame.url === url) {
+              session.off('Page.frameNavigated', listener); resolve(event.frame);
+            }
+          };
+          session.on('Page.frameNavigated', listener);
+        });
+        const navigation = await session.send('Page.navigate', {url, frameId});
+        assert.equal(navigation.frameId, frameId);
+        await bounded(committed);
+      }
+      assert.deepEqual(commits.map(frame => frame.id), ['1.3', '1.5']);
+      assert.equal(commits[1].url, 'https://cross.invalid/navigated-child');
+      steps.push('same-origin-navigated', 'cross-origin-navigated');
+      await session.detach(); session = undefined; steps.push('detached');
+      result = {status: 'iframe-workflow', steps, contexts, commits};
     } else if (expectation === 'five-domain-workflow') {
       // Domain 1: Console / Runtime is already active and verified
       // Domain 2: Page / iframe
