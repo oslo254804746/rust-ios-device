@@ -247,7 +247,23 @@ async fn web_viewer_input_endpoints_dispatch_actions() {
         .send()
         .await
         .unwrap();
-    assert_eq!(ori_resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(ori_resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        VncInputAction::Rotate { direction: "left" }
+    );
+    let invalid = client
+        .post(format!("{base}/orientation"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({"direction":"unsupported"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        rx.try_recv().is_err(),
+        "invalid direction must not reach the device"
+    );
 
     let _ = shutdown.send(());
     let _ = handle.await;
@@ -920,6 +936,39 @@ fn standard_dib_png_round_trip_conversion() {
         &pixels[..12],
         &[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]
     );
+}
+
+#[test]
+fn rgba_dib_preserves_alpha_and_jpeg_dib_uses_decoded_pixels_for_loop_suppression() {
+    let mut rgba = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut rgba, 2, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[255, 0, 0, 17, 0, 255, 0, 0])
+            .unwrap();
+    }
+    let dib = png_to_dib(&rgba).unwrap();
+    assert_eq!(u16::from_le_bytes(dib[14..16].try_into().unwrap()), 32);
+    assert_eq!(u32::from_le_bytes(dib[16..20].try_into().unwrap()), 3);
+    assert_eq!(&dib[124..], &[0, 0, 255, 17, 0, 255, 0, 0]);
+    let decoded = super::media::decode_png(dib_to_png(&dib).unwrap().into(), 0).unwrap();
+    assert_eq!(decoded.bgra.as_slice(), &[0, 0, 255, 17, 0, 255, 0, 0]);
+    let jpeg = ClipboardPayload::ImageJpeg(include_bytes!("clipboard_sample.jpg").to_vec());
+    let encoded = encode_rfb_provide_image(&jpeg).unwrap();
+    let png = parse_rfb_extended_cut_text(&encoded[8..])
+        .unwrap()
+        .image_png
+        .unwrap();
+    let decoded = super::media::decode_png(png.clone().into(), 0).unwrap();
+    assert_eq!((decoded.width, decoded.height), (16, 16));
+    assert!(decoded.bgra[2] > 200 && decoded.bgra[0] < 20);
+    let mut sync = ClipboardSyncState::new();
+    assert!(sync.should_sync(&jpeg, ClipboardSource::Device));
+    assert!(!sync.should_sync(&ClipboardPayload::ImagePng(png), ClipboardSource::Host));
 }
 
 #[test]

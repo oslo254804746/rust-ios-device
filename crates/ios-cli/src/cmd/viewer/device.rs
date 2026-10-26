@@ -21,10 +21,13 @@ pub struct DeviceInput {
     device: Option<crate::cmd::tunnel::NativeConnection>,
     pasteboard_device: Option<crate::cmd::tunnel::NativeConnection>,
     indigo_device: Option<crate::cmd::tunnel::NativeConnection>,
+    orientation_device: Option<crate::cmd::tunnel::NativeConnection>,
     native: crate::cmd::tunnel::NativeScope,
     universal: Option<UniversalHidServiceClient>,
     media: Option<MediaStreamSession>,
+    starting_display: Option<DisplayServiceClient>,
     indigo: Option<IndigoHidServiceClient>,
+    orientation: Option<ios_core::orientation::OrientationServiceClient>,
     pasteboard: Option<PasteboardClient>,
     keyboard: Option<u64>,
     keys: BTreeSet<u8>,
@@ -45,10 +48,13 @@ impl DeviceInput {
             device: None,
             pasteboard_device: None,
             indigo_device: None,
+            orientation_device: None,
             native,
             universal: None,
             media: None,
+            starting_display: None,
             indigo: None,
+            orientation: None,
             pasteboard: None,
             keyboard: None,
             keys: BTreeSet::new(),
@@ -81,10 +87,13 @@ impl DeviceInput {
         let (xpc, metadata) = device
             .connect_xpc_service_with_metadata(ios_core::display::SERVICE_NAME)
             .await?;
-        let display = DisplayServiceClient::from_resolved_metadata(xpc, &metadata)?;
+        self.starting_display = Some(DisplayServiceClient::from_resolved_metadata(
+            xpc, &metadata,
+        )?);
+        self.device = Some(device);
         self.media = Some(
-            MediaStreamSession::start_video(
-                display,
+            MediaStreamSession::start_video_retained(
+                &mut self.starting_display,
                 MediaStreamOptions {
                     sender_ip,
                     receiver_ip,
@@ -94,7 +103,6 @@ impl DeviceInput {
             .await?,
         );
         self.media.as_mut().expect("media installed").spawn_drain();
-        self.device = Some(device);
         tokio::time::sleep(Duration::from_millis(300)).await;
         let (xpc, metadata) = self
             .device
@@ -272,8 +280,31 @@ impl DeviceInput {
                     self.buttons.remove(&(page, code));
                 }
             }
-            VncInputAction::Rotate { .. } => {
-                anyhow::bail!("CoreDevice orientation injection has no verified protocol mapping")
+            VncInputAction::Rotate { direction } => {
+                let direction: ios_core::orientation::RotationDirection = direction
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("orientation must be left or right"))?;
+                if self.orientation.is_none() {
+                    let device = self
+                        .native
+                        .connect(&self.udid, ios_core::TunMode::Userspace)
+                        .await?;
+                    let (xpc, metadata) = device
+                        .connect_xpc_service_with_metadata(ios_core::orientation::SERVICE_NAME)
+                        .await?;
+                    self.orientation = Some(
+                        ios_core::orientation::OrientationServiceClient::new_with_features(
+                            xpc,
+                            metadata.features,
+                        ),
+                    );
+                    self.orientation_device = Some(device);
+                }
+                self.orientation
+                    .as_mut()
+                    .expect("orientation installed")
+                    .rotate(direction)
+                    .await?;
             }
             VncInputAction::ClipboardOut(payload) => {
                 payload.validate_bounds()?;
@@ -339,14 +370,30 @@ impl DeviceInput {
         self.contact = None;
         self.indigo = None;
         self.pasteboard = None;
+        self.orientation = None;
+        if let Some(mut display) = self.starting_display.take() {
+            if display.request_may_have_executed() {
+                let stopped = tokio::time::timeout(
+                    CLEANUP_TIMEOUT,
+                    display.stop_media_streams_strict(true, &[]),
+                )
+                .await;
+                match stopped {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => failures.push(error.into()),
+                    Err(error) => failures.push(error.into()),
+                }
+            }
+        }
         if let Some(mut media) = self.media.take() {
-            if let Err(error) = media.stop(CLEANUP_TIMEOUT).await {
+            if let Err(error) = media.stop_strict(CLEANUP_TIMEOUT, true, &[]).await {
                 failures.push(error.into());
             }
         }
         self.device = None;
         self.pasteboard_device = None;
         self.indigo_device = None;
+        self.orientation_device = None;
         if let Err(error) = self.native.collect(CLEANUP_TIMEOUT).await {
             failures.push(error);
         }

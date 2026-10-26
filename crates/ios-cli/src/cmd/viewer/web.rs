@@ -424,7 +424,7 @@ struct OrientationRequest {
 
 async fn handle_orientation(
     State(state): State<Arc<WebViewerState>>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     Json(req): Json<OrientationRequest>,
 ) -> Result<StatusCode, StatusCode> {
     let dir = match req.direction.as_str() {
@@ -432,8 +432,13 @@ async fn handle_orientation(
         "right" => "right",
         _ => return Err(StatusCode::BAD_REQUEST),
     };
-    let _ = (state, dir);
-    Err(StatusCode::NOT_IMPLEMENTED)
+    state
+        .submit(
+            DeviceCommand::Input(super::vnc::VncInputAction::Rotate { direction: dir }),
+            principal,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize)]

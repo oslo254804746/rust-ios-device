@@ -681,8 +681,7 @@ impl VncSession {
     ) -> Result<()> {
         let format = match payload {
             ClipboardPayload::Text(_) => clipboard::FORMAT_TEXT,
-            ClipboardPayload::ImagePng(_) => clipboard::FORMAT_DIB,
-            ClipboardPayload::ImageJpeg(_) => return Ok(()), // no JPEG -> DIB mapping
+            ClipboardPayload::ImagePng(_) | ClipboardPayload::ImageJpeg(_) => clipboard::FORMAT_DIB,
         };
         if self.extended_clipboard && formats & self.clipboard_formats & format != 0 {
             let message = if !requested {
@@ -693,8 +692,9 @@ impl VncSession {
             } else {
                 match payload {
                     ClipboardPayload::Text(text) => clipboard::encode_extended_provide_text(text)?,
-                    ClipboardPayload::ImagePng(png) => clipboard::encode_extended_provide_dib(png)?,
-                    ClipboardPayload::ImageJpeg(_) => unreachable!(),
+                    ClipboardPayload::ImagePng(_) | ClipboardPayload::ImageJpeg(_) => {
+                        clipboard::encode_rfb_provide_image(payload)?
+                    }
                 }
             };
             self.stream.write_all(&message).await?;
