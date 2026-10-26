@@ -364,12 +364,31 @@ impl VncSession {
             let incoming = tokio::select! {
                 result = self.stream.read_u8() => result,
                 _ = clipboard_poll.tick(), if self.state.share_clipboard => {
-                    if let Some(ClipboardPayload::Text(text)) = self.state.request(DeviceCommand::ReadClipboard).await? {
-                        let payload = ClipboardPayload::Text(text.clone());
+                    if let Some(payload) = self.state.request(DeviceCommand::ReadClipboard).await? {
                         if self.state.clipboard_sync.lock().await.should_sync(&payload, ClipboardSource::Device) {
-                            let message = if self.extended_clipboard { clipboard::encode_extended_provide_text(&text)? }
-                                else { ensure!(text.chars().all(|c| c as u32 <= 255), "classic RFB cannot encode this clipboard text; use extended clipboard"); clipboard::encode_classic_server_cut_text(&text) };
-                            self.stream.write_all(&message).await?;
+                            match &payload {
+                                ClipboardPayload::Text(text) => {
+                                    let message = if self.extended_clipboard {
+                                        clipboard::encode_extended_provide_text(text)?
+                                    } else {
+                                        ensure!(text.chars().all(|c| c as u32 <= 255), "classic RFB cannot encode this clipboard text; use extended clipboard");
+                                        clipboard::encode_classic_server_cut_text(text)
+                                    };
+                                    self.stream.write_all(&message).await?;
+                                }
+                                ClipboardPayload::ImagePng(png) => {
+                                    if self.extended_clipboard {
+                                        let message = clipboard::encode_extended_provide_image(png, true)?;
+                                        self.stream.write_all(&message).await?;
+                                    }
+                                }
+                                ClipboardPayload::ImageJpeg(jpeg) => {
+                                    if self.extended_clipboard {
+                                        let message = clipboard::encode_extended_provide_image(jpeg, false)?;
+                                        self.stream.write_all(&message).await?;
+                                    }
+                                }
+                            }
                         }
                     }
                     continue;
@@ -717,8 +736,22 @@ impl VncSession {
                         .dispatch(VncInputAction::ClipboardOut(payload))
                         .await?;
                 }
-            } else if ext.image_png.is_some() || ext.image_jpeg.is_some() {
-                bail!("image clipboard lacks verified device interoperability");
+            } else if let Some(png) = ext.image_png {
+                let payload = ClipboardPayload::ImagePng(png);
+                let mut sync = self.state.clipboard_sync.lock().await;
+                if sync.should_sync(&payload, ClipboardSource::Host) {
+                    self.state
+                        .dispatch(VncInputAction::ClipboardOut(payload))
+                        .await?;
+                }
+            } else if let Some(jpeg) = ext.image_jpeg {
+                let payload = ClipboardPayload::ImageJpeg(jpeg);
+                let mut sync = self.state.clipboard_sync.lock().await;
+                if sync.should_sync(&payload, ClipboardSource::Host) {
+                    self.state
+                        .dispatch(VncInputAction::ClipboardOut(payload))
+                        .await?;
+                }
             }
         }
         Ok(())
