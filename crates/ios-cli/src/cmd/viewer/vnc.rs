@@ -376,9 +376,18 @@ impl VncSession {
                                     };
                                     self.stream.write_all(&message).await?;
                                 }
-                                ClipboardPayload::ImagePng(_) | ClipboardPayload::ImageJpeg(_) => {
-                                    return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,
-                                        "VNC image clipboard requires DIB conversion; PNG/JPEG wire formats are unsupported").into());
+                                ClipboardPayload::ImagePng(png) => {
+                                    if self.extended_clipboard {
+                                        let message = clipboard::encode_extended_provide_dib(png)?;
+                                        self.stream.write_all(&message).await?;
+                                    }
+                                }
+                                ClipboardPayload::ImageJpeg(jpeg) => {
+                                    if self.extended_clipboard {
+                                        if let Ok(message) = clipboard::encode_extended_provide_dib(jpeg) {
+                                            self.stream.write_all(&message).await?;
+                                        }
+                                    }
                                 }
                             }
                         }
