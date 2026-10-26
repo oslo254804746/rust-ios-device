@@ -238,6 +238,12 @@ impl AppServiceClient {
         self.envelope_mode
     }
 
+    /// Reopen this selected service after an interrupted uncorrelated effect.
+    pub async fn reconnect(&mut self) -> Result<(), AppServiceError> {
+        self.client = self.client.reconnect().await?;
+        Ok(())
+    }
+
     fn feature_is_advertised(&self, feature: &str) -> bool {
         feature_is_advertised(self.service_features.as_deref(), feature)
     }
@@ -424,13 +430,27 @@ impl AppServiceClient {
         bundle_id: &str,
         options: &LaunchApplicationOptions,
     ) -> Result<Option<u64>, AppServiceError> {
+        self.launch_application_observed(bundle_id, options, &mut false)
+            .await
+    }
+
+    /// Observe full local submission separately from the confirmed process ID.
+    pub async fn launch_application_observed(
+        &mut self,
+        bundle_id: &str,
+        options: &LaunchApplicationOptions,
+        sent: &mut bool,
+    ) -> Result<Option<u64>, AppServiceError> {
         self.ensure_feature(FEATURE_LAUNCH_APPLICATION)?;
         let response = self
             .client
-            .call(self.request(
-                FEATURE_LAUNCH_APPLICATION,
-                build_launch_application_input_with_options(bundle_id, options)?,
-            ))
+            .call_observed(
+                self.request(
+                    FEATURE_LAUNCH_APPLICATION,
+                    build_launch_application_input_with_options(bundle_id, options)?,
+                ),
+                sent,
+            )
             .await?;
         ensure_no_error(&response)?;
         Ok(parse_pid(response.body.as_ref()))

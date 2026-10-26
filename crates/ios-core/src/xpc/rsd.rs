@@ -2017,12 +2017,24 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         stream_id: u32,
         budget: Option<std::time::Duration>,
     ) -> Result<XpcMessage, XpcError> {
+        self.call_on_stream_observed(body, stream_id, budget, &mut false)
+            .await
+    }
+
+    pub(crate) async fn call_on_stream_observed(
+        &mut self,
+        body: XpcValue,
+        stream_id: u32,
+        budget: Option<std::time::Duration>,
+        sent: &mut bool,
+    ) -> Result<XpcMessage, XpcError> {
         let operation = self.begin_operation(budget)?;
         let result = await_xpc_operation(operation.deadline, async {
             let connection = &mut *operation.connection;
             let id = connection
                 .send_with_flags_inner(body, flags::WANTING_REPLY)
                 .await?;
+            *sent = true;
             connection.recv_reply_on_stream_inner(stream_id, id).await
         })
         .await;

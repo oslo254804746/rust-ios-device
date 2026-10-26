@@ -138,6 +138,19 @@ impl XpcClient {
             .await
     }
 
+    /// `sent` becomes true after the complete request is flushed locally, even
+    /// if the caller subsequently drops while waiting for its reply. This is
+    /// evidence of submission, not acknowledgement or remote completion.
+    pub async fn call_observed(
+        &mut self,
+        body: XpcValue,
+        sent: &mut bool,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner
+            .call_on_stream_observed(body, crate::xpc::h2_raw::STREAM_SERVER_CLIENT, None, sent)
+            .await
+    }
+
     /// Share one absolute budget across send, flow control and correlated
     /// reply reception. Zero rejects before I/O or identifier changes.
     pub async fn call_with_timeout(
@@ -404,6 +417,27 @@ mod tests {
         .await
         .unwrap();
         (client.unwrap(), peer)
+    }
+
+    #[tokio::test]
+    async fn observed_submission_survives_caller_drop_before_reply() {
+        let (mut client, mut peer) = lifecycle_xpc_client().await;
+        let mut sent = false;
+        {
+            let request = client.call_observed(XpcValue::Bool(true), &mut sent);
+            tokio::pin!(request);
+            tokio::select! {
+                result = &mut request => panic!("unconfirmed call completed: {result:?}"),
+                frame = lifecycle_xpc_frame(&mut peer) => { assert_eq!(frame.0, FRAME_DATA); }
+            }
+        }
+        assert!(
+            sent,
+            "the full local write was observed before receiving a PID"
+        );
+        assert!(!client.is_usable());
+        drop(client);
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
     }
 
     async fn lifecycle_xpc_frame(peer: &mut tokio::io::DuplexStream) -> (u8, u32, Vec<u8>) {
