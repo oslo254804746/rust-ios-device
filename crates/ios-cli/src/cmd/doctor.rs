@@ -304,6 +304,8 @@ impl DoctorCmd {
                             let state_desc = match comp.state {
                                 super::doctor::device::target_manifest::ComponentState::DigestMatches => "digest matches",
                                 super::doctor::device::target_manifest::ComponentState::FileExists => "file exists",
+                                super::doctor::device::target_manifest::ComponentState::TimedOut => "not completed: timeout",
+                                super::doctor::device::target_manifest::ComponentState::ReadFailed => "read failed; digest unknown",
                                 super::doctor::device::target_manifest::ComponentState::DigestMismatch => "digest mismatch",
                                 super::doctor::device::target_manifest::ComponentState::MissingFile => "missing file",
                                 super::doctor::device::target_manifest::ComponentState::PermissionDenied => "permission denied",

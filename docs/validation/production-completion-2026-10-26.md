@@ -42,3 +42,19 @@ Core installation30/0、simlocation11/0；CLI apps46/0、location定向通过，
 来源：[固定ASR实现](https://github.com/doronz88/pymobiledevice3/blob/03ba2270/pymobiledevice3/restore/asr.py)、[send_filesystem](https://github.com/doronz88/pymobiledevice3/blob/03ba2270/pymobiledevice3/restore/restore.py)。
 
 Core restore85/0（新增4个ASR wire与1个restored实际DataPort接线测试，包含OOB溢出、校验、timeout原Elapsed、取消/EOF）；`.git/completion-asr-final.log`。首轮泛型重名编译失败已修，不算通过。原未服务SystemImageData的旧恢复loop拒绝断言保留，新增API不声称该旧loop已支持所有data类型。没有接通CLI完整Update；USB recovery/ECID重新枚举、各组件IMG4/TBM/nonce-slot、FDR与完整firmware dispatch仍需实现。
+
+## F01 部分本地观察
+
+组件摘要读取增加同一probe deadline的逐块检查，超时保存已完成组件及未完成组件状态，不伪装为digest mismatch。其它读取失败、未知摘要算法和超过读入上限都表示read_failed/摘要未知。同步OS文件读取仍是协作检查，不能抢占卡在内核中的单次read。CLI人类报告与JSON均区分这些状态。当前CLI全量包含Doctor73通过、原child fixture忽略。
+
+## F05 媒体/剪贴板/方向
+
+Display新增retained startup，caller取消仍保留原服务及reconnect factory，主机验证实际start提交→取消→原factory新控制连接→严格stop请求/真实回复→两peer EOF。Viewer/HID启动owner接线，视频退出要求真实stop回复，不再把EOF当设备停止ACK。方向接入已有OrientationServiceClient并等待其实际结果；HTTP成功前必须完成后端请求，非法方向不派发。
+
+来源：[固定OrientationService](https://github.com/doronz88/pymobiledevice3/blob/03ba2270/pymobiledevice3/remote/core_device/orientation_service.py) 的Xcode sniff字段；[固定DisplayService](https://github.com/doronz88/pymobiledevice3/blob/03ba2270/pymobiledevice3/remote/core_device/display_service.py)的StopRequest。stopAll仍是服务级停止，未虚构UUID为stream token。
+
+有alpha的PNG现在输出32位BI_BITFIELDS DIB v5，保留RGBA；RGB保留原24位输出。JPEG通过固定jpeg-decoder0.3.2（MSRV1.61，MIT/Apache2，无默认rayon）解码RGB/灰度再转DIB，CMYK/16位明确拒绝。JPEG和PNG按实际传输像素去重。样本由本机FFmpeg lavfi红色16x16生成，SHA256 `ad92fb5cf7f4fcdb500c5f0a6e03c8117fd6c44fc013dc4087f3d7597c5f2255`。
+
+验证：Core Display23/0、orientation6/0；CLI完整1969/0/19ignored，含viewer28通过/2显式ignored；准确新制品`ios_cli-e7a77098f7474c2d.exe`显式HEVC2/0，包含持续解码与实际生产publisher在Web/VNC订阅者均不消费时只保留最新共享像素、旧Weak释放。日志`.git/completion-{cli-final,display-final,orientation,hevc-correct}.log`。旧二进制门禁结果作废，不混为本次新功能证据。
+
+完整CLI首轮默认测试并发为1966通过/3失败/18ignored：旧方向501断言已随真实后端行为更新并增加非法方向无派发；两个未改动的tunnel时序fixture单独复跑通过，之后四线程完整批次通过。没有放宽期限/删除断言/忽略失败。
