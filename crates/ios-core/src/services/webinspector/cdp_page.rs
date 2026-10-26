@@ -597,37 +597,10 @@ impl PageCdpAdapter {
         }
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         if method == "Console.messageAdded" {
-            let mut output = PageCdpOutput::client(message.clone());
-            if let Some(msg) = message.get("params").and_then(|p| p.get("message")) {
-                let level = msg.get("level").and_then(Value::as_str).unwrap_or("log");
-                let cdp_type = match level {
-                    "warning" => "warning",
-                    "error" => "error",
-                    "info" => "info",
-                    "debug" => "debug",
-                    _ => "log",
-                };
-                let args = if let Some(params) = msg.get("parameters").and_then(Value::as_array) {
-                    params.clone()
-                } else {
-                    let text = msg.get("text").and_then(Value::as_str).unwrap_or("");
-                    vec![json!({"type": "string", "value": text})]
-                };
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as f64;
-                output.client.push(json!({
-                    "method": "Runtime.consoleAPICalled",
-                    "params": {
-                        "type": cdp_type,
-                        "args": args,
-                        "executionContextId": 1,
-                        "timestamp": timestamp,
-                    }
-                }));
-            }
-            return output;
+            // WebKit ConsoleMessage has no executionContextId. Neither a guessed
+            // context 1 nor host wall time is valid Runtime.consoleAPICalled evidence.
+            // Preserve the native event until a proven context/time association exists.
+            return PageCdpOutput::client(message);
         }
         if method == "Page.frameNavigated" || method == "Page.navigatedWithinDocument" {
             let frame = message.get("params").and_then(|params| params.get("frame"));
@@ -997,15 +970,8 @@ mod tests {
                 }
             }
         });
-        let output = adapter.incoming(console_msg);
-        assert_eq!(output.client.len(), 2);
-        assert_eq!(output.client[0]["method"], "Console.messageAdded");
-        assert_eq!(output.client[1]["method"], "Runtime.consoleAPICalled");
-        assert_eq!(output.client[1]["params"]["type"], "error");
-        assert_eq!(
-            output.client[1]["params"]["args"][0]["value"],
-            "test console error message"
-        );
+        let output = adapter.incoming(console_msg.clone());
+        assert_eq!(output.client, vec![console_msg], "native console evidence must be preserved without fabricating a Runtime context or timestamp");
 
         let download = adapter.outgoing(json!({"id": 11, "method": "Page.setDownloadBehavior"}));
         assert_eq!(download.client[0]["error"]["code"], -32601);

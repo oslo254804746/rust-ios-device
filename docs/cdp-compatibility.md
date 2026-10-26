@@ -80,3 +80,5 @@ The single default logical context now has a stable `<browser_id>:default`
 TargetInfo.browserContextId across listing/discovery/attachment/refresh. This
 fixes Playwright's earlier missing-context assertion, allowing it to reach the
 explicit download rejection. It does not implement context creation or isolation.
+
+The [2026-10-26 review](validation/remaining-six-review-2026-10-26.md) removed fabricated `Runtime.consoleAPICalled` events that used context 1 and host wall time. Native `Console.messageAdded` is preserved; WebKit ConsoleMessage supplies no reliable execution-context association. This remains an explicit Runtime/console gap. Passing the existing pinned lifecycle/rejection fixtures does not close the five F04 domains.
