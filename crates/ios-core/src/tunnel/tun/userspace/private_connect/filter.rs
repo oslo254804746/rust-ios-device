@@ -493,7 +493,7 @@ fn parse(direction: Direction, packet: &[u8]) -> Parsed {
                     id,
                 };
                 let first = if start == 0 {
-                    match transport(packet, cursor, following, projection) {
+                    match transport(packet, cursor, following, projection, true) {
                         Some(canonical) => Some((canonical, prefix)),
                         None => return Parsed::Malformed,
                     }
@@ -520,7 +520,7 @@ fn parse(direction: Direction, packet: &[u8]) -> Parsed {
                 cursor = end;
             }
             _ => {
-                return match transport(packet, cursor, next, projection) {
+                return match transport(packet, cursor, next, projection, false) {
                     Some(canonical) => Parsed::Whole(canonical),
                     None => Parsed::Malformed,
                 }
@@ -686,11 +686,13 @@ fn routing(bytes: &[u8]) -> Option<RoutingProjection> {
 }
 
 fn transport(
-    packet: &[u8],
+    mut packet: &[u8],
     mut cursor: usize,
     mut next: u8,
     mut projection: Projection,
+    outer_fragment: bool,
 ) -> Option<Canonical> {
+    let mut inner_layer = None;
     loop {
         match next {
             6 => {
@@ -704,7 +706,10 @@ fn transport(
                     destination: u16::from_be_bytes([header[2], header[3]]),
                 })));
             }
-            43 | 60 | 51 | 135 => {
+            0 | 43 | 60 | 51 | 135 => {
+                if next == 0 && inner_layer.map(|start| start + 40) != Some(cursor) {
+                    return None;
+                }
                 let (following, end) = extension(packet, cursor, next, &mut projection)?;
                 next = following;
                 cursor = end;
@@ -713,6 +718,12 @@ fn transport(
                 let header = packet.get(cursor..cursor.checked_add(8)?)?;
                 let bits = u16::from_be_bytes([header[2], header[3]]);
                 if bits & 0xfff9 != 0 {
+                    if inner_layer.is_some() {
+                        // A separate inner reassembly requires its own owner
+                        // association; it is not a malformed public packet or
+                        // evidence of isolation after native decapsulation.
+                        return Some(projection.canonical(Transport::Opaque(44)));
+                    }
                     // A second ordinary fragment association is not handled by
                     // this single-layer model; preserve the existing rejection.
                     return None;
@@ -730,7 +741,8 @@ fn transport(
                     return None;
                 }
                 let inner_len = usize::from(u16::from_be_bytes([inner[4], inner[5]]));
-                if 40 + inner_len > inner.len() {
+                let end = cursor.checked_add(40)?.checked_add(inner_len)?;
+                if end > packet.len() && !outer_fragment {
                     return None;
                 }
                 projection = Projection {
@@ -739,10 +751,15 @@ fn transport(
                     home: false,
                     fragment: false,
                     authentication: false,
-                    opaque: None,
+                    opaque: projection.opaque,
                 };
                 next = inner[6];
+                inner_layer = Some(cursor);
                 cursor += 40;
+                // Never interpret outer trailing bytes as this inner layer.
+                // An offset-zero outer fragment may contain only the complete
+                // header chain; its original association retains the rest.
+                packet = &packet[..end.min(packet.len())];
             }
             4 => {
                 // RFC 2473: IPv4 Encapsulation in IPv6.
@@ -752,18 +769,23 @@ fn transport(
                 }
                 let ihl = usize::from(inner[0] & 0x0f) * 4;
                 let total_len = usize::from(u16::from_be_bytes([inner[2], inner[3]]));
-                if ihl < 20 || total_len > inner.len() || ihl > total_len {
+                if ihl < 20 || ihl > total_len || (total_len > inner.len() && !outer_fragment) {
                     return None;
                 }
+                let fragment = u16::from_be_bytes([inner[6], inner[7]]);
+                if fragment & 0x3fff != 0 {
+                    return Some(projection.canonical(Transport::Opaque(4)));
+                }
                 let inner_proto = inner[9];
-                if inner_proto == 41 {
+                let end = cursor.checked_add(total_len)?;
+                packet = &packet[..end.min(packet.len())];
+                if matches!(inner_proto, 4 | 41) {
                     cursor += ihl;
-                    next = 41;
+                    next = inner_proto;
                     continue;
                 }
                 return Some(projection.canonical(Transport::NonTcp));
             }
-            0 => return None,
             17 | 58 | 59 => return Some(projection.canonical(Transport::NonTcp)),
             // Explicit unresolved boundary, including ESP, encapsulated IP,
             // Mobility and native protocols not interpreted by this filter.

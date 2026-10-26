@@ -939,3 +939,136 @@ fn opaque_native_transformation_boundary_is_explicit_and_remains_unaccepted() {
     drop((filter, registry));
     assert_eq!(bank.available_permits(), TOTAL);
 }
+
+#[test]
+fn encapsulated_hop_by_hop_respects_inner_layer_and_original_public_owner() {
+    let bank = Arc::new(Semaphore::new(TOTAL));
+    let (registry, port) = registry(&bank);
+    let mut filter = registry.filter("fd00::2".parse().unwrap(), &bank).unwrap();
+    for direction in [Direction::ToHost, Direction::ToDevice] {
+        let (source, destination) = addresses(direction);
+        for private in [false, true] {
+            let mut payload = vec![6, 0, 0, 0, 0, 0, 0, 0];
+            payload.extend_from_slice(&wire_tcp(
+                direction,
+                if private { port } else { port.wrapping_add(1) },
+                source,
+                destination,
+            ));
+            let inner = wire_packet(&bank, direction, 0, &payload, source, destination);
+            let outer = wire_packet(
+                &bank,
+                direction,
+                41,
+                &inner,
+                "fd00::9".parse().unwrap(),
+                "fd00::10".parse().unwrap(),
+            );
+            if private {
+                assert!(matches!(
+                    filter.ingest(direction, outer).unwrap(),
+                    FilterOutput::Discard(DiscardReason::PrivateFlow)
+                ));
+            } else {
+                assert_forward(&mut filter, direction, outer);
+            }
+        }
+    }
+    drop((filter, registry));
+    assert_eq!(bank.available_permits(), TOTAL);
+}
+
+#[test]
+fn encapsulated_tcp_cannot_read_past_inner_declared_payload() {
+    let bank = Arc::new(Semaphore::new(TOTAL));
+    let (registry, port) = registry(&bank);
+    let mut filter = registry.filter("fd00::2".parse().unwrap(), &bank).unwrap();
+    let direction = Direction::ToHost;
+    let (source, destination) = addresses(direction);
+    let mut inner = wire_packet(
+        &bank,
+        direction,
+        6,
+        &wire_tcp(direction, port, source, destination),
+        source,
+        destination,
+    );
+    // The outer payload still has TCP-looking trailing bytes; they are not
+    // part of this inner packet's declared eight-byte payload.
+    inner[4..6].copy_from_slice(&8u16.to_be_bytes());
+    let outer = packet(&bank, direction, 41, &inner);
+    assert!(matches!(
+        filter.ingest(direction, outer).unwrap(),
+        FilterOutput::Discard(DiscardReason::Malformed)
+    ));
+    drop((inner, filter, registry));
+    assert_eq!(bank.available_permits(), TOTAL);
+}
+
+#[test]
+fn outer_fragmented_encapsulation_keeps_original_set_and_filters_inner_tuple() {
+    let bank = Arc::new(Semaphore::new(TOTAL));
+    let (registry, port) = registry(&bank);
+    let mut filter = registry.filter("fd00::2".parse().unwrap(), &bank).unwrap();
+    let direction = Direction::ToHost;
+    let (source, destination) = addresses(direction);
+    for (id, private) in [(501, false), (502, true)] {
+        let inner = wire_packet(
+            &bank,
+            direction,
+            6,
+            &wire_tcp(
+                direction,
+                if private { port } else { port.wrapping_add(1) },
+                source,
+                destination,
+            ),
+            source,
+            destination,
+        );
+        let first = fragment(&bank, direction, id, 0, true, 41, &inner[..64]);
+        let last = fragment(&bank, direction, id, 64, false, 41, &inner[64..]);
+        let pointers = [first.as_ptr(), last.as_ptr()];
+        assert!(matches!(
+            filter.ingest(direction, first).unwrap(),
+            FilterOutput::Pending
+        ));
+        let result = filter.ingest(direction, last).unwrap();
+        if private {
+            assert!(matches!(
+                result,
+                FilterOutput::Discard(DiscardReason::PrivateFlow)
+            ));
+        } else {
+            assert!(matches!(result, FilterOutput::Ready));
+            for pointer in pointers {
+                assert_eq!(filter.pop_ready().unwrap().1.as_ptr(), pointer);
+            }
+        }
+        assert!(filter.pop_ready().is_none());
+    }
+    drop((filter, registry));
+    assert_eq!(bank.available_permits(), TOTAL);
+}
+
+#[test]
+fn encapsulated_ordinary_fragment_is_retained_as_explicit_unresolved_boundary() {
+    let bank = Arc::new(Semaphore::new(TOTAL));
+    let (registry, port) = registry(&bank);
+    let mut filter = registry.filter("fd00::2".parse().unwrap(), &bank).unwrap();
+    let direction = Direction::ToHost;
+    for port in [port.wrapping_add(1), port] {
+        let data = tcp(direction, port);
+        for (start, more, bytes) in [(0, true, &data[..24]), (24, false, &data[24..])] {
+            let inner = fragment(&bank, direction, 503, start, more, 6, bytes);
+            let outer = packet(&bank, direction, 41, &inner);
+            assert_eq!(whole(direction, &outer).transport, Transport::Opaque(44));
+            // Explicitly demonstrates the still-OPEN nested reassembly gap,
+            // including an actual exact private tuple in offset zero. This
+            // must never be cited as a successful full-isolation fixture.
+            assert_forward(&mut filter, direction, outer);
+        }
+    }
+    drop((filter, registry));
+    assert_eq!(bank.available_permits(), TOTAL);
+}

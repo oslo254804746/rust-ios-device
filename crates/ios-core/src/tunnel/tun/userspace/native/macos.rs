@@ -1118,6 +1118,10 @@ pub(crate) struct PacketIo {
 }
 impl PacketIo {
     #[cfg(test)]
+    pub(crate) fn test_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.fd)
+    }
+    #[cfg(test)]
     pub(crate) fn from_fd(fd: OwnedFd, mtu: u16) -> Self {
         Self { fd, mtu }
     }
