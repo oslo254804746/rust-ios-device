@@ -20,6 +20,107 @@ const MAX_NAME_LEN: usize = 512;
 const MAX_FAILURE_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_FAILURE_FILE_BYTES: usize = 1024;
 
+#[cfg(test)]
+#[test]
+fn review_regression_finish_only_cases_cannot_bypass_limits() {
+    let mut recorder = TestRunRecorder::default();
+    recorder.apply(TestExecutionEvent::BeganPlan);
+    recorder.apply(TestExecutionEvent::SuiteStarted {
+        name: "suite".into(),
+        started_at: None,
+    });
+    for index in 0..=MAX_CASES_PER_SUITE {
+        recorder.apply(TestExecutionEvent::CaseFinished {
+            class_name: "Class".into(),
+            method_name: format!("case{index}"),
+            status: TestCaseStatus::Passed,
+            duration_seconds: 0.0,
+        });
+    }
+    recorder.apply(TestExecutionEvent::FinishedPlan);
+    let summary = recorder.summary();
+    assert!(summary.suites[0].cases.len() <= MAX_CASES_PER_SUITE);
+    assert!(
+        summary.terminal_outcome().is_err(),
+        "discarded results cannot pass CI"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn review_regression_failure_only_cases_and_finish_only_suites_are_bounded() {
+    let mut recorder = TestRunRecorder::default();
+    for index in 0..=MAX_CASES_PER_SUITE {
+        recorder.apply(TestExecutionEvent::CaseFailed {
+            class_name: "Class".into(),
+            method_name: format!("case{index}"),
+            message: "failure".into(),
+            file: None,
+            line: None,
+        });
+    }
+    assert_eq!(recorder.total_cases(), MAX_CASES_PER_SUITE);
+    assert!(recorder.summary().results_truncated);
+    for index in 0..=MAX_SUITES {
+        recorder.apply(TestExecutionEvent::SuiteFinished {
+            name: format!("suite{index}"),
+            finished_at: None,
+            test_count: 0,
+            skipped: 0,
+            failures: 0,
+            expected_failures: 0,
+            unexpected_failures: 0,
+            uncaught_exceptions: 0,
+            test_duration_seconds: 0.0,
+            total_duration_seconds: 0.0,
+        });
+    }
+    assert_eq!(recorder.summary().suites.len(), MAX_SUITES);
+}
+
+#[cfg(test)]
+#[test]
+fn review_regression_long_case_identifiers_never_alias_and_truncation_reaches_junit() {
+    let mut recorder = TestRunRecorder::default();
+    recorder.apply(TestExecutionEvent::BeganPlan);
+    for suffix in ["a", "b"] {
+        recorder.apply(TestExecutionEvent::CaseFinished {
+            class_name: "Class".into(),
+            method_name: format!("{}{suffix}", "m".repeat(MAX_NAME_LEN)),
+            status: TestCaseStatus::Passed,
+            duration_seconds: 0.0,
+        });
+    }
+    recorder.apply(TestExecutionEvent::FinishedPlan);
+    let summary = recorder.summary();
+    assert_eq!(summary.total_tests, 2);
+    assert_ne!(
+        summary.suites[0].cases[0].method_name,
+        summary.suites[0].cases[1].method_name
+    );
+    assert!(summary.results_truncated);
+    assert_eq!(
+        summary.terminal_outcome(),
+        Err(TestRunIncomplete::ResultsTruncated)
+    );
+    assert!(summary
+        .to_junit_xml()
+        .contains("XCTest result evidence exceeded ingestion limits"));
+}
+
+#[cfg(test)]
+#[test]
+fn review_regression_log_truncation_stays_within_byte_budget() {
+    let mut recorder = TestRunRecorder::default();
+    recorder.apply(TestExecutionEvent::Log {
+        message: "界".repeat(MAX_CAPTURED_LOG_BYTES / 3 + 1),
+        debug: false,
+    });
+    let summary = recorder.summary();
+    assert!(summary.logs_truncated);
+    assert!(summary.logs.iter().map(String::len).sum::<usize>() <= MAX_CAPTURED_LOG_BYTES);
+}
+
 fn truncate_name(mut s: String, max: usize) -> String {
     if s.len() > max {
         let mut end = max;
@@ -317,6 +418,9 @@ pub struct TestRunSummary {
     /// Whether log output exceeded bounds and was truncated.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub logs_truncated: bool,
+    /// Result events or fields were rejected/truncated at ingestion; cannot pass CI.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub results_truncated: bool,
 }
 
 /// Supported terminal test outcomes, independent of workflow cleanup or reporting.
@@ -332,6 +436,8 @@ pub enum TestRunOutcome {
 /// Observed result evidence that cannot establish a supported terminal outcome.
 #[derive(Clone, PartialEq, Eq)]
 pub enum TestRunIncomplete {
+    /// Result evidence was discarded by an ingestion limit.
+    ResultsTruncated,
     /// No plan-start event was observed.
     PlanNotBegun,
     /// No plan-finish event was observed.
@@ -357,6 +463,7 @@ pub enum TestRunIncomplete {
 impl std::fmt::Debug for TestRunIncomplete {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ResultsTruncated => formatter.write_str("TestRunIncomplete::ResultsTruncated"),
             Self::PlanNotBegun => formatter.write_str("TestRunIncomplete::PlanNotBegun"),
             Self::PlanNotFinished => formatter.write_str("TestRunIncomplete::PlanNotFinished"),
             Self::CaseStatus { status, .. } => formatter
@@ -390,6 +497,9 @@ fn terminal_status_label(status: Option<&TestCaseStatus>) -> &'static str {
 impl std::fmt::Display for TestRunIncomplete {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ResultsTruncated => {
+                formatter.write_str("XCTest result evidence exceeded ingestion limits")
+            }
             Self::PlanNotBegun => formatter.write_str("XCTest plan did not report a start"),
             Self::PlanNotFinished => formatter.write_str("XCTest plan did not report completion"),
             Self::CaseStatus { status, .. } => write!(
@@ -430,6 +540,9 @@ impl TestRunSummary {
     /// Validate actual observed terminal evidence. An empty began-and-finished plan is valid;
     /// this does not infer selection coverage or compare nested suite counters.
     pub fn terminal_outcome(&self) -> Result<TestRunOutcome, TestRunIncomplete> {
+        if self.results_truncated {
+            return Err(TestRunIncomplete::ResultsTruncated);
+        }
         if !self.began {
             return Err(TestRunIncomplete::PlanNotBegun);
         }
@@ -475,6 +588,7 @@ pub struct TestRunRecorder {
     debug_log_bytes: usize,
     suites: Vec<TestSuiteSummary>,
     logs_truncated: bool,
+    results_truncated: bool,
 }
 
 impl TestRunRecorder {
@@ -491,9 +605,11 @@ impl TestRunRecorder {
             }
             TestExecutionEvent::SuiteStarted { name, started_at } => {
                 if self.suites.len() >= MAX_SUITES {
+                    self.results_truncated = true;
                     return;
                 }
-                let name = truncate_name(name, MAX_NAME_LEN);
+                let name = self.bounded_identifier(name);
+                let started_at = self.bounded_field(started_at, MAX_NAME_LEN);
                 self.suites.push(TestSuiteSummary {
                     name,
                     started_at,
@@ -521,7 +637,10 @@ impl TestRunRecorder {
                 test_duration_seconds,
                 total_duration_seconds,
             } => {
-                let suite = self.find_or_create_suite(&name);
+                let finished_at = self.bounded_field(finished_at, MAX_NAME_LEN);
+                let Some(suite) = self.find_or_create_suite(&name) else {
+                    return;
+                };
                 suite.finished_at = finished_at;
                 suite.test_count = Some(test_count);
                 suite.skipped = Some(skipped);
@@ -536,16 +655,19 @@ impl TestRunRecorder {
                 class_name,
                 method_name,
             } => {
-                if self.total_cases() >= MAX_TOTAL_CASES {
+                let class_name = self.bounded_identifier(class_name);
+                let method_name = self.bounded_identifier(method_name);
+                let total_cases = self.total_cases();
+                let Some(index) = self.active_suite_index(&class_name) else {
+                    return;
+                };
+                if total_cases >= MAX_TOTAL_CASES
+                    || self.suites[index].cases.len() >= MAX_CASES_PER_SUITE
+                {
+                    self.results_truncated = true;
                     return;
                 }
-                let class_name = truncate_name(class_name, MAX_NAME_LEN);
-                let method_name = truncate_name(method_name, MAX_NAME_LEN);
-                let suite = self.find_or_create_active_suite(&class_name);
-                if suite.cases.len() >= MAX_CASES_PER_SUITE {
-                    return;
-                }
-                suite.cases.push(TestCaseSummary {
+                self.suites[index].cases.push(TestCaseSummary {
                     class_name,
                     method_name,
                     status: None,
@@ -560,20 +682,20 @@ impl TestRunRecorder {
                 file,
                 line,
             } => {
-                let class_name = truncate_name(class_name, MAX_NAME_LEN);
-                let method_name = truncate_name(method_name, MAX_NAME_LEN);
-                let case = self.find_or_create_case(&class_name, &method_name);
-                case.status = Some(TestCaseStatus::Failed);
-                let mut message = message;
-                if message.len() > MAX_FAILURE_MESSAGE_BYTES {
-                    let mut end = MAX_FAILURE_MESSAGE_BYTES;
-                    while end > 0 && !message.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    message.truncate(end);
+                let message = if message.len() > MAX_FAILURE_MESSAGE_BYTES {
+                    self.results_truncated = true;
+                    let mut message =
+                        truncate_name(message, MAX_FAILURE_MESSAGE_BYTES - "... [truncated]".len());
                     message.push_str("... [truncated]");
-                }
-                let file = file.map(|f| truncate_name(f, MAX_FAILURE_FILE_BYTES));
+                    message
+                } else {
+                    message
+                };
+                let file = self.bounded_field(file, MAX_FAILURE_FILE_BYTES);
+                let Some(case) = self.find_or_create_case(&class_name, &method_name) else {
+                    return;
+                };
+                case.status = Some(TestCaseStatus::Failed);
                 case.failure = Some(TestFailure {
                     message,
                     file,
@@ -586,7 +708,13 @@ impl TestRunRecorder {
                 status,
                 duration_seconds,
             } => {
-                let case = self.find_or_create_case(&class_name, &method_name);
+                if matches!(&status, TestCaseStatus::Other(value) if value.len() > MAX_NAME_LEN) {
+                    self.results_truncated = true;
+                    return;
+                }
+                let Some(case) = self.find_or_create_case(&class_name, &method_name) else {
+                    return;
+                };
                 if case.status != Some(TestCaseStatus::Stalled) {
                     case.status = Some(status);
                 }
@@ -649,6 +777,7 @@ impl TestRunRecorder {
             debug_logs: self.debug_logs.clone(),
             suites: self.suites.clone(),
             logs_truncated: self.logs_truncated,
+            results_truncated: self.results_truncated,
         }
     }
 
@@ -669,12 +798,13 @@ impl TestRunRecorder {
         }
         let remaining = MAX_CAPTURED_LOG_BYTES - *used;
         if message.len() > remaining {
-            let mut end = remaining;
+            let marker = "... [truncated]";
+            let mut end = remaining.saturating_sub(marker.len());
             while end > 0 && !message.is_char_boundary(end) {
                 end -= 1;
             }
             message.truncate(end);
-            message.push_str("... [truncated]");
+            message.push_str(&marker[..marker.len().min(remaining)]);
             self.logs_truncated = true;
         }
         if message.is_empty() {
@@ -684,29 +814,73 @@ impl TestRunRecorder {
         logs.push(message);
     }
 
-    fn find_or_create_case(&mut self, class_name: &str, method_name: &str) -> &mut TestCaseSummary {
-        let suite = self.find_or_create_active_suite(class_name);
-        if let Some(index) = suite
-            .cases
-            .iter()
-            .rposition(|case| case.class_name == class_name && case.method_name == method_name)
-        {
-            return &mut suite.cases[index];
-        }
-        let index = suite.cases.len();
-        suite.cases.push(TestCaseSummary {
-            class_name: class_name.to_string(),
-            method_name: method_name.to_string(),
-            status: None,
-            duration_seconds: None,
-            failure: None,
-        });
-        &mut suite.cases[index]
+    fn bounded_field(&mut self, value: Option<String>, max: usize) -> Option<String> {
+        value.map(|value| {
+            if value.len() > max {
+                self.results_truncated = true;
+            }
+            truncate_name(value, max)
+        })
     }
 
-    fn find_or_create_suite(&mut self, name: &str) -> &mut TestSuiteSummary {
+    fn bounded_identifier(&mut self, value: String) -> String {
+        if value.len() <= MAX_NAME_LEN {
+            return value;
+        }
+        use sha2::Digest;
+        self.results_truncated = true;
+        // Retain readable bounded labels without conflating common-prefix identities.
+        let digest = hex::encode(sha2::Sha256::digest(value.as_bytes()));
+        let mut label = truncate_name(value, MAX_NAME_LEN - digest.len() - 1);
+        label.push('#');
+        label.push_str(&digest);
+        label
+    }
+
+    fn find_or_create_case(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<&mut TestCaseSummary> {
+        let class_name = self.bounded_identifier(class_name.to_owned());
+        let method_name = self.bounded_identifier(method_name.to_owned());
+        let total_cases = self.total_cases();
+        let suite_index = self.active_suite_index(&class_name)?;
+        let existing = self.suites[suite_index]
+            .cases
+            .iter()
+            .rposition(|case| case.class_name == class_name && case.method_name == method_name);
+        let index = if let Some(index) = existing {
+            index
+        } else {
+            if total_cases >= MAX_TOTAL_CASES
+                || self.suites[suite_index].cases.len() >= MAX_CASES_PER_SUITE
+            {
+                self.results_truncated = true;
+                return None;
+            }
+            let suite = &mut self.suites[suite_index];
+            let index = suite.cases.len();
+            suite.cases.push(TestCaseSummary {
+                class_name: class_name.to_string(),
+                method_name: method_name.to_string(),
+                status: None,
+                duration_seconds: None,
+                failure: None,
+            });
+            index
+        };
+        Some(&mut self.suites[suite_index].cases[index])
+    }
+
+    fn suite_index(&mut self, name: &str) -> Option<usize> {
+        let name = self.bounded_identifier(name.to_owned());
         if let Some(index) = self.suites.iter().rposition(|suite| suite.name == name) {
-            return &mut self.suites[index];
+            return Some(index);
+        }
+        if self.suites.len() >= MAX_SUITES {
+            self.results_truncated = true;
+            return None;
         }
         let index = self.suites.len();
         self.suites.push(TestSuiteSummary {
@@ -723,18 +897,23 @@ impl TestRunRecorder {
             total_duration_seconds: None,
             cases: Vec::new(),
         });
-        &mut self.suites[index]
+        Some(index)
     }
 
-    fn find_or_create_active_suite(&mut self, class_name: &str) -> &mut TestSuiteSummary {
+    fn find_or_create_suite(&mut self, name: &str) -> Option<&mut TestSuiteSummary> {
+        let index = self.suite_index(name)?;
+        Some(&mut self.suites[index])
+    }
+
+    fn active_suite_index(&mut self, class_name: &str) -> Option<usize> {
         if let Some(index) = self
             .suites
             .iter()
             .rposition(|suite| suite.test_count.is_none())
         {
-            return &mut self.suites[index];
+            return Some(index);
         }
-        self.find_or_create_suite(class_name)
+        self.suite_index(class_name)
     }
 }
 
@@ -770,6 +949,10 @@ impl TestRunSummary {
 
         let diagnostic = diagnostic
             .map(|value| truncate_utf8(value, MAX_JUNIT_DIAGNOSTIC_BYTES))
+            .or_else(|| {
+                self.results_truncated
+                    .then(|| TestRunIncomplete::ResultsTruncated.to_string())
+            })
             .or_else(|| (!self.finished).then(|| "XCTest run did not finish".to_string()));
         if let Some(diagnostic) = diagnostic.as_deref() {
             total_errors = total_errors.saturating_add(1);

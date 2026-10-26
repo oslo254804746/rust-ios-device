@@ -650,6 +650,7 @@ pub(crate) fn incomplete_summary(began: bool) -> TestRunSummary {
         debug_logs: Vec::new(),
         suites: Vec::new(),
         logs_truncated: false,
+        results_truncated: false,
     }
 }
 
