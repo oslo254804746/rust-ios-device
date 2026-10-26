@@ -72,8 +72,15 @@ impl ClipboardPayload {
         hasher.update(self.uti().as_bytes());
         hasher.update([0]);
         match self {
-            Self::Text(s) => hasher.update(s.as_bytes()),
-            Self::ImagePng(b) => hasher.update(b),
+            Self::Text(s) => hasher.update(s.replace("\r\n", "\n").as_bytes()),
+            Self::ImagePng(b) => {
+                // PNG metadata/compression changes on the RFB DIB round trip.
+                // Fingerprint the same bounded pixels that this adapter transfers.
+                match png_to_dib(b) {
+                    Ok(dib) => hasher.update(&dib),
+                    Err(_) => hasher.update(b), // invalid/untransmittable payloads retain a stable identity
+                }
+            }
             Self::ImageJpeg(b) => hasher.update(b),
         }
         hasher.finalize().into()
@@ -186,10 +193,16 @@ pub fn decode_classic_cut_text(bytes: &[u8]) -> Result<String> {
 
 /// Extended Clipboard caps advertisement.
 pub fn encode_extended_caps() -> Vec<u8> {
-    let flags =
-        ACTION_CAPS | ACTION_REQUEST | ACTION_PEEK | ACTION_NOTIFY | ACTION_PROVIDE | FORMAT_TEXT;
+    let flags = ACTION_CAPS
+        | ACTION_REQUEST
+        | ACTION_PEEK
+        | ACTION_NOTIFY
+        | ACTION_PROVIDE
+        | FORMAT_TEXT
+        | FORMAT_DIB;
     let mut body = flags.to_be_bytes().to_vec();
-    body.extend_from_slice(&0u32.to_be_bytes()); // Unsolicited size 0
+    body.extend_from_slice(&0u32.to_be_bytes()); // Text unsolicited size 0
+    body.extend_from_slice(&0u32.to_be_bytes()); // DIB unsolicited size 0
     let len_field = -(body.len() as i32);
 
     let mut out = Vec::with_capacity(8 + body.len());
@@ -363,7 +376,7 @@ pub fn parse_extended_cut_text(body: &[u8]) -> Result<ExtendedCutTextMessage> {
 }
 
 /// Convert PNG image bytes into a standard Microsoft Windows Device Independent Bitmap (DIB).
-/// The returned bytes start directly with a 40-byte BITMAPINFOHEADER followed by bottom-up BGR rows
+/// RFB requires a 124-byte BITMAPV5HEADER, without a BMP file header, followed by bottom-up BGR rows
 /// padded to 4-byte boundaries.
 pub fn png_to_dib(png_bytes: &[u8]) -> Result<Vec<u8>> {
     ensure!(
@@ -384,6 +397,12 @@ pub fn png_to_dib(png_bytes: &[u8]) -> Result<Vec<u8>> {
         "invalid image dimensions for DIB"
     );
 
+    let row_stride = (width as usize * 3 + 3) & !3;
+    let image_size = row_stride * height as usize;
+    ensure!(
+        124 + image_size <= MAX_IMAGE_BYTES && reader.output_buffer_size() <= MAX_IMAGE_BYTES * 4,
+        "decoded DIB exceeds image budget"
+    );
     let mut raw_pixels = vec![0u8; reader.output_buffer_size()];
     let info = reader
         .next_frame(&mut raw_pixels)
@@ -407,10 +426,10 @@ pub fn png_to_dib(png_bytes: &[u8]) -> Result<Vec<u8>> {
 
     let row_stride = (w * 3 + 3) & !3;
     let image_size = row_stride * h;
-    let mut dib = Vec::with_capacity(40 + image_size);
+    let mut dib = Vec::with_capacity(124 + image_size);
 
-    // BITMAPINFOHEADER (40 bytes, all little-endian)
-    dib.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    // BITMAPV5HEADER (all little-endian; 24-bit BI_RGB subset).
+    dib.extend_from_slice(&124u32.to_le_bytes()); // biSize
     dib.extend_from_slice(&(width as i32).to_le_bytes()); // biWidth
     dib.extend_from_slice(&(height as i32).to_le_bytes()); // biHeight (positive = bottom-up)
     dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
@@ -421,6 +440,12 @@ pub fn png_to_dib(png_bytes: &[u8]) -> Result<Vec<u8>> {
     dib.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
     dib.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
     dib.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+
+    dib.extend_from_slice(&[0; 16]); // masks unused for BI_RGB
+    dib.extend_from_slice(&0x73524742u32.to_le_bytes()); // LCS_sRGB
+    dib.extend_from_slice(&[0; 48]); // endpoints and gamma unused for sRGB
+    dib.extend_from_slice(&4u32.to_le_bytes()); // LCS_GM_IMAGES
+    dib.extend_from_slice(&[0; 12]); // no embedded profile; reserved = 0
 
     // Pixel rows bottom-up: from row h-1 down to 0
     let padding_len = row_stride - (w * 3);
@@ -454,14 +479,11 @@ pub fn png_to_dib(png_bytes: &[u8]) -> Result<Vec<u8>> {
 /// Convert a standard Microsoft Windows Device Independent Bitmap (DIB) into PNG image bytes.
 pub fn dib_to_png(dib_bytes: &[u8]) -> Result<Vec<u8>> {
     ensure!(
-        dib_bytes.len() >= 40,
-        "DIB bytes too short for BITMAPINFOHEADER"
+        dib_bytes.len() >= 124 && dib_bytes.len() <= MAX_IMAGE_BYTES,
+        "DIB v5 bytes outside header/image bounds"
     );
     let bi_size = u32::from_le_bytes(dib_bytes[0..4].try_into().unwrap());
-    ensure!(
-        bi_size == 40,
-        "unsupported DIB header size (expected 40-byte BITMAPINFOHEADER)"
-    );
+    ensure!(bi_size == 124, "RFB requires a 124-byte BITMAPV5HEADER");
     let bi_width = i32::from_le_bytes(dib_bytes[4..8].try_into().unwrap());
     let bi_height = i32::from_le_bytes(dib_bytes[8..12].try_into().unwrap());
     let bi_planes = u16::from_le_bytes(dib_bytes[12..14].try_into().unwrap());
@@ -470,8 +492,8 @@ pub fn dib_to_png(dib_bytes: &[u8]) -> Result<Vec<u8>> {
 
     ensure!(bi_planes == 1, "DIB biPlanes must be 1");
     ensure!(
-        bi_compression == 0,
-        "only uncompressed BI_RGB DIB is supported"
+        bi_compression == 0 || (bi_compression == 3 && bi_bit_count == 32),
+        "only BI_RGB or 32-bit BI_BITFIELDS DIB v5 is supported"
     );
     ensure!(
         bi_bit_count == 24 || bi_bit_count == 32,
@@ -479,7 +501,7 @@ pub fn dib_to_png(dib_bytes: &[u8]) -> Result<Vec<u8>> {
     );
     ensure!(bi_width > 0 && bi_width <= 16384, "invalid DIB width");
     ensure!(
-        bi_height != 0 && bi_height.abs() <= 16384,
+        bi_height != 0 && bi_height.unsigned_abs() <= 16384,
         "invalid DIB height"
     );
 
@@ -490,15 +512,38 @@ pub fn dib_to_png(dib_bytes: &[u8]) -> Result<Vec<u8>> {
         (bi_height.unsigned_abs() as usize, false)
     };
 
+    ensure!(
+        u32::from_le_bytes(dib_bytes[32..36].try_into().unwrap()) == 0,
+        "DIB palettes are not supported"
+    );
+    ensure!(
+        dib_bytes[112..120] == [0; 8],
+        "embedded DIB profiles are not supported"
+    );
+    let alpha = bi_compression == 3;
+    if alpha {
+        let masks: Vec<_> = dib_bytes[40..56]
+            .chunks_exact(4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        ensure!(
+            masks == [0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000],
+            "unsupported DIB channel masks"
+        );
+    }
+    ensure!(
+        width * height * 4 <= MAX_IMAGE_BYTES * 4,
+        "decoded DIB exceeds pixel budget"
+    );
     let bpp_bytes = (bi_bit_count / 8) as usize;
     let row_stride = (width * bpp_bytes + 3) & !3;
-    let pixel_data = &dib_bytes[40..];
+    let pixel_data = &dib_bytes[124..];
     ensure!(
         pixel_data.len() >= row_stride * height,
         "DIB pixel data truncated"
     );
 
-    let mut rgb_pixels = Vec::with_capacity(width * height * 3);
+    let mut rgb_pixels = Vec::with_capacity(width * height * if alpha { 4 } else { 3 });
     for row in 0..height {
         let y = if bottom_up { height - 1 - row } else { row };
         let row_start = y * row_stride;
@@ -511,13 +556,20 @@ pub fn dib_to_png(dib_bytes: &[u8]) -> Result<Vec<u8>> {
             rgb_pixels.push(r);
             rgb_pixels.push(g);
             rgb_pixels.push(b);
+            if alpha {
+                rgb_pixels.push(px[3]);
+            }
         }
     }
 
     let mut png_bytes = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png_bytes, width as u32, height as u32);
-        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_color(if alpha {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header().context("write PNG header")?;
         writer
@@ -609,48 +661,53 @@ pub fn parse_rfb_extended_cut_text(body: &[u8]) -> Result<ExtendedCutTextMessage
         let mut decompressed = Vec::new();
         let decoder = ZlibDecoder::new(compressed);
         decoder
-            .take((MAX_IMAGE_BYTES + 5) as u64)
+            .take((MAX_IMAGE_BYTES + MAX_TEXT_BYTES + 9) as u64)
             .read_to_end(&mut decompressed)
             .context("zlib decompression failed")?;
 
         ensure!(
-            decompressed.len() >= 4 && decompressed.len() <= MAX_IMAGE_BYTES + 4,
+            decompressed.len() >= 4 && decompressed.len() <= MAX_IMAGE_BYTES + MAX_TEXT_BYTES + 8,
             "decompressed clipboard payload exceeds bounds"
         );
-        let reported_len = u32::from_be_bytes(decompressed[..4].try_into().unwrap()) as usize;
-        let payload_bytes = &decompressed[4..];
-        ensure!(
-            payload_bytes.len() == reported_len,
-            "decompressed payload length mismatch"
-        );
-
-        if flags & FORMAT_TEXT != 0 {
-            let text_bytes = &payload_bytes[..reported_len];
-            let clean = text_bytes
-                .strip_suffix(b"\0")
-                .context("RFB text lacks terminating NUL")?;
+        let mut remaining = decompressed.as_slice();
+        let mut message = ExtendedCutTextMessage {
+            flags,
+            text: None,
+            image_png: None,
+            image_jpeg: None,
+        };
+        for format in [FORMAT_TEXT, FORMAT_DIB] {
+            if flags & format == 0 {
+                continue;
+            }
+            ensure!(remaining.len() >= 4, "missing RFB format size");
+            let size = u32::from_be_bytes(remaining[..4].try_into().unwrap()) as usize;
+            remaining = &remaining[4..];
             ensure!(
-                clean.len() <= MAX_TEXT_BYTES,
-                "RFB text exceeds byte budget"
+                size <= remaining.len(),
+                "decompressed payload length mismatch"
             );
-            let s = std::str::from_utf8(clean)
-                .context("RFB text is not UTF-8")?
-                .replace("\r\n", "\n");
-            return Ok(ExtendedCutTextMessage {
-                flags,
-                text: Some(s),
-                image_png: None,
-                image_jpeg: None,
-            });
-        } else if flags & FORMAT_DIB != 0 {
-            let png = dib_to_png(&payload_bytes[..reported_len])?;
-            return Ok(ExtendedCutTextMessage {
-                flags,
-                text: None,
-                image_png: Some(png),
-                image_jpeg: None,
-            });
+            let (payload, rest) = remaining.split_at(size);
+            remaining = rest;
+            if format == FORMAT_TEXT {
+                let text = payload
+                    .strip_suffix(b"\0")
+                    .context("RFB text lacks terminating NUL")?;
+                ensure!(text.len() <= MAX_TEXT_BYTES, "RFB text exceeds byte budget");
+                message.text = Some(
+                    std::str::from_utf8(text)
+                        .context("RFB text is not UTF-8")?
+                        .replace("\r\n", "\n"),
+                );
+            } else {
+                message.image_png = Some(dib_to_png(payload)?);
+            }
         }
+        ensure!(
+            remaining.is_empty(),
+            "unexpected trailing RFB clipboard data"
+        );
+        return Ok(message);
     }
 
     Ok(ExtendedCutTextMessage {
