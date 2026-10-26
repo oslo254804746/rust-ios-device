@@ -306,6 +306,7 @@ impl DoctorCmd {
                                 super::doctor::device::target_manifest::ComponentState::FileExists => "file exists",
                                 super::doctor::device::target_manifest::ComponentState::DigestMismatch => "digest mismatch",
                                 super::doctor::device::target_manifest::ComponentState::MissingFile => "missing file",
+                                super::doctor::device::target_manifest::ComponentState::PermissionDenied => "permission denied",
                             };
                             crate::output::outln!(
                                 "       - Component '{}' ({}): {}, signature unverified, device availability unprobed",

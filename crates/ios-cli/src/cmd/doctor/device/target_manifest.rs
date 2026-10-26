@@ -19,6 +19,7 @@ const MAX_COMPONENT_READ_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB bound
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct TargetEvidence {
+    #[serde(serialize_with = "serialize_target_id")]
     pub(crate) udid: String,
     pub(crate) board_id: Option<u64>,
     pub(crate) chip_id: Option<u64>,
@@ -26,6 +27,10 @@ pub(crate) struct TargetEvidence {
     pub(crate) product_type: Option<String>,
     pub(crate) product_version: Option<String>,
     pub(crate) build_version: Option<String>,
+}
+
+fn serialize_target_id<S: serde::Serializer>(udid: &str, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&ios_core::redaction::diagnostic_id(udid).to_string())
 }
 
 impl TargetEvidence {
@@ -62,6 +67,7 @@ pub(crate) enum ComponentState {
     DigestMatches,
     DigestMismatch,
     MissingFile,
+    PermissionDenied,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -546,7 +552,11 @@ fn evaluate_single_manifest(
                 component_observations.push(ComponentObservation {
                     name: comp_name.clone(),
                     path: path_str.to_string(),
-                    state: ComponentState::MissingFile,
+                    state: if is_perm {
+                        ComponentState::PermissionDenied
+                    } else {
+                        ComponentState::MissingFile
+                    },
                     signature_verified: false,
                     device_availability_probed: false,
                     expected_digest: expected_digest_hex,
@@ -584,6 +594,10 @@ fn evaluate_single_manifest(
                             },
                             Some(observed_hex),
                         )
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                        has_permission_denied = true;
+                        (ComponentState::PermissionDenied, None)
                     }
                     Err(_) => {
                         has_digest_mismatch = true;

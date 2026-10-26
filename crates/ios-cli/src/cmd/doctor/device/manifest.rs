@@ -16,6 +16,7 @@ const MAX_TOTAL_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct Metadata {
     pub(crate) mounted_entries: usize,
+    pub(crate) target_evidence: Option<super::target_manifest::TargetEvidence>,
     pub(crate) developer_entries: usize,
     pub(crate) manifests_returned: usize,
     pub(crate) signature_bytes: usize,
@@ -120,7 +121,33 @@ async fn observe(
     metadata: &mut Metadata,
     search_paths: &[std::path::PathBuf],
 ) -> Result<Option<bool>> {
-    let (stream, pair_record, device_id) = session(source, udid, clock).await?;
+    let (mut stream, pair_record, device_id) = session(source, udid, clock).await?;
+    let has_local_manifest = !super::target_manifest::find_build_manifests(search_paths).is_empty();
+    let mut versions = Vec::new();
+    if has_local_manifest {
+        // These are lockdown keys, not ImageMounter personalization identifiers.
+        for key in ["ProductType", "ProductVersion", "BuildVersion"] {
+            clock.check()?;
+            send_lockdown(
+                &mut stream,
+                &GetValueRequest {
+                    label: "ios-rs",
+                    request: "GetValue",
+                    domain: None,
+                    key: Some(key),
+                },
+            )
+            .await?;
+            let response: plist::Dictionary = recv_lockdown(&mut stream).await?;
+            check_response(&response, "GetValue")?;
+            let value = response
+                .get("Value")
+                .and_then(plist::Value::as_string)
+                .filter(|value| !value.is_empty())
+                .ok_or(MetadataMissing)?;
+            versions.push(value.to_owned());
+        }
+    }
     let (mut reader, mut writer) = tokio::io::split(stream);
     let (port, use_ssl) = start_service_preserving_errors(
         &mut reader,
@@ -142,15 +169,19 @@ async fn observe(
     };
     // Same selected-device service and clock as CopyDevices. Use the already
     // implemented QueryPersonalizationIdentifiers wire, not UDID-only wildcard matching.
-    if !super::target_manifest::find_build_manifests(search_paths).is_empty() {
+    if has_local_manifest {
         let mut client = ios_core::imagemounter::ImageMounterClient::new(&mut stream);
         let ids = client.query_personalization_identifiers().await?;
         clock.check()?;
-        let evidence = super::target_manifest::TargetEvidence::from_identifiers(udid, &ids);
+        let mut evidence = super::target_manifest::TargetEvidence::from_identifiers(udid, &ids);
+        evidence.product_type = Some(versions[0].clone());
+        evidence.product_version = Some(versions[1].clone());
+        evidence.build_version = Some(versions[2].clone());
         metadata.target_manifest = Some(super::target_manifest::evaluate_target_manifest(
             &evidence,
             search_paths,
         ));
+        metadata.target_evidence = Some(evidence);
         clock.check()?;
     } else {
         metadata.target_manifest = Some(super::target_manifest::evaluate_target_manifest(
