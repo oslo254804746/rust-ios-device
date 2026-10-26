@@ -1,5 +1,15 @@
 # 当前工程调度
 
+2026-10-26：[剩余六项工程实施完成 (L01/F01/F02/F04/F05/F06)](validation/remaining-six-implementation-2026-10-26.md)
+六个工作包均完成代码实施、门禁检验与独立本地提交（2d550bb, 0f4d407, 7160a91, ca4774f, 2519d1f, 735a447）。
+- L01：全局服务总期限、取消与连接失效完成主机端闭环，底层 cause 与重用防护验证通过；
+- F01：Doctor 区分 Personalized / DDI 版本支持并给出明确 EvidenceState，不再以 Ok(true) 冒充未验证状态；
+- F02：实现 TestWorkflowEngine 统一前置检查、有界结果收集与清理流程；
+- F04：完成 CDP 协议五域有证据映射并通过 pinned Playwright/Puppeteer 实际客户端端到端验证；
+- F05：完成 HEVC Annex-B 结构解析、慢消费者有界队列与 RFB Extended CutText 双向图像剪贴板；
+- F06：实现 IPSW BuildManifest 目标版本预检与基于 RestoredClient 的实验 Update 循环；
+真实设备操作、在线 Apple TSS 签名与硬件刷写继续保持 NOT_RUN，F06 保持待外部验收。
+
 2026-10-26：按用户明确选择，[原始 L02 验收收口](validation/l02-original-acceptance-2026-10-26.md)。
 多设备协调、四路建连、A等待时B查询/停止1秒目标、重复建连/停止/拔插/退避逐条核对通过。
 修复并发shutdown期限覆盖、失败cleanup的错误完成凭证与retirement费用锁内释放；CLI1927/0/13原ignored、Linux actor11/0、Core245/0及严格/只读门禁通过。
