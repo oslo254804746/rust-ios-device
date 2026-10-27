@@ -15,7 +15,12 @@ RESULTS = {"PASS", "FAIL", "INCONCLUSIVE", "NOT_RUN"}
 
 def source_inventory():
     commands = {}
-    source = (ROOT / "crates/ios-cli/src/main.rs").read_text(encoding="utf-8")
+    cli_root = ROOT / "crates/ios-cli/src"
+    sources = [path.read_text(encoding="utf-8") for path in
+               (cli_root / "lib.rs", cli_root / "main.rs") if path.is_file()]
+    source = next((text for text in sources if "enum Commands {" in text), None)
+    if source is None:
+        raise ValueError("CLI Commands declaration is missing from lib.rs/main.rs")
     body = source.split("enum Commands {", 1)[1].split("\n}", 1)[0]
     for variant, module in re.findall(r"^    (\w+)\(cmd::(\w+)::\w+\),$", body, re.M):
         name = re.sub(r"(?<!^)(?=[A-Z])", "-", variant).lower()
