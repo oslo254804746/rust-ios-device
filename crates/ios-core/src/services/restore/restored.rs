@@ -2,7 +2,8 @@
 //!
 //! Wire evidence: pymobiledevice3 03ba2270, restore/restored_client.py and
 //! restore/restore.py::firmware_response_messages. This module does not boot a
-//! restore ramdisk, implement ASR/FDR, personalize IMG4, or claim a full update.
+//! restore ramdisk, implement FDR, personalize IMG4, or claim a full update.
+//! Synchronous SystemImageData can use the bounded ASR data-port transport.
 
 use std::future::Future;
 use std::time::Duration;
@@ -39,12 +40,35 @@ async fn bounded<T>(
     cancel: &OperationCancel,
     work: impl Future<Output = Result<T, RestoreError>>,
 ) -> Result<T, RestoreError> {
-    tokio::select! {
+    if cancel.is_cancelled() {
+        return Err(RestoreError::Io(std::io::Error::other(
+            crate::OperationCancelled::new(),
+        )));
+    }
+    if Instant::now() >= deadline {
+        return Err(RestoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "restored operation deadline",
+        )));
+    }
+    let result = tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(RestoreError::Io(std::io::Error::other(crate::OperationCancelled::new()))),
         result = tokio::time::timeout_at(deadline, work) => result.map_err(|e|
             native_error(std::io::ErrorKind::TimedOut, "restored operation deadline", e))?,
+    };
+    if result.is_ok() && cancel.is_cancelled() {
+        return Err(RestoreError::Io(std::io::Error::other(
+            crate::OperationCancelled::new(),
+        )));
     }
+    if result.is_ok() && Instant::now() >= deadline {
+        return Err(RestoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "restored operation deadline",
+        )));
+    }
+    result
 }
 
 fn request(name: &str) -> Dictionary {
@@ -133,20 +157,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoredClient<S> {
 
     async fn send(&mut self, body: &Dictionary) -> Result<(), RestoreError> {
         self.live()?;
+        self.terminal = true;
         let result = bounded(self.deadline, &self.cancel, async {
             write_xml_plist_frame(&mut self.stream, body, MAX_FRAME)
                 .await
                 .map_err(|e| native_error(std::io::ErrorKind::Other, "write restored plist", e))
         })
         .await;
-        if result.is_err() {
-            self.terminal = true;
+        if result.is_ok() {
+            self.terminal = false;
         }
         result
     }
 
     async fn receive(&mut self) -> Result<Dictionary, RestoreError> {
         self.live()?;
+        self.terminal = true;
         let result = bounded(self.deadline, &self.cancel, async {
             let value: Value = read_plist_frame(&mut self.stream, MAX_FRAME)
                 .await
@@ -160,8 +186,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoredClient<S> {
             Ok(dict)
         })
         .await;
-        if result.is_err() {
-            self.terminal = true;
+        if result.is_ok() {
+            self.terminal = false;
         }
         result
     }
@@ -394,33 +420,103 @@ pub fn restore_event_from_plist(dict: &Dictionary) -> RestoreLifecycleEvent {
 /// requests fail rather than being counted as served. CLI execution remains disabled.
 pub async fn run_restored_update_loop<S, F>(
     client: &mut RestoredClient<S>,
-    mut state_machine: RestoreStateMachine,
+    state_machine: RestoreStateMachine,
     options: Dictionary,
-    mut firmware_provider: F,
+    firmware_provider: F,
     cancel: &OperationCancel,
 ) -> Result<RestoreExecutionReport, RestoreError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     F: FnMut(&str, &Dictionary) -> Result<(Dictionary, Vec<u8>), RestoreError>,
 {
+    type NoConnector = fn(u16) -> std::future::Ready<Result<tokio::io::DuplexStream, RestoreError>>;
+    run_restored_loop_inner(
+        client,
+        state_machine,
+        options,
+        firmware_provider,
+        cancel,
+        None::<(&mut std::io::Cursor<Vec<u8>>, &mut NoConnector)>,
+        false,
+    )
+    .await
+}
+
+/// Dispatch synchronous SystemImageData to ASR using the selected OS image.
+/// The receipt records local transfer only; unsupported routes still fail and
+/// status zero cannot establish a complete Update while routes are missing.
+pub async fn run_restored_update_loop_with_system_image<S, F, R, DataStream, C, Fut>(
+    client: &mut RestoredClient<S>,
+    state_machine: RestoreStateMachine,
+    options: Dictionary,
+    firmware_provider: F,
+    cancel: &OperationCancel,
+    image: &mut R,
+    connect_port: &mut C,
+) -> Result<RestoreExecutionReport, RestoreError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnMut(&str, &Dictionary) -> Result<(Dictionary, Vec<u8>), RestoreError>,
+    R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin,
+    DataStream: AsyncRead + AsyncWrite + Unpin,
+    C: FnMut(u16) -> Fut,
+    Fut: Future<Output = Result<DataStream, RestoreError>>,
+{
+    run_restored_loop_inner(
+        client,
+        state_machine,
+        options,
+        firmware_provider,
+        cancel,
+        Some((image, connect_port)),
+        true,
+    )
+    .await
+}
+
+async fn run_restored_loop_inner<S, F, R, DataStream, C, Fut>(
+    client: &mut RestoredClient<S>,
+    mut state_machine: RestoreStateMachine,
+    options: Dictionary,
+    mut firmware_provider: F,
+    cancel: &OperationCancel,
+    mut system_image: Option<(&mut R, &mut C)>,
+    incomplete_executor: bool,
+) -> Result<RestoreExecutionReport, RestoreError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnMut(&str, &Dictionary) -> Result<(Dictionary, Vec<u8>), RestoreError>,
+    R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin,
+    DataStream: AsyncRead + AsyncWrite + Unpin,
+    C: FnMut(u16) -> Fut,
+    Fut: Future<Output = Result<DataStream, RestoreError>>,
+{
+    let deadline = client.deadline;
+    let result = async {
     let protocol_version = client.protocol_version().clone();
     state_machine.finish_tss_phase()?;
-    client.start_update(&protocol_version, options).await?;
+    bounded(deadline, cancel, client.start_update(&protocol_version, options)).await?;
 
     loop {
         if cancel.is_cancelled() {
+            client.terminal = true;
             state_machine.cancel();
-            return Err(failed_execution(
-                &state_machine,
-                RestoreError::Io(std::io::Error::other(crate::OperationCancelled::new())),
-            ));
+            return Err(RestoreError::Io(std::io::Error::other(crate::OperationCancelled::new())));
         }
 
-        let incoming = match client.next_message().await {
-            Ok(msg) => msg,
-            Err(err) => {
-                return Err(failed_execution(&state_machine, err));
+        let incoming = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => None,
+            result = client.next_message() => Some(result),
+        };
+        let incoming = match incoming {
+            None => {
+                client.terminal = true;
+                state_machine.cancel();
+                return Err(RestoreError::Io(std::io::Error::other(crate::OperationCancelled::new())));
             }
+            Some(Ok(msg)) => msg,
+            Some(Err(err)) => return Err(err),
         };
 
         let event = restore_event_from_plist(&incoming);
@@ -440,47 +536,77 @@ where
                     .and_then(Value::as_string)
                     .filter(|name| !name.is_empty())
                     .ok_or_else(|| RestoreError::Protocol("missing restored UpdaterName".into()))?;
-                let (header, firmware) = firmware_provider(updater_name, &incoming)
-                    .map_err(|error| failed_execution(&state_machine, error))?;
+                let (header, firmware) = firmware_provider(updater_name, &incoming)?;
                 if firmware.is_empty() {
-                    return Err(failed_execution(
-                        &state_machine,
-                        RestoreError::Protocol(
+                    return Err(RestoreError::Protocol(
                             "restored firmware provider returned no component bytes".into(),
-                        ),
-                    ));
+                        ));
                 }
                 let before = client.firmware_bytes_written();
-                let sent = client
-                    .send_firmware_response(&incoming, header, &firmware)
-                    .await;
+                let sent = bounded(deadline, cancel,
+                    client.send_firmware_response(&incoming, header, &firmware)).await;
                 state_machine
                     .record_bytes_transferred((client.firmware_bytes_written() - before) as usize);
-                sent.map_err(|error| failed_execution(&state_machine, error))?;
+                sent?;
                 state_machine.record_data_request_served(format!("{dt}:{updater_name}"));
+            } else if dt == "SystemImageData" && !async_request && system_image.is_some() {
+                let (image, connector) = system_image.as_mut().expect("checked above");
+                let receipt = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => None,
+                    result = client.send_system_image(&incoming, &mut **image, &mut **connector) => Some(result),
+                };
+                let receipt = match receipt {
+                    None => {
+                        client.terminal = true;
+                        state_machine.cancel();
+                        return Err(RestoreError::Io(std::io::Error::other(
+                                crate::OperationCancelled::new(),
+                            )));
+                    }
+                    Some(result) => {
+                        result?
+                    }
+                };
+                // Count local image bytes only, not device flash or validation.
+                state_machine.record_bytes_transferred(
+                    usize::try_from(receipt.image_bytes_sent).unwrap_or(usize::MAX),
+                );
+                state_machine.record_data_request_served(dt.clone());
             } else {
-                return Err(failed_execution(
-                    &state_machine,
-                    RestoreError::Io(std::io::Error::new(
+                client.terminal = true;
+                return Err(RestoreError::Io(std::io::Error::new(
                         std::io::ErrorKind::Unsupported,
                         format!(
                             "unserved restored data request: {dt}; no secondary transport owner"
                         ),
-                    )),
-                ));
+                    )));
             }
         } else if matches!(
             event,
             RestoreLifecycleEvent::DataRequest { .. } | RestoreLifecycleEvent::Unknown { .. }
         ) {
-            return Err(failed_execution(
-                &state_machine,
-                RestoreError::Protocol(
+            return Err(RestoreError::Protocol(
                     "malformed or unsupported restored lifecycle message".into(),
-                ),
-            ));
+                ));
         }
 
+        if incomplete_executor
+            && matches!(
+                event,
+                RestoreLifecycleEvent::Status {
+                    code: 0,
+                    finished: true,
+                    ..
+                }
+            )
+        {
+            client.terminal = true;
+            return Err(RestoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "restored status zero cannot establish a complete Update while routes remain unimplemented",
+            )));
+        }
         state_machine.process_event(&event)?;
 
         if state_machine.is_terminal() {
@@ -489,15 +615,20 @@ where
                     return Ok(state_machine.generate_report());
                 }
                 RestoreState::Failed(reason) => {
-                    return Err(failed_execution(
-                        &state_machine,
-                        RestoreError::Protocol(format!("restored execution failed: {:?}", reason)),
-                    ));
+                    return Err(RestoreError::Protocol(format!("restored execution failed: {:?}", reason)));
                 }
                 _ => unreachable!(),
             }
         }
     }
+    }.await;
+    client.terminal = true;
+    result.map_err(|error| {
+        if crate::classify_error(&error) == crate::ErrorClass::Cancelled {
+            state_machine.cancel();
+        }
+        failed_execution(&state_machine, error)
+    })
 }
 
 #[cfg(test)]
