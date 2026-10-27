@@ -151,6 +151,23 @@ impl XpcClient {
             .await
     }
 
+    /// Observe full local submission while sharing one send/reply total clock.
+    pub async fn call_observed_with_timeout(
+        &mut self,
+        body: XpcValue,
+        budget: std::time::Duration,
+        sent: &mut bool,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner
+            .call_on_stream_observed(
+                body,
+                crate::xpc::h2_raw::STREAM_SERVER_CLIENT,
+                Some(budget),
+                sent,
+            )
+            .await
+    }
+
     /// Share one absolute budget across send, flow control and correlated
     /// reply reception. Zero rejects before I/O or identifier changes.
     pub async fn call_with_timeout(

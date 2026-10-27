@@ -96,3 +96,9 @@ RTP/传输来源：[RFC7798§4.1](https://www.rfc-editor.org/rfc/rfc7798.html#se
 CLI集成有一次1974/1/21ignored：合法异步DIB Notify抢在Provide回复前到达，旧fixture假定首条必是Provide。修后精确验证可选的单条Notify，继续保留原Provide/DIB/双向像素断言；未增超时，最终1975全量和Viewer门禁通过。Core完整批次之后的唯一Core生产增量是rollback错误保留，已由最终CDP24项和strict检查补验。
 
 用户于2026-10-27确认暂时没有所选21F90离线IPSW；完整Update仍缺USB recovery/ECID重新枚举、IMG4/TBM/nonce-slot、FDR及全数据请求编排。没有把ASR/提取或任意Status=0记成完整恢复。真实设备/TSS/平台验收保持NOT_RUN。
+
+### AppService与共享setup补包
+
+Core AppService新增可选有限请求总期限（默认None保留兼容），单次查询/kill/launch/spawn及完整streamapplist收集使用同一发送/接收总clock。真实apps CLI设30秒请求与XPC建连期限；process monitoring及公开stream APIs保留调用方idle/lifetime合同，不被30秒误杀。观察型launch同样受预算控制，保留完整发送事实；超时后client不能消费迟到PID。默认设备发现和共享lockdown/userspace/版本探测/版本选择建连也纳入总setup期限。
+
+Core AppService26/0，实际duplex验证零预算不发字节、提交后100ms超时/失效、streamapplist总期限、monitor不继承短请求预算；CLI apps46/0。最小feature检查PASS，13条原dead_code警告；strict Core+CLI allfeatures/alltargets PASS。日志`.git/completion-{appservice-deadlines,apps-service-final,minimal,clippy-service-final}.log`。新fixture首轮误用通用source遍历寻找stdio内部Elapsed，已改为核对原XPC IO边界、TimedOut类别和IO.get_ref中的实际Elapsed，未放宽时钟/失效/发送断言。

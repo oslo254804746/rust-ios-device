@@ -1001,14 +1001,19 @@ async fn connect_appservice(
     device: &ios_core::ConnectedDevice,
     udid: &str,
 ) -> Result<ios_core::apps::AppServiceClient, CoreError> {
-    let (xpc, metadata) = device
-        .connect_xpc_service_with_metadata(ios_core::apps::APPSERVICE_SERVICE)
-        .await?;
-    Ok(ios_core::apps::AppServiceClient::new_with_features(
+    let (xpc, metadata) = tokio::time::timeout(
+        Duration::from_secs(30),
+        device.connect_xpc_service_with_metadata(ios_core::apps::APPSERVICE_SERVICE),
+    )
+    .await
+    .map_err(|error| CoreError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, error)))??;
+    let mut client = ios_core::apps::AppServiceClient::new_with_features(
         xpc,
         udid.to_string(),
         metadata.features,
-    ))
+    );
+    client.set_request_timeout(Some(Duration::from_secs(30)));
+    Ok(client)
 }
 
 fn should_fallback_to_instruments(err: &CoreError) -> bool {
