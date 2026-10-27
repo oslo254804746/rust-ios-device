@@ -10,7 +10,7 @@ use ios_core::hid::{
 };
 use ios_core::pasteboard::{DataInclusionPolicy, PasteboardClient, PasteboardLimits};
 
-use super::clipboard::{ClipboardPayload, MAX_TEXT_BYTES};
+use super::clipboard::ClipboardPayload;
 use super::vnc::VncInputAction;
 
 pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -135,7 +135,7 @@ impl DeviceInput {
                 PasteboardLimits {
                     max_items: 8,
                     max_representations: 24,
-                    max_data_bytes: MAX_TEXT_BYTES,
+                    max_data_bytes: super::clipboard::MAX_IMAGE_BYTES,
                     max_metadata_bytes: 16 * 1024,
                     max_events: 8,
                 },
@@ -146,6 +146,32 @@ impl DeviceInput {
     }
 
     pub async fn read_clipboard(&mut self) -> Result<Option<ClipboardPayload>> {
+        match self.read_clipboard_once().await {
+            Ok(value) => Ok(value),
+            Err(error)
+                if matches!(
+                    ios_core::classify_error(error.as_ref()),
+                    ios_core::ErrorClass::Disconnected | ios_core::ErrorClass::Timeout
+                ) =>
+            {
+                self.pasteboard = None;
+                self.pasteboard_device = None;
+                if let Err(cleanup) = self.native.collect(CLEANUP_TIMEOUT).await {
+                    return super::finish(Err(error), Err(cleanup));
+                }
+                tracing::warn!(
+                    "viewer pasteboard read disconnected; refreshing selected service once"
+                );
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                // Only the read is repeated. SET and HID reports may already
+                // have effects and are never replayed by this reconnect path.
+                self.read_clipboard_once().await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn read_clipboard_once(&mut self) -> Result<Option<ClipboardPayload>> {
         let snapshot = self
             .pasteboard()
             .await?
@@ -281,6 +307,16 @@ impl DeviceInput {
                 }
             }
             VncInputAction::Rotate { direction } => {
+                if let (Some(client), Some(contact)) = (&mut self.universal, self.contact.take()) {
+                    client
+                        .send_touchscreen(
+                            TouchPhase::Cancel,
+                            contact,
+                            DEFAULT_TOUCHSCREEN_SERVICE_ID,
+                            None,
+                        )
+                        .await?;
+                }
                 let direction: ios_core::orientation::RotationDirection = direction
                     .parse()
                     .map_err(|_| anyhow::anyhow!("orientation must be left or right"))?;

@@ -54,6 +54,87 @@ async fn test_vnc_state(
     (state, receiver)
 }
 
+/// Called by the real timestamped HEVC gate with its decoded frame, exercising
+/// actual HTTP/RFB bytes through the same production states and handlers.
+pub(super) async fn verify_decoded_video_endpoints(frame: DecodedFrame) {
+    let fixture = PolicyFixture::new(vec![grant(
+        TOKEN,
+        vec![Permission::Debug, Permission::Connect],
+    )]);
+    let access = AccessControl::from_file(fixture.path.clone())
+        .await
+        .unwrap();
+    let web = WebViewerState::new(access, DEVICE.into(), 12345, false);
+    web.push_timed_frame(
+        "image/png",
+        frame.png.clone(),
+        frame.width.into(),
+        frame.height.into(),
+        frame.timestamp_ms,
+        frame.timestamp_clock,
+    )
+    .await;
+    let (base, server, stop) = spawn_test_server(web).await;
+    let response = test_client()
+        .get(format!("{base}/frame"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["X-Timestamp-Clock"], "rtp-relative-ms");
+    assert_eq!(response.bytes().await.unwrap(), frame.png);
+    stop.send(()).unwrap();
+    server.await.unwrap();
+
+    let (vnc, _events) = test_vnc_state(None).await;
+    vnc.update_decoded_frame(frame.clone()).await;
+    assert!(Arc::ptr_eq(&vnc.frame.read().await.bgra_data, &frame.bgra));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let state = vnc.clone();
+    let server = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        VncSession::new(stream, peer, state).run().await
+    });
+    let mut client = TcpStream::connect(address).await.unwrap();
+    let mut version = [0; 12];
+    client.read_exact(&mut version).await.unwrap();
+    client.write_all(RFB_VERSION_3_8).await.unwrap();
+    assert_eq!(client.read_u8().await.unwrap(), 1);
+    assert_eq!(client.read_u8().await.unwrap(), RFB_SECURITY_NONE);
+    client.write_u8(RFB_SECURITY_NONE).await.unwrap();
+    assert_eq!(client.read_u32().await.unwrap(), 0);
+    client.write_u8(1).await.unwrap();
+    assert_eq!(client.read_u16().await.unwrap(), frame.width);
+    assert_eq!(client.read_u16().await.unwrap(), frame.height);
+    let mut format = [0; 16];
+    client.read_exact(&mut format).await.unwrap();
+    let name_len = client.read_u32().await.unwrap();
+    assert!(name_len <= 128);
+    let mut name = vec![0; name_len as usize];
+    client.read_exact(&mut name).await.unwrap();
+    client
+        .write_all(&[RFB_CLIENT_FRAMEBUFFER_UPDATE_REQUEST, 0, 0, 0, 0, 0])
+        .await
+        .unwrap();
+    client.write_u16(frame.width).await.unwrap();
+    client.write_u16(frame.height).await.unwrap();
+    let mut rectangle = [0; 16];
+    client.read_exact(&mut rectangle).await.unwrap();
+    assert_eq!(&rectangle[..4], &[RFB_SERVER_FRAMEBUFFER_UPDATE, 0, 0, 1]);
+    assert_eq!(
+        u16::from_be_bytes(rectangle[8..10].try_into().unwrap()),
+        frame.width
+    );
+    let mut pixels = vec![0; frame.bgra.len()];
+    client.read_exact(&mut pixels).await.unwrap();
+    assert_eq!(&pixels, frame.bgra.as_ref());
+    drop(client);
+    vnc.stop();
+    server.await.unwrap().unwrap();
+}
+
 fn test_client() -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()
@@ -1134,6 +1215,17 @@ async fn review_regression_vnc_negotiates_v5_images_and_serves_requests() {
         let length = client.read_i32().await.unwrap().unsigned_abs() as usize;
         let mut body = vec![0; length];
         client.read_exact(&mut body).await.unwrap();
+        // Notify is asynchronous and may precede the reply to our Request.
+        // Validate that exact legal announcement, then still require Provide.
+        if u32::from_be_bytes(body[..4].try_into().unwrap()) == ACTION_NOTIFY | FORMAT_DIB {
+            assert_eq!(body.len(), 4, "Notify carries no image payload");
+            assert_eq!(client.read_u8().await.unwrap(), SERVER_CUT_TEXT);
+            client.read_exact(&mut padding).await.unwrap();
+            let size = client.read_i32().await.unwrap().unsigned_abs() as usize;
+            assert!(size <= MAX_IMAGE_BYTES + 4);
+            body.resize(size, 0);
+            client.read_exact(&mut body).await.unwrap();
+        }
         assert_eq!(
             u32::from_be_bytes(body[..4].try_into().unwrap()),
             ACTION_PROVIDE | FORMAT_DIB

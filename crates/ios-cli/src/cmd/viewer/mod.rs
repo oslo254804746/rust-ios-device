@@ -46,6 +46,12 @@ pub struct ViewerCmd {
     /// Experimental Display/RTP HEVC via FFmpeg; requires a kernel tunnel. Default: PNG screenshots.
     #[arg(long)]
     pub hevc: bool,
+    /// Recover this many disconnected media sessions after successful cleanup.
+    #[arg(long, default_value_t = 3)]
+    pub reconnect_attempts: u32,
+    /// Initial reconnect delay; exponential backoff is capped at sixteen times this value.
+    #[arg(long, default_value_t = 500)]
+    pub reconnect_delay_ms: u64,
 }
 #[derive(Clone, Copy, Subcommand)]
 pub enum ViewerSub {
@@ -70,6 +76,8 @@ impl ViewerCmd {
                     self.boundary,
                     self.share_clipboard,
                     self.hevc,
+                    self.reconnect_attempts,
+                    Duration::from_millis(self.reconnect_delay_ms),
                 )
                 .await
             }
@@ -83,6 +91,8 @@ impl ViewerCmd {
                     self.vnc_token_file,
                     self.share_clipboard,
                     self.hevc,
+                    self.reconnect_attempts,
+                    Duration::from_millis(self.reconnect_delay_ms),
                 )
                 .await
             }
@@ -141,7 +151,7 @@ async fn device_worker(
                 request = requests.recv() => match request { Some(request) => request, None => return Ok(()) },
             };
             if request.reply.is_closed() { continue; }
-            if let Some(frame) = frames.borrow_and_update().as_ref() { device.dimensions = (frame.width, frame.height); }
+            device.dimensions = frames.borrow_and_update().as_ref().map(|frame|(frame.width,frame.height)).unwrap_or((0,0));
             if !request.principal.allows(Permission::Debug, Some(&udid), None) {
                 let _ = request.reply.send(Err(anyhow!("viewer request authorization revoked")));
                 continue;
@@ -187,6 +197,7 @@ async fn join_owned(task: &mut JoinHandle<Result<()>>) -> Result<()> {
         }
     }
 }
+#[allow(clippy::too_many_arguments)]
 async fn run_web_server(
     udid: String,
     host: &str,
@@ -195,6 +206,8 @@ async fn run_web_server(
     boundary: HttpBoundaryArgs,
     share_clipboard: bool,
     hevc: bool,
+    reconnect_attempts: u32,
+    reconnect_delay: Duration,
 ) -> Result<()> {
     let listener = TcpListener::bind((loopback_address(host)?, port)).await?;
     let bound = listener.local_addr()?;
@@ -222,6 +235,8 @@ async fn run_web_server(
         stop_rx.clone(),
         native.clone(),
         hevc,
+        reconnect_attempts,
+        reconnect_delay,
     ));
     let state_frames = state.clone();
     let mut forward_stop = stop_rx.clone();
@@ -233,8 +248,8 @@ async fn run_web_server(
                 changed = frame_rx.changed() => {
                     changed.context("viewer frame producer ended")?;
                     let frame = frame_rx.borrow_and_update().clone();
-                    if let Some(frame) = frame { state_frames.push_frame("image/png", frame.png,
-                        frame.width as u32, frame.height as u32, frame.timestamp_ms).await; }
+                    if let Some(frame) = frame { state_frames.push_timed_frame("image/png", frame.png,
+                        frame.width as u32, frame.height as u32, frame.timestamp_ms,frame.timestamp_clock).await; }
                 }
             }
         }
@@ -331,6 +346,8 @@ async fn run_vnc_server(
     token: Option<PathBuf>,
     share_clipboard: bool,
     hevc: bool,
+    reconnect_attempts: u32,
+    reconnect_delay: Duration,
 ) -> Result<()> {
     let policy_mode = access.authenticate(&axum::http::HeaderMap::new()).is_none();
     if policy_mode && password.is_none() {
@@ -358,7 +375,15 @@ async fn run_vnc_server(
         stop_rx.clone(),
         native.clone(),
     ));
-    let mut producer = tokio::spawn(media::produce(udid, frames, stop_rx, native.clone(), hevc));
+    let mut producer = tokio::spawn(media::produce(
+        udid,
+        frames,
+        stop_rx,
+        native.clone(),
+        hevc,
+        reconnect_attempts,
+        reconnect_delay,
+    ));
     let mut sessions = JoinSet::new();
     crate::output::write_error_line(format_args!("VNC server listening on vnc://{bound}"))?;
     let mut producer_finished = false;
