@@ -9,8 +9,10 @@ use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
+#[cfg(test)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
+mod transport;
 
 pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PIXEL_BYTES: usize = 12 * 1024 * 1024;
@@ -341,6 +343,7 @@ pub struct DecodedFrame {
     pub width: u16,
     pub height: u16,
     pub timestamp_ms: u64,
+    pub timestamp_clock: &'static str,
 }
 
 pub fn decode_png(data: Bytes, timestamp_ms: u64) -> Result<DecodedFrame> {
@@ -422,6 +425,7 @@ pub fn decode_png(data: Bytes, timestamp_ms: u64) -> Result<DecodedFrame> {
         width: width as u16,
         height: height as u16,
         timestamp_ms,
+        timestamp_clock: "host-unix-ms",
     })
 }
 
@@ -449,6 +453,7 @@ pub async fn capture_frame(
     super::finish(result, native.collect(super::device::CLEANUP_TIMEOUT).await)
 }
 
+#[cfg(test)]
 fn spawn_stream_decoder() -> Result<tokio::process::Child> {
     use std::process::Stdio;
     tokio::process::Command::new("ffmpeg")
@@ -484,6 +489,7 @@ fn spawn_stream_decoder() -> Result<tokio::process::Child> {
         .context("start persistent FFmpeg HEVC decoder")
 }
 
+#[cfg(test)]
 async fn read_stream_png(stdout: &mut (impl tokio::io::AsyncRead + Unpin)) -> Result<Bytes> {
     let mut png = vec![0; 8];
     stdout
@@ -519,12 +525,20 @@ async fn stop_stream_decoder(child: &mut tokio::process::Child) -> Result<()> {
     Ok(())
 }
 
+fn publish_frame(frames: &watch::Sender<Option<DecodedFrame>>, frame: DecodedFrame) {
+    frames.send_replace(Some(frame));
+}
+
+#[cfg(test)]
 fn publish_decoded_png(
     frames: &watch::Sender<Option<DecodedFrame>>,
     png: Bytes,
     timestamp_ms: u64,
+    timestamp_clock: &'static str,
 ) -> Result<()> {
-    frames.send_replace(Some(decode_png(png, timestamp_ms)?));
+    let mut frame = decode_png(png, timestamp_ms)?;
+    frame.timestamp_clock = timestamp_clock;
+    publish_frame(frames, frame);
     Ok(())
 }
 
@@ -593,7 +607,7 @@ async fn produce_hevc(
             );
         }
     };
-    let mut child = match spawn_stream_decoder() {
+    let mut child = match transport::spawn_decoder() {
         Ok(child) => child,
         Err(error) => {
             return super::finish(
@@ -608,6 +622,9 @@ async fn produce_hevc(
     };
     let mut stdin = child.stdin.take().context("FFmpeg stdin missing")?;
     let mut stdout = child.stdout.take().context("FFmpeg stdout missing")?;
+    let mut stderr =
+        tokio::io::BufReader::new(child.stderr.take().context("FFmpeg stderr missing")?);
+    let mut mux = transport::HevcTs::default();
     let operation = async {
         let input = async {
             loop {
@@ -620,10 +637,9 @@ async fn produce_hevc(
                         "HEVC access unit exceeds budget"
                     );
                     // One process retains parameter sets and all reference pictures.
-                    stdin
-                        .write_all(&au.data)
+                    mux.write_access_unit(&mut stdin, &au.data, au.timestamp)
                         .await
-                        .context("write HEVC access unit")?;
+                        .context(MediaDecodeFailure)?;
                 }
             }
             #[allow(unreachable_code)]
@@ -631,13 +647,12 @@ async fn produce_hevc(
         };
         let output = async {
             loop {
-                let png = read_stream_png(&mut stdout).await?;
-                // Raw Annex-B carries no RTP timestamps through FFmpeg's PNG pipe.
-                // Report host decode wall time explicitly, never mislabel RTP ticks.
-                let timestamp_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_millis() as u64;
-                publish_decoded_png(&frames, png, timestamp_ms)?;
+                publish_frame(
+                    &frames,
+                    transport::read_frame(&mut stdout, &mut stderr)
+                        .await
+                        .context(MediaDecodeFailure)?,
+                );
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())
@@ -650,7 +665,7 @@ async fn produce_hevc(
         }
     };
     let result = operation.await;
-    drop((stdin, stdout));
+    drop((stdin, stdout, stderr));
     let result = super::finish(result, stop_stream_decoder(&mut child).await);
     let result = super::finish(
         result,
@@ -670,30 +685,128 @@ pub async fn produce(
     mut stop: watch::Receiver<bool>,
     native: crate::cmd::tunnel::NativeScope,
     hevc: bool,
+    reconnect_attempts: u32,
+    reconnect_delay: std::time::Duration,
 ) -> Result<()> {
     if hevc {
-        return produce_hevc(&udid, frames, stop, &native).await;
+        for attempt in 0..=reconnect_attempts {
+            match produce_hevc(&udid, frames.clone(), stop.clone(), &native).await {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt < reconnect_attempts && media_reconnectable(&error) => {
+                    tracing::warn!(attempt=attempt+1,error_class=%ios_core::classify_error(error.as_ref()),"viewer media disconnected; reconnecting after original cleanup");
+                    frames.send_replace(None);
+                    if wait_reconnect(
+                        &mut stop,
+                        reconnect_delay.saturating_mul(1 << attempt.min(4)),
+                    )
+                    .await
+                    {
+                        return Ok(());
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!();
     }
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut failures = 0;
     loop {
         tokio::select! {
             biased;
             changed = stop.changed() => { if changed.is_err() || *stop.borrow() { return Ok(()); } }
             _ = interval.tick() => {}
         }
-        let frame = tokio::select! {
+        let result = tokio::select! {
             biased;
             _ = stop.changed() => return Ok(()),
-            frame = tokio::time::timeout(std::time::Duration::from_secs(10), capture_frame(&udid, &native)) => frame.context("viewer capture deadline")??,
+            frame = tokio::time::timeout(std::time::Duration::from_secs(10), capture_frame(&udid, &native)) => frame.context("viewer capture deadline").and_then(|frame|frame),
         };
-        frames.send_replace(Some(frame));
+        match result {
+            Ok(frame) => {
+                failures = 0;
+                publish_frame(&frames, frame);
+            }
+            Err(error) if failures < reconnect_attempts && media_reconnectable(&error) => {
+                failures += 1;
+                frames.send_replace(None);
+                tracing::warn!(
+                    attempt = failures,
+                    "viewer screenshot disconnected; refreshing selected device service"
+                );
+                if wait_reconnect(
+                    &mut stop,
+                    reconnect_delay.saturating_mul(1 << (failures - 1).min(4)),
+                )
+                .await
+                {
+                    return Ok(());
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn media_reconnectable(error: &anyhow::Error) -> bool {
+    !error.is::<MediaDecodeFailure>()
+        && !error
+            .chain()
+            .any(|cause| cause.is::<super::ViewerCleanupFailure>())
+        && matches!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Disconnected
+                | ios_core::ErrorClass::Timeout
+                | ios_core::ErrorClass::DeviceNotFound
+        )
+}
+#[derive(Debug)]
+struct MediaDecodeFailure;
+impl std::fmt::Display for MediaDecodeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HEVC decoder input or output failed")
+    }
+}
+impl std::error::Error for MediaDecodeFailure {}
+async fn wait_reconnect(stop: &mut watch::Receiver<bool>, delay: std::time::Duration) -> bool {
+    if *stop.borrow() {
+        return true;
+    }
+    tokio::select! {biased;
+        _=stop.changed()=>true,
+        _=tokio::time::sleep(delay)=>false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn media_reconnect_backoff_is_cancellable_and_never_retries_uncertain_cleanup() {
+        let (signal, mut stop) = watch::channel(false);
+        let started = tokio::time::Instant::now();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            signal.send_replace(true);
+        });
+        assert!(wait_reconnect(&mut stop, std::time::Duration::from_secs(5)).await);
+        assert_eq!(started.elapsed(), std::time::Duration::from_millis(20));
+        let disconnected =
+            || anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        assert!(media_reconnectable(&disconnected()));
+        let failure = super::super::finish::<()>(
+            Err(disconnected()),
+            Err(anyhow::anyhow!("stop reply missing")),
+        )
+        .unwrap_err();
+        assert!(!media_reconnectable(&failure));
+        assert!(!media_reconnectable(&anyhow::anyhow!("decoder failed")));
+        assert!(
+            !media_reconnectable(&disconnected().context(MediaDecodeFailure)),
+            "a dead local decoder must not restart the device media service"
+        );
+    }
     #[tokio::test]
     #[ignore = "requires FFmpeg; actual production publisher with stalled subscribers"]
     async fn production_decoder_publisher_retains_only_latest_for_slow_web_and_vnc() {
@@ -713,7 +826,7 @@ mod tests {
             let mut first = None;
             for timestamp in 0..6 {
                 let png = read_stream_png(&mut stdout).await.unwrap();
-                publish_decoded_png(&frames, png, timestamp).unwrap();
+                publish_decoded_png(&frames, png, timestamp, "host-unix-ms").unwrap();
                 if timestamp == 0 {
                     first = Some(Arc::downgrade(&frames.borrow().as_ref().unwrap().bgra));
                 }

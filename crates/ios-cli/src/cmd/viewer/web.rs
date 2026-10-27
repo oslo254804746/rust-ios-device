@@ -1,7 +1,7 @@
 //! Web viewer HTTP / WebSocket application, interactive canvas, and media stream (F05-1).
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,14 +27,17 @@ pub const MAX_WEB_FRAME_BYTES: usize = super::media::MAX_ENCODED_BYTES;
 
 #[derive(Debug, Clone)]
 pub struct WebFrame {
+    pub sequence: u64,
     pub mime_type: &'static str,
     pub data: bytes::Bytes,
     pub width: u32,
     pub height: u32,
     pub timestamp_ms: u64,
+    pub timestamp_clock: &'static str,
 }
 
 pub struct WebViewerState {
+    sequence: AtomicU64,
     pub frame: RwLock<Option<WebFrame>>,
     pub new_frame_notify: Arc<Notify>,
     pub backend: RwLock<Option<mpsc::Sender<DeviceRequest>>>,
@@ -53,6 +56,7 @@ impl WebViewerState {
     pub fn new(access: AccessControl, udid: String, port: u16, share_clipboard: bool) -> Arc<Self> {
         let (stop_signal, _) = watch::channel(false);
         Arc::new(Self {
+            sequence: AtomicU64::new(0),
             frame: RwLock::new(None),
             new_frame_notify: Arc::new(Notify::new()),
             backend: RwLock::new(None),
@@ -76,6 +80,19 @@ impl WebViewerState {
         height: u32,
         ts: u64,
     ) {
+        self.push_timed_frame(mime, data, width, height, ts, "host-unix-ms")
+            .await;
+    }
+
+    pub async fn push_timed_frame(
+        &self,
+        mime: &'static str,
+        data: impl Into<bytes::Bytes>,
+        width: u32,
+        height: u32,
+        ts: u64,
+        clock: &'static str,
+    ) {
         let data = data.into();
         if data.len() > MAX_WEB_FRAME_BYTES {
             tracing::warn!(
@@ -85,11 +102,13 @@ impl WebViewerState {
             return;
         }
         let frame = WebFrame {
+            sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
             mime_type: mime,
             data,
             width,
             height,
             timestamp_ms: ts,
+            timestamp_clock: clock,
         };
         {
             let mut guard = self.frame.write().await;
@@ -201,6 +220,8 @@ async fn handle_frame(
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     Response::builder()
         .header(header::CONTENT_TYPE, frame.mime_type)
+        .header("X-Timestamp-Clock", frame.timestamp_clock)
+        .header("X-Timestamp", frame.timestamp_ms.to_string())
         .header(header::CACHE_CONTROL, "no-store")
         .body(axum::body::Body::from(frame.data))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
@@ -278,9 +299,9 @@ async fn handle_stream(
                     ));
                 }
                 if let Some(frame) = state.frame.read().await.clone() {
-                    if last != Some(frame.timestamp_ms) {
-                        last = Some(frame.timestamp_ms);
-                        parts.push_back(bytes::Bytes::from(format!("--frame\r\nContent-Type: {}\r\nContent-Length: {}\r\nX-Timestamp: {}\r\n\r\n", frame.mime_type, frame.data.len(), frame.timestamp_ms)));
+                    if last != Some(frame.sequence) {
+                        last = Some(frame.sequence);
+                        parts.push_back(bytes::Bytes::from(format!("--frame\r\nContent-Type: {}\r\nContent-Length: {}\r\nX-Timestamp: {}\r\nX-Timestamp-Clock: {}\r\n\r\n", frame.mime_type, frame.data.len(), frame.timestamp_ms,frame.timestamp_clock)));
                         parts.push_back(frame.data);
                         parts.push_back(bytes::Bytes::from_static(b"\r\n"));
                         continue;
