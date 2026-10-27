@@ -23,6 +23,29 @@ use uuid::Uuid;
 #[cfg(test)]
 mod startup_tests;
 
+#[cfg(test)]
+pub(crate) struct WorkflowLoopbackFixture {
+    pub udid: String,
+    pub rsd_port: u16,
+    pub readiness_port: u16,
+}
+
+#[cfg(test)]
+pub(crate) fn workflow_fixture_for(udid: &str) -> Result<Option<(u16, u16)>> {
+    match WORKFLOW_LOOPBACK.try_with(|fixture| {
+        (fixture.udid == udid).then_some((fixture.rsd_port, fixture.readiness_port))
+    }) {
+        Ok(Some(ports)) => Ok(Some(ports)),
+        Ok(None) => Err(anyhow::anyhow!("workflow loopback fixture target mismatch")),
+        Err(_) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static WORKFLOW_LOOPBACK: WorkflowLoopbackFixture;
+}
+
 use crate::cmd::connect::connect_lockdown_only;
 pub(crate) use crate::cmd::connect::CommandDevice as OwnedTestDevice;
 
@@ -523,6 +546,10 @@ async fn start_test_plan_session_inner(
         .as_ref()
         .expect("startup retains device native owner");
     let product_version = run_stage(deadline, "reading the device product version", async {
+        #[cfg(test)]
+        if workflow_fixture_for(udid)?.is_some() {
+            return Ok(semver::Version::new(17, 0, 0));
+        }
         device.product_version().await.map_err(anyhow::Error::from)
     })
     .await?;
@@ -635,47 +662,15 @@ async fn start_test_plan_session_inner(
                 cleanup.controller = Some(RunnerController::CoreDevice(Box::new(
                     AppServiceClient::new_with_features(xpc, udid.to_string(), metadata.features),
                 )));
-                let Some(RunnerController::CoreDevice(appservice)) = &mut cleanup.controller else {
-                    unreachable!()
-                };
-                let options = LaunchApplicationOptions {
-                    arguments: plan.args.clone(),
-                    environment_variables: launch_env.clone().into_iter().collect(),
-                    standard_io_uses_pseudoterminals: true,
-                    start_stopped: false,
-                    terminate_existing: true,
-                    standard_io_identifiers: Default::default(),
-                };
-                let previous = if appservice.supports_process_listing() {
-                    Some(
-                        appservice
-                            .list_processes()
-                            .await?
-                            .into_iter()
-                            .filter(|process| {
-                                process.bundle_id.as_deref() == Some(plan.runner.bundle_id.as_str())
-                            })
-                            .map(|process| process.pid)
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-                cleanup.pending_runner = Some((plan.runner.bundle_id.clone(), previous));
-                let pid = appservice
-                    .launch_application_observed(
-                        &plan.runner.bundle_id,
-                        &options,
-                        &mut cleanup.launch_submitted,
-                    )
-                    .await
-                    .map_err(|error| anyhow::Error::new(error).context("CoreDevice launch error"))?
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("CoreDevice launch returned no PID for XCTest runner")
-                    })?;
-                cleanup.pid = Some(pid);
-                cleanup.pending_runner = None;
-                Ok::<_, anyhow::Error>(pid)
+                launch_coredevice_runner(
+                    &mut cleanup.controller,
+                    &mut cleanup.pending_runner,
+                    &mut cleanup.launch_submitted,
+                    &mut cleanup.pid,
+                    &plan,
+                    &launch_env,
+                )
+                .await
             },
         )
         .await?;
@@ -799,6 +794,53 @@ async fn start_test_plan_session_inner(
     })
 }
 
+/// Submit one modern runner launch while retaining state for cleanup if the
+/// request is cancelled after it reaches AppService.
+async fn launch_coredevice_runner(
+    controller: &mut Option<RunnerController>,
+    pending_runner: &mut Option<(String, Option<Vec<u64>>)>,
+    launch_submitted: &mut bool,
+    confirmed_pid: &mut Option<u64>,
+    plan: &TestLaunchPlan,
+    launch_env: &HashMap<String, String>,
+) -> Result<u64> {
+    let Some(RunnerController::CoreDevice(appservice)) = controller else {
+        unreachable!("modern startup retains its AppService controller")
+    };
+    let options = LaunchApplicationOptions {
+        arguments: plan.args.clone(),
+        environment_variables: launch_env.clone().into_iter().collect(),
+        standard_io_uses_pseudoterminals: true,
+        start_stopped: false,
+        terminate_existing: true,
+        standard_io_identifiers: Default::default(),
+    };
+    let previous = if appservice.supports_process_listing() {
+        Some(
+            appservice
+                .list_processes()
+                .await?
+                .into_iter()
+                .filter(|process| {
+                    process.bundle_id.as_deref() == Some(plan.runner.bundle_id.as_str())
+                })
+                .map(|process| process.pid)
+                .collect(),
+        )
+    } else {
+        None
+    };
+    *pending_runner = Some((plan.runner.bundle_id.clone(), previous));
+    let pid = appservice
+        .launch_application_observed(&plan.runner.bundle_id, &options, launch_submitted)
+        .await
+        .map_err(|error| anyhow::Error::new(error).context("CoreDevice launch error"))?
+        .ok_or_else(|| anyhow::anyhow!("CoreDevice launch returned no PID for XCTest runner"))?;
+    *confirmed_pid = Some(pid);
+    *pending_runner = None;
+    Ok(pid)
+}
+
 async fn terminate_process(controller: &mut RunnerController, pid: u64) -> Result<()> {
     match controller {
         RunnerController::Instruments(process_control) => {
@@ -843,6 +885,12 @@ pub(crate) async fn connect_testmanager_device_scoped(
     udid: &str,
     native: &crate::cmd::tunnel::NativeScope,
 ) -> Result<OwnedTestDevice> {
+    #[cfg(test)]
+    if let Some((port, _)) = workflow_fixture_for(udid)? {
+        return Ok(OwnedTestDevice::Plain(Box::new(
+            ios_core::device::workflow_loopback_fixture(udid, port).await?,
+        )));
+    }
     let version = Box::pin(crate::cmd::connect::probe_product_version(udid)).await?;
     if version.major >= 17 {
         Ok(OwnedTestDevice::Scoped(Box::new(

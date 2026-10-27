@@ -111,6 +111,24 @@ async fn peer_eof(peer: &mut DuplexStream) {
     }
 }
 
+fn plan() -> TestLaunchPlan {
+    TestLaunchPlan {
+        runner: InstalledAppInfo {
+            bundle_id: "example.runner".into(),
+            path: "/Applications/Runner.app".into(),
+            executable: "Runner".into(),
+            container: None,
+        },
+        target: None,
+        xctest_bundle_name: "RunnerTests.xctest".into(),
+        is_xctest: true,
+        args: vec!["fixture-argument".into()],
+        env: HashMap::new(),
+        tests_to_run: Vec::new(),
+        tests_to_skip: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn submitted_launch_cancel_reconnects_original_factory_and_kills_only_unique_new_pid() {
     let (original, mut peer) = pair().await;
@@ -122,25 +140,40 @@ async fn submitted_launch_cancel_reconnects_original_factory_and_kills_only_uniq
     });
     let mut cleanup = TestStartupCleanup {
         controller: Some(RunnerController::CoreDevice(Box::new(
-            AppServiceClient::new(original, "selected-device"),
+            AppServiceClient::new_with_features(
+                original,
+                "selected-device",
+                [
+                    "com.apple.coredevice.feature.listprocesses",
+                    "com.apple.coredevice.feature.launchapplication",
+                    "com.apple.coredevice.feature.sendsignaltoprocess",
+                ],
+            ),
         ))),
-        pending_runner: Some(("example.runner".into(), Some(vec![7]))),
         ..Default::default()
     };
     {
-        let Some(RunnerController::CoreDevice(controller)) = &mut cleanup.controller else {
-            unreachable!()
-        };
-        let options = LaunchApplicationOptions::default();
-        let launched = controller.launch_application_observed(
-            "example.runner",
-            &options,
+        let plan = plan();
+        let env = HashMap::new();
+        let launched = launch_coredevice_runner(
+            &mut cleanup.controller,
+            &mut cleanup.pending_runner,
             &mut cleanup.launch_submitted,
+            &mut cleanup.pid,
+            &plan,
+            &env,
         );
         tokio::pin!(launched);
         tokio::select! {
-            result=&mut launched=>panic!("PID should be unconfirmed: {result:?}"),
-            message=request(&mut peer)=>{
+            result = &mut launched => panic!("baseline should be pending: {result:?}"),
+            message = request(&mut peer) => {
+                assert_eq!(message.body.as_ref().unwrap().as_dict().unwrap()["CoreDevice.featureIdentifier"].as_str(), Some("com.apple.coredevice.feature.listprocesses"));
+                reply(&mut peer, message.msg_id, processes(&[7])).await;
+            }
+        }
+        tokio::select! {
+            result = &mut launched => panic!("PID should be unconfirmed: {result:?}"),
+            message = request(&mut peer) => {
                 assert_eq!(message.body.as_ref().unwrap().as_dict().unwrap()["CoreDevice.featureIdentifier"].as_str(),Some("com.apple.coredevice.feature.launchapplication"));
             }
         }
