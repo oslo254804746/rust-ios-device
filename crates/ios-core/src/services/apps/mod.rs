@@ -12,7 +12,8 @@ pub use appservice::{
 };
 pub use installation::{AppInfo, BrowseLimits, InstallationProxy};
 pub use zipconduit::{
-    install_ipa, install_ipa_with_checked_progress, CheckedProgressCallback, ZipConduitError,
+    install_ipa, install_ipa_owned_with_timeout, install_ipa_with_checked_progress,
+    CheckedProgressCallback, ZipConduitError,
 };
 
 /// Service name for legacy (iOS <17) app listing.

@@ -24,6 +24,7 @@ use uuid::Uuid;
 mod startup_tests;
 
 use crate::cmd::connect::connect_lockdown_only;
+pub(crate) use crate::cmd::connect::CommandDevice as OwnedTestDevice;
 
 #[derive(clap::Args)]
 pub struct RunTestCmd {
@@ -197,20 +198,6 @@ pub struct ActiveTestPlan {
     kill_attempted: bool,
     termination_error: Option<anyhow::Error>,
     native: crate::cmd::tunnel::NativeScope,
-}
-
-pub(crate) enum OwnedTestDevice {
-    Plain(Box<ConnectedDevice>),
-    Scoped(Box<crate::cmd::tunnel::NativeConnection>),
-}
-impl std::ops::Deref for OwnedTestDevice {
-    type Target = ConnectedDevice;
-    fn deref(&self) -> &ConnectedDevice {
-        match self {
-            Self::Plain(device) => device,
-            Self::Scoped(device) => device,
-        }
-    }
 }
 
 enum RunnerController {

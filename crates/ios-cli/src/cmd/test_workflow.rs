@@ -625,16 +625,20 @@ pub async fn install_package_if_present(
         pair_record_path: None,
         skip_tunnel: true,
     };
-    let device = Box::pin(ios_core::connect(udid, connect_opts))
-        .await
-        .context("connecting to device for test package installation")?;
-
-    let lookup_stream =
-        Box::pin(device.connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE))
-            .await
-            .context("checking package ownership before installation")?;
-    let mut proxy = ios_core::apps::InstallationProxy::new(lookup_stream);
-    let existed = proxy.lookup_app(&bundle_id).await?.is_some();
+    let (device, existed) =
+        super::connect::finite_service_operation(Duration::from_secs(30), async {
+            let device = Box::pin(ios_core::connect(udid, connect_opts))
+                .await
+                .context("connecting to device for test package installation")?;
+            let lookup_stream =
+                Box::pin(device.connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE))
+                    .await
+                    .context("checking package ownership before installation")?;
+            let mut proxy = ios_core::apps::InstallationProxy::new(lookup_stream);
+            let existed = proxy.lookup_app(&bundle_id).await?.is_some();
+            Ok((device, existed))
+        })
+        .await?;
     // Record an absent bundle before the first possible install write so a
     // partially successful installation is cleaned after an error too. An
     // existing application is never owned by this run and never uninstalled.
@@ -644,10 +648,10 @@ pub async fn install_package_if_present(
 
     tracing::info!(package = %path.display(), "test workflow: installing package");
     let svc_name = ios_core::apps::zipconduit::SERVICE_NAME;
-    let mut stream = Box::pin(device.connect_service(svc_name))
+    let stream = Box::pin(device.connect_service_with_timeout(svc_name, Duration::from_secs(30)))
         .await
         .context("failed to connect streaming_zip_conduit service")?;
-    ios_core::apps::install_ipa_with_checked_progress(&mut stream, path, None)
+    ios_core::apps::install_ipa_owned_with_timeout(stream, path, None, Duration::from_secs(300))
         .await
         .with_context(|| format!("failed installing package '{}'", path.display()))?;
 

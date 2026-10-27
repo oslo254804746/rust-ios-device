@@ -4,10 +4,14 @@ use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
-use crate::cmd::connect::{connect_by_ios_major, userspace_options};
+use crate::cmd::connect::{
+    connect_lockdown_only, finite_service_operation, probe_product_version, CommandDevice,
+};
 
 mod install_observer;
 mod mutation_output;
+#[cfg(test)]
+mod staged_tests;
 mod streaming_install;
 use mutation_output::Mutation;
 
@@ -194,7 +198,7 @@ impl AppsCmd {
     #[cfg(test)]
     pub(crate) fn connected_async_state_bytes() -> usize {
         fn measure<F>(
-            _: impl FnOnce(AppsSub, ios_core::ConnectedDevice, Option<u64>, String, bool) -> F,
+            _: impl FnOnce(AppsSub, CommandDevice, Option<u64>, String, bool) -> F,
         ) -> usize {
             std::mem::size_of::<F>()
         }
@@ -223,28 +227,67 @@ impl AppsCmd {
             .await;
         }
 
-        let (device, ios_major) = if apps_subcommand_requires_version_probe(&self.sub) {
-            let (device, version) = Box::pin(connect_by_ios_major(&udid, |major| {
-                apps_subcommand_prefers_tunnel(&self.sub, major)
-            }))
-            .await
-            .context("failed to connect device for apps command")?;
-            (device, Some(version.major))
-        } else {
-            (
-                Box::pin(ios_core::connect(&udid, userspace_options(true))).await?,
-                None,
+        let staged_install = matches!(
+            &self.sub,
+            AppsSub::Install {
+                streaming: false,
+                ..
+            } | AppsSub::Upgrade { .. }
+        );
+        let budget = apps_operation_budget(&self.sub);
+        let scope = crate::cmd::tunnel::NativeScope::new()?;
+        let operation = Box::pin(async {
+            let (device, ios_major) = cancellable_apps_operation(
+                Some(Duration::from_secs(30)),
+                tokio::signal::ctrl_c(),
+                async {
+                    let connected = if apps_subcommand_requires_version_probe(&self.sub) {
+                        let version = Box::pin(probe_product_version(&udid)).await?;
+                        let device = if apps_subcommand_prefers_tunnel(&self.sub, version.major) {
+                            let connected = tokio::time::timeout(
+                                Duration::from_secs(30),
+                                Box::pin(scope.connect(&udid, ios_core::TunMode::Userspace)),
+                            )
+                            .await
+                            .context("apps native setup deadline")??;
+                            CommandDevice::Scoped(Box::new(connected))
+                        } else {
+                            CommandDevice::Plain(Box::new(
+                                Box::pin(connect_lockdown_only(&udid)).await?,
+                            ))
+                        };
+                        (device, Some(version.major))
+                    } else {
+                        (
+                            CommandDevice::Plain(Box::new(
+                                Box::pin(connect_lockdown_only(&udid)).await?,
+                            )),
+                            None,
+                        )
+                    };
+                    Ok(connected)
+                },
             )
+            .await?;
+            // Preserve the existing heap-backed boundary for the large match.
+            Box::pin(Self::run_connected(self.sub, device, ios_major, udid, json)).await
+        });
+        // Staged installs own their cancellation and deadline through cleanup.
+        let result = if staged_install {
+            operation.await
+        } else {
+            cancellable_apps_operation(budget, tokio::signal::ctrl_c(), operation).await
         };
-        // Keep connection negotiation and the command's many service variants
-        // in separate heap-backed async states. Constructing the combined
-        // state exceeded the Windows main-thread stack in debug builds.
-        Box::pin(Self::run_connected(self.sub, device, ios_major, udid, json)).await
+        crate::cmd::test_workflow::combine_results(
+            result,
+            scope.close(Duration::from_secs(15)).await,
+            "apps original native retirement failed",
+        )
     }
 
     async fn run_connected(
         sub: AppsSub,
-        device: ios_core::ConnectedDevice,
+        device: CommandDevice,
         ios_major: Option<u64>,
         udid: String,
         json: bool,
@@ -336,28 +379,39 @@ impl AppsCmd {
                         ios_core::apps::zipconduit::RSD_SERVICE_NAME
                     };
 
-                    let mut stream = if skip_tunnel {
-                        device
-                            .connect_service(svc_name)
+                    let operation = async {
+                        let stream = if skip_tunnel {
+                            device
+                                .connect_service_with_timeout(svc_name, Duration::from_secs(30))
+                                .await
+                                .context("failed to connect streaming_zip_conduit service")?
+                        } else {
+                            tokio::time::timeout(
+                                Duration::from_secs(30),
+                                device.connect_rsd_service(svc_name),
+                            )
                             .await
-                            .context("failed to connect streaming_zip_conduit service")?
-                    } else {
-                        device
-                            .connect_rsd_service(svc_name)
-                            .await
+                            .context("ZIP conduit RSD setup deadline")?
                             .context("failed to connect streaming_zip_conduit RSD service")?
-                    };
+                        };
 
-                    crate::output::write_error_line(format_args!(
-                        "Installing via streaming zip conduit..."
-                    ))?;
-                    ios_core::apps::install_ipa_with_checked_progress(
-                        &mut stream,
-                        source_path,
-                        Some(Box::new(streaming_install::write_progress)),
-                    )
-                    .await
-                    .context("streaming zip conduit install failed")?;
+                        crate::output::write_error_line(format_args!(
+                            "Installing via streaming zip conduit..."
+                        ))?;
+                        ios_core::apps::install_ipa_owned_with_timeout(
+                            stream,
+                            source_path,
+                            Some(Box::new(streaming_install::write_progress)),
+                            Duration::from_secs(300),
+                        )
+                        .await
+                        .context("streaming zip conduit install failed")?;
+                        Ok::<_, anyhow::Error>(())
+                    };
+                    tokio::select! {biased;
+                        signal=tokio::signal::ctrl_c()=>{signal?;return Err(anyhow::Error::new(ios_core::OperationCancelled::new()).context("streaming IPA install cancelled; device effect unknown"));}
+                        result=operation=>result?,
+                    }
                     mutation_output::emit(
                         &Mutation::Install {
                             path: &ipa_path,
@@ -370,113 +424,20 @@ impl AppsCmd {
 
                 let install_paths = build_install_paths(source_path)?;
 
-                let afc_stream = device
-                    .connect_service("com.apple.afc")
-                    .await
-                    .context("failed to connect AFC for app staging")?;
-                let mut afc = ios_core::afc::AfcClient::new(afc_stream);
-
-                match afc.make_dir("/PublicStaging").await {
-                    Ok(()) => {}
-                    Err(ios_core::afc::AfcError::Status(
-                        ios_core::afc::AfcStatusCode::ObjectExists,
-                    )) => {}
-                    Err(err) => {
-                        return Err(err).context("failed to create /PublicStaging on device");
-                    }
-                }
-
-                let staged_path = if install_paths.is_directory {
-                    remove_staged_path(&mut afc, &install_paths.final_remote_path, true)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to clear staged bundle {}",
-                                install_paths.final_remote_path
-                            )
-                        })?;
-
-                    stage_app_bundle(&mut afc, source_path, &install_paths.final_remote_path)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to upload app bundle to {}",
-                                install_paths.final_remote_path
-                            )
-                        })?;
-
-                    StagedPath {
-                        path: install_paths.final_remote_path.clone(),
-                        is_directory: true,
-                    }
-                } else {
-                    for stale_path in [
-                        &install_paths.temp_remote_path,
-                        &install_paths.final_remote_path,
-                    ] {
-                        remove_staged_path(&mut afc, stale_path, false)
+                Box::pin(install_staged_package(
+                    |service| async {
+                        device
+                            .connect_service_with_timeout(service, Duration::from_secs(30))
                             .await
-                            .with_context(|| format!("failed to clear staged file {stale_path}"))?;
-                    }
-
-                    let mut ipa_file = tokio::fs::File::open(source_path)
-                        .await
-                        .with_context(|| format!("open {}", source_path.display()))?;
-                    afc.write_file_from_reader(&install_paths.temp_remote_path, &mut ipa_file)
-                        .await
-                        .context(format!(
-                            "failed to upload IPA to {}",
-                            install_paths.temp_remote_path
-                        ))?;
-                    afc.rename(
-                        &install_paths.temp_remote_path,
-                        &install_paths.final_remote_path,
-                    )
-                    .await
-                    .context(format!(
-                        "failed to finalize staged IPA at {}",
-                        install_paths.final_remote_path
-                    ))?;
-
-                    StagedPath {
-                        path: install_paths.final_remote_path.clone(),
-                        is_directory: false,
-                    }
-                };
-
-                let install_result: Result<()> = async {
-                    let install_stream = device
-                        .connect_service_with_timeout(ios_core::apps::INSTALLATION_PROXY_SERVICE, Duration::from_secs(30))
-                        .await
-                        .context("failed to connect installation proxy")?;
-                    let mut proxy = ios_core::apps::InstallationProxy::new(install_stream);
-                    tokio::select! {
-                        result = proxy.install_with_timeout(&install_paths.package_path, Duration::from_secs(300)) => result,
-                        signal = tokio::signal::ctrl_c() => {
-                            signal?;
-                            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "installation cancelled; device effect unknown").into());
-                        }
-                    }
-                        .context(format!(
-                            "failed to install staged IPA {}",
-                            install_paths.package_path
-                        ))?;
-                    Ok(())
-                }
-                .await;
-
-                let cleanup_result = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    remove_staged_path(&mut afc, &staged_path.path, staged_path.is_directory),
-                )
-                .await
-                .map_err(anyhow::Error::new)
-                .and_then(|result| result);
-                crate::cmd::test_workflow::combine_results(
-                    install_result,
-                    cleanup_result,
-                    "staged install payload cleanup failed",
-                )?;
+                            .map_err(Into::into)
+                    },
+                    source_path,
+                    &install_paths,
+                    false,
+                    Duration::from_secs(300),
+                    tokio::signal::ctrl_c(),
+                ))
+                .await?;
                 mutation_output::emit(
                     &Mutation::Install {
                         path: &ipa_path,
@@ -495,83 +456,20 @@ impl AppsCmd {
                     ));
                 }
 
-                let afc_stream = device
-                    .connect_service("com.apple.afc")
-                    .await
-                    .context("failed to connect AFC for app staging")?;
-                let mut afc = ios_core::afc::AfcClient::new(afc_stream);
-
-                match afc.make_dir("/PublicStaging").await {
-                    Ok(()) => {}
-                    Err(ios_core::afc::AfcError::Status(
-                        ios_core::afc::AfcStatusCode::ObjectExists,
-                    )) => {}
-                    Err(err) => {
-                        return Err(err).context("failed to create /PublicStaging on device");
-                    }
-                }
-
-                for stale_path in [
-                    &install_paths.temp_remote_path,
-                    &install_paths.final_remote_path,
-                ] {
-                    remove_staged_path(&mut afc, stale_path, false)
-                        .await
-                        .with_context(|| format!("failed to clear staged file {stale_path}"))?;
-                }
-
-                let mut ipa_file = tokio::fs::File::open(source_path)
-                    .await
-                    .with_context(|| format!("open {}", source_path.display()))?;
-                afc.write_file_from_reader(&install_paths.temp_remote_path, &mut ipa_file)
-                    .await
-                    .context(format!(
-                        "failed to upload IPA to {}",
-                        install_paths.temp_remote_path
-                    ))?;
-                afc.rename(
-                    &install_paths.temp_remote_path,
-                    &install_paths.final_remote_path,
-                )
-                .await
-                .context(format!(
-                    "failed to finalize staged IPA at {}",
-                    install_paths.final_remote_path
-                ))?;
-
-                let upgrade_result: Result<()> = async {
-                    let install_stream = device
-                        .connect_service_with_timeout(ios_core::apps::INSTALLATION_PROXY_SERVICE, Duration::from_secs(30))
-                        .await
-                        .context("failed to connect installation proxy")?;
-                    let mut proxy = ios_core::apps::InstallationProxy::new(install_stream);
-                    tokio::select! {
-                        result = proxy.upgrade_with_timeout(&install_paths.package_path, Duration::from_secs(300)) => result,
-                        signal = tokio::signal::ctrl_c() => {
-                            signal?;
-                            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "upgrade cancelled; device effect unknown").into());
-                        }
-                    }
-                        .context(format!(
-                            "failed to upgrade staged IPA {}",
-                            install_paths.package_path
-                        ))?;
-                    Ok(())
-                }
-                .await;
-
-                let cleanup_result = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    remove_staged_path(&mut afc, &install_paths.final_remote_path, false),
-                )
-                .await
-                .map_err(anyhow::Error::new)
-                .and_then(|result| result);
-                crate::cmd::test_workflow::combine_results(
-                    upgrade_result,
-                    cleanup_result,
-                    "staged upgrade payload cleanup failed",
-                )?;
+                Box::pin(install_staged_package(
+                    |service| async {
+                        device
+                            .connect_service_with_timeout(service, Duration::from_secs(30))
+                            .await
+                            .map_err(Into::into)
+                    },
+                    source_path,
+                    &install_paths,
+                    true,
+                    Duration::from_secs(300),
+                    tokio::signal::ctrl_c(),
+                ))
+                .await?;
                 mutation_output::emit(&Mutation::Upgrade { path: &ipa_path }, json)?;
             }
             AppsSub::Archive { bundle_id } => {
@@ -669,8 +567,7 @@ impl AppsCmd {
                 let processes = match connect_appservice(&device, &udid).await {
                     Ok(mut client) => client.list_processes().await?,
                     Err(e) if should_fallback_to_instruments(&e) => {
-                        let (_device, stream) =
-                            super::instruments::connect_instruments(&udid).await?;
+                        let stream = connect_apps_instruments(&device, ios_major).await?;
                         let mut di = ios_core::instruments::DeviceInfoClient::connect(stream)
                             .await
                             .context("DTX error")?;
@@ -717,8 +614,7 @@ impl AppsCmd {
                 match connect_appservice(&device, &udid).await {
                     Ok(mut client) => client.kill_process(pid).await?,
                     Err(e) if should_fallback_to_instruments(&e) => {
-                        let (_device, stream) =
-                            super::instruments::connect_instruments(&udid).await?;
+                        let stream = connect_apps_instruments(&device, ios_major).await?;
                         let mut pc =
                             ios_core::instruments::process_control::ProcessControl::connect(stream)
                                 .await
@@ -746,8 +642,7 @@ impl AppsCmd {
                 let processes = match connect_appservice(&device, &udid).await {
                     Ok(mut client) => client.list_processes().await?,
                     Err(e) if should_fallback_to_instruments(&e) => {
-                        let (_device, stream) =
-                            super::instruments::connect_instruments(&udid).await?;
+                        let stream = connect_apps_instruments(&device, ios_major).await?;
                         let mut di = ios_core::instruments::DeviceInfoClient::connect(stream)
                             .await
                             .context("DTX error")?;
@@ -780,8 +675,7 @@ impl AppsCmd {
                                          because Instruments fallback only supports SIGKILL (9)"
                                     )));
                                 }
-                                let (_device, stream) =
-                                    super::instruments::connect_instruments(udid_ref).await?;
+                                let stream=connect_apps_instruments(device_ref,ios_major).await?;
                                 let mut pc = ios_core::instruments::process_control::ProcessControl::connect(stream)
                                     .await
                                     .context("DTX error")?;
@@ -802,8 +696,7 @@ impl AppsCmd {
                     Err(e) if should_fallback_to_instruments(&e) => {
                         use std::collections::HashMap;
 
-                        let (_device, stream) =
-                            super::instruments::connect_instruments(&udid).await?;
+                        let stream = connect_apps_instruments(&device, ios_major).await?;
                         let mut pc =
                             ios_core::instruments::process_control::ProcessControl::connect(stream)
                                 .await
@@ -958,6 +851,45 @@ impl AppsCmd {
     }
 }
 
+async fn connect_apps_instruments(
+    device: &ios_core::ConnectedDevice,
+    major: Option<u64>,
+) -> Result<ios_core::device::ServiceStream> {
+    let major = major.ok_or_else(|| {
+        anyhow::anyhow!("apps instruments fallback requires observed device version")
+    })?;
+    if major >= 17 {
+        device
+            .connect_rsd_service(ios_core::instruments::SERVICE_IOS17)
+            .await
+            .map_err(Into::into)
+    } else {
+        match device
+            .connect_service(ios_core::instruments::SERVICE_IOS14)
+            .await
+        {
+            Ok(stream) => Ok(stream),
+            Err(_) => device
+                .connect_service(ios_core::instruments::SERVICE_LEGACY)
+                .await
+                .map_err(Into::into),
+        }
+    }
+}
+
+fn apps_operation_budget(sub: &AppsSub) -> Option<Duration> {
+    match sub {
+        AppsSub::Monitor { .. } => None,
+        AppsSub::Install { .. }
+        | AppsSub::Upgrade { .. }
+        | AppsSub::Archive { .. }
+        | AppsSub::Restore { .. }
+        | AppsSub::Uninstall { .. } => Some(Duration::from_secs(300)),
+        AppsSub::InstallRecord { timeout_secs, .. } => Some(Duration::from_secs(*timeout_secs)),
+        _ => Some(Duration::from_secs(30)),
+    }
+}
+
 fn apps_subcommand_requires_version_probe(sub: &AppsSub) -> bool {
     matches!(
         sub,
@@ -1088,6 +1020,101 @@ fn build_install_paths(path: &std::path::Path) -> Result<InstallPaths> {
     })
 }
 
+async fn cancellable_apps_operation<T>(
+    budget: Option<Duration>,
+    stop: impl std::future::Future<Output = std::io::Result<()>>,
+    operation: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let bounded = async {
+        match budget {
+            Some(budget) => finite_service_operation(budget, operation).await,
+            None => operation.await,
+        }
+    };
+    tokio::select! { biased;
+        signal = stop => {
+            signal.context("apps cancellation signal failed")?;
+            Err(anyhow::Error::new(ios_core::OperationCancelled::new())
+                .context("apps command cancelled; device effects may be unknown"))
+        },
+        result = bounded => result,
+    }
+}
+
+async fn install_staged_package<C, F, S>(
+    mut connect: C,
+    source: &std::path::Path,
+    paths: &InstallPaths,
+    upgrade: bool,
+    budget: Duration,
+    stop: impl std::future::Future<Output = std::io::Result<()>>,
+) -> Result<()>
+where
+    C: FnMut(&'static str) -> F,
+    F: std::future::Future<Output = Result<S>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut staging_started = false;
+    let operation = async {
+        let mut afc = ios_core::afc::AfcClient::new(connect("com.apple.afc").await?);
+        ensure_remote_dir(&mut afc, "/PublicStaging").await?;
+        // From this point even a partial upload needs cleanup on a fresh stream.
+        staging_started = true;
+        if paths.is_directory {
+            remove_staged_path(&mut afc, &paths.final_remote_path, true).await?;
+            stage_app_bundle(&mut afc, source, &paths.final_remote_path).await?;
+        } else {
+            remove_staged_path(&mut afc, &paths.temp_remote_path, false).await?;
+            remove_staged_path(&mut afc, &paths.final_remote_path, false).await?;
+            let mut file = tokio::fs::File::open(source).await?;
+            afc.write_file_from_reader(&paths.temp_remote_path, &mut file)
+                .await?;
+            afc.rename(&paths.temp_remote_path, &paths.final_remote_path)
+                .await?;
+        }
+        drop(afc);
+        let stream = connect(ios_core::apps::INSTALLATION_PROXY_SERVICE).await?;
+        let mut proxy = ios_core::apps::InstallationProxy::new(stream);
+        if upgrade {
+            proxy
+                .upgrade_with_timeout(&paths.package_path, budget)
+                .await?;
+        } else {
+            proxy
+                .install_with_timeout(&paths.package_path, budget)
+                .await?;
+        }
+        Ok(())
+    };
+    let primary = cancellable_apps_operation(Some(budget), stop, operation).await;
+    if !staging_started {
+        return primary;
+    }
+    // The original operation is dropped before reconnecting. Its partial AFC
+    // framing and late installation replies are never reused by cleanup.
+    let cleanup = finite_service_operation(Duration::from_secs(5), async {
+        let mut afc = ios_core::afc::AfcClient::new(connect("com.apple.afc").await?);
+        let temporary = if paths.is_directory {
+            Ok(())
+        } else {
+            remove_staged_path(&mut afc, &paths.temp_remote_path, false).await
+        };
+        let final_path =
+            remove_staged_path(&mut afc, &paths.final_remote_path, paths.is_directory).await;
+        crate::cmd::test_workflow::combine_results(
+            temporary,
+            final_path,
+            "final staging path cleanup failed",
+        )
+    })
+    .await;
+    crate::cmd::test_workflow::combine_results(
+        primary,
+        cleanup,
+        "staged app payload cleanup failed",
+    )
+}
+
 async fn remove_staged_path<S>(
     afc: &mut ios_core::afc::AfcClient<S>,
     path: &str,
@@ -1142,11 +1169,6 @@ where
     Err(anyhow::anyhow!(
         "staged app bundle still exists after recursive cleanup: {path}"
     ))
-}
-
-struct StagedPath {
-    path: String,
-    is_directory: bool,
 }
 
 async fn stage_app_bundle<S>(
@@ -1496,6 +1518,22 @@ fn filter_running_processes_by_name(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn app_command_clock_profiles_distinguish_finite_mutations_and_long_monitoring() {
+        use clap::Parser;
+        let command = TestCli::parse_from(["apps", "list"]);
+        assert_eq!(
+            super::apps_operation_budget(&command.command),
+            Some(std::time::Duration::from_secs(30))
+        );
+        let command = TestCli::parse_from(["apps", "install", "Example.ipa", "--streaming"]);
+        assert_eq!(
+            super::apps_operation_budget(&command.command),
+            Some(std::time::Duration::from_secs(300))
+        );
+        let command = TestCli::parse_from(["apps", "monitor", "42", "--timeout-secs", "600"]);
+        assert_eq!(super::apps_operation_budget(&command.command), None);
+    }
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
