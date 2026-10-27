@@ -12,6 +12,8 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 
+#[cfg(all(test, feature = "display"))]
+mod deadline_tests;
 #[cfg(test)]
 mod input_source_contract_tests;
 
@@ -177,6 +179,7 @@ pub struct AppServiceClient {
     /// `None` means the RSD feature list was not available. `Some` is an
     /// explicit feature list and is used only for capability routing.
     service_features: Option<Vec<String>>,
+    request_timeout: Option<std::time::Duration>,
 }
 
 impl AppServiceClient {
@@ -206,6 +209,7 @@ impl AppServiceClient {
             device_identifier: device_identifier.into(),
             envelope_mode,
             service_features: None,
+            request_timeout: None,
         }
     }
 
@@ -230,6 +234,7 @@ impl AppServiceClient {
             device_identifier: device_identifier.into(),
             envelope_mode: CoreDeviceEnvelopeMode::Modern,
             service_features: Some(service_features.into_iter().map(Into::into).collect()),
+            request_timeout: None,
         }
     }
 
@@ -244,6 +249,20 @@ impl AppServiceClient {
 
     pub fn supports_process_listing(&self) -> bool {
         self.feature_is_advertised(FEATURE_LIST_PROCESSES)
+    }
+
+    /// Total budget for finite calls and list collection. Streaming APIs and
+    /// process-termination monitoring retain their caller-owned idle/lifetime
+    /// policy. None preserves legacy unbounded finite-call timing.
+    pub fn set_request_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        self.request_timeout = timeout;
+    }
+
+    async fn call(&mut self, body: XpcValue) -> Result<XpcMessage, AppServiceError> {
+        Ok(match self.request_timeout {
+            Some(budget) => self.client.call_with_timeout(body, budget).await?,
+            None => self.client.call(body).await?,
+        })
     }
 
     /// Reopen this selected service after an interrupted uncorrelated effect.
@@ -282,7 +301,6 @@ impl AppServiceClient {
     pub async fn list_processes(&mut self) -> Result<Vec<RunningAppProcess>, AppServiceError> {
         self.ensure_feature(FEATURE_LIST_PROCESSES)?;
         let response = self
-            .client
             .call(self.request(
                 FEATURE_LIST_PROCESSES,
                 XpcValue::Dictionary(IndexMap::new()),
@@ -293,6 +311,45 @@ impl AppServiceClient {
 
     /// List installed apps using the supplied CoreDevice filters.
     pub async fn list_apps(
+        &mut self,
+        options: ListAppsOptions,
+    ) -> Result<Vec<CoreDeviceAppInfo>, AppServiceError> {
+        if let Some(budget) = self.request_timeout {
+            let deadline = tokio::time::Instant::now()
+                .checked_add(budget)
+                .filter(|_| !budget.is_zero())
+                .ok_or_else(|| {
+                    AppServiceError::Xpc(XpcError::Io(std::io::Error::new(
+                        if budget.is_zero() {
+                            std::io::ErrorKind::TimedOut
+                        } else {
+                            std::io::ErrorKind::InvalidInput
+                        },
+                        "invalid appservice collection budget",
+                    )))
+                })?;
+            let result = tokio::time::timeout_at(deadline, self.list_apps_inner(options))
+                .await
+                .map_err(|error| {
+                    AppServiceError::Xpc(XpcError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        error,
+                    )))
+                })?;
+            return match result {
+                Ok(_) if tokio::time::Instant::now() >= deadline => {
+                    Err(AppServiceError::Xpc(XpcError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "late app list completion",
+                    ))))
+                }
+                result => result,
+            };
+        }
+        self.list_apps_inner(options).await
+    }
+
+    async fn list_apps_inner(
         &mut self,
         options: ListAppsOptions,
     ) -> Result<Vec<CoreDeviceAppInfo>, AppServiceError> {
@@ -307,7 +364,6 @@ impl AppServiceClient {
 
         self.ensure_feature(FEATURE_LIST_APPS)?;
         let response = self
-            .client
             .call(self.request(FEATURE_LIST_APPS, build_list_apps_input(options)))
             .await?;
         parse_apps(&response)
@@ -393,7 +449,6 @@ impl AppServiceClient {
     pub async fn list_roots(&mut self) -> Result<XpcValue, AppServiceError> {
         self.ensure_feature(FEATURE_LIST_ROOTS)?;
         let response = self
-            .client
             .call(self.request(FEATURE_LIST_ROOTS, build_list_roots_input()))
             .await?;
         parse_output_value(response)
@@ -408,7 +463,6 @@ impl AppServiceClient {
     pub async fn send_signal(&mut self, pid: u64, signal: i64) -> Result<(), AppServiceError> {
         self.ensure_feature(FEATURE_SEND_SIGNAL)?;
         let response = self
-            .client
             .call(self.request(FEATURE_SEND_SIGNAL, build_send_signal_input(pid, signal)?))
             .await?;
         ensure_no_error(&response)?;
@@ -422,7 +476,6 @@ impl AppServiceClient {
     ) -> Result<Option<u64>, AppServiceError> {
         self.ensure_feature(FEATURE_LAUNCH_APPLICATION)?;
         let response = self
-            .client
             .call(self.request(
                 FEATURE_LAUNCH_APPLICATION,
                 build_launch_application_input(bundle_id)?,
@@ -450,16 +503,18 @@ impl AppServiceClient {
         sent: &mut bool,
     ) -> Result<Option<u64>, AppServiceError> {
         self.ensure_feature(FEATURE_LAUNCH_APPLICATION)?;
-        let response = self
-            .client
-            .call_observed(
-                self.request(
-                    FEATURE_LAUNCH_APPLICATION,
-                    build_launch_application_input_with_options(bundle_id, options)?,
-                ),
-                sent,
-            )
-            .await?;
+        let request = self.request(
+            FEATURE_LAUNCH_APPLICATION,
+            build_launch_application_input_with_options(bundle_id, options)?,
+        );
+        let response = match self.request_timeout {
+            Some(budget) => {
+                self.client
+                    .call_observed_with_timeout(request, budget, sent)
+                    .await?
+            }
+            None => self.client.call_observed(request, sent).await?,
+        };
         ensure_no_error(&response)?;
         Ok(parse_pid(response.body.as_ref()))
     }
@@ -472,7 +527,6 @@ impl AppServiceClient {
     ) -> Result<Option<u64>, AppServiceError> {
         self.ensure_feature(FEATURE_SPAWN_EXECUTABLE)?;
         let response = self
-            .client
             .call(self.request(
                 FEATURE_SPAWN_EXECUTABLE,
                 build_spawn_executable_input(executable, arguments)?,
@@ -496,7 +550,6 @@ impl AppServiceClient {
     ) -> Result<Vec<AppIcon>, AppServiceError> {
         self.ensure_feature(FEATURE_FETCH_APP_ICONS)?;
         let response = self
-            .client
             .call(self.request(
                 FEATURE_FETCH_APP_ICONS,
                 build_fetch_app_icons_input(bundle_id, width, height, scale, allow_placeholder),

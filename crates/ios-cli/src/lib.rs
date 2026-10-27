@@ -287,9 +287,11 @@ async fn resolve_cli_udid(udid: Option<String>, command: &Commands) -> Result<Op
         return Ok(udid);
     }
 
-    let devices = ios_core::list_devices()
-        .await
-        .context("failed to list connected iOS devices for default --udid")?;
+    let devices =
+        tokio::time::timeout(std::time::Duration::from_secs(30), ios_core::list_devices())
+            .await
+            .context("default device discovery deadline")?
+            .context("failed to list connected iOS devices for default --udid")?;
     default_udid_from_devices(&devices)
         .map(Some)
         .ok_or_else(|| anyhow::anyhow!("--udid required: no connected iOS devices found"))
