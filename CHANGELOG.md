@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stream bounded ZIP32 installs from admitted directory metadata and 64 KiB
+  decode buffers, preserving CRC checks, original deadlines and single-use IO.
+- Extend native page realms to user/internal worlds and associate console object
+  arguments only when their injected-script identity proves the active world.
+- Exercise the shared test workflow through localhost RSD/AppService/DTX peers
+  to real testcase/JUnit output, and dispatch synchronous restored OS requests to ASR.
+
+
 - Match explicit Doctor targets to local DDI identities/components with separate
   version policy, digest, permission and unknown evidence; no signature claim.
 - Export the executable shared test workflow; bound real app setup/install calls

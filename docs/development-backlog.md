@@ -1,9 +1,9 @@
 # 当前待开发清单
 
-2026-10-27 当前核对：有效30主项，**26项开发交付、4项仍未完成（L01/F02/F04/F06）**。
-F01、F05按用户“实现齐备、仅待外部运行可计开发交付”的口径关闭开发状态；
+2026-10-27 当前核对：有效30主项，**27项开发交付、3项仍未完成（F02/F04/F06）**。
+F01、F05及本轮L01按用户“实现齐备、仅待外部运行可计开发交付”的口径关闭开发状态；
 不表示物理设备或跨平台验收通过。L02原范围收口、Q04及全部子项排除保持。
-逐项原要求、实际门禁、提交和OPEN/NOT_RUN见[本轮报告](validation/production-completion-2026-10-26.md)。
+逐项原要求、实际门禁、提交和OPEN/NOT_RUN见[本轮报告](validation/production-completion-2026-10-26.md)及[开发增量](validation/remaining-development-2026-10-27.md)。
 
 ## 历史增量记录（旧计数已被下方当前主表取代）
 
@@ -550,19 +550,19 @@ Q04及全部子项排除，有效任务分母保持30。
 
 审查后承接原19项与L03，本轮A03共同owner/绑定/工具完整交付并通过实际gate：
 L04原测量/资源归因/预算工具范围本轮交付，开发口径计入完成：
-Q02、原L02和本次F01/F05开发收口后，26项开发交付，4项仍缺开发；扩展审计欠账不计作原L02未完成。
+Q02、原L02、F01/F05及本轮L01开发收口后，27项开发交付，3项仍缺开发；扩展审计欠账不计作原L02未完成。
 这不等于原19项在Windows/其它平台全部重新验收通过。Viewer能力清单和
 五项Windows core失败作为原工作项维护处理，不新增任务改变分母。
 未计完成项按原范围继续；不因占位、拒绝或缺口说明升级计数。
 
 | ID | 六项原定义交付状态（2026-10-27） |
 | --- | --- |
-| L01 | 进行中：实际服务setup30s、安装/升级/owned ZIP总300s、暂存独立5s及NativeScope收尾已接线；ZIP兼容loader仍同步解压并保留全量展开内容，未满足该阻塞/每流缓冲边界。 |
+| L01 | 开发交付（2026-10-27）：有限生产profiles与消费者已接线；owned ZIP以准入的ZIP32目录快照、64KiB块CRC预检/增量解码/发送替换全量loader，原总clock/取消/stream retirement保持。ZIP31、Core2041与CLI1986通过；raw borrowed API及同步OS调用限制明确，不声明全进程RSS/物理抢占。 |
 | F01 | 开发交付（2026-10-27）：显式目标board/chip/security/model、generic personalized/legacy版本策略、本地普通组件/摘要/权限/部分超时和目录/USB/remoted观察已接线；Doctor78通过。签名未验证与设备可用性分别表示；真实设备和未运行平台NOT_RUN，能力成熟度不升级。 |
-| F02 | 进行中：公开现有可执行TestWorkflowEngine，CLI共用；结果准入、有限日志/产物/退出码及提交未确认PID收尾已实现。仍缺一个覆盖现代canonical/shim RSD、AppService和DTX的完整CLI假服务场景；代表性合成应用真机流程NOT_RUN。 |
-| F04 | 进行中：native normal context schema/epoch、同源跨源iframe、Memory采样和Fetch生命周期已实现，固定实际客户端15通过；页面多realm console关联、可信页面Input及下载控制/save/cancel/events仍缺。 |
+| F02 | 进行中：现有TestWorkflowEngine公开且CLI共用；本轮同一run经localhost真实RSD/AppService/canonical与shim DTX完成testcase/JUnit/sidecar与授权失败收尾，2项门禁通过。仍缺CLI子进程、安装/日志和原NativeScope任务退休联成一个现代完整场景；真机流程NOT_RUN。 |
+| F04 | 进行中：normal/user/internal world与逐ID世代/退役已接线，normal导航独立；有原生对象injectedScriptId和设备WallTime才生成页面console，固定客户端16通过。primitive-only无context证据的console、可信selected-page Input和下载控制/save/cancel/events仍OPEN。 |
 | F05 | 开发交付（2026-10-27）：真实HEVC→持续FFmpeg→共享HTTP/RFB像素、RTP PTS/尺寸、输入/方向、RGBA/JPEG DIB、图像去重/有限重连与严格清理已接线；Viewer28和显式媒体3通过。stopAll为服务级限制；物理设备/独立桌面客户端和未运行平台NOT_RUN。 |
-| F06 | 进行中：所选OS提取和实际ASR/DataPort传输已实现；完整Update仍缺recovery/ramdisk/USB-ECID重识别、nonce/TSS/IMG4/TBM/nonce-slot、FDR及完整异步dispatch。force/tss在发现前拒绝，真实恢复NOT_RUN。 |
+| F06 | 进行中：所选OS提取、ASR/DataPort与restored loop同步SystemImageData已接线；独立取消、错误后terminal/partial report/迟到成功拒绝已验证。完整Update仍缺recovery/ramdisk/USB-ECID重识别、nonce/TSS/IMG4/TBM/nonce-slot、FDR及异步dispatch；force/tss关闭，真实恢复NOT_RUN。 |
 
 当前修复及实际验证见[修复记录](validation/review-fixes-2026-10-10.md)。
 本轮最小WDA交付与L01/L02/Q02/F01范围复核见[接力记录](validation/wda-continuation-2026-10-12.md)。

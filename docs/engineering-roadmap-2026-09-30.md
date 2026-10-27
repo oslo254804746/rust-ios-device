@@ -1,6 +1,6 @@
 # 项目工程回顾与后续实施计划
 
-> 2026-10-27当前开发状态：有效30项，26项开发交付；L01/F02/F04/F06四项继续。F01/F05已按原定义完成开发及当前主机门禁；真实设备/未运行平台保持NOT_RUN。旧a703e81/4529418全完成声明仍撤回。见[本轮报告](validation/production-completion-2026-10-26.md)。L02原范围收口、Q04全部排除保持。
+> 2026-10-27当前开发状态：有效30项，27项开发交付；F02/F04/F06三项继续。L01/F01/F05已按原定义完成开发及当前主机门禁；真实设备/未运行平台保持NOT_RUN。旧a703e81/4529418全完成声明仍撤回。见[本轮报告](validation/production-completion-2026-10-26.md)。L02原范围收口、Q04全部排除保持。
 
 > 2026-10-26范围更新：用户明确选择先收口本文件原L02，多设备原验收已完成；此前扩展到ESP/嵌套分片/完整owner审计的要求保留为欠账，后续单独处理。见[验收与边界](validation/l02-original-acceptance-2026-10-26.md)。
 
@@ -31,7 +31,7 @@
 本表的完成状态据此表示开发交付；原验收条款、历史结果与未执行测试仍保留，
 NOT_RUN不改写为PASS，也不推导平台/真机支持或发布授权。D01/D02已交付的
 文档与治理基础关闭开发状态，后续维护随新任务执行。当前明确尚缺原范围代码/工具交付的
-4项见[当前待开发清单](development-backlog.md)。
+3项见[当前待开发清单](development-backlog.md)。
 
 2026-10-08 用户要求集中修改相关代码，完成一个工作项后再统一运行回归和最终
 验收；不再为每个小修复或纯文档更新重复完整测试。开发期仅在需要时做编译检查，
@@ -132,16 +132,16 @@ NOT_RUN不改写为PASS，也不推导平台/真机支持或发布授权。D01/D
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 完成（开发口径）：当前错误分类/机器输出及binding映射已交付；legacy兼容边界和平台/真机验证保留 |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：`655733c` 完成 AFC caller-limit 与有总期限/累计回复预算的 Browse，`f077674` 完成 Syslog 取消续读/terminal 原生前置主机验收；`2b906d7` 完成共同 owner/checked existing-trust 原生前置；`6f582c9` 完成有限 fresh device query/预算/TCP-Unix-TLS 主机子项；Python/C 句柄、绑定/示例及真机原验收尚未完成。见 [证据](validation/bounded-service-read-2026-10-08.md) |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：实际服务setup30s、安装/升级/owned ZIP总300s、暂存独立5s及NativeScope收尾已接线；ZIP兼容loader仍同步解压并保留全量展开内容，未满足该阻塞/每流缓冲边界。 见[当前报告](validation/production-completion-2026-10-26.md) |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 开发交付（2026-10-27）：有限生产profiles与消费者已接线；owned ZIP以准入的ZIP32目录快照、64KiB块CRC预检/增量解码/发送替换全量loader，原总clock/取消/stream retirement保持。ZIP31、Core2041与CLI1986通过；raw borrowed API及同步OS调用限制明确，不声明全进程RSS/物理抢占。 见[开发增量](validation/remaining-development-2026-10-27.md) |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 原验收开发完成（2026-10-26用户确认按原范围收口）：设备协调/4并发、A等待时B查询停止1秒目标、重复建连/拔插停止竞态与扫描退避通过；见[逐条验收](validation/l02-original-acceptance-2026-10-26.md)。ESP/嵌套分片及完整owner等扩展欠账另列，未宣称完成；真实平台/设备证据仍NOT_RUN。 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 进行中：`1a604af` 完成 serve 可配置退避、持续预算/准确状态与原 owner/epoch 回收的主机子项验收；`8947fc1` 完成 manual 实际 route/原 grant 恢复、跨扫描 stop、过期发布回滚的主机子项；Darwin watch 基线/去重/断线语义及平台/真机验收继续。见 [证据](validation/manager-reconnect-2026-10-08.md) |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 进行中：同 fixture 修改前后 1/4/16、30s/104轮及独立60s资源归因主机子项已验收；文件/吞吐/长时间流/平台真机未完成 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 开发交付（2026-10-27）：显式目标board/chip/security/model、generic personalized/legacy版本策略、本地普通组件/摘要/权限/部分超时和目录/USB/remoted观察已接线；Doctor78通过。签名未验证与设备可用性分别表示；真实设备和未运行平台NOT_RUN，能力成熟度不升级。 见[当前报告](validation/production-completion-2026-10-26.md) |
-| F02 | 完成应用、测试、日志与结果工作流 | P3 | F01、A02、L03 | 进行中：公开现有可执行TestWorkflowEngine，CLI共用；结果准入、有限日志/产物/退出码及提交未确认PID收尾已实现。仍缺一个覆盖现代canonical/shim RSD、AppService和DTX的完整CLI假服务场景；代表性合成应用真机流程NOT_RUN。 见[当前报告](validation/production-completion-2026-10-26.md) |
+| F02 | 完成应用、测试、日志与结果工作流 | P3 | F01、A02、L03 | 进行中：现有TestWorkflowEngine公开且CLI共用；本轮同一run经localhost真实RSD/AppService/canonical与shim DTX完成testcase/JUnit/sidecar与授权失败收尾，2项门禁通过。仍缺CLI子进程、安装/日志和原NativeScope任务退休联成一个现代完整场景；真机流程NOT_RUN。 见[开发增量](validation/remaining-development-2026-10-27.md) |
 | F03 | 建立经过 Rust 桥的真实 CDP 客户端测试 | P3 | R02、S02、B03 | 已完成：`3e697fd` 固定实际客户端经生产 Rust bridge/合成 WebInspector，Puppeteer 有限 Runtime 全流程、Playwright 初始化明确拒绝、完整 trace/原 owner 回收及下载协议依据/实现方案满足原 F03 验收；F04 各域和真机验收继续。见 [证据](validation/cdp-client-workflow-2026-10-09.md) |
-| F04 | 按协议域完成 CDP 兼容流程 | P3 | F03、Q02 | 进行中：native normal context schema/epoch、同源跨源iframe、Memory采样和Fetch生命周期已实现，固定实际客户端15通过；页面多realm console关联、可信页面Input及下载控制/save/cancel/events仍缺。 见[当前报告](validation/production-completion-2026-10-26.md) |
+| F04 | 按协议域完成 CDP 兼容流程 | P3 | F03、Q02 | 进行中：normal/user/internal world与逐ID世代/退役已接线，normal导航独立；有原生对象injectedScriptId和设备WallTime才生成页面console，固定客户端16通过。primitive-only无context证据的console、可信selected-page Input和下载控制/save/cancel/events仍OPEN。 见[开发增量](validation/remaining-development-2026-10-27.md) |
 | F05 | 完成媒体查看器、VNC 与双向剪贴板 | P3 | S02、S03、L03、Q02 | 开发交付（2026-10-27）：真实HEVC→持续FFmpeg→共享HTTP/RFB像素、RTP PTS/尺寸、输入/方向、RGBA/JPEG DIB、图像去重/有限重连与严格清理已接线；Viewer28和显式媒体3通过。stopAll为服务级限制；物理设备/独立桌面客户端和未运行平台NOT_RUN。 见[当前报告](validation/production-completion-2026-10-26.md) |
-| F06 | 完成恢复预检入口与实验恢复执行流程 | P3 | A02、L01、Q02、Q04 | 进行中：所选OS提取和实际ASR/DataPort传输已实现；完整Update仍缺recovery/ramdisk/USB-ECID重识别、nonce/TSS/IMG4/TBM/nonce-slot、FDR及完整异步dispatch。force/tss在发现前拒绝，真实恢复NOT_RUN。 见[当前报告](validation/production-completion-2026-10-26.md) |
+| F06 | 完成恢复预检入口与实验恢复执行流程 | P3 | A02、L01、Q02、Q04 | 进行中：所选OS提取、ASR/DataPort与restored loop同步SystemImageData已接线；独立取消、错误后terminal/partial report/迟到成功拒绝已验证。完整Update仍缺recovery/ramdisk/USB-ECID重识别、nonce/TSS/IMG4/TBM/nonce-slot、FDR及异步dispatch；force/tss关闭，真实恢复NOT_RUN。 见[开发增量](validation/remaining-development-2026-10-27.md) |
 | D01 | 维护文档、变更记录与交付规则 | P2 | 首批整改依赖 B01、B02、Q01；随后持续执行 | 完成（开发口径）：文档整改与交付规则已交付；持续维护随各开发任务执行 |
 | D02 | 建立质量指标与 1.0 发布准备标准 | P2 | 指标先随 Q01 建立；发布准备依赖 B04、A01、A02、L04、F02 | 完成（开发口径）：质量回顾模板、指标与1.0准备标准已交付；候选验证及实际发布准备记录保留 |
 
