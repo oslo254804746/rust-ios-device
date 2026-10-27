@@ -681,6 +681,102 @@ async fn pinned_puppeteer_same_and_cross_origin_iframe_navigation() {
 }
 
 #[tokio::test]
+#[ignore = "requires cached pinned Node clients; explicit F04 native world lifecycle gate"]
+async fn pinned_puppeteer_native_world_lifecycle_and_retired_tree() {
+    let (capture, receipts, evidence) = gate("puppeteer", WEB_TARGET, "world-workflow").await;
+    let report = report(&capture, "puppeteer", "25.12.0", "world-workflow");
+    for id in [101, 301, 302] {
+        assert!(report["destroyedContexts"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(id)));
+    }
+    assert!(!report["contexts"].as_array().unwrap().contains(&json!(303)));
+    let native: Vec<(String, JsonValue)> = evidence["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|record| record["event"] == "runtime_send" || record["event"] == "runtime_receive")
+        .map(|record| {
+            let event = record["event"].as_str().unwrap().to_owned();
+            let message = &record["message"];
+            let inner = if matches!(
+                message["method"].as_str(),
+                Some("Target.sendMessageToTarget" | "Target.dispatchMessageFromTarget")
+            ) {
+                serde_json::from_str(message["params"]["message"].as_str().unwrap()).unwrap()
+            } else {
+                message.clone()
+            };
+            (event, inner)
+        })
+        .collect();
+    for (id, kind) in [(301, "user"), (302, "internal"), (303, "user")] {
+        let context = native
+            .iter()
+            .find(|(event, message)| {
+                event == "runtime_send"
+                    && message["method"] == "Runtime.executionContextCreated"
+                    && message["params"]["context"]["id"] == id
+            })
+            .unwrap();
+        assert_eq!(context.1["params"]["context"]["type"], kind);
+        assert!(context.1["params"]["context"].get("origin").is_none());
+        assert!(context.1["params"]["context"].get("auxData").is_none());
+    }
+    let detach = native
+        .iter()
+        .position(|(event, message)| {
+            event == "runtime_send"
+                && message["method"] == "Page.frameDetached"
+                && message["params"]["frameId"] == "retired"
+        })
+        .unwrap();
+    let tree_request = native
+        .iter()
+        .enumerate()
+        .skip(detach + 1)
+        .find(|(_, (event, message))| {
+            event == "runtime_receive" && message["method"] == "Page.getResourceTree"
+        })
+        .unwrap();
+    assert!(native
+        .iter()
+        .skip(tree_request.0 + 1)
+        .any(|(event, message)| event == "runtime_send"
+            && message["id"] == tree_request.1 .1["id"]
+            && message["result"]["frameTree"].is_object()));
+    let commands: Vec<JsonValue> = evidence["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|record| record["event"] == "runtime_receive")
+        .map(|record| {
+            let message = &record["message"];
+            if message["method"] == "Target.sendMessageToTarget" {
+                serde_json::from_str(message["params"]["message"].as_str().unwrap()).unwrap()
+            } else {
+                message.clone()
+            }
+        })
+        .collect();
+    for id in [301, 302] {
+        assert!(commands
+            .iter()
+            .any(|command| command["method"] == "Runtime.evaluate"
+                && command["params"]["contextId"] == id));
+    }
+    assert!(commands
+        .iter()
+        .any(|command| command["method"] == "Runtime.evaluate"
+            && command["params"]["contextId"] == 101
+            && command["params"]["expression"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("window.location.assign("))));
+    assert_native_order(&evidence, &receipts);
+}
+
+#[tokio::test]
 #[ignore = "requires cached pinned Node clients; explicit F04 native memory metrics gate"]
 async fn pinned_puppeteer_device_memory_metrics_and_sampling_lifecycle() {
     let (capture, receipts, evidence) = gate("puppeteer", WEB_TARGET, "metrics-workflow").await;

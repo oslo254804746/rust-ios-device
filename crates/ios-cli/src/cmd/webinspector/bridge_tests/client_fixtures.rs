@@ -624,12 +624,48 @@ async fn js_peer(
                         json!({"id": cmd_id, "result": {}})
                     }
                     Some("Runtime.evaluate") => {
+                        if target.is_web && command["params"].get("executionContextId").is_some() {
+                            return Err(anyhow!(
+                                "WebKit Runtime.evaluate uses contextId, not executionContextId"
+                            ));
+                        }
                         if command["params"]
                             .get("contextId")
                             .and_then(JsonValue::as_u64)
-                            .is_some_and(|id| ![1, 101, 102,201,202].contains(&id))
+                            .is_some_and(|id| ![1, 101, 102,201,202,301,302].contains(&id))
                         {
                             json!({"id": cmd_id, "error": {"code": -32602, "message": "Cannot find context with specified id"}})
+                        } else if command["params"]["expression"] == "fixture:world-console" {
+                            assert_eq!(command["params"]["contextId"], 301);
+                            let evt = json!({"method":"Console.messageAdded","params":{"message":{
+                                "source":"console-api","type":"log","level":"log","text":"object","timestamp":12.5,
+                                "parameters":[{"type":"object","objectId":"{\"injectedScriptId\":301,\"id\":7}"}]
+                            }}});
+                            let dispatch = if nested {
+                                json!({"method":"Target.dispatchMessageFromTarget","params":{
+                                    "targetId":target_id.as_deref().unwrap_or(""),"message":serde_json::to_string(&evt)?
+                                }})
+                            } else { evt };
+                            runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                            json!({"id":cmd_id,"result":{"result":{"type":"undefined"}}})
+                        } else if command["params"]["expression"] == "fixture:worlds" {
+                            // Only WebKit's actual context fields are supplied. The
+                            // final realm retires before its origin tree can return.
+                            let events = [
+                                json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":301,"type":"user","name":"user-world","frameId":"1.3"}}}),
+                                json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":302,"type":"internal","name":"internal-world","frameId":"1.3"}}}),
+                                json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":303,"type":"user","name":"late-world","frameId":"retired"}}}),
+                                json!({"method":"Page.frameDetached","params":{"frameId":"retired"}}),
+                            ];
+                            for evt in events {
+                                let dispatch = if nested {
+                                    json!({"method":"Target.dispatchMessageFromTarget","params":{
+                                        "targetId":target_id.as_deref().unwrap_or(""),"message":serde_json::to_string(&evt)?
+                                    }})
+                                } else { evt };
+                                runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                            }
+                            json!({"id":cmd_id,"result":{"result":{"type":"undefined"}}})
                         } else if let Some(kind) = command["params"]["expression"].as_str().and_then(|s| s.strip_prefix("fixture:fetch:")) {
                             let request_id = format!("native-{kind}");
                             let request = json!({"url":"https://example.invalid/resource","method":"GET","headers":{}});
