@@ -302,16 +302,15 @@ async fn capture_display(
         }
     };
     let stop_result: Result<(), anyhow::Error> = session
-        .stop(Duration::from_secs(5))
+        .stop_strict(Duration::from_secs(5), true, &[])
         .await
+        .map(|_| ())
         .map_err(Into::into);
-    if let Err(error) = capture_result {
-        if let Err(stop_error) = stop_result {
-            return Err(error.context(format!("also failed to stop media stream: {stop_error}")));
-        }
-        return Err(error);
-    }
-    stop_result?;
+    crate::cmd::test_workflow::combine_results(
+        capture_result,
+        stop_result,
+        "display capture stop failed",
+    )?;
     if !json_output {
         crate::output::outln!(
             "Captured {units} {} access units ({bytes} bytes)",

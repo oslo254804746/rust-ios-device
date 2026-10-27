@@ -176,6 +176,7 @@ pub struct DisplayServiceClient {
     request_sent: bool,
     envelope_mode: CoreDeviceEnvelopeMode,
     service_features: Option<Vec<String>>,
+    media_start_pending: bool,
 }
 
 pub type DisplayService = DisplayServiceClient;
@@ -190,6 +191,7 @@ impl DisplayServiceClient {
             request_sent: false,
             envelope_mode: mode,
             service_features: None,
+            media_start_pending: false,
         }
     }
     pub fn new_with_features<I, S>(client: XpcClient, features: I) -> Self
@@ -202,6 +204,7 @@ impl DisplayServiceClient {
             request_sent: false,
             envelope_mode: CoreDeviceEnvelopeMode::Modern,
             service_features: Some(features.into_iter().map(Into::into).collect()),
+            media_start_pending: false,
         }
     }
     pub fn from_resolved_metadata(
@@ -220,10 +223,10 @@ impl DisplayServiceClient {
             f.is_empty() || f.iter().any(|x| x == START_MEDIA_FEATURE)
         })
     }
-    /// A control request may have reached the service, including interrupted
-    /// startup. This is not an acknowledgement that a stream exists.
+    /// A start request may have reached the service, including interrupted
+    /// startup. A completed MediaInUse rejection clears this observation.
     pub fn request_may_have_executed(&self) -> bool {
-        self.request_sent
+        self.media_start_pending
     }
     fn ensure(&self, feature: &'static str) -> Result<(), DisplayError> {
         if self.envelope_mode == CoreDeviceEnvelopeMode::Legacy {
@@ -307,14 +310,18 @@ impl DisplayServiceClient {
         let call_id = uuid::Uuid::new_v4().to_string().to_ascii_uppercase();
         let offer = build_negotiator_offer(kind, &call_id, sid, options)?;
         let input = build_start_input(kind, options, id, offer);
-        let response = self
+        let result = self
             .invoke_with_deadline(
                 START_MEDIA_FEATURE,
                 START_MEDIA_ACTION,
                 input,
                 options.timeout,
             )
-            .await?;
+            .await;
+        if matches!(result, Err(DisplayError::MediaInUse)) {
+            self.media_start_pending = false;
+        }
+        let response = result?;
         let connection = response
             .as_dict()
             .and_then(|d| d.get("connection"))
@@ -422,6 +429,9 @@ impl DisplayServiceClient {
                     .await
                     .map_err(DisplayError::Reconnect)?;
             }
+            if feature == START_MEDIA_FEATURE {
+                self.media_start_pending = true;
+            }
             self.request_sent = true;
             self.client
                 .call(build_request_with_action("", feature, action, input))
@@ -501,7 +511,33 @@ impl MediaStreamSession {
         kind: MediaKind,
         options: MediaStreamOptions,
     ) -> Result<Self, DisplayError> {
-        Self::start_retained(&mut Some(service), kind, options).await
+        let mut pending = Some(service);
+        let result = Self::start_retained(&mut pending, kind, options).await;
+        match result {
+            Ok(session) => Ok(session),
+            Err(error) => {
+                if let Some(service) = pending
+                    .as_mut()
+                    .filter(|service| service.request_may_have_executed())
+                {
+                    let cleanup = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        service.stop_media_streams_strict(true, &[]),
+                    )
+                    .await
+                    .map_err(|elapsed| {
+                        native_error(
+                            std::io::ErrorKind::TimedOut,
+                            "failed media startup cleanup",
+                            elapsed,
+                        )
+                    })
+                    .and_then(|result| result.map(|_| ()));
+                    return Err(finish_media_stop(Err(error), cleanup).unwrap_err());
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Keep the original service owner in the caller until negotiation succeeds.
@@ -1520,6 +1556,136 @@ fn build_media_blob(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn explicit_media_in_use_rejection_does_not_authorize_stop_all_cleanup() {
+        let (client, mut peer, _) = crate::test_native::connected_xpc_pair().await;
+        let remote = tokio::spawn(async move {
+            let request = next_control_request(&mut peer).await;
+            let response = crate::encode_xpc_message(&crate::XpcMessage {
+                flags: crate::xpc_message_flags::ALWAYS_SET
+                    | crate::xpc_message_flags::DATA
+                    | crate::xpc_message_flags::REPLY,
+                msg_id: request.msg_id,
+                body: Some(dict([(
+                    "CoreDevice.error",
+                    dict([("code", XpcValue::Int64(9022))]),
+                )])),
+            })
+            .unwrap();
+            let mut header = [0; 9];
+            header[..3].copy_from_slice(&(response.len() as u32).to_be_bytes()[1..]);
+            header[8] = 3;
+            peer.write_all(&header).await.unwrap();
+            peer.write_all(&response).await.unwrap();
+            peer
+        });
+        let mut service = DisplayServiceClient::new(client);
+        let error = service
+            .start_video_stream(&MediaStreamOptions {
+                receiver_ip: "fd00::1".into(),
+                sender_ip: "fd00::2".into(),
+                receiver_port: 1234,
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DisplayError::MediaInUse));
+        assert!(!service.request_may_have_executed());
+        drop(service);
+        let mut peer = remote.await.unwrap();
+        let mut tail = Vec::new();
+        peer.read_to_end(&mut tail).await.unwrap();
+        // Only flow-control frames can remain. No stop request is submitted.
+        while !tail.is_empty() {
+            assert_ne!(tail[3], 0);
+            let n = u32::from_be_bytes([0, tail[0], tail[1], tail[2]]) as usize;
+            tail.drain(..9 + n);
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_reconnect_before_start_does_not_authorize_media_cleanup() {
+        let (client, mut peer, _) = crate::test_native::connected_xpc_pair().await;
+        let client = client.with_reconnector(|| async {
+            Err(XpcError::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionReset,
+            )))
+        });
+        let mut service = DisplayServiceClient::new(client);
+        // A previous query used this connection; the start must reconnect first.
+        service.request_sent = true;
+        let error = service
+            .start_video_stream(&MediaStreamOptions {
+                receiver_ip: "fd00::1".into(),
+                sender_ip: "fd00::2".into(),
+                receiver_port: 1234,
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DisplayError::Reconnect(_)));
+        assert!(!service.request_may_have_executed());
+        drop(service);
+        let mut tail = Vec::new();
+        peer.read_to_end(&mut tail).await.unwrap();
+        while !tail.is_empty() {
+            assert_ne!(tail[3], 0, "no start or stop XPC request was sent");
+            let n = u32::from_be_bytes([0, tail[0], tail[1], tail[2]]) as usize;
+            tail.drain(..9 + n);
+        }
+    }
+
+    #[tokio::test]
+    async fn authorized_hid_close_requires_real_media_stop_reply() {
+        for keyboard in [false, true] {
+            let (client, mut peer, _) = crate::test_native::connected_xpc_pair().await;
+            let remote = tokio::spawn(async move {
+                let request = next_control_request(&mut peer).await;
+                assert_eq!(
+                    request.body.unwrap().as_dict().unwrap()["CoreDevice.featureIdentifier"]
+                        .as_str(),
+                    Some(STOP_MEDIA_FEATURE)
+                );
+                peer.shutdown().await.unwrap();
+                let mut tail = Vec::new();
+                peer.read_to_end(&mut tail).await.unwrap();
+            });
+            let media = MediaStreamSession {
+                service: Some(DisplayServiceClient::new(client)),
+                socket: Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()),
+                kind: MediaKind::Video,
+                id: uuid::Uuid::new_v4(),
+                assembler: RtpAssembler::new(MediaKind::Video, 1024, 10),
+                sender: None,
+                local_ssrc: None,
+                remote_ssrc: None,
+                highest_sequence: Arc::new(AtomicU32::new(0)),
+                highest_sequence_seen: Arc::new(AtomicBool::new(false)),
+                rtcp_task: None,
+                drain_task: None,
+            };
+            let (hid_client, _hid_peer, _) = crate::test_native::connected_xpc_pair().await;
+            let mut hid = crate::hid::UniversalHidServiceClient::new(hid_client);
+            let error = if keyboard {
+                hid.keyboard_session_with_media(7, media)
+                    .close(Duration::from_secs(2))
+                    .await
+                    .unwrap_err()
+            } else {
+                hid.touch_session_with_media(7, media)
+                    .close(Duration::from_secs(2))
+                    .await
+                    .unwrap_err()
+            };
+            assert!(matches!(error, crate::hid::HidError::Media(_)));
+            assert!(crate::test_native::has_source::<std::io::Error>(&error));
+            tokio::time::timeout(Duration::from_secs(2), remote)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn cancelled_start_retains_original_reconnector_and_requires_real_stop_reply() {
