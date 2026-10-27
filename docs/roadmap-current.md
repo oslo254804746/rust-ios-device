@@ -1,5 +1,12 @@
 # 当前工程调度
 
+2026-10-27 当前核对：有效30主项，**26项开发交付、4项仍未完成（L01/F02/F04/F06）**。
+F01、F05按用户“实现齐备、仅待外部运行可计开发交付”的口径关闭开发状态；
+不表示物理设备或跨平台验收通过。L02原范围收口、Q04及全部子项排除保持。
+逐项原要求、实际门禁、提交和OPEN/NOT_RUN见[本轮报告](validation/production-completion-2026-10-26.md)。
+
+## 历史增量记录（下方当前主表及本轮报告优先）
+
 2026-10-26：[六项补齐交付独立审查](validation/six-followup-review-2026-10-26.md)。
 撤回 `4529418` 的“30项全部开发交付”结论。有效30主项维持 **24项开发交付、6项尚未满足原定义**；L02原范围收口与Q04全部排除保持。
 - L01：三个服务请求owner成立；本次修正真实CLI建连接线与XPC初始化总clock。其它原profiles与安装进度取消不能据只读observer关闭。
@@ -459,6 +466,26 @@ SDK副本、prepared公开root与其余全局边界仍待审计；主项23/6/L02
 无 mdns6/proxy4、完整CLI1731/0FAIL/13原ignored及严格Core/CLI门禁通过。
 经理层 initial RSD 生产接入仍 PENDING；L02全审计、23/6/待核查、有效30与Q04排除不变。
 
+
+## 当前主表（2026-10-27）
+
+2026-10-27 当前核对：有效30主项，**26项开发交付、4项仍未完成（L01/F02/F04/F06）**。
+F01、F05按用户“实现齐备、仅待外部运行可计开发交付”的口径关闭开发状态；
+不表示物理设备或跨平台验收通过。L02原范围收口、Q04及全部子项排除保持。
+逐项原要求、实际门禁、提交和OPEN/NOT_RUN见[本轮报告](validation/production-completion-2026-10-26.md)。
+
+| ID | 当前原定义状态 |
+| --- | --- |
+| L01 | 进行中：实际服务setup30s、安装/升级/owned ZIP总300s、暂存独立5s及NativeScope收尾已接线；ZIP兼容loader仍同步解压并保留全量展开内容，未满足该阻塞/每流缓冲边界。 |
+| F01 | 开发交付（2026-10-27）：显式目标board/chip/security/model、generic personalized/legacy版本策略、本地普通组件/摘要/权限/部分超时和目录/USB/remoted观察已接线；Doctor78通过。签名未验证与设备可用性分别表示；真实设备和未运行平台NOT_RUN，能力成熟度不升级。 |
+| F02 | 进行中：公开现有可执行TestWorkflowEngine，CLI共用；结果准入、有限日志/产物/退出码及提交未确认PID收尾已实现。仍缺一个覆盖现代canonical/shim RSD、AppService和DTX的完整CLI假服务场景；代表性合成应用真机流程NOT_RUN。 |
+| F04 | 进行中：native normal context schema/epoch、同源跨源iframe、Memory采样和Fetch生命周期已实现，固定实际客户端15通过；页面多realm console关联、可信页面Input及下载控制/save/cancel/events仍缺。 |
+| F05 | 开发交付（2026-10-27）：真实HEVC→持续FFmpeg→共享HTTP/RFB像素、RTP PTS/尺寸、输入/方向、RGBA/JPEG DIB、图像去重/有限重连与严格清理已接线；Viewer28和显式媒体3通过。stopAll为服务级限制；物理设备/独立桌面客户端和未运行平台NOT_RUN。 |
+| F06 | 进行中：所选OS提取和实际ASR/DataPort传输已实现；完整Update仍缺recovery/ramdisk/USB-ECID重识别、nonce/TSS/IMG4/TBM/nonce-slot、FDR及完整异步dispatch。force/tss在发现前拒绝，真实恢复NOT_RUN。 |
+
+原L02开发交付已收口；ESP/嵌套分片/完整owner扩展欠账单列，不重开本轮分母。
+
+## 历史调度主表（2026-10-21，superseded）
 
 更新：2026-10-21。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
 开发计数与真实验收分开，Q04及全部子项继续排除。

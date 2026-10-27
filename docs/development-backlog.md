@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-27 当前核对：有效30主项，**26项开发交付、4项仍未完成（L01/F02/F04/F06）**。
+F01、F05按用户“实现齐备、仅待外部运行可计开发交付”的口径关闭开发状态；
+不表示物理设备或跨平台验收通过。L02原范围收口、Q04及全部子项排除保持。
+逐项原要求、实际门禁、提交和OPEN/NOT_RUN见[本轮报告](validation/production-completion-2026-10-26.md)。
+
+## 历史增量记录（旧计数已被下方当前主表取代）
+
 2026-10-26：[六项补齐交付独立审查](validation/six-followup-review-2026-10-26.md)。
 撤回 `4529418` 的“30项全部开发交付”结论。有效30主项维持 **24项开发交付、6项尚未满足原定义**；L02原范围收口与Q04全部排除保持。
 - L01：三个服务请求owner成立；本次修正真实CLI建连接线与XPC初始化总clock。其它原profiles与安装进度取消不能据只读observer关闭。
@@ -535,25 +542,27 @@ L02继续全审计，主项23/6/待核查、有效30与Q04全部排除不变。
 完整 tunnel 718/0 FAIL/2 原 ignored、strict CLI/build/Source0 通过。L02 继续全审计，
 主项 23 交付/6 缺开发/L02 待核查、有效 30 和 Q04 全部排除不变。
 
-更新：2026-10-26。用户口径允许完整实现、仅等待运行验证的任务计开发完成；
+## 当前主表（2026-10-27）
+
+更新：2026-10-27。用户口径允许完整实现、仅等待运行验证的任务计开发完成；
 代码、协议、生产接线、工具或收尾尚缺不能计完成。实际 NOT_RUN 不改成 PASS。
 Q04及全部子项排除，有效任务分母保持30。
 
 审查后承接原19项与L03，本轮A03共同owner/绑定/工具完整交付并通过实际gate：
 L04原测量/资源归因/预算工具范围本轮交付，开发口径计入完成：
-Q02与本次原L02范围收口后，24项开发交付，6项仍缺开发；扩展审计欠账不计作原L02未完成。
+Q02、原L02和本次F01/F05开发收口后，26项开发交付，4项仍缺开发；扩展审计欠账不计作原L02未完成。
 这不等于原19项在Windows/其它平台全部重新验收通过。Viewer能力清单和
 五项Windows core失败作为原工作项维护处理，不新增任务改变分母。
 未计完成项按原范围继续；不因占位、拒绝或缺口说明升级计数。
 
-| ID | 原范围中的剩余交付（修复后逐项复核） |
+| ID | 六项原定义交付状态（2026-10-27） |
 | --- | --- |
-| L01 | [SpringBoard请求owner/总期限](validation/springboard-lifecycle-2026-10-13.md)及CLI接线已交付，21项门禁通过；剩余协议/服务和startup/upgrade/blocking/长流总期限、取消失效、原主/清理错误、native回收；局部SDK/restore/workflow修复不关闭全部profiles。 |
-| F01 | USB/route/目录、remoted前后状态、挂载/签名观察与legacy/明确existing-RSD开发操作已接线，Doctor48项通过。legacy握手后raw DTX仅接受协商TLS1.2，TLS1.3明确Unsupported且无DTX；[目标personalization manifest/目录观察](validation/doctor-manifest-directories-2026-10-13.md)已接线，Doctor60项通过；完整本地BuildManifest/组件/签名证据和原平台/设备范围仍须核查，不由Unknown推导Ok。 |
-| F02 | 限量crash收集、现代startup NativeScope、noWait事实receipt、WDA startup/ready owner与scoped forward已接线；修正WDA迟到成功丢owner的竞态，localhost实际CLI启动→TCP ready→单次转发→原PID/peer收尾5项通过。原DTX错误/部分产物/重跑/安装owner及实际legacy CLI故障peer已验。[终态CI判定/最后stdout和sidecar](validation/f02-terminal-integrity-2026-10-13.md)已接线，实际CLI26方法通过；现代全流程、结果准入、可组合Rust整体工作流和原平台/设备范围仍须核查，不据legacy子项关闭。 |
-| F04 | [原生context关闭/独立刷新接线](validation/cdp-native-context-closure-2026-10-13.md)及public nonflat传输已验：Core110、CLI184、pinned实际客户端10通过；默认Playwright拒绝保持。Runtime console语义、Page/iframe、可信Input/截图、Fetch/下载、Memory/Performance及原设备范围继续，不据关闭子项完成主项。 |
-| F05 | PNG/Web/VNC共享源、输入/文本剪贴板owner和保护；原HEVC媒体解码、方向、有证据图像双向剪贴板、预算/退出及adapter流程。 |
-| F06 | 有机型/固件/版本证据的预检和完整Update：recovery ramdisk、USB重举、nonce/TSS/IMG4、ASR/FDR/data-port传输/失败/清理；restored传输子项和拒绝不算完整执行器。 |
+| L01 | 进行中：实际服务setup30s、安装/升级/owned ZIP总300s、暂存独立5s及NativeScope收尾已接线；ZIP兼容loader仍同步解压并保留全量展开内容，未满足该阻塞/每流缓冲边界。 |
+| F01 | 开发交付（2026-10-27）：显式目标board/chip/security/model、generic personalized/legacy版本策略、本地普通组件/摘要/权限/部分超时和目录/USB/remoted观察已接线；Doctor78通过。签名未验证与设备可用性分别表示；真实设备和未运行平台NOT_RUN，能力成熟度不升级。 |
+| F02 | 进行中：公开现有可执行TestWorkflowEngine，CLI共用；结果准入、有限日志/产物/退出码及提交未确认PID收尾已实现。仍缺一个覆盖现代canonical/shim RSD、AppService和DTX的完整CLI假服务场景；代表性合成应用真机流程NOT_RUN。 |
+| F04 | 进行中：native normal context schema/epoch、同源跨源iframe、Memory采样和Fetch生命周期已实现，固定实际客户端15通过；页面多realm console关联、可信页面Input及下载控制/save/cancel/events仍缺。 |
+| F05 | 开发交付（2026-10-27）：真实HEVC→持续FFmpeg→共享HTTP/RFB像素、RTP PTS/尺寸、输入/方向、RGBA/JPEG DIB、图像去重/有限重连与严格清理已接线；Viewer28和显式媒体3通过。stopAll为服务级限制；物理设备/独立桌面客户端和未运行平台NOT_RUN。 |
+| F06 | 进行中：所选OS提取和实际ASR/DataPort传输已实现；完整Update仍缺recovery/ramdisk/USB-ECID重识别、nonce/TSS/IMG4/TBM/nonce-slot、FDR及完整异步dispatch。force/tss在发现前拒绝，真实恢复NOT_RUN。 |
 
 当前修复及实际验证见[修复记录](validation/review-fixes-2026-10-10.md)。
 本轮最小WDA交付与L01/L02/Q02/F01范围复核见[接力记录](validation/wda-continuation-2026-10-12.md)。

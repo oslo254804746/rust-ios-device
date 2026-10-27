@@ -23,6 +23,31 @@ their limits; it does not certify every service or remote cleanup.
 The active roadmap scope excludes Q04 and all its subtasks as of2026-10-06.
 Older profiles below retain their historical scope and unresolved findings.
 
+## Production consumers updated 2026-10-27
+
+| Profile / actual entry | Setup / request / total | Cancellation and cleanup |
+| --- | --- | --- |
+| Diagnostics, Misagent, SpringBoard, Screenshot, Heartbeat, AMFI, PowerAssertion, SimLocation, AFC/HouseArrest CLI | Shared 30s connect covers selection, lockdown, StartService, port/TLS; each protocol keeps its documented request/operation clock | Request send/read share their original budget. Partial/committed failure retires or invalidates the client. Heartbeat uses cancellable idle; GPX waits are cancellable and each point write is finite. |
+| InstallationProxy apps install/upgrade | 30s setup; one 300s total for staging plus service setup/send/all progress | Cancellation/expiry still attempts both temporary/final staging removals on a fresh AFC stream under an independent 5s total. Cleanup does not consume the interrupted AFC framer. Primary and cleanup causes survive; installation is never replayed or declared rolled back. |
+| Owned ZIP / apps --streaming / workflow package install | Service setup 30s; owned transfer 300s including preparation, send/flush and progress | Caller Drop/error/expiry drops the original stream; zero budget neither reads IPA nor writes wire. Legacy local loader still reads/decompresses into memory and cannot preempt a synchronous decode or blocked filesystem call. This remains a specific L01 gap. |
+| AppService / apps query and process control | Optional Core request timeout defaults to None for compatibility; actual CLI sets 30s. Entire list_apps stream collection shares one clock | Observed launch submission means complete local flush, not device ACK. Late PID replies cannot be reused. Public monitoring keeps its own lifetime; CLI monitor retains user timeout/Ctrl-C, not a short query deadline. |
+| Apps native device owner | Same selected CommandDevice retained by operation; modern tunnel uses NativeScope | CLI native close has separate 15s budget after clients/device drop. Legacy Instruments fallback tries modern then legacy service on the same selected device. |
+| Display / authorized HID / Viewer | Retained startup, finite capture/control; strict stop and original NativeScope collection before retry | No cleanup stopAll for an explicit MediaInUse rejection or a reconnect failure before start submission. HID close shares its release/strict-media budget and remains idempotent after confirmed close. Any cleanup failure forbids automatic media retry, even when the operation succeeded. |
+| TestWorkflowEngine | Existing CLI engine exported as executable Rust API; public package lookup/setup has 30s clock before owned ZIP total | Submitted unconfirmed launch is reconciled through original reconnect/list baseline; only a unique new matching PID may be killed. Services close before native retirement. A unified modern full CLI fake-service scenario remains unverified. |
+| Restored / ASR | Already-connected control owner and DataPort transfer inherit one total/cancel | ASR/extraction receipt is not recovery completion; failed or abandoned transfer cannot reuse a late control reply. Full Update remains disabled. |
+
+This table supersedes older consumer-wiring statements below. It records finite
+profiles rather than claiming every compatibility/raw API or blocking worker is
+physically cancellable. Existing H2/DTX/AFC/HTTP-upgrade owner evidence remains
+applicable; [current validation](validation/production-completion-2026-10-26.md)
+lists actual gates and OPEN/NOT_RUN separately.
+
+Rust error migration: `HidError::Media` now contains the original `DisplayError`
+as its source instead of a formatted `String`. Code constructing or matching
+that payload must use the typed display error. Error classification and nested
+native IO/timeout causes are retained; no device stop acknowledgement is inferred
+from a disconnect.
+
 | Deadline role | Meaning |
 | --- | --- |
 | Connect | Transport, discovery/bootstrap or service setup budget; each documented entry owns its start point |

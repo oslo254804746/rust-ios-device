@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Match explicit Doctor targets to local DDI identities/components with separate
+  version policy, digest, permission and unknown evidence; no signature claim.
+- Export the executable shared test workflow; bound real app setup/install calls
+  and retain staging/native cleanup after cancellation and unconfirmed launch.
+- Map native page contexts, iframe navigation, WebKit memory sampling and Fetch
+  lifecycle through the Rust CDP bridge. Trusted page input and downloads remain open.
+- Add persistent timestamped HEVC decoding via external FFmpeg, shared HTTP/RFB
+  pixels, orientation and RGBA/JPEG DIB clipboard adapters with strict media cleanup.
+- Extract the selected IPSW OS image and serve bounded ASR data-port transfers;
+  complete Update recovery remains disabled and unimplemented.
+
+
 - Admit manual paired pending/plan vector backing while borrowing original
   desired UID, ticket and host filters. Keep incomplete-browse behavior and
   original manual/USB publications when plan admission fails.
@@ -77,9 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Python `Device.aclose`. Add a Windows-capable actual C ABI service fixture.
 - Repair Viewer device/port authorization and RFC 6143 DES authentication; add
   shared PNG pixels, locally flushed HID and text pasteboard operations and original
-  native retirement owners. Full HEVC/image/orientation workflows remain incomplete.
+  native retirement owners. Subsequent HEVC/image/orientation implementation and host gates are recorded above; physical workflows remain unverified.
 - Replace fabricated CDP domain results with finite WebInspector Page/PNG/Fetch
-  translations and explicit unsupported Input/Memory/Performance errors.
+  translations and explicit unsupported trusted Input/download errors; subsequent native metrics are recorded above.
 - Add a distinct restored plist transport that actually sends StartRestore and
   firmware responses; reject incomplete CLI Update execution before device IO.
   Inspection records ZIP component checks and saved TSS metadata correlation,

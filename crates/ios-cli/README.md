@@ -28,12 +28,26 @@ workspace.
 SpringBoard requests use a 30-second total send/receive/parse budget. Set
 `ios springboard orientation --request-timeout-ms 5000` to change that request
 budget. A cancelled or failed request after wire progress retires the original
-connection; reconnect before another command. This budget starts at the service
-request and does not bound device discovery or service connection setup.
+connection; reconnect before another command. The request clock starts at the service request. CLI service setup independently
+uses a shared 30-second budget covering discovery/lockdown/StartService/port/TLS.
+Long listeners keep cancellable idle waits rather than inheriting this setup clock.
 
 From a checkout, `python scripts/validate.py quick --package ios-cli` runs
 focused tests. `python scripts/validate.py full --python <interpreter>` runs
 the same complete check set used by CI; see [build notes](../../docs/build.md).
+
+## Reusable test workflow
+
+The crate also exports `TestWorkflowEngine`, `TestWorkflowArgs` and
+`TestWorkflowRunOptions`. `TestWorkflowEngine::run` executes the same existing
+owner used by `runtest` and `runxctest`: explicit target/readiness, optional
+package installation, startup, bounded result/log collection, JUnit/sidecar and
+cleanup. It accepts a launch-plan resolver; it is not a separate orchestration
+engine. See the [external Rust API test](tests/workflow_api.rs) and
+[current validation](../../docs/validation/production-completion-2026-10-26.md).
+Package installation is explicit, is never automatically replayed after unknown
+effects, and retains original cleanup failures. The full modern CLI fake-service
+scenario and representative physical workflow remain unverified.
 
 ## Install
 
