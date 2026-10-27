@@ -258,6 +258,7 @@ async fn js_peer(
     evidence: SharedEvidence,
 ) -> Result<PeerReceipt> {
     let closure = closure_state.mode;
+    let mut navigated_frames = std::collections::HashMap::<String, String>::new();
     let mut receipt = PeerReceipt {
         stream: id,
         setups: 0,
@@ -476,13 +477,7 @@ async fn js_peer(
                                         "id": 1,
                                         "type": "normal",
                                         "frameId": "1.1",
-                                        "origin": "https://example.invalid",
                                         "name": "",
-                                        "uniqueId": "pagecontext.1",
-                                        "auxData": {
-                                            "isDefault": true,
-                                            "frameId": "1.1"
-                                        }
                                     }
                                 }
                             });
@@ -542,7 +537,7 @@ async fn js_peer(
                         json!({"id": cmd_id, "result": {}})
                     }
                     Some("Page.getResourceTree") => {
-                        json!({
+                        let mut reply = json!({
                             "id": cmd_id,
                             "result": {
                                 "frameTree": {
@@ -571,7 +566,23 @@ async fn js_peer(
                                     ]
                                 }
                             }
-                        })
+                        });
+                        if let Some(url) = navigated_frames.get("1.1") {
+                            reply["result"]["frameTree"]["frame"]["url"] = json!(url);
+                            reply["result"]["frameTree"]["frame"]["loaderId"] = json!("new-loader");
+                        }
+                        for child in reply["result"]["frameTree"]["childFrames"]
+                            .as_array_mut()
+                            .unwrap()
+                        {
+                            if let Some(url) =
+                                navigated_frames.get(child["frame"]["id"].as_str().unwrap())
+                            {
+                                child["frame"]["url"] = json!(url);
+                                child["frame"]["loaderId"] = json!("new-loader");
+                            }
+                        }
+                        reply
                     }
                     Some("Page.snapshotRect") => {
                         json!({
@@ -616,7 +627,7 @@ async fn js_peer(
                         if command["params"]
                             .get("contextId")
                             .and_then(JsonValue::as_u64)
-                            .is_some_and(|id| ![1, 101, 102].contains(&id))
+                            .is_some_and(|id| ![1, 101, 102,201,202].contains(&id))
                         {
                             json!({"id": cmd_id, "error": {"code": -32602, "message": "Cannot find context with specified id"}})
                         } else if let Some(kind) = command["params"]["expression"].as_str().and_then(|s| s.strip_prefix("fixture:fetch:")) {
@@ -648,8 +659,10 @@ async fn js_peer(
                             let frame = match command["params"]["contextId"].as_u64() {
                                 Some(101) => "1.3", Some(102) => "1.5", _ => "1.1",
                             };
+                            navigated_frames.insert(frame.to_owned(),url.clone());
                             let evt = json!({"method":"Page.frameNavigated","params":{
-                                "frame":{"id":frame,"parentId":"1.1","url":url,"loaderId":"new-loader"}
+                                "frame":{"id":frame,"parentId":"1.1","url":url,"loaderId":"new-loader",
+                                    "securityOrigin":if frame=="1.5" {"https://cross.invalid"} else {"https://example.invalid"}}
                             }});
                             let dispatch = if nested {
                                 json!({"method":"Target.dispatchMessageFromTarget","params":{
@@ -657,6 +670,16 @@ async fn js_peer(
                                 }})
                             } else { evt };
                             runtime_send(&mut stream, id, &evidence, dispatch).await?;
+                            let context_id=if frame=="1.3" {201} else if frame=="1.5" {202} else {1};
+                            let evt=json!({"method":"Runtime.executionContextCreated","params":{"context":{
+                                "id":context_id,"type":"normal","name":"","frameId":frame
+                            }}});
+                            let dispatch=if nested {
+                                json!({"method":"Target.dispatchMessageFromTarget","params":{
+                                    "targetId":target_id.as_deref().unwrap_or(""),"message":serde_json::to_string(&evt)?
+                                }})
+                            } else {evt};
+                            runtime_send(&mut stream,id,&evidence,dispatch).await?;
                             json!({"id":cmd_id,"result":{"result":{"type":"undefined"}}})
                         } else if command["params"]["expression"] == "fixture:console-log" {
                             receipt.evaluations += 1;
