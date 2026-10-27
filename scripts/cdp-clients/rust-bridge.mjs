@@ -40,7 +40,7 @@ function arguments_() {
   assert.equal(endpoint.hostname, '127.0.0.1');
   assert(endpoint.port && endpoint.pathname === '/' && !endpoint.search && !endpoint.hash);
   assert(!endpoint.username && !endpoint.password);
-  assert(['initialization-rejection', 'runtime-workflow', 'console-workflow', 'fetch-workflow', 'metrics-workflow', 'iframe-workflow', 'five-domain-workflow', 'native-page-closure', 'native-application-closure', 'native-discovery-page-closure', 'native-discovery-application-closure', 'native-discovery-race-closure'].includes(expectation));
+  assert(['initialization-rejection', 'runtime-workflow', 'console-workflow', 'fetch-workflow', 'metrics-workflow', 'iframe-workflow', 'world-workflow', 'five-domain-workflow', 'native-page-closure', 'native-application-closure', 'native-discovery-page-closure', 'native-discovery-application-closure', 'native-discovery-race-closure'].includes(expectation));
   return { client, endpoint: endpoint.origin, targetUrl, expectation };
 }
 
@@ -86,12 +86,14 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
     steps.push('attached');
     const contexts = [];
     const frameContexts = new Map();
+    const worlds = new Map();
     const destroyedContexts = [];
     let resolveContext;
     const announced = new Promise(resolve => { resolveContext = resolve; });
     session.on('Runtime.executionContextCreated', event => {
       contexts.push(event.context.id);
-      if (event.context.auxData?.frameId) frameContexts.set(event.context.auxData.frameId, event.context);
+      worlds.set(event.context.id, event.context);
+      if (event.context.auxData?.frameId && event.context.auxData.isDefault) frameContexts.set(event.context.auxData.frameId, event.context);
       resolveContext(event.context.id);
     });
     session.on('Runtime.executionContextDestroyed', event => {
@@ -173,6 +175,53 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
       steps.push('metrics-verified', 'tracking-stopped');
       await session.detach(); session = undefined; steps.push('detached');
       result = {status:'metrics-workflow', steps, contexts, metrics:event.metrics};
+    } else if (expectation === 'world-workflow') {
+      await session.send('Page.getFrameTree');
+      const arrived = new Promise(resolve => {
+        const listener = event => {
+          if (event.context.id === 302) {
+            session.off('Runtime.executionContextCreated', listener);
+            resolve();
+          }
+        };
+        session.on('Runtime.executionContextCreated', listener);
+      });
+      await session.send('Runtime.evaluate', {expression:'fixture:worlds', contextId});
+      await bounded(arrived);
+      for (const id of [301, 302]) {
+        const world = worlds.get(id);
+        assert.equal(world.origin, 'https://example.invalid');
+        assert.equal(world.auxData.frameId, '1.3');
+        assert.equal(world.auxData.isDefault, false);
+        assert.equal(world.auxData.type, 'isolated');
+        assert.equal((await session.send('Runtime.evaluate', {expression:'6*7', contextId:id, returnByValue:true})).result.value, 42);
+      }
+      const consoleEvent = new Promise(resolve => session.once('Runtime.consoleAPICalled', resolve));
+      await session.send('Runtime.evaluate', {expression:'fixture:world-console', contextId:301});
+      const logged = await bounded(consoleEvent);
+      assert.equal(logged.executionContextId, 301);
+      assert.equal(logged.timestamp, 12500);
+      assert.equal(JSON.parse(logged.args[0].objectId).injectedScriptId, 301);
+      assert.equal(frameContexts.get('1.3').id, 101);
+      await session.send('Page.getFrameTree');
+      assert(!worlds.has(303), 'retired world was revived by a late frame tree');
+      const committed = new Promise(resolve => {
+        const listener = event => {
+          if (event.frame.id === '1.3') {
+            session.off('Page.frameNavigated', listener); resolve();
+          }
+        };
+        session.on('Page.frameNavigated', listener);
+      });
+      await session.send('Page.navigate', {url:'https://example.invalid/world-next', frameId:'1.3'});
+      await bounded(committed);
+      for (const id of [101, 301, 302]) {
+        assert(destroyedContexts.includes(id));
+        await assert.rejects(session.send('Runtime.evaluate', {expression:'6*7', contextId:id}));
+      }
+      steps.push('worlds-evaluated', 'object-console-associated', 'late-world-retired', 'worlds-destroyed');
+      await session.detach(); session = undefined; steps.push('detached');
+      result = {status:'world-workflow', steps, contexts, destroyedContexts};
     } else if (expectation === 'iframe-workflow') {
       const { frameTree } = await session.send('Page.getFrameTree');
       assert.equal(frameTree.childFrames[0].frame.securityOrigin, frameTree.frame.securityOrigin);

@@ -1,12 +1,14 @@
 //! Stateful CDP translations backed by real WebInspector responses.
 //! Protocol evidence: pinned pymobiledevice3 cdp_target.py getResourceTree,
 //! snapshotRect, in-page navigation and Network interception adapters.
+//! Realm/console evidence: pinned WebKit Runtime.json, PageRuntimeAgent.cpp,
+//! InjectedScriptSource.js::_bind and ConsoleMessage.cpp::addToFrontend.
 //! Input is refused: in-page DOM synthesis cannot meet trusted CDP input semantics.
 use super::cdp_browser::{error, reply, unverified_page_error};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 
@@ -39,6 +41,7 @@ enum Translation {
     ContextTree {
         event: Value,
         epoch: u64,
+        serial: u64,
     },
     FrameTree,
     NavigateTree {
@@ -90,7 +93,11 @@ pub struct PageCdpAdapter {
     frame_origins: HashMap<String, String>,
     frame_epochs: HashMap<String, u64>,
     tree_revision: u64,
-    announced_contexts: HashMap<String, i64>,
+    announced_contexts: HashMap<i64, String>,
+    realms: HashMap<i64, (String, u64)>,
+    next_realm_serial: u64,
+    seen_realm_ids: HashSet<i64>,
+    reused_realm_ids: HashSet<i64>,
     fetch_enabled: bool,
     fetch_stage: Option<String>,
     request_meta: HashMap<String, Value>,
@@ -101,15 +108,26 @@ pub struct PageCdpAdapter {
 }
 impl PageCdpAdapter {
     fn context_query_is_current(&self, translation: &Translation) -> bool {
-        let Translation::ContextTree { event, epoch } = translation else {
+        let Translation::ContextTree {
+            event,
+            epoch,
+            serial,
+        } = translation
+        else {
             return true;
         };
         let context = &event["params"]["context"];
         let Some(frame) = context["frameId"].as_str() else {
             return false;
         };
+        let Some(id) = context["id"].as_i64() else {
+            return false;
+        };
         self.frame_epochs.get(frame) == Some(epoch)
-            && self.frame_contexts.get(frame).copied() == context["id"].as_i64()
+            && self
+                .realms
+                .get(&id)
+                .is_some_and(|(owner, generation)| owner == frame && generation == serial)
     }
     fn remember_frame_origins(&mut self, tree: &Value) {
         if let (Some(frame), Some(origin)) = (
@@ -133,7 +151,11 @@ impl PageCdpAdapter {
         let (Some(frame), Some(id)) = (context["frameId"].as_str(), context["id"].as_i64()) else {
             return context_mapping_failed();
         };
-        if self.frame_contexts.get(frame) != Some(&id) {
+        if !self
+            .realms
+            .get(&id)
+            .is_some_and(|(owner, _)| owner == frame)
+        {
             return PageCdpOutput::default();
         }
         let Some(origin) = self.frame_origins.get(frame) else {
@@ -142,13 +164,94 @@ impl PageCdpAdapter {
         let Some(name) = context["name"].as_str() else {
             return context_mapping_failed();
         };
-        self.announced_contexts.insert(frame.to_owned(), id);
+        let is_default = context["type"] == "normal";
+        self.announced_contexts.insert(id, frame.to_owned());
         PageCdpOutput::client(
             json!({"method":"Runtime.executionContextCreated","params":{"context":{
                 "id":id,"name":name,"origin":origin,
-                "auxData":{"frameId":frame,"isDefault":true,"type":"default"}
+                "auxData":{"frameId":frame,"isDefault":is_default,"type":if is_default {"default"} else {"isolated"}}
             }}}),
         )
+    }
+    fn retire_frame(&mut self, frame: &str) -> Vec<Value> {
+        self.frame_contexts.remove(frame);
+        if let Some(epoch) = self.frame_epochs.get_mut(frame) {
+            *epoch = epoch.wrapping_add(1);
+        }
+        self.realms.retain(|_, (owner, _)| owner != frame);
+        let mut ids = self
+            .announced_contexts
+            .iter()
+            .filter_map(|(id, owner)| (owner == frame).then_some(*id))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        for id in &ids {
+            self.announced_contexts.remove(id);
+        }
+        ids.into_iter().map(|id| json!({"method":"Runtime.executionContextDestroyed","params":{"executionContextId":id}})).collect()
+    }
+    // WebKit binds remote objects to the same injectedScriptId used in the
+    // native context event. Primitive-only messages cannot establish a realm.
+    fn console_event(&self, event: &Value) -> Option<Value> {
+        let message = &event["params"]["message"];
+        if message["source"] != "console-api" {
+            return None;
+        }
+        let kind = match message["type"].as_str()? {
+            "log" => match message["level"].as_str()? {
+                "log" => "log",
+                "info" => "info",
+                "warning" => "warning",
+                "error" => "error",
+                "debug" => "debug",
+                _ => return None,
+            },
+            "trace" => "trace",
+            "dir" => "dir",
+            "dirxml" => "dirxml",
+            "table" => "table",
+            "clear" => "clear",
+            "assert" => "assert",
+            _ => return None,
+        };
+        let timestamp = message["timestamp"]
+            .as_f64()
+            .filter(|time| time.is_finite() && *time >= 0.0)?
+            * 1000.0;
+        if !timestamp.is_finite() {
+            return None;
+        }
+        let args = message["parameters"]
+            .as_array()
+            .filter(|args| !args.is_empty())?;
+        let mut context = None;
+        for arg in args {
+            if !arg.is_object() {
+                return None;
+            }
+            if let Some(object_id) = arg.get("objectId") {
+                let object_id = object_id.as_str().filter(|value| value.len() <= 1024)?;
+                let parsed: Value = serde_json::from_str(object_id).ok()?;
+                let object = parsed.as_object()?;
+                if object.len() != 2 || object.get("id")?.as_u64().is_none() {
+                    return None;
+                }
+                let id = object.get("injectedScriptId")?.as_i64()?;
+                if context.is_some_and(|previous| previous != id) {
+                    return None;
+                }
+                context = Some(id);
+            }
+        }
+        let context = context?;
+        if !self.announced_contexts.contains_key(&context)
+            || self.reused_realm_ids.contains(&context)
+        {
+            return None;
+        }
+        Some(json!({"method":"Runtime.consoleAPICalled","params":{
+            "type":kind,"args":args,"executionContextId":context,"timestamp":timestamp
+        }}))
     }
     fn performance_changing(&self) -> bool {
         self.pending.values().any(|p| {
@@ -176,6 +279,10 @@ impl PageCdpAdapter {
             frame_epochs: HashMap::new(),
             tree_revision: 0,
             announced_contexts: HashMap::new(),
+            realms: HashMap::new(),
+            next_realm_serial: 0,
+            seen_realm_ids: HashSet::new(),
+            reused_realm_ids: HashSet::new(),
             fetch_enabled: false,
             fetch_stage: None,
             request_meta: HashMap::new(),
@@ -271,6 +378,30 @@ impl PageCdpAdapter {
             return PageCdpOutput::client(error(&request, -32000, "Fetch state change is pending"));
         }
         match method.as_str() {
+            "Runtime.evaluate" => {
+                if params.get("uniqueContextId").is_some()
+                    || params.get("executionContextId").is_some()
+                {
+                    return PageCdpOutput::client(error(
+                        &request,
+                        -32602,
+                        "unsupported execution context selector",
+                    ));
+                }
+                if let Some(context) = params.get("contextId") {
+                    if context
+                        .as_i64()
+                        .map_or(true, |id| !self.announced_contexts.contains_key(&id))
+                    {
+                        return PageCdpOutput::client(error(
+                            &request,
+                            -32602,
+                            "unknown or retired execution context",
+                        ));
+                    }
+                }
+                PageCdpOutput::wire(request)
+            }
             "HeapProfiler.collectGarbage" => {
                 self.issue(request, Translation::Pass, "Heap.gc", json!({}), None)
             }
@@ -1039,19 +1170,38 @@ impl PageCdpAdapter {
         }
         if method == "Runtime.executionContextCreated" {
             let context = &message["params"]["context"];
-            if context["type"] == "normal" {
+            if matches!(
+                context["type"].as_str(),
+                Some("normal" | "user" | "internal")
+            ) {
                 if let (Some(frame), Some(id)) =
                     (context["frameId"].as_str(), context["id"].as_i64())
                 {
-                    if self.frame_contexts.len() < MAX_PENDING
-                        || self.frame_contexts.contains_key(frame)
-                    {
+                    if self.realms.len() < MAX_PENDING && !self.realms.contains_key(&id) {
                         if self.frame_epochs.len() >= MAX_REQUESTS
                             && !self.frame_epochs.contains_key(frame)
                         {
                             return context_mapping_failed();
                         }
-                        self.frame_contexts.insert(frame.to_owned(), id);
+                        if context["type"] == "normal" {
+                            if self.frame_contexts.contains_key(frame) {
+                                return context_mapping_failed();
+                            }
+                            self.frame_contexts.insert(frame.to_owned(), id);
+                        }
+                        let Some(serial) = self.next_realm_serial.checked_add(1) else {
+                            return context_mapping_failed();
+                        };
+                        if self.seen_realm_ids.len() >= MAX_REQUESTS
+                            && !self.seen_realm_ids.contains(&id)
+                        {
+                            return context_mapping_failed();
+                        }
+                        if !self.seen_realm_ids.insert(id) {
+                            self.reused_realm_ids.insert(id);
+                        }
+                        self.next_realm_serial = serial;
+                        self.realms.insert(id, (frame.to_owned(), serial));
                         if self.frame_epochs.len() < MAX_REQUESTS
                             || self.frame_epochs.contains_key(frame)
                         {
@@ -1069,6 +1219,7 @@ impl PageCdpAdapter {
                             Translation::ContextTree {
                                 event: message,
                                 epoch,
+                                serial,
                             },
                             "Page.getResourceTree",
                             json!({}),
@@ -1078,7 +1229,7 @@ impl PageCdpAdapter {
                 }
                 return context_mapping_failed();
             }
-            // WebKit user/internal worlds have no implemented CDP mapping.
+            // Unknown future world types have no verified CDP mapping.
             return PageCdpOutput::default();
         }
         if method == "Runtime.executionContextsCleared" {
@@ -1086,21 +1237,27 @@ impl PageCdpAdapter {
             self.frame_origins.clear();
             self.frame_contexts.clear();
             self.announced_contexts.clear();
+            self.realms.clear();
             for epoch in self.frame_epochs.values_mut() {
                 *epoch = epoch.wrapping_add(1);
             }
         }
         if method == "Runtime.executionContextDestroyed" {
             if let Some(id) = message["params"]["executionContextId"].as_i64() {
+                self.realms.remove(&id);
                 self.frame_contexts.retain(|_, context| *context != id);
-                self.announced_contexts.retain(|_, context| *context != id);
+                if self.announced_contexts.remove(&id).is_none() {
+                    return PageCdpOutput::default();
+                }
+            } else {
+                return context_mapping_failed();
             }
         }
         if method == "Console.messageAdded" {
-            // WebKit ConsoleMessage has no executionContextId. Neither a guessed
-            // context 1 nor host wall time is valid Runtime.consoleAPICalled evidence.
-            // Preserve the native event until a proven context/time association exists.
-            return PageCdpOutput::client(message);
+            let translated = self.console_event(&message);
+            let mut output = PageCdpOutput::client(message);
+            output.client.extend(translated);
+            return output;
         }
         if method == "Page.frameNavigated" || method == "Page.navigatedWithinDocument" {
             self.tree_revision = self.tree_revision.wrapping_add(1);
@@ -1138,7 +1295,7 @@ impl PageCdpAdapter {
                 if let Some(frame_id) = frame_id {
                     let main = frame.is_some_and(|frame| frame.get("parentId").is_none());
                     let retired = if main {
-                        self.frame_contexts.keys().cloned().collect::<Vec<_>>()
+                        self.frame_epochs.keys().cloned().collect::<Vec<_>>()
                     } else {
                         vec![frame_id.to_owned()]
                     };
@@ -1148,13 +1305,7 @@ impl PageCdpAdapter {
                         self.frame_origins.remove(frame_id);
                     }
                     for retired in retired {
-                        self.frame_contexts.remove(&retired);
-                        if let Some(epoch) = self.frame_epochs.get_mut(&retired) {
-                            *epoch = epoch.wrapping_add(1);
-                        }
-                        if let Some(id) = self.announced_contexts.remove(&retired) {
-                            output.client.push(json!({"method":"Runtime.executionContextDestroyed","params":{"executionContextId":id}}));
-                        }
+                        output.client.extend(self.retire_frame(&retired));
                     }
                     if let Some(origin) = frame.and_then(|frame| frame["securityOrigin"].as_str()) {
                         if self.frame_origins.len() < MAX_REQUESTS {
@@ -1180,14 +1331,10 @@ impl PageCdpAdapter {
         }
         if method == "Page.frameDetached" {
             self.tree_revision = self.tree_revision.wrapping_add(1);
-            let mut destroyed = None;
+            let mut destroyed = Vec::new();
             if let Some(frame) = message["params"]["frameId"].as_str() {
-                self.frame_contexts.remove(frame);
                 self.frame_origins.remove(frame);
-                if let Some(epoch) = self.frame_epochs.get_mut(frame) {
-                    *epoch = epoch.wrapping_add(1);
-                }
-                destroyed = self.announced_contexts.remove(frame);
+                destroyed = self.retire_frame(frame);
             }
             let mut message = message;
             if let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) {
@@ -1196,9 +1343,7 @@ impl PageCdpAdapter {
                 }
             }
             let mut output = PageCdpOutput::default();
-            if let Some(id) = destroyed {
-                output.client.push(json!({"method":"Runtime.executionContextDestroyed","params":{"executionContextId":id}}));
-            }
+            output.client.extend(destroyed);
             output.client.push(message);
             return output;
         }
@@ -1523,13 +1668,113 @@ mod tests {
     }
 
     #[test]
-    fn unmapped_native_worlds_are_not_forwarded_as_cdp_contexts() {
+    fn native_worlds_have_independent_identity_evaluation_and_retirement() {
         let mut adapter = adapter();
-        for kind in ["user", "internal"] {
-            let output = adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":41,"type":kind,"name":"","frameId":"child"}}}));
-            assert!(output.client.is_empty() && output.wire.is_empty());
+        adapter.remember_frame_origins(
+            &json!({"frame":{"id":"child","securityOrigin":"https://child.test"}}),
+        );
+        for (id, kind, is_default) in [
+            (41, "normal", true),
+            (42, "user", false),
+            (43, "internal", false),
+        ] {
+            let output = adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":id,"type":kind,"name":kind,"frameId":"child"}}}));
+            let mapped = &output.client[0]["params"]["context"];
+            assert_eq!(mapped["origin"], "https://child.test");
+            assert_eq!(mapped["auxData"]["isDefault"], is_default);
+            assert_eq!(
+                mapped["auxData"]["type"],
+                if is_default { "default" } else { "isolated" }
+            );
+            let evaluate = adapter.outgoing(json!({"id":id,"method":"Runtime.evaluate","params":{"expression":"6*7","contextId":id}}));
+            assert_eq!(evaluate.wire[0]["params"]["contextId"], id);
+            assert!(evaluate.wire[0]["params"]
+                .get("executionContextId")
+                .is_none());
+        }
+        let invalid = adapter.outgoing(json!({"id":90,"method":"Runtime.evaluate","params":{"expression":"6*7","executionContextId":42}}));
+        assert!(invalid.wire.is_empty());
+        assert_eq!(invalid.client[0]["error"]["code"], -32602);
+        assert_eq!(adapter.frame_contexts["child"], 41);
+        let commit = adapter.incoming(json!({"method":"Page.frameNavigated","params":{"frame":{"id":"child","parentId":"main","url":"https://next.test","securityOrigin":"https://next.test"}}}));
+        let destroyed: Vec<_> = commit
+            .client
+            .iter()
+            .filter(|message| message["method"] == "Runtime.executionContextDestroyed")
+            .map(|message| message["params"]["executionContextId"].as_i64().unwrap())
+            .collect();
+        assert_eq!(destroyed, vec![41, 42, 43]);
+        for id in [41, 42, 43] {
+            let evaluate = adapter.outgoing(json!({"id":id,"method":"Runtime.evaluate","params":{"expression":"6*7","contextId":id}}));
+            assert!(evaluate.wire.is_empty());
+            assert_eq!(evaluate.client[0]["error"]["code"], -32602);
         }
         assert!(adapter.frame_contexts.is_empty());
+    }
+
+    #[test]
+    fn late_world_tree_reply_cannot_revive_retired_or_reused_context() {
+        let mut adapter = adapter();
+        let lookup = adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":42,"type":"user","name":"old","frameId":"child"}}}));
+        adapter.incoming(json!({"method":"Runtime.executionContextDestroyed","params":{"executionContextId":42}}));
+        let replacement = adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":42,"type":"internal","name":"new","frameId":"child"}}}));
+        let old = adapter.incoming(json!({"id":lookup.wire[0]["id"],"result":{"frameTree":{"frame":{"id":"child","url":"https://stale.test/","securityOrigin":"https://stale.test"}}}}));
+        assert!(old.client.is_empty() && old.wire.is_empty());
+        let new = adapter.incoming(json!({"id":replacement.wire[0]["id"],"result":{"frameTree":{"frame":{"id":"child","url":"https://new.test/","securityOrigin":"https://new.test"}}}}));
+        assert_eq!(new.client[0]["params"]["context"]["name"], "new");
+        assert_eq!(
+            new.client[0]["params"]["context"]["origin"],
+            "https://new.test"
+        );
+    }
+
+    #[test]
+    fn console_object_id_proves_live_world_and_preserves_ambiguous_messages() {
+        let mut adapter = adapter();
+        adapter.remember_frame_origins(
+            &json!({"frame":{"id":"child","securityOrigin":"https://child.test"}}),
+        );
+        for (id, kind) in [(41, "normal"), (42, "user")] {
+            adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":id,"type":kind,"name":"","frameId":"child"}}}));
+        }
+        let event = json!({"method":"Console.messageAdded","params":{"message":{
+            "source":"console-api","type":"log","level":"log","text":"value","timestamp":12.5,
+            "parameters":[{"type":"string","value":"value"},{"type":"object","objectId":"{\"injectedScriptId\":42,\"id\":7}"}]
+        }}});
+        let output = adapter.incoming(event.clone());
+        assert_eq!(output.client[0], event);
+        assert_eq!(output.client[1]["method"], "Runtime.consoleAPICalled");
+        assert_eq!(output.client[1]["params"]["executionContextId"], 42);
+        assert_eq!(output.client[1]["params"]["timestamp"], 12500.0);
+        assert_eq!(
+            output.client[1]["params"]["args"],
+            event["params"]["message"]["parameters"]
+        );
+        for level in ["log", "info", "warning", "error", "debug"] {
+            let mut native = event.clone();
+            native["params"]["message"]["level"] = json!(level);
+            assert_eq!(adapter.incoming(native).client[1]["params"]["type"], level);
+        }
+        for params in [
+            json!([{"type":"string","value":"no object"}]),
+            json!([{"type":"object","objectId":"invalid"}]),
+            json!([{"type":"object","objectId":"{\"injectedScriptId\":42,\"id\":7}"},{"type":"object","objectId":"{\"injectedScriptId\":41,\"id\":8}"}]),
+            json!([{"type":"object","objectId":"{\"injectedScriptId\":999,\"id\":7}"}]),
+        ] {
+            let mut invalid = event.clone();
+            invalid["params"]["message"]["parameters"] = params;
+            assert_eq!(adapter.incoming(invalid.clone()).client, vec![invalid]);
+        }
+        let mut no_time = event.clone();
+        no_time["params"]["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("timestamp");
+        assert_eq!(adapter.incoming(no_time.clone()).client, vec![no_time]);
+        adapter.incoming(json!({"method":"Runtime.executionContextDestroyed","params":{"executionContextId":42}}));
+        assert_eq!(adapter.incoming(event.clone()).client, vec![event.clone()]);
+        adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":42,"type":"user","name":"replacement","frameId":"child"}}}));
+        assert_eq!(adapter.incoming(event.clone()).client, vec![event]);
     }
 
     #[test]
