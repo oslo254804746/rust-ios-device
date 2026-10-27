@@ -152,6 +152,118 @@ impl<R: Read + Seek> IpswPreflight<R> {
         self.product_build_version.as_deref()
     }
 
+    /// Extract the selected identity's OS image to a seekable staging file for
+    /// ASR. Uses bounded chunks and ZIP CRC, with one cooperative local clock.
+    /// On failure the caller must discard its partial output; nothing is sent
+    /// to a device. OS images are not subject to the small updater payload limit.
+    pub fn extract_system_image<W: std::io::Write>(
+        &mut self,
+        writer: &mut W,
+        max_bytes: u64,
+        budget: std::time::Duration,
+        cancel: &crate::session::OperationCancel,
+    ) -> Result<ComponentInspection, RestoreError> {
+        use sha2::{Digest, Sha256};
+        let deadline = std::time::Instant::now()
+            .checked_add(budget)
+            .filter(|_| !budget.is_zero())
+            .ok_or_else(|| {
+                RestoreError::Protocol("invalid system image extraction deadline".into())
+            })?;
+        let checkpoint = || -> Result<(), RestoreError> {
+            if cancel.is_cancelled() {
+                return Err(RestoreError::Io(std::io::Error::other(
+                    crate::OperationCancelled::new(),
+                )));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(RestoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "system image extraction deadline elapsed",
+                )));
+            }
+            Ok(())
+        };
+        checkpoint()?;
+        let path = self
+            .identity
+            .get("Manifest")
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|m| m.get("OS"))
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|c| c.get("Info"))
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|i| i.get("Path"))
+            .and_then(plist::Value::as_string)
+            .filter(|path| safe_ipsw_path(path))
+            .ok_or_else(|| {
+                RestoreError::Protocol("selected identity has no safe OS component path".into())
+            })?
+            .to_owned();
+        let mut selected = None;
+        for index in 0..self.archive.len() {
+            checkpoint()?;
+            let entry = self
+                .archive
+                .by_index_raw(index)
+                .map_err(|e| native_zip("locate OS image", e))?;
+            if entry.name() == path && selected.replace(index).is_some() {
+                return Err(RestoreError::Protocol("duplicate OS image member".into()));
+            }
+        }
+        let index = selected
+            .ok_or_else(|| RestoreError::Protocol("OS image is missing from IPSW".into()))?;
+        let mut entry = self
+            .archive
+            .by_index(index)
+            .map_err(|e| native_zip("open OS image", e))?;
+        let size = entry.size();
+        if entry.is_dir()
+            || entry
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170000 == 0o120000)
+            || size == 0
+            || size > max_bytes
+        {
+            return Err(RestoreError::Protocol(
+                "OS image size/type exceeds extraction contract".into(),
+            ));
+        }
+        let mut buffer = [0u8; 64 * 1024];
+        let mut count = 0u64;
+        let mut digest = Sha256::new();
+        loop {
+            checkpoint()?;
+            let read = entry
+                .read(&mut buffer)
+                .map_err(|e| native_io("read OS image and verify ZIP CRC", e))?;
+            if read == 0 {
+                break;
+            }
+            count = count
+                .checked_add(read as u64)
+                .filter(|n| *n <= size)
+                .ok_or_else(|| RestoreError::Protocol("OS image exceeds advertised size".into()))?;
+            checkpoint()?;
+            writer
+                .write_all(&buffer[..read])
+                .map_err(|e| native_io("write staged OS image", e))?;
+            digest.update(&buffer[..read]);
+        }
+        if count != size {
+            return Err(RestoreError::Protocol("OS image size mismatch".into()));
+        }
+        checkpoint()?;
+        writer
+            .flush()
+            .map_err(|e| native_io("flush staged OS image", e))?;
+        Ok(ComponentInspection {
+            path,
+            bytes: count,
+            sha256: hex::encode(digest.finalize()),
+        })
+    }
+
     /// Verify target device version against IPSW target version and behavior constraints.
     ///
     /// For "Update" (in-place upgrade) restores, cross-major downgrades and minor downgrades
@@ -938,6 +1050,63 @@ pub fn firmware_response_messages<'a>(
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
+
+    #[test]
+    fn selected_os_image_extracts_original_bytes_and_cancellation_keeps_partial_output() {
+        use sha2::{Digest, Sha256};
+        let mut identity =
+            selected_identity("Update", "Upgrade Install (IPSW)", "Firmware/rose.bin");
+        identity
+            .get_mut("Manifest")
+            .unwrap()
+            .as_dictionary_mut()
+            .unwrap()
+            .insert("OS".into(), entry("system.dmg"));
+        let bytes = vec![0x35u8; 160 * 1024];
+        let archive = ipsw(vec![identity], &[("system.dmg", &bytes)]);
+        let mut reader = IpswPreflight::open(Cursor::new(archive.clone()), selector()).unwrap();
+        let mut output = Vec::new();
+        let receipt = reader
+            .extract_system_image(
+                &mut output,
+                bytes.len() as u64,
+                std::time::Duration::from_secs(1),
+                &crate::session::OperationCancel::new(),
+            )
+            .unwrap();
+        assert_eq!(output, bytes);
+        assert_eq!(receipt.sha256, hex::encode(Sha256::digest(&bytes)));
+        let mut reader = IpswPreflight::open(Cursor::new(archive), selector()).unwrap();
+        let cancel = crate::session::OperationCancel::new();
+        struct CancelOnWrite {
+            bytes: Vec<u8>,
+            cancel: crate::session::OperationCancel,
+        }
+        impl Write for CancelOnWrite {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                self.cancel.cancel();
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                panic!("cancelled extraction must not flush success")
+            }
+        }
+        let mut output = CancelOnWrite {
+            bytes: Vec::new(),
+            cancel: cancel.clone(),
+        };
+        let error = reader
+            .extract_system_image(
+                &mut output,
+                bytes.len() as u64,
+                std::time::Duration::from_secs(1),
+                &cancel,
+            )
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Cancelled);
+        assert_eq!(output.bytes.len(), 64 * 1024);
+    }
 
     fn ipsw(identities: Vec<plist::Dictionary>, files: &[(&str, &[u8])]) -> Vec<u8> {
         let manifest = plist::Value::Dictionary(plist::Dictionary::from_iter([(
