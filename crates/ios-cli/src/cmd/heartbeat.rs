@@ -2,8 +2,6 @@ use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use std::time::Duration;
 
 use anyhow::Result;
-use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions};
 
 #[derive(clap::Args)]
 pub struct HeartbeatCmd {
@@ -30,15 +28,12 @@ pub(crate) async fn run_heartbeat(
     count: usize,
     timeout: Option<u64>,
 ) -> Result<()> {
-    let opts = ConnectOptions {
-        tun_mode: TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    let device = connect(udid, opts).await?;
-    let stream = device
-        .connect_service(ios_core::heartbeat::SERVICE_NAME)
-        .await?;
+    let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+        udid,
+        ios_core::heartbeat::SERVICE_NAME,
+        Duration::from_secs(30),
+    )
+    .await?;
     let mut client = ios_core::heartbeat::HeartbeatClient::new(stream);
     if let Some(t) = timeout {
         client.set_idle_timeout(Some(Duration::from_secs(t)));
@@ -50,7 +45,10 @@ pub(crate) async fn run_heartbeat(
 
     let mut messages = Vec::with_capacity(count);
     for _ in 0..count {
-        let message = client.ping().await?;
+        let message = tokio::select! {biased;
+            signal=tokio::signal::ctrl_c()=>{signal?;return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"heartbeat listener cancelled").into());}
+            message=client.ping()=>message?,
+        };
         messages.push(message);
     }
 

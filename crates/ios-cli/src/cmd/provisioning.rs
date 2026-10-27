@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use comfy_table::{Cell, Table};
-use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions};
 
 #[derive(clap::Args)]
 pub struct ProvisioningCmd {
@@ -52,15 +50,12 @@ impl ProvisioningCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for provisioning"))?;
 
-        let opts = ConnectOptions {
-            tun_mode: TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: true,
-        };
-        let device = connect(&udid, opts).await?;
-        let stream = device
-            .connect_service(ios_core::misagent::SERVICE_NAME)
-            .await?;
+        let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+            &udid,
+            ios_core::misagent::SERVICE_NAME,
+            std::time::Duration::from_secs(30),
+        )
+        .await?;
         let mut client = ios_core::misagent::MisagentClient::new(stream);
         client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
 

@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions};
 use tokio::fs;
 
 #[derive(clap::Args)]
@@ -37,18 +35,12 @@ impl LocationCmd {
                     .parse::<f64>()
                     .map_err(|e| crate::output::input_error("invalid longitude", e))?;
 
-                let opts = ConnectOptions {
-                    tun_mode: TunMode::Userspace,
-                    pair_record_path: None,
-                    skip_tunnel: true,
-                };
-                let device = connect(&udid, opts).await?;
-                let stream = device
-                    .connect_service_with_timeout(
-                        ios_core::simlocation::SERVICE_NAME,
-                        std::time::Duration::from_secs(30),
-                    )
-                    .await?;
+                let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+                    &udid,
+                    ios_core::simlocation::SERVICE_NAME,
+                    std::time::Duration::from_secs(30),
+                )
+                .await?;
                 let mut client = ios_core::simlocation::SimLocationClient::new(stream);
                 client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
                 client
@@ -62,18 +54,12 @@ impl LocationCmd {
                     .await
                     .map_err(|e| anyhow::Error::new(e).context("failed to read GPX file"))?;
 
-                let opts = ConnectOptions {
-                    tun_mode: TunMode::Userspace,
-                    pair_record_path: None,
-                    skip_tunnel: true,
-                };
-                let device = connect(&udid, opts).await?;
-                let stream = device
-                    .connect_service_with_timeout(
-                        ios_core::simlocation::SERVICE_NAME,
-                        std::time::Duration::from_secs(30),
-                    )
-                    .await?;
+                let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+                    &udid,
+                    ios_core::simlocation::SERVICE_NAME,
+                    std::time::Duration::from_secs(30),
+                )
+                .await?;
                 let mut client = ios_core::simlocation::SimLocationClient::new(stream);
                 client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
                 let count = tokio::select! {
@@ -87,18 +73,12 @@ impl LocationCmd {
                 crate::output::outln!("Replayed {count} GPX point(s) from {}", file.display());
             }
             LocationSub::Reset => {
-                let opts = ConnectOptions {
-                    tun_mode: TunMode::Userspace,
-                    pair_record_path: None,
-                    skip_tunnel: true,
-                };
-                let device = connect(&udid, opts).await?;
-                let stream = device
-                    .connect_service_with_timeout(
-                        ios_core::simlocation::SERVICE_NAME,
-                        std::time::Duration::from_secs(30),
-                    )
-                    .await?;
+                let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+                    &udid,
+                    ios_core::simlocation::SERVICE_NAME,
+                    std::time::Duration::from_secs(30),
+                )
+                .await?;
                 let mut client = ios_core::simlocation::SimLocationClient::new(stream);
                 client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
                 client

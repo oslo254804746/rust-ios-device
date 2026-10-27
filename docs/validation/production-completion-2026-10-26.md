@@ -1,4 +1,4 @@
-# 剩余生产功能实施 — 2026-10-26
+# 剩余生产功能实施 — 2026-10-26～27
 
 起点 `9f0e78a`，分支 `codex/review-fixes-20261010`，工作区干净。同一 checkout，仅本地提交。主控串行构建，所有设备协议验证使用离线/duplex/localhost；无真实设备、TSS或系统网络修改。
 
@@ -70,3 +70,29 @@ Fetch增加native interceptWithRequest（url/method/headers/base64 postData）�
 来源：[WebKit Runtime协议](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/JavaScriptCore/inspector/protocol/Runtime.json)、[Memory协议](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/JavaScriptCore/inspector/protocol/Memory.json)、[InspectorMemoryAgent](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/WebCore/inspector/agents/InspectorMemoryAgent.cpp)、[Network协议](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/JavaScriptCore/inspector/protocol/Network.json)、[InspectorNetworkAgent](https://github.com/WebKit/WebKit/blob/c1abbcfd045014c75f90751dad1a3e489e25ed47/Source/WebCore/inspector/agents/InspectorNetworkAgent.cpp)。
 
 执行：Core CDP22/0（之后Fetch移除增量新增fixture在最终批次补验），CLI WebInspector184/0/15客户端ignored；准确当前制品显式客户端15/0/0ignored（Playwright1.63.0/Puppeteer25.12.0，包含新iframe/metrics/Fetch三个流程）。`.git/completion-{cdp-core,web-final,cdp-clients-all}.log`。首次新iframe gate13/1失败，原因为测试把navigate回复当作异步事件也已送达；保留全部断言并显式等待匹配事件，随后单项和最终15全组通过。Input/下载和不等价的Chrome专有计数未实现，不能由这些流程宣称五域完成。
+
+## 后续生产增量与最终批次
+
+- L01：新connect_lockdown_service实际用于Diagnostics、Misagent、SpringBoard、Screenshot、Heartbeat、AMFI、PowerAssertion、SimLocation和AFC/HouseArrest。30秒setup总clock覆盖所选设备连接/lockdown/StartService/端口/TLS；请求另用其原总clock，长流不继承setup期限。Heartbeat等待显式Ctrl-C可取消。setup两项fixture验证零预算不poll、60ms发送后仍在总100ms结束、caller Drop及原peer EOF。没有将该时钟fixture冒称完整假USB/TLS握手。
+- F02：启动前PID基线在缺少listprocesses能力时允许Unknown，已确认PID流程继续工作；部分提交后失效也进入未确认收尾。两个新实际XPC假服务测试经过生产TestStartupCleanup：完整launch提交后取消→原factory重连→listprocesses→只kill唯一新PID→原peer EOF；歧义时不发送猜测PID的kill。原错误加RunnerLaunchUnconfirmed上下文，不跳过其它服务/native收尾。首轮fixture将原生Int64 PID误写成Uint64断言，修正后runtest14/0。
+- F05：用最小单HEVC轨MPEG-TS携带90kHz RTP PTS，经持续FFmpeg解码，读取showinfo提供的对应解码帧PTS和尺寸；BGRA原始帧由Rust逐帧编码PNG。避免FFmpeg PNG编码器在分辨率变化时保留旧IHDR造成坏帧。Web以X-Timestamp-Clock区分rtp-relative-ms/host-unix-ms；逐帧sequence允许重连后RTP原点重置。已实现有限次数、可配置退避重连；原清理失败或本机解码器失败不重启设备服务。只读剪贴板GET失败可刷新服务一次，SET/HID不重放，图像通道上限修正为2MiB，失去媒体帧时禁止沿用旧输入尺寸。
+- F06：新增选中identity的OS镜像提取，固定64KiB缓冲、大小/ZIP CRC/SHA256、协作总clock与取消；失败输出是调用方必须丢弃的部分文件。已由Core全量覆盖成功和首块后取消。
+- F04：原生Memory/Fetch rollback自身失败或超时仍保留原命令错误，并在error.data保留cleanup观察；24个Core CDP测试通过。
+
+RTP/传输来源：[RFC7798§4.1](https://www.rfc-editor.org/rfc/rfc7798.html#section-4.1)、[FFmpeg n7.1 mpegtsenc](https://github.com/FFmpeg/FFmpeg/blob/n7.1/libavformat/mpegtsenc.c)、[showinfo](https://github.com/FFmpeg/FFmpeg/blob/n7.1/libavfilter/vf_showinfo.c)、[rawvideo逐帧尺寸](https://github.com/FFmpeg/FFmpeg/blob/n7.1/libavcodec/rawenc.c)。镜像UTI和XPC数据表示来源：[固定pasteboard service协议观察](https://github.com/doronz88/pymobiledevice3/blob/03ba2270/pymobiledevice3/remote/core_device/pasteboard_service.py)、[Apple图像UTI](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/CocoaDrawingGuide/Images/Images.html)。这些是协议依据，不是本机物理iOS互通的运行记录。
+
+时间戳门禁真实执行9帧、32位RTP回绕、不等间隔、32x32→48x32参数切换，并经真实HTTP/RFB端点取得同一PNG/像素；Web/VNC订阅者停滞时旧共享像素Weak释放。原始RTP API未改。首轮PNG直出在第7帧坏IHDR失败，未删尺寸断言；改为rawvideo/Rust PNG后通过。
+
+| 执行 | 结果 |
+| --- | --- |
+| Core lib all-features，4线程 | 2011 PASS / 0 FAIL / 1原ignored，32.19s；`.git/completion-core-final.log` |
+| CLI实际当前lib测试二进制，4线程 | 1975 PASS / 0 FAIL / 21 ignored，66.14s；`.git/completion-cli-verified.log` |
+| 显式当前媒体门禁 | 3/0/0ignored；`.git/completion-media-final.log`，包含实际HTTP/RFB和慢订阅者 |
+| 固定实际客户端 | 15/0/0ignored，35.20s；`.git/completion-client-verified.log` |
+| 后续Core CDP补验 | 24/0；`.git/completion-cdp-core-final.log` |
+| 后续Viewer补验 | 28/0/3显式媒体ignored；`.git/completion-viewer-final.log` |
+| strict Core+CLI allfeatures/alltargets Clippy | PASS，54.09s；`.git/completion-clippy-final.log` |
+
+CLI集成有一次1974/1/21ignored：合法异步DIB Notify抢在Provide回复前到达，旧fixture假定首条必是Provide。修后精确验证可选的单条Notify，继续保留原Provide/DIB/双向像素断言；未增超时，最终1975全量和Viewer门禁通过。Core完整批次之后的唯一Core生产增量是rollback错误保留，已由最终CDP24项和strict检查补验。
+
+用户于2026-10-27确认暂时没有所选21F90离线IPSW；完整Update仍缺USB recovery/ECID重新枚举、IMG4/TBM/nonce-slot、FDR及全数据请求编排。没有把ASR/提取或任意Status=0记成完整恢复。真实设备/TSS/平台验收保持NOT_RUN。
