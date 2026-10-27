@@ -61,6 +61,8 @@ pub const KEYBOARD_REPORT_ID: u8 = 0x01;
 pub enum HidError {
     #[error("xpc error: {0}")]
     Xpc(#[from] XpcError),
+    #[error("HID media authorization error: {0}")]
+    Media(#[source] crate::display::DisplayError),
     #[error("HID protocol error: {0}")]
     Protocol(String),
     #[error("CoreDevice HID requires the modern envelope; legacy mode is unsupported")]
@@ -667,6 +669,7 @@ impl UniversalHidServiceClient {
         AuthorizedTouchSession {
             session: self.touch_session(service_id),
             media,
+            media_closed: false,
         }
     }
 
@@ -681,6 +684,7 @@ impl UniversalHidServiceClient {
         AuthorizedKeyboardSession {
             session: self.keyboard_session(service_id),
             media,
+            media_closed: false,
         }
     }
 }
@@ -959,6 +963,7 @@ impl Drop for TouchSession<'_> {
 pub struct AuthorizedTouchSession<'a, P: HidMediaProvider> {
     session: TouchSession<'a>,
     media: P,
+    media_closed: bool,
 }
 
 impl<P: HidMediaProvider> AuthorizedTouchSession<'_, P> {
@@ -1003,6 +1008,10 @@ impl<P: HidMediaProvider> AuthorizedTouchSession<'_, P> {
     /// alive so the caller can retry instead of leaving an active contact
     /// unauthenticated.
     pub async fn close(&mut self, timeout: Duration) -> Result<(), HidError> {
+        if self.media_closed {
+            return Ok(());
+        }
+        let started = tokio::time::Instant::now();
         let hid_result = self.session.close(timeout).await;
         // Keep the media authorization alive when release failed. Stopping
         // it here could leave a contact active while removing the gate
@@ -1012,11 +1021,13 @@ impl<P: HidMediaProvider> AuthorizedTouchSession<'_, P> {
         let media_result = self
             .media
             .media_session()
-            .stop(timeout)
+            .stop_strict(timeout.saturating_sub(started.elapsed()), true, &[])
             .await
-            .map_err(|error| {
-                HidError::Protocol(format!("media authorization stop failed: {error}"))
-            });
+            .map(|_| ())
+            .map_err(HidError::Media);
+        if media_result.is_ok() {
+            self.media_closed = true;
+        }
         media_result
     }
 }
@@ -1117,6 +1128,7 @@ impl Drop for KeyboardSession<'_> {
 pub struct AuthorizedKeyboardSession<'a, P: HidMediaProvider> {
     session: KeyboardSession<'a>,
     media: P,
+    media_closed: bool,
 }
 
 impl<P: HidMediaProvider> AuthorizedKeyboardSession<'_, P> {
@@ -1133,16 +1145,22 @@ impl<P: HidMediaProvider> AuthorizedKeyboardSession<'_, P> {
     }
 
     pub async fn close(&mut self, timeout: Duration) -> Result<(), HidError> {
+        if self.media_closed {
+            return Ok(());
+        }
+        let started = tokio::time::Instant::now();
         let hid_result = self.session.close(timeout).await;
         hid_result?;
         let media_result = self
             .media
             .media_session()
-            .stop(timeout)
+            .stop_strict(timeout.saturating_sub(started.elapsed()), true, &[])
             .await
-            .map_err(|error| {
-                HidError::Protocol(format!("media authorization stop failed: {error}"))
-            });
+            .map(|_| ())
+            .map_err(HidError::Media);
+        if media_result.is_ok() {
+            self.media_closed = true;
+        }
         media_result
     }
 }
@@ -1211,6 +1229,23 @@ fn ascii_usage(character: char) -> Option<(KeyboardUsage, bool)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_cleanup_error_retains_original_display_and_native_io_categories() {
+        let native = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        let error = super::HidError::Media(crate::display::DisplayError::Io(native));
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::Disconnected
+        );
+        let source = std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<crate::display::DisplayError>()
+            .unwrap();
+        let crate::display::DisplayError::Io(native) = source else {
+            panic!("original display IO error lost")
+        };
+        assert_eq!(native.kind(), std::io::ErrorKind::ConnectionReset);
+    }
     use super::*;
 
     #[tokio::test]

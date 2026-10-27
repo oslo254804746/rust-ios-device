@@ -173,8 +173,11 @@ impl HidCmd {
                 }
                 .await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
                 print_result(json_output, "tap", 2, false)?;
             }
             HidSub::Swipe {
@@ -208,8 +211,11 @@ impl HidCmd {
                 }
                 .await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
                 print_result(json_output, "swipe", steps + 1, false)?;
             }
             HidSub::Touch {
@@ -225,8 +231,11 @@ impl HidCmd {
                 let mut session = client.touch_session_with_media(service_id, media);
                 let operation = session.send_transition(phase, coordinate).await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
                 print_result(json_output, "touch", 1, false)?;
             }
             HidSub::Text { text, service_id } => {
@@ -244,8 +253,11 @@ impl HidCmd {
                 let mut session = client.keyboard_session_with_media(keyboard, media);
                 let operation = session.type_text(&text).await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
                 print_result(json_output, "text", length, true)?;
             }
             HidSub::Key {
@@ -271,8 +283,11 @@ impl HidCmd {
                 };
                 let operation = session.send_key(usage, modifiers).await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
                 print_result(json_output, "key", 1, false)?;
             }
         }
@@ -337,17 +352,37 @@ async fn connect_universal_with_media(
     {
         Ok(value) => value,
         Err(error) => {
-            let _ = media.stop(Duration::from_secs(5)).await;
-            return Err(anyhow::Error::from(error)
-                .context("Universal HID service is unavailable on this device"));
+            let primary = anyhow::Error::from(error)
+                .context("Universal HID service is unavailable on this device");
+            let cleanup = media
+                .stop_strict(Duration::from_secs(5), true, &[])
+                .await
+                .map(|_| ())
+                .map_err(Into::into);
+            return Err(crate::cmd::test_workflow::combine_results(
+                Err(primary),
+                cleanup,
+                "HID authorization media stop failed",
+            )
+            .unwrap_err());
         }
     };
     let client = match UniversalHidServiceClient::from_resolved_metadata(xpc, &metadata) {
         Ok(client) => client,
         Err(error) => {
-            let _ = media.stop(Duration::from_secs(5)).await;
-            return Err(anyhow::Error::from(error)
-                .context("Universal HID service is not a canonical RemoteXPC service"));
+            let primary = anyhow::Error::from(error)
+                .context("Universal HID service is not a canonical RemoteXPC service");
+            let cleanup = media
+                .stop_strict(Duration::from_secs(5), true, &[])
+                .await
+                .map(|_| ())
+                .map_err(Into::into);
+            return Err(crate::cmd::test_workflow::combine_results(
+                Err(primary),
+                cleanup,
+                "HID authorization media stop failed",
+            )
+            .unwrap_err());
         }
     };
     Ok((client, media, device))
