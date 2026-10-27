@@ -234,6 +234,7 @@ async fn handle_cdp_socket(
                                     let translated = adapter.outgoing(message);
                                     for response in translated.client { sender.send(Message::Text(response.to_string())).await?; }
                                     for wire in translated.wire { session.send_bridge_message(&mut client, &wire).await?; }
+                                    if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
                                 } else { session.send_bridge_message(&mut client, &message).await?; }
                             }
                         }
@@ -253,6 +254,7 @@ async fn handle_cdp_socket(
                     if !client.is_usable() { return Err(anyhow::Error::new(expired).context("CDP translated command deadline expired during native IO")); }
                     if let Some(adapter) = &mut page_adapter {
                         for message in adapter.expired() { sender.send(Message::Text(message.to_string())).await?; }
+                        if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
                     }
                 }
                 outbound = session.next_session_event(&mut client, timeout) => {
@@ -281,6 +283,7 @@ async fn handle_cdp_socket(
                                         for message in translated.client {
                                             sender.send(Message::Text(diagnostic_cdp_response(message).to_string())).await?;
                                         }
+                                        if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
                                     } else { sender.send(Message::Text(diagnostic_cdp_response(message).to_string())).await?; }
                                 }
                             }
@@ -823,6 +826,7 @@ async fn open_cdp_browser_page_at(
                                         output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
                                     }
                                     for wire in translated.wire { inspector.send_bridge_message(&mut client, &wire).await?; }
+                                    if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
                                 } else { inspector.send_bridge_message(&mut client, &message).await?; }
                             }
                         }
@@ -840,6 +844,7 @@ async fn open_cdp_browser_page_at(
                         for message in adapter.expired() {
                             output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
                         }
+                        if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
                     }
                 }
                 outbound = inspector.next_session_event(&mut client, timeout) => {
@@ -863,6 +868,7 @@ async fn open_cdp_browser_page_at(
                                             let message = diagnostic_cdp_response(message);
                                             output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
                                         }
+                                        if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
                                     } else {
                                         let created = message["method"] == "Runtime.executionContextCreated";
                                         let message = diagnostic_cdp_response(message);

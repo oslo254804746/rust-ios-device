@@ -36,6 +36,10 @@ impl PageCdpOutput {
 #[derive(Debug)]
 enum Translation {
     Pass,
+    ContextTree {
+        event: Value,
+        epoch: u64,
+    },
     FrameTree,
     NavigateTree {
         url: String,
@@ -74,6 +78,7 @@ struct Pending {
     request: Value,
     translation: Translation,
     deadline: Instant,
+    tree_revision: Option<u64>,
 }
 #[derive(Debug)]
 pub struct PageCdpAdapter {
@@ -82,14 +87,69 @@ pub struct PageCdpAdapter {
     timeout: Duration,
     frame_id: Option<String>,
     frame_contexts: HashMap<String, i64>,
+    frame_origins: HashMap<String, String>,
+    frame_epochs: HashMap<String, u64>,
+    tree_revision: u64,
+    announced_contexts: HashMap<String, i64>,
     fetch_enabled: bool,
     fetch_stage: Option<String>,
     request_meta: HashMap<String, Value>,
     paused: HashMap<String, &'static str>,
     performance_enabled: bool,
     memory_metrics: Option<Value>,
+    detached: bool,
 }
 impl PageCdpAdapter {
+    fn context_query_is_current(&self, translation: &Translation) -> bool {
+        let Translation::ContextTree { event, epoch } = translation else {
+            return true;
+        };
+        let context = &event["params"]["context"];
+        let Some(frame) = context["frameId"].as_str() else {
+            return false;
+        };
+        self.frame_epochs.get(frame) == Some(epoch)
+            && self.frame_contexts.get(frame).copied() == context["id"].as_i64()
+    }
+    fn remember_frame_origins(&mut self, tree: &Value) {
+        if let (Some(frame), Some(origin)) = (
+            tree["frame"]["id"].as_str(),
+            tree["frame"]["securityOrigin"].as_str(),
+        ) {
+            if self.frame_origins.len() < MAX_REQUESTS || self.frame_origins.contains_key(frame) {
+                self.frame_origins
+                    .insert(frame.to_owned(), origin.to_owned());
+            }
+        }
+        if let Some(children) = tree.get("childFrames").and_then(Value::as_array) {
+            for child in children {
+                self.remember_frame_origins(child);
+            }
+        }
+    }
+
+    fn page_context_event(&mut self, event: Value) -> PageCdpOutput {
+        let context = &event["params"]["context"];
+        let (Some(frame), Some(id)) = (context["frameId"].as_str(), context["id"].as_i64()) else {
+            return context_mapping_failed();
+        };
+        if self.frame_contexts.get(frame) != Some(&id) {
+            return PageCdpOutput::default();
+        }
+        let Some(origin) = self.frame_origins.get(frame) else {
+            return context_mapping_failed();
+        };
+        let Some(name) = context["name"].as_str() else {
+            return context_mapping_failed();
+        };
+        self.announced_contexts.insert(frame.to_owned(), id);
+        PageCdpOutput::client(
+            json!({"method":"Runtime.executionContextCreated","params":{"context":{
+                "id":id,"name":name,"origin":origin,
+                "auxData":{"frameId":frame,"isDefault":true,"type":"default"}
+            }}}),
+        )
+    }
     fn performance_changing(&self) -> bool {
         self.pending.values().any(|p| {
             matches!(
@@ -112,12 +172,17 @@ impl PageCdpAdapter {
             timeout,
             frame_id: None,
             frame_contexts: HashMap::new(),
+            frame_origins: HashMap::new(),
+            frame_epochs: HashMap::new(),
+            tree_revision: 0,
+            announced_contexts: HashMap::new(),
             fetch_enabled: false,
             fetch_stage: None,
             request_meta: HashMap::new(),
             paused: HashMap::new(),
             performance_enabled: false,
             memory_metrics: None,
+            detached: false,
         }
     }
     fn issue(
@@ -129,6 +194,9 @@ impl PageCdpAdapter {
         deadline: Option<Instant>,
     ) -> PageCdpOutput {
         if self.pending.len() >= MAX_PENDING || self.next_id == i64::MIN {
+            if request.get("id").is_none() {
+                return context_mapping_failed();
+            }
             return PageCdpOutput::client(error(
                 &request,
                 -32000,
@@ -143,11 +211,19 @@ impl PageCdpAdapter {
                 request,
                 translation,
                 deadline: deadline.unwrap_or_else(|| Instant::now() + self.timeout),
+                tree_revision: (method == "Page.getResourceTree").then_some(self.tree_revision),
             },
         );
         PageCdpOutput::wire(json!({"id":id,"method":method,"params":params}))
     }
     pub fn outgoing(&mut self, request: Value) -> PageCdpOutput {
+        if self.detached {
+            return PageCdpOutput::client(error(
+                &request,
+                -32000,
+                "page protocol mapping is detached; reconnect",
+            ));
+        }
         let Some(method) = request
             .get("method")
             .and_then(Value::as_str)
@@ -629,7 +705,23 @@ impl PageCdpAdapter {
             _ => PageCdpOutput::wire(request),
         }
     }
+    pub fn is_usable(&self) -> bool {
+        !self.detached
+    }
+
     pub fn incoming(&mut self, message: Value) -> PageCdpOutput {
+        if self.detached {
+            return PageCdpOutput::default();
+        }
+        let output = self.incoming_inner(message);
+        self.detached = output
+            .client
+            .iter()
+            .any(|message| message["method"] == "Inspector.detached");
+        output
+    }
+
+    fn incoming_inner(&mut self, message: Value) -> PageCdpOutput {
         if let Some(id) = message
             .get("id")
             .and_then(Value::as_i64)
@@ -638,7 +730,40 @@ impl PageCdpAdapter {
             let Some(pending) = self.pending.remove(&id) else {
                 return PageCdpOutput::default();
             };
+            // A retired query cannot destroy or announce a replacement realm,
+            // regardless of whether its late response succeeded or failed.
+            if !self.context_query_is_current(&pending.translation) {
+                return PageCdpOutput::default();
+            }
+            if pending
+                .tree_revision
+                .is_some_and(|revision| revision != self.tree_revision)
+            {
+                if pending.deadline <= Instant::now() {
+                    return if matches!(pending.translation, Translation::ContextTree { .. }) {
+                        context_mapping_failed()
+                    } else {
+                        PageCdpOutput::client(error(
+                            &pending.request,
+                            -32000,
+                            "frame tree changed before translation completed",
+                        ))
+                    };
+                }
+                // Do not cache any part of a snapshot taken before a navigation.
+                // A retry inherits the original absolute deadline.
+                return self.issue(
+                    pending.request,
+                    pending.translation,
+                    "Page.getResourceTree",
+                    json!({}),
+                    Some(pending.deadline),
+                );
+            }
             if let Some(cause) = message.get("error") {
+                if matches!(pending.translation, Translation::ContextTree { .. }) {
+                    return context_mapping_failed();
+                }
                 if let Translation::FetchEnable { stage } = &pending.translation {
                     return self.issue(
                         pending.request,
@@ -677,6 +802,9 @@ impl PageCdpAdapter {
                 return PageCdpOutput::client(response);
             }
             let Some(result) = message.get("result") else {
+                if matches!(pending.translation, Translation::ContextTree { .. }) {
+                    return context_mapping_failed();
+                }
                 return PageCdpOutput::client(error(
                     &pending.request,
                     -32000,
@@ -684,6 +812,13 @@ impl PageCdpAdapter {
                 ));
             };
             return match pending.translation {
+                Translation::ContextTree { event, .. } => {
+                    let Some(tree) = result.get("frameTree").filter(|tree| valid_tree(tree)) else {
+                        return context_mapping_failed();
+                    };
+                    self.remember_frame_origins(tree);
+                    self.page_context_event(event)
+                }
                 Translation::PerformanceEnable => self.issue(
                     pending.request,
                     Translation::PerformanceStart,
@@ -716,6 +851,7 @@ impl PageCdpAdapter {
                 Translation::FrameTree => {
                     match result.get("frameTree").filter(|tree| valid_tree(tree)) {
                         Some(tree) => {
+                            self.remember_frame_origins(tree);
                             self.frame_id = tree["frame"]["id"].as_str().map(str::to_owned);
                             PageCdpOutput::client(reply(
                                 &pending.request,
@@ -738,6 +874,7 @@ impl PageCdpAdapter {
                         ));
                     };
                     let main_id = tree["frame"]["id"].as_str().unwrap().to_owned();
+                    self.remember_frame_origins(tree);
                     let effective_frame_id = frame_id.unwrap_or_else(|| main_id.clone());
                     let context = if effective_frame_id != main_id {
                         let context = self
@@ -793,6 +930,7 @@ impl PageCdpAdapter {
                                 request: pending.request,
                                 translation: Translation::Navigate { frame_id, url },
                                 deadline: pending.deadline,
+                                tree_revision: None,
                             },
                         );
                         PageCdpOutput::default()
@@ -901,24 +1039,61 @@ impl PageCdpAdapter {
         }
         if method == "Runtime.executionContextCreated" {
             let context = &message["params"]["context"];
-            if context["type"] == "normal" || context["isPageContext"] == true {
+            if context["type"] == "normal" {
                 if let (Some(frame), Some(id)) =
                     (context["frameId"].as_str(), context["id"].as_i64())
                 {
                     if self.frame_contexts.len() < MAX_PENDING
                         || self.frame_contexts.contains_key(frame)
                     {
+                        if self.frame_epochs.len() >= MAX_REQUESTS
+                            && !self.frame_epochs.contains_key(frame)
+                        {
+                            return context_mapping_failed();
+                        }
                         self.frame_contexts.insert(frame.to_owned(), id);
+                        if self.frame_epochs.len() < MAX_REQUESTS
+                            || self.frame_epochs.contains_key(frame)
+                        {
+                            self.frame_epochs.entry(frame.to_owned()).or_insert(0);
+                        }
+                        if self.frame_origins.contains_key(frame) {
+                            return self.page_context_event(message);
+                        }
+                        if self.pending.len() >= MAX_PENDING {
+                            return context_mapping_failed();
+                        }
+                        let epoch = self.frame_epochs.get(frame).copied().unwrap_or(0);
+                        return self.issue(
+                            message.clone(),
+                            Translation::ContextTree {
+                                event: message,
+                                epoch,
+                            },
+                            "Page.getResourceTree",
+                            json!({}),
+                            None,
+                        );
                     }
                 }
+                return context_mapping_failed();
             }
+            // WebKit user/internal worlds have no implemented CDP mapping.
+            return PageCdpOutput::default();
         }
         if method == "Runtime.executionContextsCleared" {
+            self.tree_revision = self.tree_revision.wrapping_add(1);
+            self.frame_origins.clear();
             self.frame_contexts.clear();
+            self.announced_contexts.clear();
+            for epoch in self.frame_epochs.values_mut() {
+                *epoch = epoch.wrapping_add(1);
+            }
         }
         if method == "Runtime.executionContextDestroyed" {
             if let Some(id) = message["params"]["executionContextId"].as_i64() {
                 self.frame_contexts.retain(|_, context| *context != id);
+                self.announced_contexts.retain(|_, context| *context != id);
             }
         }
         if method == "Console.messageAdded" {
@@ -928,6 +1103,7 @@ impl PageCdpAdapter {
             return PageCdpOutput::client(message);
         }
         if method == "Page.frameNavigated" || method == "Page.navigatedWithinDocument" {
+            self.tree_revision = self.tree_revision.wrapping_add(1);
             let frame = message.get("params").and_then(|params| params.get("frame"));
             let frame_id = frame
                 .and_then(|frame| frame.get("id"))
@@ -958,6 +1134,36 @@ impl PageCdpAdapter {
                 })
                 .collect();
             let mut output = PageCdpOutput::default();
+            if method == "Page.frameNavigated" {
+                if let Some(frame_id) = frame_id {
+                    let main = frame.is_some_and(|frame| frame.get("parentId").is_none());
+                    let retired = if main {
+                        self.frame_contexts.keys().cloned().collect::<Vec<_>>()
+                    } else {
+                        vec![frame_id.to_owned()]
+                    };
+                    if main {
+                        self.frame_origins.clear();
+                    } else {
+                        self.frame_origins.remove(frame_id);
+                    }
+                    for retired in retired {
+                        self.frame_contexts.remove(&retired);
+                        if let Some(epoch) = self.frame_epochs.get_mut(&retired) {
+                            *epoch = epoch.wrapping_add(1);
+                        }
+                        if let Some(id) = self.announced_contexts.remove(&retired) {
+                            output.client.push(json!({"method":"Runtime.executionContextDestroyed","params":{"executionContextId":id}}));
+                        }
+                    }
+                    if let Some(origin) = frame.and_then(|frame| frame["securityOrigin"].as_str()) {
+                        if self.frame_origins.len() < MAX_REQUESTS {
+                            self.frame_origins
+                                .insert(frame_id.to_owned(), origin.to_owned());
+                        }
+                    }
+                }
+            }
             for id in ids {
                 let pending = self.pending.remove(&id).unwrap();
                 let mut result = json!({"frameId":frame_id.unwrap()});
@@ -973,8 +1179,15 @@ impl PageCdpAdapter {
             return output;
         }
         if method == "Page.frameDetached" {
+            self.tree_revision = self.tree_revision.wrapping_add(1);
+            let mut destroyed = None;
             if let Some(frame) = message["params"]["frameId"].as_str() {
                 self.frame_contexts.remove(frame);
+                self.frame_origins.remove(frame);
+                if let Some(epoch) = self.frame_epochs.get_mut(frame) {
+                    *epoch = epoch.wrapping_add(1);
+                }
+                destroyed = self.announced_contexts.remove(frame);
             }
             let mut message = message;
             if let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) {
@@ -982,7 +1195,12 @@ impl PageCdpAdapter {
                     params.insert("reason".into(), json!("remove"));
                 }
             }
-            return PageCdpOutput::client(message);
+            let mut output = PageCdpOutput::default();
+            if let Some(id) = destroyed {
+                output.client.push(json!({"method":"Runtime.executionContextDestroyed","params":{"executionContextId":id}}));
+            }
+            output.client.push(message);
+            return output;
         }
         if method == "Network.requestWillBeSent" {
             if let Some(id) = message["params"]["requestId"].as_str() {
@@ -1062,27 +1280,44 @@ impl PageCdpAdapter {
             .iter()
             .filter_map(|(id, pending)| (pending.deadline <= now).then_some(*id))
             .collect();
-        ids.into_iter()
-            .map(|id| {
+        let output: Vec<_> = ids
+            .into_iter()
+            .filter_map(|id| {
                 let pending = self.pending.remove(&id).unwrap();
+                if !self.context_query_is_current(&pending.translation) {
+                    return None;
+                }
+                if matches!(pending.translation, Translation::ContextTree { .. }) {
+                    return Some(context_mapping_failed().client.remove(0));
+                }
                 if let Translation::PerformanceRollback { cause }
                 | Translation::FetchRollback { cause } = &pending.translation
                 {
-                    return rollback_failure(
+                    return Some(rollback_failure(
                         &pending.request,
                         cause,
                         Some(&json!({"code":-32000,"message":"native rollback deadline elapsed"})),
-                    );
+                    ));
                 }
-                error(
+                Some(error(
                     &pending.request,
                     -32000,
                     "WebInspector translation deadline elapsed",
-                )
+                ))
             })
-            .collect()
+            .collect();
+        self.detached |= output
+            .iter()
+            .any(|message| message["method"] == "Inspector.detached");
+        output
     }
 }
+fn context_mapping_failed() -> PageCdpOutput {
+    PageCdpOutput::client(
+        json!({"method":"Inspector.detached","params":{"reason":"native frame origin for execution context is unavailable"}}),
+    )
+}
+
 fn rollback_failure(request: &Value, primary: &Value, cleanup: Option<&Value>) -> Value {
     let mut response = reply(request, json!({}));
     response.as_object_mut().unwrap().remove("result");
@@ -1223,6 +1458,166 @@ fn valid_png(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_context_queries_ignore_errors_missing_results_and_expiry() {
+        for retire in [
+            "Page.frameDetached",
+            "Runtime.executionContextsCleared",
+            "Page.frameNavigated",
+        ] {
+            for outcome in ["error", "missing", "expiry"] {
+                let mut adapter = adapter();
+                let lookup = adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":41,"type":"normal","name":"","frameId":"old"}}}));
+                let id = lookup.wire[0]["id"].as_i64().unwrap();
+                adapter.incoming(json!({"method":retire,"params":{"frameId":"old","frame":{"id":"old","url":"https://new.test","securityOrigin":"https://new.test"}}}));
+                let output =
+                    match outcome {
+                        "expiry" => {
+                            adapter.pending.get_mut(&id).unwrap().deadline = Instant::now();
+                            adapter.expired()
+                        }
+                        "error" => adapter
+                            .incoming(
+                                json!({"id":id,"error":{"code":-32000,"message":"old failure"}}),
+                            )
+                            .client,
+                        _ => adapter.incoming(json!({"id":id})).client,
+                    };
+                assert!(
+                    output.is_empty(),
+                    "{retire}/{outcome} must not detach a replacement realm"
+                );
+                assert!(adapter.is_usable());
+            }
+        }
+    }
+
+    #[test]
+    fn stale_trees_retry_with_original_deadline_without_overwriting_new_origins() {
+        for method in ["context", "Page.getFrameTree", "Page.navigate"] {
+            let mut adapter = adapter();
+            let lookup = if method == "context" {
+                adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":41,"type":"normal","name":"","frameId":"main"}}}))
+            } else {
+                adapter
+                    .outgoing(json!({"id":7,"method":method,"params":{"url":"https://next.test"}}))
+            };
+            let id = lookup.wire[0]["id"].as_i64().unwrap();
+            let deadline = adapter.pending[&id].deadline;
+            adapter.incoming(json!({"method":"Page.frameNavigated","params":{"frame":{"id":"child","parentId":"main","url":"https://c.test","securityOrigin":"https://c.test"}}}));
+            let new_realm = adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":42,"type":"normal","name":"","frameId":"child"}}}));
+            assert_eq!(
+                new_realm.client[0]["params"]["context"]["origin"],
+                "https://c.test"
+            );
+            let retried = adapter.incoming(json!({"id":id,"result":{"frameTree":{"frame":{"id":"main","securityOrigin":"https://a.test"},"childFrames":[{"frame":{"id":"child","securityOrigin":"https://b.test"}}]}}}));
+            assert!(retried.client.is_empty());
+            assert_eq!(retried.wire[0]["method"], "Page.getResourceTree");
+            assert_eq!(
+                adapter.pending[&retried.wire[0]["id"].as_i64().unwrap()].deadline,
+                deadline
+            );
+            assert_eq!(adapter.frame_origins["child"], "https://c.test");
+        }
+    }
+
+    #[test]
+    fn unmapped_native_worlds_are_not_forwarded_as_cdp_contexts() {
+        let mut adapter = adapter();
+        for kind in ["user", "internal"] {
+            let output = adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":41,"type":kind,"name":"","frameId":"child"}}}));
+            assert!(output.client.is_empty() && output.wire.is_empty());
+        }
+        assert!(adapter.frame_contexts.is_empty());
+    }
+
+    #[test]
+    fn page_context_fields_come_from_native_id_world_and_frame_origin() {
+        let mut adapter = PageCdpAdapter::new(Duration::from_secs(1));
+        let created = json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":41,"type":"normal","name":"","frameId":"cross"}}});
+        let lookup = adapter.incoming(created.clone());
+        assert_eq!(lookup.wire[0]["method"], "Page.getResourceTree");
+        assert!(lookup.client.is_empty());
+        let mapped=adapter.incoming(json!({"id":lookup.wire[0]["id"],"result":{"frameTree":{
+            "frame":{"id":"main","url":"https://a.test/","securityOrigin":"https://a.test"},
+            "childFrames":[{"frame":{"id":"cross","parentId":"main","url":"https://b.test/","securityOrigin":"https://b.test"}}]
+        }}}));
+        assert_eq!(
+            mapped.client[0]["params"]["context"]["origin"],
+            "https://b.test"
+        );
+        assert_eq!(
+            mapped.client[0]["params"]["context"]["auxData"]["frameId"],
+            "cross"
+        );
+        assert_eq!(mapped.client[0]["params"]["context"]["id"], 41);
+        assert!(mapped.client[0]["params"]["context"]
+            .get("uniqueId")
+            .is_none());
+        let navigated=adapter.incoming(json!({"method":"Page.frameNavigated","params":{"frame":{"id":"cross","parentId":"main","url":"https://c.test/new","securityOrigin":"https://c.test"}}}));
+        assert_eq!(
+            navigated.client[0]["method"],
+            "Runtime.executionContextDestroyed"
+        );
+        let recreated=adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":42,"type":"normal","name":"","frameId":"cross"}}}));
+        assert_eq!(
+            recreated.client[0]["params"]["context"]["origin"],
+            "https://c.test"
+        );
+        assert_eq!(recreated.client[0]["params"]["context"]["id"], 42);
+    }
+
+    #[test]
+    fn late_context_origin_reply_cannot_announce_a_retired_frame_realm() {
+        let mut adapter = PageCdpAdapter::new(Duration::from_secs(1));
+        let lookup=adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":41,"type":"normal","name":"","frameId":"old"}}}));
+        adapter.incoming(json!({"method":"Page.frameDetached","params":{"frameId":"old"}}));
+        let late=adapter.incoming(json!({"id":lookup.wire[0]["id"],"result":{"frameTree":{"frame":{"id":"old","url":"https://a.test","securityOrigin":"https://a.test"}}}}));
+        assert!(late.client.is_empty());
+        assert!(adapter.announced_contexts.is_empty());
+    }
+
+    #[test]
+    fn missing_context_origin_closes_local_mapping_and_never_sends_an_unknown_rpc_id() {
+        let mut adapter = PageCdpAdapter::new(Duration::from_secs(1));
+        let lookup=adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":41,"type":"normal","name":"","frameId":"child"}}}));
+        let failed = adapter.incoming(
+            json!({"id":lookup.wire[0]["id"],"error":{"code":-32601,"message":"no frame tree"}}),
+        );
+        assert_eq!(failed.client[0]["method"], "Inspector.detached");
+        assert!(!adapter.is_usable());
+        assert!(failed.client[0].get("id").is_none());
+        let next = adapter
+            .outgoing(json!({"id":12,"method":"Runtime.evaluate","params":{"expression":"6*7"}}));
+        assert!(next.wire.is_empty());
+        assert_eq!(next.client[0]["error"]["code"], -32000);
+    }
+
+    #[test]
+    fn main_navigation_retires_announced_child_realms_before_frame_commit() {
+        let mut adapter = PageCdpAdapter::new(Duration::from_secs(1));
+        adapter.remember_frame_origins(&json!({"frame":{"id":"main","securityOrigin":"https://a.test"},"childFrames":[{"frame":{"id":"child","securityOrigin":"https://b.test"}}]}));
+        for (id, frame) in [(1, "main"), (2, "child")] {
+            let announced=adapter.incoming(json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":id,"type":"normal","name":"","frameId":frame}}}));
+            assert_eq!(announced.client[0]["params"]["context"]["id"], id);
+        }
+        let commit=adapter.incoming(json!({"method":"Page.frameNavigated","params":{"frame":{"id":"main","url":"https://c.test","securityOrigin":"https://c.test"}}}));
+        let mut destroyed = commit
+            .client
+            .iter()
+            .filter(|m| m["method"] == "Runtime.executionContextDestroyed")
+            .map(|m| m["params"]["executionContextId"].as_i64().unwrap())
+            .collect::<Vec<_>>();
+        destroyed.sort();
+        assert_eq!(destroyed, vec![1, 2]);
+        assert_eq!(
+            commit.client.last().unwrap()["method"],
+            "Page.frameNavigated"
+        );
+        assert!(adapter.frame_contexts.is_empty());
+        assert!(!adapter.frame_origins.contains_key("child"));
+    }
 
     #[test]
     fn fetch_override_response_and_disable_remove_real_native_interception() {

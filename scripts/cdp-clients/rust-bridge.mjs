@@ -85,11 +85,18 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
     session = await target.createCDPSession();
     steps.push('attached');
     const contexts = [];
+    const frameContexts = new Map();
+    const destroyedContexts = [];
     let resolveContext;
     const announced = new Promise(resolve => { resolveContext = resolve; });
     session.on('Runtime.executionContextCreated', event => {
       contexts.push(event.context.id);
+      if (event.context.auxData?.frameId) frameContexts.set(event.context.auxData.frameId, event.context);
       resolveContext(event.context.id);
+    });
+    session.on('Runtime.executionContextDestroyed', event => {
+      destroyedContexts.push(event.executionContextId);
+      for (const [frame,context] of frameContexts) if (context.id === event.executionContextId) frameContexts.delete(frame);
     });
     await session.send('Runtime.enable');
     let timer;
@@ -172,12 +179,24 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
       assert.notEqual(frameTree.childFrames[1].frame.securityOrigin, frameTree.frame.securityOrigin);
       const commits = [];
       session.on('Page.frameNavigated', event => commits.push(event.frame));
-      for (const [frameId, context, url] of [
-        ['1.3', 101, 'https://example.invalid/navigated-child'],
-        ['1.5', 102, 'https://cross.invalid/navigated-child'],
+      for (const [frameId, url, origin] of [
+        ['1.3', 'https://example.invalid/navigated-child', 'https://example.invalid'],
+        ['1.5', 'https://cross.invalid/navigated-child', 'https://cross.invalid'],
       ]) {
-        const evaluated = await session.send('Runtime.evaluate', {expression:'6*7', contextId:context, returnByValue:true});
+        const context = frameContexts.get(frameId);
+        assert(context, 'native frame context was not mapped');
+        assert.equal(context.origin, origin);
+        assert.equal(context.auxData.isDefault, true);
+        const evaluated = await session.send('Runtime.evaluate', {expression:'6*7', contextId:context.id, returnByValue:true});
         assert.equal(evaluated.result.value, 42);
+        const recreated = new Promise(resolve => {
+          const listener = event => {
+            if (event.context.auxData?.frameId === frameId && event.context.id !== context.id) {
+              session.off('Runtime.executionContextCreated', listener); resolve(event.context);
+            }
+          };
+          session.on('Runtime.executionContextCreated', listener);
+        });
         const committed = new Promise(resolve => {
           const listener = event => {
             if (event.frame.id === frameId && event.frame.url === url) {
@@ -189,12 +208,19 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
         const navigation = await session.send('Page.navigate', {url, frameId});
         assert.equal(navigation.frameId, frameId);
         await bounded(committed);
+        const nextContext = await bounded(recreated);
+        assert(destroyedContexts.includes(context.id));
+        assert.equal(nextContext.origin, origin);
+        const nextEvaluated = await session.send('Runtime.evaluate', {expression:'6*7',contextId:nextContext.id,returnByValue:true});
+        assert.equal(nextEvaluated.result.value,42);
       }
       assert.deepEqual(commits.map(frame => frame.id), ['1.3', '1.5']);
       assert.equal(commits[1].url, 'https://cross.invalid/navigated-child');
+      const refreshed = (await session.send('Page.getFrameTree')).frameTree;
+      assert.deepEqual(refreshed.childFrames.map(child => child.frame.url), commits.map(frame => frame.url));
       steps.push('same-origin-navigated', 'cross-origin-navigated');
       await session.detach(); session = undefined; steps.push('detached');
-      result = {status: 'iframe-workflow', steps, contexts, commits};
+      result = {status: 'iframe-workflow', steps, contexts, commits, destroyedContexts};
     } else if (expectation === 'five-domain-workflow') {
       // Domain 1: Console / Runtime is already active and verified
       // Domain 2: Page / iframe
