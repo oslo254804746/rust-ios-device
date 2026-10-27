@@ -504,3 +504,377 @@ async fn restored_update_loop_handles_device_failure_status() {
     assert!(msg.contains("StatusCode") || msg.contains("14") || msg.contains("failed"));
     remote.await.unwrap();
 }
+
+#[tokio::test]
+async fn system_image_dispatch_uses_data_port_and_status_zero_is_not_update_completion() {
+    use tokio::io::AsyncWriteExt;
+    let (control, mut peer) = tokio::io::duplex(8192);
+    let (data, mut asr_peer) = tokio::io::duplex(8192);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let remote = tokio::spawn(async move {
+        handshake(&mut peer, 42).await;
+        assert_eq!(
+            read(&mut peer).await["Request"].as_string(),
+            Some("StartRestore")
+        );
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType", Value::String("DataRequestMsg".into())),
+                ("DataType", Value::String("SystemImageData".into())),
+                ("DataPort", Value::Integer(4321u64.into())),
+            ]),
+        )
+        .await;
+        done_rx.await.unwrap();
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType", Value::String("StatusMsg".into())),
+                ("Status", Value::Integer(0u64.into())),
+            ]),
+        )
+        .await;
+    });
+    let asr = tokio::spawn(async move {
+        asr_peer.write_all(b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Command</key><string>Initiate</string></dict></plist>\n").await.unwrap();
+        let mut offer = Vec::new();
+        while !offer.ends_with(b"</plist>\n") {
+            offer.push(asr_peer.read_u8().await.unwrap());
+        }
+        let offer: Dictionary = plist::from_bytes(&offer).unwrap();
+        assert_eq!(
+            offer["Payload"].as_dictionary().unwrap()["Size"].as_unsigned_integer(),
+            Some(3)
+        );
+        asr_peer.write_all(b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Command</key><string>Payload</string></dict></plist>\n").await.unwrap();
+        let mut received = [0; 3];
+        asr_peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"OS!");
+        assert_eq!(asr_peer.read(&mut [0; 1]).await.unwrap(), 0);
+        done_tx.send(()).unwrap();
+    });
+    let cancel = OperationCancel::new();
+    let mut client = RestoredClient::connect(control, 42, Duration::from_secs(5), cancel.clone())
+        .await
+        .unwrap();
+    let mut sm = RestoreStateMachine::new();
+    sm.receive_nonces(Some(vec![1]), None).unwrap();
+    let mut image = std::io::Cursor::new(b"OS!".to_vec());
+    let mut data = Some(data);
+    let mut connector = |port| {
+        assert_eq!(port, 4321);
+        std::future::ready(Ok(data.take().unwrap()))
+    };
+    let error = run_restored_update_loop_with_system_image(
+        &mut client,
+        sm,
+        Dictionary::from_iter([("RestoreBehavior", Value::String("Update".into()))]),
+        |_, _| panic!("firmware was not requested"),
+        &cancel,
+        &mut image,
+        &mut connector,
+    )
+    .await
+    .unwrap_err();
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let report = loop {
+        let current = source.expect("partial execution report");
+        if let Some(execution) =
+            current.downcast_ref::<super::super::state_machine::RestoreExecutionError>()
+        {
+            break &execution.report;
+        }
+        source = current.source();
+    };
+    assert_eq!(report.total_bytes_transferred, 3);
+    assert_eq!(report.data_requests_served, vec!["SystemImageData"]);
+    assert_ne!(report.final_state, RestoreState::Completed);
+    assert!(client.terminal);
+    asr.await.unwrap();
+    remote.await.unwrap();
+}
+
+#[tokio::test]
+async fn system_image_dispatch_cancel_drops_data_port_and_preserves_cancel_cause() {
+    let (control, mut peer) = tokio::io::duplex(8192);
+    let (data, mut asr_peer) = tokio::io::duplex(8192);
+    let remote = tokio::spawn(async move {
+        handshake(&mut peer, 42).await;
+        let _ = read(&mut peer).await;
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType", Value::String("DataRequestMsg".into())),
+                ("DataType", Value::String("SystemImageData".into())),
+            ]),
+        )
+        .await;
+    });
+    let cancel = OperationCancel::new();
+    let mut client = RestoredClient::connect(control, 42, Duration::from_secs(5), cancel.clone())
+        .await
+        .unwrap();
+    let mut sm = RestoreStateMachine::new();
+    sm.receive_nonces(Some(vec![1]), None).unwrap();
+    let mut image = std::io::Cursor::new(b"OS!".to_vec());
+    let mut data = Some(data);
+    let trigger = cancel.clone();
+    let mut connector = |port| {
+        assert_eq!(port, super::super::asr::DEFAULT_PORT);
+        let data = data.take().unwrap();
+        let trigger = trigger.clone();
+        async move {
+            trigger.cancel();
+            Ok(data)
+        }
+    };
+    let error = run_restored_update_loop_with_system_image(
+        &mut client,
+        sm,
+        Dictionary::from_iter([("RestoreBehavior", Value::String("Update".into()))]),
+        |_, _| panic!("firmware was not requested"),
+        &cancel,
+        &mut image,
+        &mut connector,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(crate::classify_error(&error), crate::ErrorClass::Cancelled);
+    assert!(has_owned_cancel(&error));
+    assert!(client.terminal);
+    assert_eq!(asr_peer.read(&mut [0; 1]).await.unwrap(), 0);
+    remote.await.unwrap();
+}
+
+#[tokio::test]
+async fn system_image_async_request_is_not_silently_served_synchronously() {
+    let (control, mut peer) = tokio::io::duplex(8192);
+    let remote = tokio::spawn(async move {
+        handshake(&mut peer, 42).await;
+        let _ = read(&mut peer).await;
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType", Value::String("AsyncDataRequestMsg".into())),
+                ("DataType", Value::String("SystemImageData".into())),
+                ("DataPort", Value::Integer(4321u64.into())),
+            ]),
+        )
+        .await;
+    });
+    let cancel = OperationCancel::new();
+    let mut client = RestoredClient::connect(control, 42, Duration::from_secs(5), cancel.clone())
+        .await
+        .unwrap();
+    let mut sm = RestoreStateMachine::new();
+    sm.receive_nonces(Some(vec![1]), None).unwrap();
+    let mut image = std::io::Cursor::new(b"OS!".to_vec());
+    let mut connector = |_port| {
+        std::future::ready(Err::<tokio::io::DuplexStream, _>(RestoreError::Protocol(
+            "unexpected connection".into(),
+        )))
+    };
+    let error = run_restored_update_loop_with_system_image(
+        &mut client,
+        sm,
+        Dictionary::from_iter([("RestoreBehavior", Value::String("Update".into()))]),
+        |_, _| panic!("firmware was not requested"),
+        &cancel,
+        &mut image,
+        &mut connector,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(error, RestoreError::Io(ref io) if io.kind() == std::io::ErrorKind::Unsupported)
+    );
+    assert!(client.terminal);
+    remote.await.unwrap();
+}
+
+fn partial_report(error: &RestoreError) -> &RestoreExecutionReport {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = source {
+        if let Some(execution) =
+            current.downcast_ref::<super::super::state_machine::RestoreExecutionError>()
+        {
+            return &execution.report;
+        }
+        source = current.source();
+    }
+    panic!("original partial report is missing")
+}
+
+fn has_owned_cancel(error: &RestoreError) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    for _ in 0..32 {
+        let Some(current) = source else { break };
+        if current.is::<crate::OperationCancelled>() {
+            return true;
+        }
+        source = if let Some(io) = current.downcast_ref::<std::io::Error>() {
+            // std::io::Error::source can forward past the owned custom payload.
+            io.get_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static))
+        } else {
+            current.source()
+        };
+    }
+    false
+}
+
+#[tokio::test]
+async fn independent_loop_cancel_interrupts_start_and_firmware_send() {
+    for during_firmware in [false, true] {
+        let (control, mut peer) = tokio::io::duplex(1);
+        let loop_cancel = OperationCancel::new();
+        let trigger = loop_cancel.clone();
+        let remote = tokio::spawn(async move {
+            handshake(&mut peer, 42).await;
+            if during_firmware {
+                assert_eq!(
+                    read(&mut peer).await["Request"].as_string(),
+                    Some("StartRestore")
+                );
+                write(
+                    &mut peer,
+                    Dictionary::from_iter([
+                        ("MsgType", Value::String("DataRequestMsg".into())),
+                        ("DataType", Value::String("FirmwareUpdaterData".into())),
+                        (
+                            "Arguments",
+                            Value::Dictionary(Dictionary::from_iter([(
+                                "UpdaterName",
+                                Value::String("Rose".into()),
+                            )])),
+                        ),
+                    ]),
+                )
+                .await;
+            }
+            let _first_submitted_byte = peer.read_u8().await.unwrap();
+            trigger.cancel();
+            let mut remainder = Vec::new();
+            peer.read_to_end(&mut remainder).await.unwrap();
+        });
+        let mut client =
+            RestoredClient::connect(control, 42, Duration::from_secs(5), OperationCancel::new())
+                .await
+                .unwrap();
+        let mut state = RestoreStateMachine::new();
+        state.receive_nonces(Some(vec![1]), None).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_restored_update_loop(
+                &mut client,
+                state,
+                Dictionary::from_iter([("RestoreBehavior", Value::String("Update".into()))]),
+                |_, _| Ok((Dictionary::new(), vec![7; 1024])),
+                &loop_cancel,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(has_owned_cancel(&result));
+        assert!(matches!(
+            partial_report(&result).final_state,
+            RestoreState::Failed(super::super::state_machine::RestoreFailure::Cancelled)
+        ));
+        assert!(client.terminal);
+        assert!(client.next_message().await.is_err());
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(2), remote)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn rejected_requests_retain_report_and_cannot_consume_late_success() {
+    for scenario in 0..5 {
+        let (control, mut peer) = tokio::io::duplex(8192);
+        let remote = tokio::spawn(async move {
+            handshake(&mut peer, 42).await;
+            let _ = read(&mut peer).await;
+            let mut request = Dictionary::from_iter([
+                ("MsgType", Value::String("DataRequestMsg".into())),
+                ("DataType", Value::String("FirmwareUpdaterData".into())),
+            ]);
+            if scenario == 0 {
+                request.insert("DataType".into(), Value::String("SystemImageData".into()));
+                request.insert("DataPort".into(), Value::Integer(0u64.into()));
+            } else if scenario == 4 {
+                request.insert("MsgType".into(), Value::String("UnknownMessage".into()));
+            } else if scenario != 1 {
+                request.insert(
+                    "Arguments".into(),
+                    Value::Dictionary(Dictionary::from_iter([(
+                        "UpdaterName",
+                        Value::String("Rose".into()),
+                    )])),
+                );
+            }
+            write(&mut peer, request).await;
+            write(
+                &mut peer,
+                Dictionary::from_iter([
+                    ("MsgType", Value::String("StatusMsg".into())),
+                    ("Status", Value::Integer(0u64.into())),
+                ]),
+            )
+            .await;
+            let mut remainder = Vec::new();
+            peer.read_to_end(&mut remainder).await.unwrap();
+            assert!(remainder.is_empty());
+        });
+        let cancel = OperationCancel::new();
+        let mut client =
+            RestoredClient::connect(control, 42, Duration::from_secs(5), cancel.clone())
+                .await
+                .unwrap();
+        let mut state = RestoreStateMachine::new();
+        state.receive_nonces(Some(vec![1]), None).unwrap();
+        let mut image = std::io::Cursor::new(vec![1]);
+        let mut connector = |_| {
+            std::future::ready(Err::<tokio::io::DuplexStream, _>(RestoreError::Protocol(
+                "must not connect".into(),
+            )))
+        };
+        let error = run_restored_update_loop_with_system_image(
+            &mut client,
+            state,
+            Dictionary::from_iter([("RestoreBehavior", Value::String("Update".into()))]),
+            |_, _| {
+                if scenario == 2 {
+                    Err(RestoreError::Io(std::io::Error::from(
+                        std::io::ErrorKind::PermissionDenied,
+                    )))
+                } else {
+                    Ok((Dictionary::new(), Vec::new()))
+                }
+            },
+            &cancel,
+            &mut image,
+            &mut connector,
+        )
+        .await
+        .unwrap_err();
+        assert_ne!(partial_report(&error).final_state, RestoreState::Completed);
+        if scenario == 2 {
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::PermissionDenied
+            );
+        }
+        assert!(client.terminal);
+        assert!(client.next_message().await.is_err());
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(2), remote)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
