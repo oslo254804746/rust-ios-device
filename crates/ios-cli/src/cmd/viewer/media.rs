@@ -690,9 +690,15 @@ pub async fn produce(
 ) -> Result<()> {
     if hevc {
         for attempt in 0..=reconnect_attempts {
-            match produce_hevc(&udid, frames.clone(), stop.clone(), &native).await {
+            let result = produce_hevc(&udid, frames.clone(), stop.clone(), &native).await;
+            let result = retire_failed_capture(result, &native).await;
+            match result {
                 Ok(()) => return Ok(()),
-                Err(error) if attempt < reconnect_attempts && media_reconnectable(&error) => {
+                Err(error)
+                    if attempt < reconnect_attempts
+                        && !*stop.borrow()
+                        && media_reconnectable(&error) =>
+                {
                     tracing::warn!(attempt=attempt+1,error_class=%ios_core::classify_error(error.as_ref()),"viewer media disconnected; reconnecting after original cleanup");
                     frames.send_replace(None);
                     if wait_reconnect(
@@ -723,6 +729,12 @@ pub async fn produce(
             _ = stop.changed() => return Ok(()),
             frame = tokio::time::timeout(std::time::Duration::from_secs(10), capture_frame(&udid, &native)) => frame.context("viewer capture deadline").and_then(|frame|frame),
         };
+        let result = match result {
+            Ok(frame) => Ok(frame),
+            Err(error) => Err(retire_failed_capture(Err(error), &native)
+                .await
+                .unwrap_err()),
+        };
         match result {
             Ok(frame) => {
                 failures = 0;
@@ -749,8 +761,28 @@ pub async fn produce(
     }
 }
 
+async fn retire_failed_capture(
+    result: Result<()>,
+    native: &crate::cmd::tunnel::NativeScope,
+) -> Result<()> {
+    match result {
+        Err(error)
+            if !error
+                .chain()
+                .any(|cause| cause.is::<super::ViewerCleanupFailure>()) =>
+        {
+            super::finish(
+                Err(error),
+                native.collect(super::device::CLEANUP_TIMEOUT).await,
+            )
+        }
+        result => result,
+    }
+}
+
 fn media_reconnectable(error: &anyhow::Error) -> bool {
     !error.is::<MediaDecodeFailure>()
+        && !error.is::<super::ViewerCleanupOnlyFailure>()
         && !error
             .chain()
             .any(|cause| cause.is::<super::ViewerCleanupFailure>())
@@ -801,6 +833,22 @@ mod tests {
         )
         .unwrap_err();
         assert!(!media_reconnectable(&failure));
+        for kind in [
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let failure =
+                super::super::finish::<()>(Ok(()), Err(std::io::Error::from(kind).into()))
+                    .unwrap_err();
+            assert!(
+                !media_reconnectable(&failure),
+                "cleanup alone cannot permit retry"
+            );
+            assert_eq!(
+                failure.downcast_ref::<std::io::Error>().unwrap().kind(),
+                kind
+            );
+        }
         assert!(!media_reconnectable(&anyhow::anyhow!("decoder failed")));
         assert!(
             !media_reconnectable(&disconnected().context(MediaDecodeFailure)),

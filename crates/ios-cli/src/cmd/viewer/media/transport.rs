@@ -225,7 +225,10 @@ pub(super) async fn read_frame<S: AsyncRead + Unpin, R: AsyncBufRead + Unpin>(
             .context("FFmpeg frame omitted dimensions")?;
         let width = width.parse::<u16>().context("FFmpeg frame width")?;
         let height = height.parse::<u16>().context("FFmpeg frame height")?;
-        let size = usize::from(width) * usize::from(height) * 4;
+        let size = usize::from(width)
+            .checked_mul(usize::from(height))
+            .and_then(|size| size.checked_mul(4))
+            .context("decoded frame size overflow")?;
         ensure!(
             size > 0 && size <= super::MAX_PIXEL_BYTES,
             "decoded frame exceeds pixel budget"

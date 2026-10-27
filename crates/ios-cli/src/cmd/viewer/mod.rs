@@ -301,13 +301,22 @@ async fn run_web_server(
 pub(super) fn finish<T>(primary: Result<T>, cleanup: Result<()>) -> Result<T> {
     match (primary, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error.context(ViewerCleanupOnlyFailure)),
         (Err(primary), Err(cleanup)) => Err(anyhow::Error::new(ViewerCleanupFailure {
             primary,
             cleanup,
         })),
     }
 }
+#[derive(Debug)]
+struct ViewerCleanupOnlyFailure;
+impl std::fmt::Display for ViewerCleanupOnlyFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("viewer cleanup failed")
+    }
+}
+impl std::error::Error for ViewerCleanupOnlyFailure {}
 struct ViewerCleanupFailure {
     primary: anyhow::Error,
     cleanup: anyhow::Error,
