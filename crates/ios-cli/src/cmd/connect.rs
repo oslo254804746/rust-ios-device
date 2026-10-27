@@ -1,6 +1,27 @@
 use anyhow::{Context, Result};
 use ios_core::{ConnectOptions, ConnectedDevice, TunMode};
 
+pub(crate) enum CommandDevice {
+    Plain(Box<ConnectedDevice>),
+    Scoped(Box<crate::cmd::tunnel::NativeConnection>),
+}
+impl std::ops::Deref for CommandDevice {
+    type Target = ConnectedDevice;
+    fn deref(&self) -> &ConnectedDevice {
+        match self {
+            Self::Plain(device) => device,
+            Self::Scoped(device) => device,
+        }
+    }
+}
+
+pub(crate) async fn finite_service_operation<T>(
+    budget: std::time::Duration,
+    work: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    bounded_service_setup(budget, work).await
+}
+
 /// One setup clock covers selected-device discovery, lockdown session,
 /// StartService, port connection and any service TLS handshake.
 pub async fn connect_lockdown_service(

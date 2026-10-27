@@ -18,6 +18,8 @@ mod error_mapping;
 
 #[cfg(test)]
 mod input_source_contract_tests;
+#[cfg(test)]
+mod owned_deadline_tests;
 
 pub const SERVICE_NAME: &str = "com.apple.streaming_zip_conduit";
 pub const RSD_SERVICE_NAME: &str = "com.apple.streaming_zip_conduit.shim.remote";
@@ -41,6 +43,122 @@ pub type ProgressCallback = Box<dyn Fn(u32, &str) + Send>;
 
 /// Progress observer that can stop the operation with its original IO error.
 pub type CheckedProgressCallback = Box<dyn Fn(u32, &str) -> std::io::Result<()> + Send>;
+
+/// Single-use owned install. One cooperative clock covers local preparation,
+/// transfer and every progress reply; the connection is always dropped on
+/// completion, timeout, error or caller cancellation. No mutation is replayed
+/// and closing the connection does not establish device rollback. The legacy
+/// local IPA loader's peak memory and synchronous decoding behavior remain.
+pub async fn install_ipa_owned_with_timeout<S>(
+    stream: S,
+    ipa_path: &Path,
+    progress: Option<CheckedProgressCallback>,
+    budget: std::time::Duration,
+) -> Result<(), ZipConduitError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + 'static,
+{
+    if budget.is_zero() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "ZIP install budget is zero",
+        )
+        .into());
+    }
+    let deadline = tokio::time::Instant::now()
+        .checked_add(budget)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "ZIP install deadline overflow",
+            )
+        })?;
+    let mut stream = InstallIo {
+        inner: stream,
+        deadline,
+    };
+    let result = tokio::time::timeout_at(
+        deadline,
+        install_ipa_with_checked_progress(&mut stream, ipa_path, progress),
+    )
+    .await
+    .map_err(|elapsed| {
+        ZipConduitError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed))
+    })?;
+    match result {
+        Ok(()) if tokio::time::Instant::now() >= deadline => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "late ZIP install completion",
+        )
+        .into()),
+        result => result,
+    }
+}
+
+struct InstallIo<S> {
+    inner: S,
+    deadline: tokio::time::Instant,
+}
+impl<S: AsyncRead + Unpin> AsyncRead for InstallIo<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return std::task::Poll::Pending;
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(result, std::task::Poll::Ready(Ok(())))
+            && tokio::time::Instant::now() >= self.deadline
+        {
+            std::task::Poll::Pending
+        } else {
+            result
+        }
+    }
+}
+impl<S: AsyncWrite + Unpin> AsyncWrite for InstallIo<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return std::task::Poll::Pending;
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_write(cx, bytes);
+        if matches!(result, std::task::Poll::Ready(Ok(_)))
+            && tokio::time::Instant::now() >= self.deadline
+        {
+            std::task::Poll::Pending
+        } else {
+            result
+        }
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return std::task::Poll::Pending;
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_flush(cx);
+        if matches!(result, std::task::Poll::Ready(Ok(())))
+            && tokio::time::Instant::now() >= self.deadline
+        {
+            std::task::Poll::Pending
+        } else {
+            result
+        }
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
 
 /// Install an IPA via Streaming Zip Conduit.
 ///
