@@ -271,18 +271,36 @@ pub(crate) fn evaluate_target_manifest_until(
         };
     }
 
-    // Try evaluating discovered manifests until a match or informative failure is found
-    let mut last_metadata = None;
+    // A hardware-matched partial observation outranks an unrelated image.
+    let mut best_metadata: Option<TargetManifestMetadata> = None;
+    let relevance = |metadata: &TargetManifestMetadata| {
+        let rank = match metadata.outcome {
+            Some(MatchOutcome::TimedOut) => 8,
+            Some(MatchOutcome::PermissionDenied) => 7,
+            Some(MatchOutcome::MissingFields) => 6,
+            Some(MatchOutcome::AmbiguousIdentities) => 5,
+            Some(MatchOutcome::DigestMismatch) => 4,
+            Some(MatchOutcome::MissingFile) => 3,
+            Some(MatchOutcome::VersionMismatch) => 2,
+            _ => 1,
+        };
+        (metadata.matched_identities > 0, rank)
+    };
 
     for manifest_path in &manifests {
         let metadata = evaluate_single_manifest(evidence, manifest_path, deadline);
         if metadata.outcome == Some(MatchOutcome::Matched) {
             return metadata;
         }
-        last_metadata = Some(metadata);
+        if best_metadata
+            .as_ref()
+            .map_or(true, |best| relevance(&metadata) > relevance(best))
+        {
+            best_metadata = Some(metadata);
+        }
     }
 
-    last_metadata.unwrap_or_default()
+    best_metadata.unwrap_or_default()
 }
 
 fn evaluate_single_manifest(
@@ -373,10 +391,20 @@ fn evaluate_single_manifest(
 
     // A SupportedProductTypes list, when supplied, is an additional model
     // constraint. Board/chip identity matching below is still mandatory.
-    if let Some(models) = dict
-        .get("SupportedProductTypes")
-        .and_then(plist::Value::as_array)
-    {
+    if let Some(models) = dict.get("SupportedProductTypes") {
+        let Some(models) = models.as_array().filter(|models| {
+            !models.is_empty()
+                && models
+                    .iter()
+                    .all(|model| model.as_string().is_some_and(|model| !model.is_empty()))
+        }) else {
+            return TargetManifestMetadata {
+                manifest_path: Some(manifest_display),
+                outcome: Some(MatchOutcome::MissingFields),
+                detail: "SupportedProductTypes is malformed or empty.".into(),
+                ..Default::default()
+            };
+        };
         if !evidence
             .product_type
             .as_deref()
@@ -384,7 +412,11 @@ fn evaluate_single_manifest(
         {
             return TargetManifestMetadata {
                 manifest_path: Some(manifest_display),
-                outcome: Some(MatchOutcome::NoMatchingIdentity),
+                outcome: Some(if evidence.product_type.is_some() {
+                    MatchOutcome::NoMatchingIdentity
+                } else {
+                    MatchOutcome::MissingFields
+                }),
                 detail:
                     "Target ProductType is absent from SupportedProductTypes or was not observed."
                         .into(),
@@ -407,28 +439,32 @@ fn evaluate_single_manifest(
                     .is_some_and(|m| m.contains_key("PersonalizedDMG"))
             })
         });
-    if let (Some(device_ver), Some(manifest_ver)) = (
-        evidence.product_version.as_deref(),
-        product_version.as_deref(),
-    ) {
-        let dev_major = device_ver.split('.').next().unwrap_or("");
-        let incompatible = if personalized {
-            dev_major.parse::<u64>().map_or(true, |major| major < 17)
-        } else {
-            // A version-specific legacy image needs the same major/minor.
-            let release = |s: &str| {
-                s.split('.')
-                    .take(2)
-                    .map(str::parse::<u64>)
-                    .collect::<Result<Vec<_>, _>>()
-            };
-            !matches!((release(device_ver), release(manifest_ver)), (Ok(a), Ok(b)) if a.len() == 2 && a == b)
-        };
-        if incompatible {
-            let detail = format!(
+    let release = |version: &str| {
+        let parts = version
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        (parts.len() >= 2 && parts.len() <= 3).then_some(parts)
+    };
+    let device_release = evidence.product_version.as_deref().and_then(release);
+    let version_supported = if personalized {
+        device_release.map(|version| version[0] >= 17)
+    } else {
+        match (device_release, product_version.as_deref().and_then(release)) {
+            (Some(device), Some(manifest)) => Some(device[..2] == manifest[..2]),
+            _ => None,
+        }
+    };
+    if version_supported == Some(false) {
+        let device_ver = evidence.product_version.as_deref().unwrap_or("unobserved");
+        let manifest_ver = product_version
+            .as_deref()
+            .unwrap_or("generic personalized image");
+        let detail = format!(
                 "DDI version profile ({manifest_ver}) does not match device version ({device_ver}); personalized images require iOS17+, legacy images require the same major/minor. Build equality is not required."
             );
-            return TargetManifestMetadata {
+        return TargetManifestMetadata {
                 manifest_path: Some(manifest_display),
                 outcome: Some(MatchOutcome::VersionMismatch),
                 matched_identities: 0,
@@ -439,7 +475,6 @@ fn evaluate_single_manifest(
                 detail,
                 hint: Some("Select a hardware-compatible personalized DDI for iOS17+, or a version-specific legacy DDI.".into()),
             };
-        }
     }
 
     let identities = match dict.get("BuildIdentities").and_then(plist::Value::as_array) {
@@ -473,11 +508,15 @@ fn evaluate_single_manifest(
 
     // Filter identities matching board and chip
     let mut matching_identities = Vec::new();
+    let mut unresolved_identity = false;
 
     for identity_val in identities {
         let identity_dict = match identity_val.as_dictionary() {
             Some(d) => d,
-            None => continue,
+            None => {
+                unresolved_identity = true;
+                continue;
+            }
         };
 
         let id_board = identity_dict.get("ApBoardID").and_then(parse_plist_int);
@@ -486,45 +525,40 @@ fn evaluate_single_manifest(
             .get("ApSecurityDomain")
             .and_then(parse_plist_int);
 
-        // Required fields check: identity must have board and chip IDs
-        if id_board.is_none() || id_chip.is_none() {
+        // Missing fields are not evidence that this identity is incompatible.
+        if matches!((target_board, id_board), (Some(a), Some(b)) if a != b)
+            || matches!((target_chip, id_chip), (Some(a), Some(b)) if a != b)
+            || matches!((evidence.security_domain, id_sec_domain), (Some(a), Some(b)) if a != b)
+        {
             continue;
         }
-
-        let board_matches = match (target_board, id_board) {
-            (Some(tb), Some(ib)) => tb == ib,
-            (None, _) => false,
-            _ => false,
-        };
-
-        let chip_matches = match (target_chip, id_chip) {
-            (Some(tc), Some(ic)) => tc == ic,
-            (None, _) => false,
-            _ => false,
-        };
-
-        let sec_matches = match (evidence.security_domain, id_sec_domain) {
-            (Some(tsd), Some(isd)) => tsd == isd,
-            (Some(_), None) => false,
-            (None, _) => true,
-        };
-
+        if id_board.is_none()
+            || id_chip.is_none()
+            || (evidence.security_domain.is_some() && id_sec_domain.is_none())
+        {
+            unresolved_identity = true;
+            continue;
+        }
+        let board_matches = target_board == id_board;
+        let chip_matches = target_chip == id_chip;
+        let sec_matches =
+            evidence.security_domain.is_none() || evidence.security_domain == id_sec_domain;
         if board_matches && chip_matches && sec_matches {
             matching_identities.push(identity_dict);
         }
     }
 
-    if matching_identities.is_empty() {
+    if matching_identities.is_empty() || unresolved_identity {
         return TargetManifestMetadata {
             manifest_path: Some(manifest_display),
-            outcome: Some(MatchOutcome::NoMatchingIdentity),
-            matched_identities: 0,
+            outcome: Some(if unresolved_identity { MatchOutcome::MissingFields } else { MatchOutcome::NoMatchingIdentity }),
+            matched_identities: matching_identities.len(),
             total_identities,
             product_version,
             product_build_version,
             components: Vec::new(),
             detail: format!(
-                "No matching BuildIdentity for target (board_id={:?}, chip_id={:?}, total identities in manifest: {total_identities}).",
+                "BuildIdentity selection is unavailable or incompatible (unresolved identity fields: {unresolved_identity}, board_id={:?}, chip_id={:?}, total identities: {total_identities}).",
                 target_board, target_chip
             ),
             hint: Some("Verify target device board/chip hardware model matches DDI manifest.".into()),
@@ -677,7 +711,11 @@ fn evaluate_single_manifest(
 
         let file_size = metadata.len();
 
-        let (state, observed_digest_hex) = if let Some(expected_bytes) = expected_digest_bytes {
+        let (state, observed_digest_hex) = if !metadata.file_type().is_file() {
+            // Directories, links and device files are not component evidence.
+            has_missing_fields = true;
+            (ComponentState::ReadFailed, None)
+        } else if let Some(expected_bytes) = expected_digest_bytes {
             if file_size > MAX_COMPONENT_READ_BYTES {
                 has_missing_fields = true;
                 (ComponentState::ReadFailed, None)
@@ -765,9 +803,12 @@ fn evaluate_single_manifest(
             "BuildManifest identity matched, but one or more component digests do not match on disk.".into(),
             Some("Re-download or verify DDI bundle integrity; files may be corrupted.".into()),
         )
-    } else if has_missing_fields || evidence.security_domain.is_none() {
+    } else if has_missing_fields
+        || evidence.security_domain.is_none()
+        || version_supported.is_none()
+    {
         (MatchOutcome::MissingFields,
-            "Component paths or target SecurityDomain evidence are missing; no complete identity observation is available.".into(),
+            "Component paths, target SecurityDomain or version-policy evidence are missing; no complete identity observation is available.".into(),
             Some("Inspect the selected DDI manifest and target personalization identifiers.".into()))
     } else {
         (
@@ -867,6 +908,185 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn complete_target() -> TargetEvidence {
+        TargetEvidence {
+            board_id: Some(12),
+            chip_id: Some(0x8110),
+            security_domain: Some(1),
+            product_version: Some("17.4.1".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn incomplete_identity_and_invalid_version_remain_unknown() {
+        let root = std::env::temp_dir().join(format!("ddi-incomplete-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("image.dmg"), b"image").unwrap();
+        let manifest = create_test_manifest(
+            &root,
+            12,
+            0x8110,
+            None,
+            None,
+            &[("PersonalizedDMG", "image.dmg", None)],
+        );
+        assert_eq!(
+            evaluate_single_manifest(&complete_target(), &manifest, None).outcome,
+            Some(MatchOutcome::MissingFields)
+        );
+        create_test_manifest(
+            &root,
+            12,
+            0x8110,
+            Some(1),
+            None,
+            &[("PersonalizedDMG", "image.dmg", None)],
+        );
+        for version in ["unavailable", "17.invalid", "17.4.invalid", "17"] {
+            let mut target = complete_target();
+            target.product_version = Some(version.into());
+            assert_eq!(
+                evaluate_single_manifest(&target, &manifest, None).outcome,
+                Some(MatchOutcome::MissingFields),
+                "{version}"
+            );
+        }
+        std::fs::remove_file(manifest).unwrap();
+        std::fs::remove_file(root.join("image.dmg")).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn related_component_failure_is_not_hidden_by_unrelated_manifest_sort_order() {
+        let root = std::env::temp_dir().join(format!("ddi-selection-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let a = root.join("a");
+        let z = root.join("z");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&z).unwrap();
+        for reverse in [false, true] {
+            let (related, unrelated) = if reverse { (&z, &a) } else { (&a, &z) };
+            create_test_manifest(
+                related,
+                12,
+                0x8110,
+                Some(1),
+                None,
+                &[("PersonalizedDMG", "missing.dmg", None)],
+            );
+            create_test_manifest(
+                unrelated,
+                99,
+                0x8110,
+                Some(1),
+                None,
+                &[("PersonalizedDMG", "missing.dmg", None)],
+            );
+            let observed =
+                evaluate_target_manifest(&complete_target(), std::slice::from_ref(&root));
+            assert_eq!(observed.outcome, Some(MatchOutcome::MissingFile));
+            assert_eq!(observed.matched_identities, 1);
+        }
+        for dir in [&a, &z] {
+            std::fs::remove_file(dir.join("BuildManifest.plist")).unwrap();
+            std::fs::remove_dir(dir).unwrap();
+        }
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn component_directory_without_digest_is_not_a_file_observation() {
+        let root = std::env::temp_dir().join(format!("ddi-directory-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(root.join("image.dmg")).unwrap();
+        let manifest = create_test_manifest(
+            &root,
+            12,
+            0x8110,
+            Some(1),
+            None,
+            &[("PersonalizedDMG", "image.dmg", None)],
+        );
+        let observed = evaluate_single_manifest(&complete_target(), &manifest, None);
+        assert_eq!(observed.outcome, Some(MatchOutcome::MissingFields));
+        assert_eq!(observed.components[0].state, ComponentState::ReadFailed);
+        std::fs::remove_file(manifest).unwrap();
+        std::fs::remove_dir(root.join("image.dmg")).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn model_constraints_require_observed_target_and_valid_manifest_models() {
+        let root = std::env::temp_dir().join(format!("ddi-models-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = create_test_manifest(
+            &root,
+            12,
+            0x8110,
+            Some(1),
+            None,
+            &[("PersonalizedDMG", "missing.dmg", None)],
+        );
+        let mut manifest = plist::Value::from_file(&path).unwrap();
+        for models in [
+            plist::Value::Array(vec![plist::Value::String("iPhone14,2".into())]),
+            plist::Value::String("invalid".into()),
+        ] {
+            manifest
+                .as_dictionary_mut()
+                .unwrap()
+                .insert("SupportedProductTypes".into(), models);
+            manifest.to_file_xml(&path).unwrap();
+            assert_eq!(
+                evaluate_single_manifest(&complete_target(), &path, None).outcome,
+                Some(MatchOutcome::MissingFields)
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn generic_personalized_manifest_without_product_version_still_checks_target_minimum() {
+        let temp =
+            std::env::temp_dir().join(format!("ddi-generic-version-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&temp).unwrap();
+        std::fs::write(temp.join("image.dmg"), b"image").unwrap();
+        let manifest = create_test_manifest(
+            &temp,
+            12,
+            0x8110,
+            Some(1),
+            None,
+            &[("PersonalizedDMG", "image.dmg", None)],
+        );
+        let mut target = TargetEvidence {
+            board_id: Some(12),
+            chip_id: Some(0x8110),
+            security_domain: Some(1),
+            product_version: Some("16.6".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            evaluate_single_manifest(&target, &manifest, None).outcome,
+            Some(MatchOutcome::VersionMismatch)
+        );
+        target.product_version = Some("17.4.1".into());
+        assert_eq!(
+            evaluate_single_manifest(&target, &manifest, None).outcome,
+            Some(MatchOutcome::Matched)
+        );
+        target.product_version = None;
+        assert_eq!(
+            evaluate_single_manifest(&target, &manifest, None).outcome,
+            Some(MatchOutcome::MissingFields)
+        );
+        std::fs::remove_file(manifest).unwrap();
+        std::fs::remove_file(temp.join("image.dmg")).unwrap();
+        std::fs::remove_dir(temp).unwrap();
+    }
 
     #[tokio::test]
     async fn expired_component_observation_is_partial_and_never_a_digest_mismatch() {
