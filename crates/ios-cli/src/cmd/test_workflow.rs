@@ -837,6 +837,17 @@ where
 
 /// Perform read-only preflight on the device at `udid` before modifying any state.
 pub async fn preflight_device_readiness(udid: &str, deadline: Instant) -> Result<()> {
+    #[cfg(test)]
+    if let Some((_, port)) = crate::cmd::runtest::workflow_fixture_for(udid)? {
+        return tokio::time::timeout_at(deadline, async {
+            let stream =
+                tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await?;
+            let mut client = ios_core::imagemounter::ImageMounterClient::new(stream);
+            probe_device_readiness(&mut client, udid, true, &["Personalized"]).await
+        })
+        .await
+        .context("test workflow preflight: deadline expired while checking device readiness")?;
+    }
     let connect_opts = ios_core::device::ConnectOptions {
         tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
@@ -1455,6 +1466,9 @@ impl<'a> TestWorkflowEngine<'a> {
         outcome
     }
 }
+
+#[cfg(test)]
+mod modern_fixture_tests;
 
 #[cfg(test)]
 mod tests {
