@@ -15,11 +15,14 @@ use std::path::Path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 mod error_mapping;
+mod owned_archive;
 
 #[cfg(test)]
 mod input_source_contract_tests;
 #[cfg(test)]
 mod owned_deadline_tests;
+#[cfg(test)]
+mod owned_stream_tests;
 
 pub const SERVICE_NAME: &str = "com.apple.streaming_zip_conduit";
 pub const RSD_SERVICE_NAME: &str = "com.apple.streaming_zip_conduit.shim.remote";
@@ -47,8 +50,10 @@ pub type CheckedProgressCallback = Box<dyn Fn(u32, &str) -> std::io::Result<()> 
 /// Single-use owned install. One cooperative clock covers local preparation,
 /// transfer and every progress reply; the connection is always dropped on
 /// completion, timeout, error or caller cancellation. No mutation is replayed
-/// and closing the connection does not establish device rollback. The legacy
-/// local IPA loader's peak memory and synchronous decoding behavior remain.
+/// and closing the connection does not establish device rollback.
+/// Local preparation admits ZIP32 packages under the limits in `owned_archive`
+/// and validates entries in bounded chunks before sending. File system calls
+/// themselves cannot be interrupted if the operating system stalls them.
 pub async fn install_ipa_owned_with_timeout<S>(
     stream: S,
     ipa_path: &Path,
@@ -79,7 +84,7 @@ where
     };
     let result = tokio::time::timeout_at(
         deadline,
-        install_ipa_with_checked_progress(&mut stream, ipa_path, progress),
+        install_owned(&mut stream, ipa_path, progress, deadline),
     )
     .await
     .map_err(|elapsed| {
@@ -93,6 +98,32 @@ where
         .into()),
         result => result,
     }
+}
+
+async fn install_owned<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    path: &Path,
+    progress: Option<CheckedProgressCallback>,
+    deadline: tokio::time::Instant,
+) -> Result<(), ZipConduitError> {
+    let mut archive = owned_archive::PreparedArchive::open(path, deadline).await?;
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("app.ipa");
+    send_plist(stream, &build_init_transfer(filename)).await?;
+    write_zip_dir_entry(stream, "META-INF/").await?;
+    let metadata = build_zip_metadata(archive.record_count(), archive.total_size())?;
+    write_zip_file_entry(
+        stream,
+        "META-INF/com.apple.ZipMetadata.plist",
+        &plist_to_xml_bytes(&metadata)?,
+    )
+    .await?;
+    archive.send(stream).await?;
+    stream.write_all(&[0x50, 0x4b, 0x01, 0x02]).await?;
+    stream.flush().await?;
+    receive_progress(stream, progress).await
 }
 
 struct InstallIo<S> {
@@ -258,6 +289,13 @@ where
     stream.write_all(&[0x50, 0x4b, 0x01, 0x02]).await?;
     stream.flush().await?;
 
+    receive_progress(stream, progress).await
+}
+
+async fn receive_progress<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    progress: Option<CheckedProgressCallback>,
+) -> Result<(), ZipConduitError> {
     // 5. Poll for completion
     loop {
         let resp = recv_plist(stream).await?;
