@@ -36,9 +36,34 @@ Actual `restore update --force` currently rejects before connecting, because no
 complete proven Update path is implemented. A distinct `restore::restored::RestoredClient`
 now implements bounded already-connected restored plist negotiation/ECID checks,
 StartRestore and real synchronous firmware responses; its peer fixtures do not
-substitute for recovery USB/ramdisk, ASR, FDR, ticket personalization or re-enumeration.
+substitute for recovery USB/ramdisk, FDR, ticket personalization or re-enumeration.
 See [repair scope and verification](validation/review-fixes-2026-10-10.md).
 
 The [2026-10-26 review](validation/remaining-six-review-2026-10-26.md) removed an unproven normal-mode/empty-firmware CLI execution path. Saved TSS metadata correlation never sets signature verification or execution support to true. Current-device and IPSW version strings are observations, not a validated compatibility policy. Unsupported restored data ports/types and malformed terminal statuses fail explicitly; no unserved request is counted as completed.
 
 The [follow-up review](validation/six-followup-review-2026-10-26.md) also rejects execution with a saved `--tss` file, before device discovery. The removed branch treated a preflight dictionary as firmware bytes and substituted literal bytes on failure; it could not implement a restore. Product-version ordering now rejects malformed versions and obvious Update downgrades. It does not prove same-version build compatibility, signed eligibility, nonce stability across recovery or Apple signature validity. The reference profile describes iPhone14,2/d63ap (13 Pro), not iPhone14,3 (13 Pro Max), and is fixture metadata rather than an enabled execution profile.
+
+## Selected OS extraction and ASR transfer
+
+`IpswPreflight::extract_system_image` extracts only the selected identity's
+`Manifest.OS.Info.Path` to a caller-owned writer, using 64 KiB chunks with size,
+ZIP CRC and SHA256 observations under a cooperative deadline/cancellation.
+Failure leaves partial output which the caller must discard. It does not load
+the OS image into the smaller updater-component payload limit.
+
+`restore::asr::send_image` owns an already-connected ASR socket and a seekable
+image: unframed XML Initiate/offer, OOB range reads, Payload and 128 KiB chunks,
+with SHA-1 per chunk when negotiated. `RestoredClient::send_system_image` serves
+only the requested SystemImageData/DataPort after StartRestore; connection and
+transfer inherit the original total clock and cancellation. Failure/caller Drop
+makes the owner terminal. An ASR receipt proves local transfer, never flashing
+completion; it cannot convert an arbitrary Status=0 into successful recovery.
+
+Full Update still lacks proven recovery/ramdisk and USB/ECID reidentification,
+nonce-aware TSS/IMG4/TBM/nonce-slot personalization, FDR and the complete async
+component/data-port dispatcher. CLI --force and saved --tss remain rejected before
+discovery. iPhone14,2/d63ap, board 0x0c/chip 0x8110, iOS17.5.1/21F90 is reference
+fixture metadata only. No offline IPSW is currently available for that profile;
+actual TSS, device transitions and recovery remain NOT_RUN. The missing executor
+is a development gap independent of that file. See the
+[current report](validation/production-completion-2026-10-26.md).

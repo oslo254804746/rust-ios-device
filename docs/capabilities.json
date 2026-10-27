@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-12",
+  "updated": "2026-10-27",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
@@ -2611,6 +2611,90 @@
       "result": "PASS",
       "scope": "Actual pasteboard watch receives private-console Ctrl-C during CoreDeviceProxy StartService waiting, emits original stopped/native_reclaimed and exits 0; original reader joins and independent strict TLS peer EOF/worker joins. Seven separate supervisor fixtures plus one budget test.",
       "limitations": "Startup cancellation only, no activated TUN or complete clipboard notification/text/image/dedup/restore device workflow. Controller fixtures do not certify native device ACK. Tool commit/hash linkage is separate from this exact CLI commit."
+    },
+    {
+      "id": "windows-doctor-ddi-20261027",
+      "level": "host-unit/protocol",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "offline fixtures",
+        "owned duplex",
+        "explicit localhost",
+        "local subprocesses"
+      ],
+      "required_state": [
+        "No physical iOS discovery or operation; fixed source and exact executable recorded in report"
+      ],
+      "tested_commit": "c86308301a2ad9f61d7ab45d28d53435daced86d",
+      "date": "2026-10-27",
+      "location": "docs/validation/production-completion-2026-10-26.md",
+      "result": "PASS",
+      "scope": "Doctor78 current CLI tests: explicit hardware/model/version matching, generic personalized minimum, component/digest/permissions/nonregular files, incomplete identity and multi-manifest relevance, partial deadlines, platform/host report fixtures. No physical discovery or Apple signature verification."
+    },
+    {
+      "id": "windows-viewer-media-20261027",
+      "level": "simulated-flow",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "offline fixtures",
+        "owned duplex",
+        "explicit localhost",
+        "local subprocesses"
+      ],
+      "required_state": [
+        "No physical iOS discovery or operation; fixed source and exact executable recorded in report"
+      ],
+      "tested_commit": "c86308301a2ad9f61d7ab45d28d53435daced86d",
+      "date": "2026-10-27",
+      "location": "docs/validation/production-completion-2026-10-26.md",
+      "result": "PASS",
+      "scope": "Viewer28 plus explicit FFmpeg3: actual persistent HEVC decode, RTP PTS wrap/intervals and 32x32 to 48x32 changes, authorized localhost HTTP/RFB pixels, slow consumers, RGBA/JPEG DIB and orientation adapters. Core Display26/HID9 include actual XPC strict stop EOF and pre-start reconnect failure. No physical iOS or independent desktop client acceptance."
+    },
+    {
+      "id": "windows-cdp-native-20261027",
+      "level": "simulated-flow",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "offline fixtures",
+        "owned duplex",
+        "explicit localhost",
+        "local subprocesses"
+      ],
+      "required_state": [
+        "No physical iOS discovery or operation; fixed source and exact executable recorded in report"
+      ],
+      "tested_commit": "c86308301a2ad9f61d7ab45d28d53435daced86d",
+      "date": "2026-10-27",
+      "location": "docs/validation/production-completion-2026-10-26.md",
+      "result": "PASS",
+      "scope": "Actual fixed Playwright1.63.0/Puppeteer25.12.0 clients15 through the production Rust bridge and plist peers; Core CDP31 and CLI WebInspector184. Native normal realms, same/cross-origin navigation, real Memory/Fetch lifecycle; default downloads explicitly rejected. Physical Safari/WebView and trusted Input remain unverified/unimplemented."
+    },
+    {
+      "id": "windows-restore-asr-20261027",
+      "level": "host-unit/protocol",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "offline fixtures",
+        "owned duplex",
+        "explicit localhost",
+        "local subprocesses"
+      ],
+      "required_state": [
+        "No physical iOS discovery or operation; fixed source and exact executable recorded in report"
+      ],
+      "tested_commit": "c86308301a2ad9f61d7ab45d28d53435daced86d",
+      "date": "2026-10-27",
+      "location": "docs/validation/production-completion-2026-10-26.md",
+      "result": "PASS",
+      "scope": "Core restore86 in the current full Core batch: selected OS extraction, real ASR Initiate/OOB/Payload/checksum and RestoredClient SystemImageData/DataPort dispatch through owned synthetic peers. Does not establish complete Update, physical transitions, TSS eligibility or Apple personalization."
     }
   ],
   "capabilities": [
@@ -4023,7 +4107,7 @@
           "Exact service/transport routes require operation-specific evidence; a module or CLI name is not a protocol observation."
         ]
       },
-      "implementation": "public-surface-present",
+      "implementation": "Explicit existing-trust bounded host/target diagnostics, local DDI hardware/version/component evidence and partial-state reporting implemented; physical/platform support remains separately unverified.",
       "maturity": "experimental",
       "required_state": [
         "Host platform and installed service dependencies must be checked for the chosen operation.",
@@ -4064,12 +4148,17 @@
           "result": "PASS",
           "evidence": "linux-existing-rsd-doctor-838c4ed",
           "scope": "Actual production Core RSD observer through doctor checks, exact target attribution and safe schema; five actual CLI selector rejection/trap captures. No positive full-process physical-device workflow."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-doctor-ddi-20261027"
         }
       ],
       "limitations": [
         "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
         "Target probes use existing lockdown trust and only explicit already-established RSD routes; no pairing, tunnel activation, settings change, DDI download or mount is performed. Missing metadata and unsupported adapters stay Unknown; ProductVersion chooses legacy transport but does not establish service support.",
-        "DDI mounted state comes from strict CopyDevices metadata; usability requires an actual read-only DeviceInfo runningProcesses result through the implemented legacy/existing-RSD adapter. ddi_manifests queries opaque personalization manifests only for device-reported personalized DeveloperDiskImage signatures; nonempty replies do not verify Apple cryptographic signatures or match a local BuildManifest to target hardware. Root validated 60 doctor fixture tests (one original ignored), strict CLI Clippy/build and this inventory; physical/platform support is not established by synthetic responses.",
+        "Mounted state uses strict CopyDevices metadata; usability requires actual read-only DeviceInfo runningProcesses through the implemented legacy/existing-RSD adapter. Opaque personalization tickets do not verify Apple signatures. Local BuildManifest now matches observed board/chip/security/model and the correct personalized/legacy version policy; regular component files/digests/permissions are observed independently. Doctor78 current fixture tests pass; signature_verified and device_availability_probed are not inferred from a matching local file.",
         "Platform USB counts and directory observations establish bounded visibility only, without selected-device identity, trust, credential contents or write-access guarantees. macOS remoted coexistence requires running process samples before/after a successful target-identifying existing-RSD directory read; it does not prove uninterrupted liveness. Blocking local filesystem calls are not physically cancellable."
       ],
       "topic": "docs/troubleshooting.md"
@@ -5764,10 +5853,15 @@
           "result": "PASS",
           "evidence": "linux-cdp-cancel-3e697fd",
           "scope": "Actual client waiter cancellation after consumed Runtime.enable reaps the original Node process and joins original bounded pipes/native peers with strict EOF."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-cdp-native-20261027"
         }
       ],
       "limitations": [
-        "Target/flat session/JSContext subset; actual Rust-bridge client workflows and Page/Input/Fetch/Memory/Performance compatibility remain pending."
+        "Actual fixed-client Rust-bridge workflows cover native normal realms, iframe navigation, Memory sampling and Fetch subset. Page multi-realm console correlation, user/internal world mapping, trusted selected-page Input and download control/save/cancel/events remain OPEN. Default Playwright download initialization is explicitly unsupported; physical Safari/WebView remains NOT_RUN."
       ],
       "topic": "docs/cdp-compatibility.md"
     },
@@ -7681,6 +7775,11 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-viewer-media-20261027"
         }
       ],
       "limitations": [
@@ -7708,7 +7807,7 @@
         ],
         "unresolved": []
       },
-      "implementation": "Encoded RTP plus additive strict stop/ownership observation implemented; decoded viewing remains partial.",
+      "implementation": "Bounded raw RTP plus retained startup, strict stop and original task joins implemented; CLI viewer decodes HEVC through external FFmpeg.",
       "maturity": "experimental",
       "required_state": [
         "Host platform and installed service dependencies must be checked for the chosen operation.",
@@ -7728,13 +7827,18 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-viewer-media-20261027"
         }
       ],
       "limitations": [
-        "Bounded encoded RTP/access units and stop routines; decoded viewer/VNC workflow is pending.",
+        "Raw encoded RTP remains available; actual decoded HTTP/RFB host workflow is recorded separately from physical Display interoperability.",
         "EOF/reset/broken pipe cannot supply strict stop ACK. Legacy permissive stop remains a separate compatibility API.",
         "Media-status equality is an observed media predicate, not remote HID contact state. Encoded RTP and host task joins do not prove HEVC decoding or physical viewer acceptance.",
-        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
+        "Current source and exact host gates are registered in docs/validation/production-completion-2026-10-26.md; service-level stopAll remains the verified stop granularity, no maturity upgrade."
       ],
       "topic": "docs/validation/protocol-observers-2026-10-12.md"
     },
@@ -7871,10 +7975,15 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-restore-asr-20261027"
         }
       ],
       "limitations": [
-        "IPSW/device-side preflight and helpers exist; no preflight-requests CLI or complete recovery/TSS restore loop."
+        "Normal-mode preflight-requests CLI, selected identity OS extraction and ASR SystemImageData/DataPort transfer exist. Full recovery/ramdisk, USB/ECID reidentification, nonce-aware TSS/IMG4/TBM/nonce-slot, FDR and async firmware dispatch remain unimplemented; CLI Update execution stays disabled. No physical restore/TSS acceptance."
       ],
       "topic": "docs/restore-preflight.md"
     },
@@ -7990,6 +8099,11 @@
           "result": "PASS",
           "evidence": "linux-cdp-cancel-3e697fd",
           "scope": "Actual client waiter cancellation after consumed Runtime.enable reaps the original Node process and joins original bounded pipes/native peers with strict EOF."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-cdp-native-20261027"
         }
       ],
       "limitations": [
@@ -8474,10 +8588,13 @@
         "Universal HID with display media authorization",
         "Indigo HID",
         "Darwin pasteboard text",
-        "RFB 3.8 DES authentication"
+        "RFB 3.8 DES authentication",
+        "Display/RTP to HEVC MPEG-TS and external FFmpeg BGRA",
+        "CoreDevice OrientationService",
+        "Darwin pasteboard PNG/JPEG XPC.Data and RFB DIB v5"
       ],
       "source": "crates/ios-cli/src/cmd/viewer/mod.rs",
-      "implementation": "Partial: shared bounded PNG decoding/HTTP/RFB producer, HID writer completion/text pasteboard response owner; one-way HID reports have no device ACK, scoped Principal and joined shutdown; full F05 is incomplete.",
+      "implementation": "Shared bounded PNG or persistent external FFmpeg HEVC decode with original RTP PTS/dimensions, HTTP/RFB pixels, HID/OrientationService and text/PNG/JPEG clipboard adapters; finite reconnect and strict original cleanup implemented. Physical/platform acceptance remains NOT_RUN.",
       "maturity": "experimental",
       "required_state": [
         "Explicit UDID, existing trust/tunnel, available CoreDevice screenshot/HID/pasteboard services",
@@ -8494,11 +8611,16 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No physical device operation has been authorized for this repair; screenshot/HID/pasteboard and actual VNC-client acceptance are deferred."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-viewer-media-20261027"
         }
       ],
       "limitations": [
-        "PNG screenshots only; HEVC/RTP/VideoToolbox/FFmpeg/WebCodecs decoding is not implemented.",
-        "Direction injection and image clipboard interoperability are explicitly rejected; F05 remains incomplete.",
+        "External FFmpeg is required for experimental --hevc and is not bundled; licenses/configuration and unrun platform packaging are documented in docs/viewer.md.",
+        "Direction uses the real OrientationService adapter; device PNG/JPEG uses pinned upstream UTI/XPC evidence. Physical orientation/image interoperability remains NOT_RUN. Display stopAll is service-level; no verified per-stream UInt32 token ownership is claimed.",
         "RFB supports advertised little-endian 32-bit true color and one active controlling client; legacy password is limited to eight bytes.",
         "Windows/macOS/Linux actual desktop clipboard, physical device and standard VNC clients remain unverified.",
         "Logical frame/queue/client limits do not prove a whole-process 64 MiB RSS ceiling."

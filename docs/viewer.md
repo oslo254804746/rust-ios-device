@@ -1,68 +1,75 @@
-# Screenshot viewer, experimental HEVC and clipboard
+# Screenshot viewer, HEVC and clipboard
 
-The viewer uses CoreDevice PNG screenshots, decodes the actual pixels with the
-Rust `png` crate, and shares each image with HTTP and RFB consumers. Experimental `--hevc` selects Display/RTP over a kernel tunnel and a persistent
-FFmpeg HEVC-to-PNG subprocess; decoder/reference state survives access units.
-The default screenshot mode does not attempt a kernel video connection. `png` and `des` are Rust dependencies under
-MIT/Apache-2.0; `arboard` supplies the desktop text clipboard (MIT/Apache-2.0).
-Dependency licenses and target packaging still require release verification.
+The default viewer captures CoreDevice PNG screenshots. Experimental `--hevc`
+uses Display/RTP over a kernel tunnel, a single HEVC MPEG-TS track, and one
+persistent external FFmpeg process. RTP's 90 kHz timestamps survive MPEG-TS/PES;
+FFmpeg `showinfo` supplies decoded frame PTS and dimensions, BGRA rawvideo is
+encoded to PNG by Rust, and HTTP/RFB consume the same latest immutable frame.
+Reference pictures and parameter changes remain in the decoder. The original
+raw RTP API is retained. There is no silent screenshot fallback for HEVC errors.
 
-Choose an exact device with the root `--udid` option. HTTP clients need a policy
-grant containing both `debug` for that device and `connect` for that device and
-the viewer's bound listener port. Native requests use the bearer header. The
-browser `/login` page contains no device data and accepts a token into memory;
-its authenticated `/frame` and control calls use the bearer header. The token is
-not placed in the URL or browser storage. Local anonymous access requires the
-existing explicit `--local-unauthenticated` loopback option.
+`ffmpeg` must be in PATH with HEVC decoding, MPEG-TS input, `showinfo` and BGRA
+rawvideo output. It is not bundled. The Windows host gate used FFmpeg 9.0.2,
+an external GPL/version3 full build. Other builds may be LGPL/GPL depending on
+configuration; release packaging and codec/patent review remain pending. Rust
+`png`, `des`, `arboard` and `jpeg-decoder` use MIT/Apache-2.0 licenses. macOS/Linux
+execution and physical Display interoperability remain NOT_RUN.
 
-For policy-mode VNC, supply `--vnc-token-file` and `--password`. The private token
-selects one scoped policy Principal for the RFB owner. Every RFB session and
-pending device request retains that Principal; expiry and policy replacement
-revoke the owner. RFB DES authenticates clients to this owner, and does not carry
-or substitute for the policy credential. The legacy RFB password must contain
-1..8 bytes. VNC remains loopback-only and accepts one controlling client. It
-supports Raw, DesktopSize and text/DIB v5 Extended Clipboard with the advertised
-little-endian 32-bit true-color pixel format; other formats are rejected.
+Choose an exact device with root `--udid`. Policy HTTP clients need both `debug`
+for that device and `connect` for its bound listener port. Native requests use
+Bearer headers; `/login` holds the token only in memory, never a URL or browser
+storage. Local anonymous access requires explicit `--local-unauthenticated`.
+Host/Origin checks and existing protected transport rules still apply.
 
-Input uses the existing Universal HID and Indigo clients and waits for the
-original writer to finish. Their one-way reports have no device acknowledgement;
-a successful write does not prove a contact changed on the device. Universal HID requires the kernel tunnel/display
-authorization side channel. HTTP reports an unavailable backend or failed
-operation as an error. Direction injection has no verified service mapping and
-returns 501. There is no synthetic orientation success.
+VNC stays loopback-only with one controlling client. Policy mode requires
+`--vnc-token-file` and `--password`; RFB DES authenticates to that policy owner
+and does not replace its device/port scope. The legacy password is 1..8 bytes.
+RFB supports Raw, DesktopSize and text/DIB v5 Extended Clipboard with the
+advertised little-endian 32-bit true-color format. Unknown formats are rejected.
 
-`--share-clipboard` enables bounded text and experimental PNG pasteboard reads/writes for HTTP/VNC.
-Standalone `viewer clipboard` polls the device and local clipboard, starts with
-the device baseline, preserves actual text, and suppresses repeated/echoed
-content. Its policy owner uses `--vnc-token-file` and the selected `--port`
-(default 5900) scope. HTTP/device adapters contain generic PNG/JPEG UTI read/write paths, but device image interoperability has not been established. Treat those paths as experimental. RFB bit 3 uses a 124-byte DIB v5 header (no BMP file header), with bounded 24/32-bit RGB and standard BGRA bitfields; embedded profiles and palettes are rejected. PNG images convert to 24-bit BGR DIB, discarding alpha. Bit 4 remains unsupported files. JPEG-to-DIB conversion is not implemented. The text limit is 1 MiB; extended clipboard parsing is bounded.
+Input uses Universal HID and Indigo and waits for their original writer. These
+one-way reports have no device ACK. Pointer coordinates require a current frame;
+loss of capture clears old dimensions. Direction changes use the existing
+OrientationService backend and report success only after its request completes.
+Unavailable backends and invalid directions return errors. Physical HID focus,
+coordinate accuracy and orientation behavior remain NOT_RUN.
 
-Encoded PNG frames are limited to 2 MiB and decoded BGRA pixels to 12 MiB.
-The device request queue has eight slots; HTTP has at most two multipart
-streams, which share immutable frame bytes; RFB has one client. Capture and
-device operations have ten-second deadlines. Stop wakes blocked sessions,
-releases potentially pressed contacts/keys/buttons, and joins the original
-capture/device/server/session tasks. Errors retain the primary and cleanup
-objects. These logical limits do not establish a 64 MiB whole-process RSS cap.
+`--share-clipboard` enables bounded text, PNG and JPEG device pasteboard adapters
+for HTTP/VNC. Device PNG/JPEG use XPC.Data and `public.png`/`public.jpeg`, supported
+by the pinned upstream pasteboard protocol; physical iOS image exchange remains
+NOT_RUN. Standalone `viewer clipboard` synchronizes desktop/device text only,
+starts from the device baseline and suppresses repeats and echoes. Its policy
+owner uses `--vnc-token-file` and the selected `--port` (default 5900) scope.
 
-Capture and cached pasteboard/HID connections now use the original native
-retirement registry with four foreground connection slots. Cached service
-clients retain their tunnel connection until service close. Cancellation during
-startup preserves the original native owner; capture retirement and final
-shutdown collect its real joins. An incomplete native cleanup remains an error
-with the original registry retained, rather than an inferred success from task Drop.
+RFB bit 3 is a 124-byte DIB v5 header without a BMP file header. RGB PNG uses
+24-bit BGR; alpha PNG uses 32-bit BI_BITFIELDS and preserves RGBA. RGB/grayscale
+JPEG decodes to DIB; CMYK and 16-bit JPEG are rejected. Bit 4 is files and stays
+unsupported. Profiles/palettes and over-limit payloads are rejected. Image loop
+suppression hashes the actual transferred DIB pixels, including PNG/JPEG
+re-encoding; text normalizes RFB line endings. Notify/Request/Provide, Caps and
+SetEncodings renegotiation follow the standard extended-clipboard flow.
 
-F05 remains incomplete: orientation, device image protocol evidence,
-reconnect/desktop-platform coverage and actual standard VNC/device workflows
-need further implementation or acceptance evidence. No real device was
-operated during this repair. See the [repair scope](validation/viewer-cdp-repair-2026-10-10.md).
+Encoded frames and image clipboard payloads are bounded at 2 MiB, decoded BGRA
+at 12 MiB. The request queue has eight slots, HTTP at most two multipart streams,
+and RFB one client. Slow consumers retain the newest shared frame; old frame
+buffers release. These logical limits do not prove a whole-process RSS cap.
+Web timestamps explicitly identify `rtp-relative-ms` or `host-unix-ms`; sequence
+numbers distinguish reconnects that reset the RTP origin.
 
-The [2026-10-26 review](validation/remaining-six-review-2026-10-26.md) removed fabricated RFB PNG/JPEG production messages. The historical private-codec roundtrip is a unit regression only and does not establish RFB or device image support.
+Capture/device operations use ten-second deadlines. Media retry attempts default
+to three, with configurable 500 ms base delay and exponential backoff capped at
+16x. Only eligible device disconnect/timeout/missing-device errors retry, after
+original NativeScope collection. Decoder failures and every cleanup failure
+stop retry. Read-only pasteboard GET may refresh once; SET/HID are not replayed.
 
-HEVC decoder dependencies are external: `ffmpeg` must be in PATH with HEVC and PNG codecs.
-FFmpeg licensing depends on the installed build (LGPL/GPL and optional components); the executable is not bundled here. Release packaging and codec/patent review remain pending.
-The production pipe drains PNG concurrently with access-unit writes and retains only the latest shared frame for Web/VNC. Decode/read/write errors propagate; there is no silent screenshot fallback after selecting `--hevc`. Stop kills and waits for the decoder, then calls the existing Display stop and native collection. Raw Annex-B to PNG drops RTP timestamp metadata; viewer timestamps are explicitly host decode wall time in milliseconds. RTP-tick wrap/reordering is not represented as presentation time. Real Display startup/cancellation and per-stream stop identifiers still need device evidence. The legacy synchronous `HevcDecoder`/`HevcPipeline` helper tests only independent intra frames; production uses the persistent asynchronous process.
+Stop releases potentially pressed contacts/keys/buttons and joins the original
+capture/device/server/session/decoder tasks. Retained Display startup survives
+caller cancellation for strict cleanup; confirmed MediaInUse does not authorize
+stopping someone else's media. Stop requires a real response. `stopAll` remains
+a service-level operation: no verified per-stream UInt32 token ownership schema
+is claimed. Cleanup keeps original primary/secondary causes and actual native
+joins, including a separate failure when the operation itself succeeded.
 
-RFB advertises text and DIB with separate zero unsolicited limits. Changes are announced with Notify; Request receives the actual payload. Client Caps restrict outgoing formats, and re-negotiating SetEncodings resets that observation. Peer Notify requests supported data; files remain rejected. The localhost gate verifies both DIB directions through the actual RFB session and the fake device adapter, separately from any claim about physical iOS UTI handling.
-
-Clipboard loop suppression fingerprints the transferred PNG pixels through the same bounded DIB representation, so a PNG/DIB/PNG re-encode cannot evade it just by changing compression or metadata. Text fingerprints use normalized RFB line endings. This does not establish physical-device image UTI behavior, and the current outbound 24-bit DIB still discards alpha.
+The [current implementation and verification](validation/production-completion-2026-10-26.md)
+separates host gates from physical Display/HID/clipboard, independent desktop VNC
+clients and platform acceptance. Older repair reports record earlier limitations.

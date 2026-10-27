@@ -1,86 +1,39 @@
 # CDP compatibility status
 
-The WebInspector bridge has browser Target discovery, flat sessions, and a
-limited JavaScriptCore execution-context adapter. `Target.getBrowserContexts`
-reports the single default context. `Target.setAutoAttach` applies the ordered
-target-type filter sent by Puppeteer, including its page exclusion rule. A
-synthetic WebInspector service test exercises JSContext `Runtime.enable`,
-execution-context announcement, and `Runtime.evaluate` with the synthetic
-context ID. These are protocol tests, not a passed Playwright or Puppeteer page
-workflow.
+The protected Rust HTTP/WebSocket bridge routes browser Target discovery, flat
+and bounded nonflat sessions to an injectable WebInspector source. Actual fixed
+Puppeteer 25.12.0 and Playwright 1.63.0 tests connect through this production
+bridge to synthetic plist peers. The single default context has stable
+`<browser_id>:default` identity; creating isolated browser contexts is unsupported.
+Default Playwright `connectOverCDP` still fails explicitly on
+`Browser.setDownloadBehavior` (-32601). Its narrow noDefaults/nonflat session
+workflow does not establish default browser compatibility.
 
-R02 adds an internal Rust-only `InspectorSource` boundary shared by the actual
-protected CDP and Selenium routers. Owned host tests now traverse the Rust page
-and browser WebSockets through synthetic plist peers, covering discovery,
-unpaused Target attachment, Runtime replies/errors, flattened session routing,
-detach and teardown. See [module/injection acceptance](validation/webinspector-boundaries-2026-10-01.md).
-The actual pinned-client framework now uses this production entry point.
-Puppeteer25.12.0 completes a synthetic JSContext Runtime workflow; Playwright1.63.0
-records actual Browser.setDownloadBehavior/-32601 initialization failure.
-[Reproduction and scope](cdp-client-workflow.md). Physical Safari/WebView/JSContext
-and the remaining domain workflows retain their acceptance.
+Debug servers require an explicit UDID and `--auth-config` or explicit loopback
+`--local-unauthenticated`. Bearer scope must cover `debug` for that device.
+Expiry/reload revokes sockets and pending requests. Host/Origin checks and
+single-use browser handshake tickets remain enforced. See
+[HTTP boundaries](http-boundary.md), [management access](management-access.md)
+and [client reproduction](cdp-client-workflow.md).
 
-The Rust CDP and Selenium servers now require `--auth-config` or explicit
-loopback `--local-unauthenticated`. Native HTTP and WebSocket clients need the
-scoped bearer header; `debug` must cover the server's selected device.
-Expiry/reload revokes established sockets and pending requests. Host acceptance
-checks only admission/metadata, including a WebSocket blocked before device
-access; it does not supply client initialization or page workflow evidence.
-Host/Origin checks are enforced; controlled browser clients use single-use CDP
-handshake tickets. The S02 Chromium/manager byte-relay gate does not certify a
-Playwright CDP session or an Apple page workflow. Debug
-listeners require explicit UDID selection without first-device discovery. See
-[HTTP boundaries](http-boundary.md) and
-[management access](management-access.md) before migrating existing clients.
-
-The following domains have limited adapters or still lack implementation:
-
-| Domain | Missing evidence and next validation |
+| Domain | Implemented mapping and remaining scope |
 | --- | --- |
-| JSContext Runtime | Actual Puppeteer selects the synthetic context through the Rust bridge, evaluates and rejects an unknown context ID. Parsed native page/application closure now reaches a typed session event and emits context destruction before detach/WS close; four added pinned-client closure gates require explicit execution. Playwright's narrow public noDefaults/nonflat CDPSession fixture leaves download policy alone; default initialization still rejects unsupported download control. The pinned Puppeteer JSContext console workflow now passes with a device-provided timestamp and implicit context association; full Playwright initialization and representative physical JSContext workflows remain pending. [Closure mapping, bounds and gate status](validation/cdp-native-context-closure-2026-10-13.md). |
-| iframe / Page | The adapter uses native `Page.getResourceTree` and frame events, preserving children. Navigation waits for matching native frame/URL commit; it does not infer completion from evaluate returning. Actual pinned-client page/frame workflows remain pending. |
-| Input / screenshot | PNG viewport/scale-1 clip screenshots use native `Page.snapshotRect` and validate decoded image data. Trusted input remains unsupported; DOM-synthesized events cannot establish native input semantics. The new pinned Puppeteer gate verifies a synthetic PNG screenshot through the Rust bridge; trusted input and representative physical screenshot workflows remain pending. |
-| Fetch | One wildcard request/response stage uses native Network interception, with correlated pause/continue/fulfill/fail acknowledgements. Authentication/resource filters, complete rollback, target cancellation and downloads remain missing. The new pinned Puppeteer gate verifies enable/disable through the bridge; full actual-client pause/continue/fulfill/fail/cancel workflows remain pending. |
-| Memory / Performance | Capture supported WebInspector methods and result fields, then run client metric and memory requests against fixtures. Reject commands lacking a verified translation. |
+| JSContext / Runtime | Single implicit JSC realm supports evaluation, unknown-ID rejection, observed destruction before detach and console with device WallTime converted to milliseconds. Page normal worlds keep native id/name/frameId; CDP origin comes from native frame.securityOrigin and auxData identifies the default frame world. Missing origin triggers a real getResourceTree query; failure retires the inspector owner. Retired queries and stale tree snapshots cannot revive old realms or overwrite new origins. Navigation/clear/detach destroys or invalidates old contexts. Unsupported WebKit user/internal worlds are filtered. Page multi-realm Runtime console correlation remains OPEN; native Console.messageAdded is preserved without inventing context or host time. |
+| Page / iframe | Native frame-tree IDs and normal-world mappings support same/cross-origin child evaluation and navigation, with actual client gates. Navigation success waits for matching native frame/URL commit; an evaluate reply is insufficient. Referrer/transition options are rejected. Queries spanning tree changes retry under their original deadline. |
+| Input / screenshot | PNG viewport and scale-1 clip screenshots use Page.snapshotRect and validate decoded PNG. JPEG screenshots and trusted Input remain unsupported. Selected-page focus, CSS-to-screen coordinates, direction and native click/key/modifier guarantees are not established by global HID or DOM dispatchEvent. |
+| Fetch / downloads | Native wildcard request/response interception supports correlated pause, continue with URL/method/headers/base64 body, fulfill, fail and pending-request disable. Filters are removed for their exact stage/regex; failed/expired rollback retains primary plus cleanup error. Authentication/resource-type filters remain unsupported. Download control/save/cancel/events and default Browser.setDownloadBehavior remain OPEN; pinned WebKit Browser.json provides no verified equivalent. |
+| Memory / Performance | Performance enable/start and stop/disable use native Memory sampling lifecycle. Timestamp is inspector elapsed seconds; WebKitJavaScriptMemory/JIT/Image/Layer/Page/OtherMemory are native allocation bytes. Missing categories are omitted, never zero-filled. JavaScript includes GCHeap plus GCOwned and is not Chrome JSHeapUsedSize/TotalSize. HeapProfiler.collectGarbage uses Heap.gc. DOM/listener counters and other unknown metrics are explicitly unsupported. |
 
-The bridge returns CDP `-32601` for unsupported methods, including trusted Input,
-Memory and Performance, rather than forwarding overlapping WebKit names.
-Page/Fetch support is limited to the explicit translations above.
-`Runtime.evaluate` with `throwOnSideEffect=true` also returns an
-error because WebKit does not provide the required no-side-effect guarantee.
-The JSContext adapter rejects unknown context IDs before stripping its own
-synthetic context selector.
+Unsupported methods return -32601, unsupported parameters an explicit error.
+`Runtime.evaluate(throwOnSideEffect=true)` is refused because WebKit has no
+matching guarantee. Overlapping method names are not blindly forwarded.
 
-## Reproduce the client initialization probe
+The [current report](validation/production-completion-2026-10-26.md) records the
+nonzero fixed-client gates, native schema and lifecycle evidence. Their fake
+services validate known WebKit fields, not previously unknown protocol claims.
+Physical Safari/WebView/JSC and other-platform execution remain NOT_RUN. F04
+stays open for page console association, trusted Input and downloads.
 
-The repository's `scripts/cdp-client-probe.cjs` runs current client libraries
-against a standalone fake CDP endpoint to record startup methods. It never
-contacts a device or the Rust bridge. For example:
-
-```sh
-npm install --prefix /tmp/rust-ios-cdp-probe --no-audit --no-fund playwright-core@1.63.0 puppeteer-core@25.12.0 ws@8.22.0
-NODE_PATH=/tmp/rust-ios-cdp-probe/node_modules node scripts/cdp-client-probe.cjs
-```
-
-With `playwright-core` 1.63.0 and `puppeteer-core` 25.12.0, Puppeteer first sent
-`Target.getBrowserContexts`, `Target.setDiscoverTargets`, and
-`Target.setAutoAttach` with a filter excluding page targets. It connected to
-the fake endpoint but found zero pages. Playwright requested
-`Browser.getVersion`, `Target.setAutoAttach`, `Browser.setDownloadBehavior`, and
-`Target.getTargetInfo`; the probe rejected `Browser.setDownloadBehavior`, so
-`connectOverCDP` failed. The bridge now accepts the trailing slash on
-`/json/version/` used by Playwright's HTTP endpoint lookup. Download behavior
-remains unimplemented; returning an empty success would claim unsupported
-download handling. The [actual Rust bridge gate](cdp-client-workflow.md) now records pinned client
-commands/events and original native/child close order. The standalone probe
-remains request discovery only. Download translation and the remaining domain
-workflows retain their explicit gaps.
-
-The single default logical context now has a stable `<browser_id>:default`
-TargetInfo.browserContextId across listing/discovery/attachment/refresh. This
-fixes Playwright's earlier missing-context assertion, allowing it to reach the
-explicit download rejection. It does not implement context creation or isolation.
-
-The [2026-10-26 review](validation/remaining-six-review-2026-10-26.md) removed fabricated `Runtime.consoleAPICalled` events that used context 1 and host wall time. Native `Console.messageAdded` is preserved; WebKit ConsoleMessage supplies no reliable execution-context association. This remains an explicit Runtime/console gap. Passing the existing pinned lifecycle/rejection fixtures does not close the five F04 domains.
-
-The [follow-up review](validation/six-followup-review-2026-10-26.md) preserves native console events. For the single implicit JSContext only, a device-provided WebKit WallTime timestamp can be converted from seconds to CDP milliseconds; no host time is fabricated and page multi-context console correlation remains missing. Main-frame navigation still requires a matching native commit. Explicit child-frame navigation now rejects before evaluation because the adapter has no verified execution-context selection; referrer/transition options are rejected rather than silently ignored. Five-domain fixtures that expect Input/download/metric rejection are evidence of refusal, not implementation of those domains.
+`scripts/cdp-client-probe.cjs` is only an independent startup-method discovery
+probe. It never contacts the Rust bridge or a device and is not acceptance of
+any domain. Historical reports describe earlier implemented/rejected subsets.
