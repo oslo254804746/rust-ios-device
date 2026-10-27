@@ -74,6 +74,13 @@ class CapabilityPolicyTests(unittest.TestCase):
                 "service:flat": "crates/ios-core/src/services/flat.rs",
                 "service:nested": "crates/ios-core/src/services/nested/mod.rs",
             })
+            # The executable can delegate to the same public library entry.
+            (cli / "main.rs").rename(cli / "lib.rs")
+            (cli / "main.rs").write_text("fn main() { ios_cli::run_cli(); }\n", encoding="utf-8")
+            with patch.object(capabilities, "ROOT", root):
+                library_commands, library_services = capabilities.source_inventory()
+            self.assertEqual(library_commands, commands)
+            self.assertEqual(library_services, actual)
 
 
 if __name__ == "__main__":
