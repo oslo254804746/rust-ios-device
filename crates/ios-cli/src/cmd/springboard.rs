@@ -5,8 +5,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ios_core::springboard::{Icon, SpringboardClient};
-use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions};
 use tokio::fs;
 
 #[derive(clap::Args)]
@@ -108,15 +106,12 @@ impl SpringboardCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for springboard"))?;
 
-        let opts = ConnectOptions {
-            tun_mode: TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: true,
-        };
-        let device = connect(&udid, opts).await?;
-        let stream = device
-            .connect_service(ios_core::springboard::SERVICE_NAME)
-            .await?;
+        let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+            &udid,
+            ios_core::springboard::SERVICE_NAME,
+            Duration::from_secs(30),
+        )
+        .await?;
         let mut client = SpringboardClient::new(stream);
         client.set_operation_timeout(Some(Duration::from_millis(self.request_timeout_ms)));
 

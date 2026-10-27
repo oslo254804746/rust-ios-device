@@ -208,15 +208,12 @@ async fn try_dtx_screenshot(udid: &str) -> Result<Bytes> {
 }
 
 async fn take_legacy_screenshot(udid: &str) -> Result<ScreenshotImage> {
-    let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    let device = ios_core::connect(udid, opts).await?;
-    let stream = device
-        .connect_service(ios_core::screenshot::SERVICE_NAME)
-        .await?;
+    let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+        udid,
+        ios_core::screenshot::SERVICE_NAME,
+        Duration::from_secs(30),
+    )
+    .await?;
 
     crate::output::write_error_line(format_args!("Capturing screenshot (legacy screenshotr)..."))?;
     let mut client = ios_core::screenshot::ScreenshotClient::new(stream);

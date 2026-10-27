@@ -3,7 +3,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ios_core::crashreport::{
     prepare_reports, CRASHREPORT_COPY_MOBILE_SERVICE, CRASHREPORT_MOVER_SERVICE,
 };
@@ -178,23 +178,35 @@ impl FileCmd {
 
     fn run_afc(self, udid: String, json_output: bool) -> Pin<Box<dyn Future<Output = Result<()>>>> {
         Box::pin(async move {
-            let opts = ios_core::device::ConnectOptions {
-                tun_mode: ios_core::TunMode::Userspace,
-                pair_record_path: None,
-                skip_tunnel: true,
+            let service = if self.crash {
+                CRASHREPORT_MOVER_SERVICE
+            } else if self.app.is_some() {
+                ios_core::afc::house_arrest::SERVICE_NAME
+            } else {
+                "com.apple.afc"
             };
-            let device = ios_core::connect(&udid, opts).await?;
+            let (device, stream) = crate::cmd::connect::connect_lockdown_service(
+                &udid,
+                service,
+                std::time::Duration::from_secs(30),
+            )
+            .await?;
             let mut afc = if self.crash {
-                let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
-                prepare_reports(&mut mover).await?;
+                let mut mover = stream;
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    prepare_reports(&mut mover),
+                )
+                .await
+                .context("crash mover setup deadline")??;
                 let stream = device
-                    .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
+                    .connect_service_with_timeout(
+                        CRASHREPORT_COPY_MOBILE_SERVICE,
+                        std::time::Duration::from_secs(30),
+                    )
                     .await?;
                 ios_core::afc::AfcClient::new(stream)
             } else if let Some(bundle_id) = self.app.as_deref() {
-                let stream = device
-                    .connect_service(ios_core::afc::house_arrest::SERVICE_NAME)
-                    .await?;
                 let house_arrest = ios_core::afc::house_arrest::HouseArrestClient::new(stream)
                     .with_operation_timeout(Some(std::time::Duration::from_secs(30)));
                 if self.documents {
@@ -203,9 +215,9 @@ impl FileCmd {
                     house_arrest.vend_container(bundle_id).await?
                 }
             } else {
-                let stream = device.connect_service("com.apple.afc").await?;
                 ios_core::afc::AfcClient::new(stream)
             };
+            afc.set_request_timeout(Some(std::time::Duration::from_secs(30)));
 
             match self.sub {
                 FileSub::Ls { path, long } => {

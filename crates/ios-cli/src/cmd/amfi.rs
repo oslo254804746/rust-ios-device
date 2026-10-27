@@ -1,6 +1,4 @@
 use anyhow::Result;
-use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions};
 
 #[derive(clap::Args)]
 pub struct AmfiCmd {
@@ -28,18 +26,12 @@ impl AmfiCmd {
 }
 
 async fn reveal_developer_mode(udid: &str, json: bool) -> Result<()> {
-    let opts = ConnectOptions {
-        tun_mode: TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    let device = connect(udid, opts).await?;
-    let stream = device
-        .connect_service_with_timeout(
-            ios_core::amfi::SERVICE_NAME,
-            std::time::Duration::from_secs(30),
-        )
-        .await?;
+    let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+        udid,
+        ios_core::amfi::SERVICE_NAME,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
     let mut client = ios_core::amfi::AmfiClient::new(stream);
     client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
     client
@@ -64,18 +56,12 @@ async fn reveal_developer_mode(udid: &str, json: bool) -> Result<()> {
 }
 
 async fn enable_developer_mode(udid: &str, json: bool) -> Result<()> {
-    let opts = ConnectOptions {
-        tun_mode: TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    let device = connect(udid, opts).await?;
-    let stream = device
-        .connect_service_with_timeout(
-            ios_core::amfi::SERVICE_NAME,
-            std::time::Duration::from_secs(30),
-        )
-        .await?;
+    let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+        udid,
+        ios_core::amfi::SERVICE_NAME,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
     let mut client = ios_core::amfi::AmfiClient::new(stream);
     client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
     client

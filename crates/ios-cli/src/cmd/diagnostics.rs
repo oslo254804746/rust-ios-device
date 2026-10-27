@@ -2,8 +2,7 @@ use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use std::time::Duration;
 
 use anyhow::Result;
-use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions};
+use ios_core::{connect, ConnectOptions, TunMode};
 
 #[derive(clap::Args)]
 pub struct DiagnosticsCmd {
@@ -88,15 +87,12 @@ impl DiagnosticsCmd {
             )?;
         }
 
-        let opts = ConnectOptions {
-            tun_mode: TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: true,
-        };
-        let device = connect(&udid, opts).await?;
-        let stream = device
-            .connect_service(ios_core::diagnostics::SERVICE_NAME)
-            .await?;
+        let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+            &udid,
+            ios_core::diagnostics::SERVICE_NAME,
+            Duration::from_secs(30),
+        )
+        .await?;
         let mut client = ios_core::diagnostics::DiagnosticsClient::new(stream);
         client.set_operation_timeout(Some(Duration::from_secs(30)));
 
