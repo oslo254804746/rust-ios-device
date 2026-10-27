@@ -2695,6 +2695,90 @@
       "location": "docs/validation/production-completion-2026-10-26.md",
       "result": "PASS",
       "scope": "Core restore86 in the current full Core batch: selected OS extraction, real ASR Initiate/OOB/Payload/checksum and RestoredClient SystemImageData/DataPort dispatch through owned synthetic peers. Does not establish complete Update, physical transitions, TSS eligibility or Apple personalization."
+    },
+    {
+      "id": "windows-bounded-zip-20261027",
+      "level": "host-unit/protocol",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "offline files",
+        "owned duplex",
+        "explicit localhost",
+        "fixed local Node/FFmpeg subprocesses"
+      ],
+      "required_state": [
+        "Same checkout; no physical discovery/action or actual TSS; main-controlled serial Cargo gates"
+      ],
+      "tested_commit": "8ea9af31613154c61d4efc3f825e5672362f707d",
+      "date": "2026-10-27",
+      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "result": "PASS",
+      "scope": "CoreZIP31 and full Core2041: actual owned duplex Stored/Deflated streaming, metadata snapshot/EOCD bounds, nested ZIP, 6MiB payload CRC, malformed input, caller Drop/deadline and peer EOF. ZIP32 admitted profile, no physical install, whole-process RSS or OS syscall preemption guarantee."
+    },
+    {
+      "id": "windows-modern-workflow-20261027",
+      "level": "simulated-flow",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "offline files",
+        "owned duplex",
+        "explicit localhost",
+        "fixed local Node/FFmpeg subprocesses"
+      ],
+      "required_state": [
+        "Same checkout; no physical discovery/action or actual TSS; main-controlled serial Cargo gates"
+      ],
+      "tested_commit": "8ea9af31613154c61d4efc3f825e5672362f707d",
+      "date": "2026-10-27",
+      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "result": "PASS",
+      "scope": "Same TestWorkflowEngine::run traverses actual loopback readiness/RSD/canonical AppService/canonical or shim DTX to one passed testcase/JUnit/attempt sidecar; launch then authorization failure kills known PID before DTX close. Two tests include fail-closed target injection; peers abort and join on all fixture failures. Not a CLI binary, installation/log, original native-owner or physical-device workflow."
+    },
+    {
+      "id": "windows-isolated-worlds-20261027",
+      "level": "simulated-flow",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "offline files",
+        "owned duplex",
+        "explicit localhost",
+        "fixed local Node/FFmpeg subprocesses"
+      ],
+      "required_state": [
+        "Same checkout; no physical discovery/action or actual TSS; main-controlled serial Cargo gates"
+      ],
+      "tested_commit": "8ea9af31613154c61d4efc3f825e5672362f707d",
+      "date": "2026-10-27",
+      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "result": "PASS",
+      "scope": "Actual fixed Playwright/Puppeteer16 through the Rust bridge plus CoreCDP33: normal/user/internal contexts, per-ID epochs, retired tree/ID reuse, native objectId console evidence and WallTime. Primitive-only console without world identity, trusted page input and downloads remain unsupported; no physical Safari/WebView acceptance."
+    },
+    {
+      "id": "windows-restored-dispatch-20261027",
+      "level": "host-unit/protocol",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "offline files",
+        "owned duplex",
+        "explicit localhost",
+        "fixed local Node/FFmpeg subprocesses"
+      ],
+      "required_state": [
+        "Same checkout; no physical discovery/action or actual TSS; main-controlled serial Cargo gates"
+      ],
+      "tested_commit": "8ea9af31613154c61d4efc3f825e5672362f707d",
+      "date": "2026-10-27",
+      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "result": "PASS",
+      "scope": "CoreRestore91 (restored13) includes actual synchronous SystemImageData dispatch through original total/cancellation to ASR and continued control receive; independent-token cancellation during StartRestore/firmware, terminal rejection/partial reports and late-status exclusion. Async ports/full recovery remain unimplemented and no Update completion or device write acceptance is claimed."
     }
   ],
   "capabilities": [
@@ -3536,13 +3620,19 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-bounded-zip-20261027"
         }
       ],
       "limitations": [
         "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
         "Wire Int64/Uint64 receipt is additive; legacy InstallRecord fields and ordinary install-record output are unchanged.",
         "Read-only Query only; the existing external tunnel is not owned or stopped. Service record fingerprints and actual socket EOF are separate from device trust or remote cleanup.",
-        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
+        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied.",
+        "Owned CLI/workflow ZIP installs admit only ZIP32 Stored/Deflated: archive <=u32::MAX, 16384 entries, 16MiB directory/32MiB metadata reads, 1GiB per expanded entry and 8GiB total; 64KiB streaming buffers and CRC preflight. Borrowed legacy APIs remain separate, OS syscalls cannot be physically preempted, and mutable payloads are not file snapshots."
       ],
       "topic": "docs/validation/protocol-observers-2026-10-12.md"
     },
@@ -5618,10 +5708,16 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-modern-workflow-20261027"
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "A same-engine loopback modern protocol/result fixture is now executed; actual CLI binary plus installation/log and original NativeScope retirement in one modern scenario remains unverified. Existing stage-level native cleanup tests are separate evidence."
       ],
       "topic": "docs/usage.md"
     },
@@ -5666,10 +5762,16 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-modern-workflow-20261027"
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "A same-engine loopback modern protocol/result fixture is now executed; actual CLI binary plus installation/log and original NativeScope retirement in one modern scenario remains unverified. Existing stage-level native cleanup tests are separate evidence."
       ],
       "topic": "docs/usage.md"
     },
@@ -5858,10 +5960,15 @@
           "level": "simulated-flow",
           "result": "PASS",
           "evidence": "windows-cdp-native-20261027"
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-isolated-worlds-20261027"
         }
       ],
       "limitations": [
-        "Actual fixed-client Rust-bridge workflows cover native normal realms, iframe navigation, Memory sampling and Fetch subset. Page multi-realm console correlation, user/internal world mapping, trusted selected-page Input and download control/save/cancel/events remain OPEN. Default Playwright download initialization is explicitly unsupported; physical Safari/WebView remains NOT_RUN."
+        "Fixed-client Rust-bridge workflows now cover native normal/user/internal realms, iframe navigation, proven object console association, Memory sampling and Fetch subset. Primitive-only console world association, trusted selected-page input and download control/save/cancel/events remain OPEN; default Playwright downloads reject explicitly and physical Safari/WebView stays NOT_RUN."
       ],
       "topic": "docs/cdp-compatibility.md"
     },
@@ -6248,10 +6355,16 @@
           "result": "PASS",
           "evidence": "linux-browse-total-budget-655733c",
           "scope": "Checked Browse total, cumulative reply/frame/entry budgets, strict metadata and rejection through every old entry after committed invalidation only."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-bounded-zip-20261027"
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "Owned CLI/workflow ZIP installs admit only ZIP32 Stored/Deflated: archive <=u32::MAX, 16384 entries, 16MiB directory/32MiB metadata reads, 1GiB per expanded entry and 8GiB total; 64KiB streaming buffers and CRC preflight. Borrowed legacy APIs remain separate, OS syscalls cannot be physically preempted, and mutable payloads are not file snapshots."
       ],
       "topic": "docs/usage.md"
     },
@@ -6952,6 +7065,11 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-modern-workflow-20261027"
         }
       ],
       "limitations": [
@@ -7980,10 +8098,15 @@
           "level": "host-unit/protocol",
           "result": "PASS",
           "evidence": "windows-restore-asr-20261027"
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-restored-dispatch-20261027"
         }
       ],
       "limitations": [
-        "Normal-mode preflight-requests CLI, selected identity OS extraction and ASR SystemImageData/DataPort transfer exist. Full recovery/ramdisk, USB/ECID reidentification, nonce-aware TSS/IMG4/TBM/nonce-slot, FDR and async firmware dispatch remain unimplemented; CLI Update execution stays disabled. No physical restore/TSS acceptance."
+        "Normal-mode preflight-requests, selected identity OS extraction, real ASR and experimental restored synchronous SystemImageData loop dispatch exist. Async data-port owners/full recovery/USB-ECID reidentification/nonce-aware TSS-IMG4-TBM-nonce-slot/FDR remain unimplemented. Partial ASR failures have no complete receipt: a zero recorded count does not imply no writes. CLI complete Update stays disabled; no physical restore/TSS acceptance."
       ],
       "topic": "docs/restore-preflight.md"
     },
@@ -8104,6 +8227,11 @@
           "level": "simulated-flow",
           "result": "PASS",
           "evidence": "windows-cdp-native-20261027"
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-isolated-worlds-20261027"
         }
       ],
       "limitations": [

@@ -67,3 +67,12 @@ fixture metadata only. No offline IPSW is currently available for that profile;
 actual TSS, device transitions and recovery remain NOT_RUN. The missing executor
 is a development gap independent of that file. See the
 [current report](validation/production-completion-2026-10-26.md).
+
+
+The experimental `run_restored_update_loop_with_system_image` now dispatches a
+synchronous SystemImageData request through that ASR path and resumes the control
+loop after transfer. AsyncDataRequest still needs an independent transport/task
+owner and is explicitly rejected. This incomplete executor rejects Status=0 as
+complete Update evidence; the older firmware-only helper retains its historical
+protocol-loop result and does not certify recovery. See the
+[development increment](validation/remaining-development-2026-10-27.md).

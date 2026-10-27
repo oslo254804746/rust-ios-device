@@ -46,8 +46,10 @@ cleanup. It accepts a launch-plan resolver; it is not a separate orchestration
 engine. See the [external Rust API test](tests/workflow_api.rs) and
 [current validation](../../docs/validation/production-completion-2026-10-26.md).
 Package installation is explicit, is never automatically replayed after unknown
-effects, and retains original cleanup failures. The full modern CLI fake-service
-scenario and representative physical workflow remain unverified.
+effects, and retains original cleanup failures. A same-engine localhost fixture now traverses real RSD/AppService/canonical and
+shim DTX to a testcase/JUnit/sidecar and failure cleanup. Binary-process, original
+native-owner, installation/log integration and representative physical workflows
+remain unverified. See the [development increment](../../docs/validation/remaining-development-2026-10-27.md).
 
 ## Install
 
