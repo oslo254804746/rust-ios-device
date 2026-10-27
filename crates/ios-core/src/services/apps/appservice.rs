@@ -238,6 +238,14 @@ impl AppServiceClient {
         self.envelope_mode
     }
 
+    pub fn is_usable(&self) -> bool {
+        self.client.is_usable()
+    }
+
+    pub fn supports_process_listing(&self) -> bool {
+        self.feature_is_advertised(FEATURE_LIST_PROCESSES)
+    }
+
     /// Reopen this selected service after an interrupted uncorrelated effect.
     pub async fn reconnect(&mut self) -> Result<(), AppServiceError> {
         self.client = self.client.reconnect().await?;

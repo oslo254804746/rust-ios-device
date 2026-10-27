@@ -20,6 +20,9 @@ use ios_core::XctCapabilities;
 use tokio::time::Instant;
 use uuid::Uuid;
 
+#[cfg(test)]
+mod startup_tests;
+
 use crate::cmd::connect::connect_lockdown_only;
 
 #[derive(clap::Args)]
@@ -222,15 +225,20 @@ pub(crate) struct TestStartupCleanup {
     pid: Option<u64>,
     device: Option<OwnedTestDevice>,
     instruments_device: Option<OwnedTestDevice>,
-    pending_runner: Option<(String, Vec<u64>)>,
+    pending_runner: Option<(String, Option<Vec<u64>>)>,
     launch_submitted: bool,
 }
 impl TestStartupCleanup {
     pub(crate) async fn close(&mut self) -> Result<()> {
         let mut result = Ok(());
-        if self.pid.is_none() && self.launch_submitted {
-            if let (Some(RunnerController::CoreDevice(controller)), Some((bundle, previous))) =
-                (&mut self.controller, self.pending_runner.take())
+        let interrupted = self.pending_runner.is_some()
+            && matches!(&self.controller,
+            Some(RunnerController::CoreDevice(controller)) if !controller.is_usable());
+        if self.pid.is_none() && (self.launch_submitted || interrupted) {
+            if let (
+                Some(RunnerController::CoreDevice(controller)),
+                Some((bundle, Some(previous))),
+            ) = (&mut self.controller, self.pending_runner.take())
             {
                 result = tokio::time::timeout(Duration::from_secs(2), async {
                     controller.reconnect().await?;
@@ -250,7 +258,8 @@ impl TestStartupCleanup {
                 })
                 .await
                 .map_err(anyhow::Error::new)
-                .and_then(|result| result);
+                .and_then(|result| result)
+                .context(RunnerLaunchUnconfirmed);
             } else {
                 result = Err(anyhow::Error::new(RunnerLaunchUnconfirmed));
             }
@@ -650,15 +659,21 @@ async fn start_test_plan_session_inner(
                     terminate_existing: true,
                     standard_io_identifiers: Default::default(),
                 };
-                let previous = appservice
-                    .list_processes()
-                    .await?
-                    .into_iter()
-                    .filter(|process| {
-                        process.bundle_id.as_deref() == Some(plan.runner.bundle_id.as_str())
-                    })
-                    .map(|process| process.pid)
-                    .collect();
+                let previous = if appservice.supports_process_listing() {
+                    Some(
+                        appservice
+                            .list_processes()
+                            .await?
+                            .into_iter()
+                            .filter(|process| {
+                                process.bundle_id.as_deref() == Some(plan.runner.bundle_id.as_str())
+                            })
+                            .map(|process| process.pid)
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
                 cleanup.pending_runner = Some((plan.runner.bundle_id.clone(), previous));
                 let pid = appservice
                     .launch_application_observed(
