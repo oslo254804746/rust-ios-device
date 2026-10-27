@@ -661,11 +661,15 @@ impl PageCdpAdapter {
                         Some(pending.deadline),
                     );
                 }
-                let cause = match &pending.translation {
-                    Translation::PerformanceRollback { cause } => cause,
-                    Translation::FetchRollback { cause } => cause,
-                    _ => cause,
-                };
+                if let Translation::PerformanceRollback { cause: primary }
+                | Translation::FetchRollback { cause: primary } = &pending.translation
+                {
+                    return PageCdpOutput::client(rollback_failure(
+                        &pending.request,
+                        primary,
+                        Some(cause),
+                    ));
+                }
                 let mut response = json!({"id":pending.request["id"],"error":cause});
                 if let Some(session) = pending.request.get("sessionId") {
                     response["sessionId"] = session.clone();
@@ -706,10 +710,7 @@ impl PageCdpAdapter {
                     PageCdpOutput::client(reply(&pending.request, json!({})))
                 }
                 Translation::PerformanceRollback { cause } => {
-                    let mut response = reply(&pending.request, json!({}));
-                    response.as_object_mut().unwrap().remove("result");
-                    response["error"] = cause;
-                    PageCdpOutput::client(response)
+                    PageCdpOutput::client(rollback_failure(&pending.request, &cause, None))
                 }
                 Translation::Pass => PageCdpOutput::client(reply(&pending.request, result.clone())),
                 Translation::FrameTree => {
@@ -879,10 +880,7 @@ impl PageCdpAdapter {
                     PageCdpOutput::client(reply(&pending.request, result.clone()))
                 }
                 Translation::FetchRollback { cause } => {
-                    let mut response = reply(&pending.request, json!({}));
-                    response.as_object_mut().unwrap().remove("result");
-                    response["error"] = cause;
-                    PageCdpOutput::client(response)
+                    PageCdpOutput::client(rollback_failure(&pending.request, &cause, None))
                 }
                 Translation::FetchResume { request_id } => {
                     self.paused.remove(&request_id);
@@ -1066,14 +1064,34 @@ impl PageCdpAdapter {
             .collect();
         ids.into_iter()
             .map(|id| {
+                let pending = self.pending.remove(&id).unwrap();
+                if let Translation::PerformanceRollback { cause }
+                | Translation::FetchRollback { cause } = &pending.translation
+                {
+                    return rollback_failure(
+                        &pending.request,
+                        cause,
+                        Some(&json!({"code":-32000,"message":"native rollback deadline elapsed"})),
+                    );
+                }
                 error(
-                    &self.pending.remove(&id).unwrap().request,
+                    &pending.request,
                     -32000,
                     "WebInspector translation deadline elapsed",
                 )
             })
             .collect()
     }
+}
+fn rollback_failure(request: &Value, primary: &Value, cleanup: Option<&Value>) -> Value {
+    let mut response = reply(request, json!({}));
+    response.as_object_mut().unwrap().remove("result");
+    response["error"] = primary.clone();
+    if let Some(cleanup) = cleanup {
+        response["error"]["data"] =
+            json!({"primaryData":primary.get("data"),"cleanupError":cleanup});
+    }
+    response
 }
 fn memory_metrics(event: &Value) -> Option<Value> {
     let timestamp = event["timestamp"]
@@ -1285,6 +1303,23 @@ mod tests {
         let output = adapter.incoming(json!({"id":rollback.wire[0]["id"],"result":{}}));
         assert_eq!(output.client[0]["error"], original);
         assert!(!adapter.performance_enabled);
+    }
+
+    #[test]
+    fn rollback_timeout_retains_primary_and_cleanup_observations() {
+        let mut adapter = PageCdpAdapter::new(Duration::from_secs(1));
+        let enable = adapter.outgoing(json!({"id":1,"method":"Performance.enable"}));
+        let start = adapter.incoming(json!({"id":enable.wire[0]["id"],"result":{}}));
+        let rollback=adapter.incoming(json!({"id":start.wire[0]["id"],"error":{"code":-123,"message":"original sampling error","data":{"native":1}}}));
+        adapter
+            .pending
+            .get_mut(&rollback.wire[0]["id"].as_i64().unwrap())
+            .unwrap()
+            .deadline = Instant::now();
+        let result = adapter.expired();
+        assert_eq!(result[0]["error"]["code"], -123);
+        assert_eq!(result[0]["error"]["data"]["primaryData"]["native"], 1);
+        assert_eq!(result[0]["error"]["data"]["cleanupError"]["code"], -32000);
     }
 
     #[test]
