@@ -15,6 +15,118 @@ use super::web::*;
 use crate::access::test_support::{grant, JsonRequest, PolicyFixture, DEVICE, TOKEN};
 use crate::access::{AccessControl, Permission};
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "manual diagnostic only; measures unpolled viewer capture future sizes"]
+async fn report_viewer_capture_future_sizes() {
+    let udid = "size-probe-only";
+    let native = crate::cmd::tunnel::NativeScope::new().unwrap();
+    let (frames, _frame_rx) = tokio::sync::watch::channel(None::<DecodedFrame>);
+    let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    macro_rules! report_size {
+        ($label:literal, $future:expr) => {{
+            let future = $future;
+            eprintln!(
+                "viewer-future-size {}={}",
+                $label,
+                std::mem::size_of_val(&future)
+            );
+        }};
+    }
+    report_size!(
+        "version_probe",
+        crate::cmd::connect::probe_product_version(udid)
+    );
+    report_size!(
+        "native_connect",
+        native.connect(udid, ios_core::TunMode::Userspace)
+    );
+    report_size!(
+        "instruments_connect",
+        crate::cmd::instruments::connect_instruments(udid)
+    );
+    report_size!(
+        "legacy_capture",
+        crate::cmd::screenshot::capture_fallback_scoped(udid, &native)
+    );
+    report_size!("capture_frame", capture_frame(udid, &native, false));
+    report_size!(
+        "timeout_capture_frame",
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            Box::pin(capture_frame(udid, &native, false)),
+        )
+    );
+    report_size!(
+        "produce",
+        produce(
+            udid.to_string(),
+            frames,
+            stop_rx,
+            native.clone(),
+            false,
+            0,
+            Duration::from_millis(500),
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "manual diagnostic only; decodes the private PNG on a default Tokio worker"]
+async fn viewer_png_decode_tokio_worker_stack_probe() {
+    let path = std::env::var_os("IOS_PRIVATE_PNG_TEST")
+        .map(std::path::PathBuf::from)
+        .expect("set IOS_PRIVATE_PNG_TEST to the private captured PNG path");
+    let data = std::fs::read(&path).expect("read IOS_PRIVATE_PNG_TEST");
+    let input_bytes = data.len();
+    let decoded = tokio::spawn(async move { decode_png(data.into(), 1) })
+        .await
+        .expect("PNG decoder task panicked");
+    let frame = decoded.expect("PNG decode failed");
+    eprintln!(
+        "viewer-png-worker-decode input_bytes={} dimensions={}x{} output_pixel_bytes={}",
+        input_bytes,
+        frame.width,
+        frame.height,
+        frame.bgra.len(),
+    );
+}
+
+#[test]
+fn pre_ios17_viewer_capture_skips_coredevice_tunnel_path() {
+    assert!(!coredevice_capture_supported(14));
+    assert!(!coredevice_capture_supported(16));
+    assert!(coredevice_capture_supported(17));
+    assert!(coredevice_capture_supported(18));
+}
+
+#[test]
+fn native_screenshot_above_video_unit_budget_still_decodes_with_pixel_bound() {
+    let mut pixels = vec![0; 1024 * 768 * 4];
+    let mut state = 1234567u32;
+    for byte in &mut pixels {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        *byte = state as u8;
+    }
+    let mut data = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut data, 1024, 768);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+    }
+    assert!(data.len() > MAX_ENCODED_BYTES);
+    let frame = decode_png(data.into(), 1).unwrap();
+    assert_eq!((frame.width, frame.height), (1024, 768));
+    assert_eq!(frame.bgra.len(), pixels.len());
+    assert!(decode_png(vec![0; MAX_PNG_BYTES + 1].into(), 1).is_err());
+}
+
 fn observed_backend() -> (
     mpsc::Sender<DeviceRequest>,
     mpsc::UnboundedReceiver<VncInputAction>,

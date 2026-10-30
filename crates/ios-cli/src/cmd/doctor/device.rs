@@ -174,7 +174,15 @@ impl Check {
 
     fn failure(probe: Probe, error: anyhow::Error) -> Self {
         let class = error_class(&error);
-        let state = if error.is::<MetadataMissing>() || class == ErrorClass::NotFound {
+        let unknown_image_command = matches!(probe, Probe::DeveloperMode | Probe::DdiManifests)
+            && matches!(
+                error.downcast_ref::<ios_core::imagemounter::ImageMounterError>(),
+                Some(ios_core::imagemounter::ImageMounterError::DeviceError(code))
+                    if code == "UnknownCommand"
+            );
+        let state = if unknown_image_command {
+            State::Unsupported
+        } else if error.is::<MetadataMissing>() || class == ErrorClass::NotFound {
             State::MetadataMissing
         } else {
             match class {
@@ -199,6 +207,7 @@ impl Check {
                 State::PermissionDenied => "The host or an explicit lockdown response denied access to the selected device probe.",
                 State::ServiceUnavailable => "Lockdown explicitly reported that the requested service is unavailable.",
                 State::MetadataMissing => "Required local trust or response metadata was absent; no negative capability value was inferred.",
+                State::Unsupported if unknown_image_command => "The image mounter explicitly rejected a requested command as UnknownCommand; this observation does not establish a negative device setting or DDI usability.",
                 State::Unsupported => "The selected developer operation or negotiated transport has no verified adapter. Its DDI usability is unknown; no tunnel, mount or pairing was attempted.",
                 _ => "The selected device probe failed; its typed error category is reported without private response data.",
             },

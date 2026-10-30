@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use ios_core::device::ServiceStream;
 use ios_core::MuxClient;
 use std::{sync::Arc, time::Duration};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 mod lifecycle;
@@ -53,8 +53,6 @@ struct ForwardConnector {
     setup_failure: Option<Arc<anyhow::Error>>,
     #[cfg(test)]
     direct_test_target: Option<std::net::SocketAddr>,
-    #[cfg(test)]
-    fallback_test_target: Option<std::net::SocketAddr>,
 }
 
 pub async fn run_port_forward(
@@ -211,8 +209,6 @@ async fn resolve_forward_connector_scoped(
         setup_failure,
         #[cfg(test)]
         direct_test_target: None,
-        #[cfg(test)]
-        fallback_test_target: None,
     })
 }
 
@@ -243,7 +239,7 @@ impl ForwardConnector {
     fn describe(&self, host: &str, host_port: u16, device_port: u16) -> String {
         match &self.tunnel_proxy {
             Some(target) => format!(
-                "Forwarding {host}:{host_port} → [{}]:{device_port}  (prefers proxy 127.0.0.1:{}; usbmux fallback enabled)",
+                "Forwarding {host}:{host_port} → [{}]:{device_port}  (prefers usbmux direct; proxy 127.0.0.1:{} fallback)",
                 ios_core::redaction::diagnostic_id(&target.server_addr), target.proxy_port
             ),
             None => format!(
@@ -253,28 +249,12 @@ impl ForwardConnector {
     }
 
     async fn connect(&self, device_port: u16) -> Result<ServiceStream> {
+        // A usbmux Connect reply confirms the device port was opened. The
+        // legacy userspace proxy preamble has no acknowledgement: a successful
+        // local TCP dial cannot establish that a legacy port exists on the
+        // tunnel address. Select the direct route before copying any data.
         #[cfg(test)]
-        if let Some(address) = self.direct_test_target {
-            return Ok(Box::new(TcpStream::connect(address).await?));
-        }
-        let mut primary = self.setup_failure.clone();
-        if let Some(target) = &self.tunnel_proxy {
-            match connect_via_tunnel_proxy(target, device_port).await {
-                Ok(stream) => return Ok(stream),
-                Err(err) => {
-                    tracing::warn!(
-                        remote = %ios_core::redaction::diagnostic_id(&target.server_addr),
-                        device_port, proxy_port = target.proxy_port,
-                        error = %crate::output::error_message(&err),
-                        "forward: tunnel proxy connect failed; falling back to usbmux"
-                    );
-                    primary = Some(Arc::new(err));
-                }
-            }
-        }
-
-        #[cfg(test)]
-        let fallback = if let Some(address) = self.fallback_test_target {
+        let direct = if let Some(address) = self.direct_test_target {
             TcpStream::connect(address)
                 .await
                 .map(|stream| Box::new(stream) as ServiceStream)
@@ -283,16 +263,29 @@ impl ForwardConnector {
             connect_via_usbmux(self.device_id, device_port).await
         };
         #[cfg(not(test))]
-        let fallback = connect_via_usbmux(self.device_id, device_port).await;
+        let direct = connect_via_usbmux(self.device_id, device_port).await;
+        let primary = match direct {
+            Ok(stream) => return Ok(stream),
+            Err(error) => error,
+        };
+        let fallback = match &self.tunnel_proxy {
+            Some(target) => connect_via_tunnel_proxy(target, device_port).await,
+            None => {
+                return Err(match &self.setup_failure {
+                    Some(error) => anyhow::Error::new(ForwardFallbackFailure {
+                        primary: error.clone(),
+                        fallback: primary,
+                    }),
+                    None => primary,
+                })
+            }
+        };
         match fallback {
             Ok(stream) => Ok(stream),
-            Err(fallback) => match primary {
-                Some(primary) => Err(anyhow::Error::new(ForwardFallbackFailure {
-                    primary,
-                    fallback,
-                })),
-                None => Err(fallback),
-            },
+            Err(fallback) => Err(anyhow::Error::new(ForwardFallbackFailure {
+                primary: Arc::new(primary),
+                fallback,
+            })),
         }
     }
 }
@@ -305,8 +298,26 @@ async fn connect_via_tunnel_proxy(
     let mut proxy = TcpStream::connect(&proxy_addr).await?;
     let addr_bytes = parse_ipv6_bytes(&target.server_addr)?;
     proxy.write_all(&addr_bytes).await?;
-    proxy.write_all(&(device_port as u32).to_le_bytes()).await?;
+    let port = device_port as u32 | ios_core::USERSPACE_PROXY_CONNECT_ACK;
+    proxy.write_all(&port.to_le_bytes()).await?;
     proxy.flush().await?;
+    match proxy.read_u8().await? {
+        0 => {}
+        1 => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "userspace remote connect aborted before establishment",
+            )
+            .into())
+        }
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid userspace connect acknowledgement",
+            )
+            .into())
+        }
+    }
     Ok(Box::new(proxy))
 }
 

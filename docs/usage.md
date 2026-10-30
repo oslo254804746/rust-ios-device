@@ -499,8 +499,17 @@ collect destination is refused. Both commands use the classic
 `com.apple.os_trace_relay.shim.remote` RSD service on iOS 17+, and `--timeout`
 covers connection, transfer, validation, and extraction. Device-side
 `SizeLimit`, `AgeLimit`, and Unix-timestamp `StartTime` are sent unchanged;
-the core API also enforces bounded host-side archive, entry, and extracted-byte
-budgets. Ctrl+C removes incomplete temporary output.
+`--size-limit` requests the device's archive size and also sets the host
+transfer cap for compatibility. Use `--max-bytes` to set a separate hard host
+transfer cap, for example `--size-limit 1048576 --max-bytes 33554432`.
+When neither option is given the host transfer cap is 4 GiB. Both size options
+must be nonzero unsigned 64-bit values. The device may ignore its size hint; the
+host rejects an entire announced chunk before reading it if that chunk would
+exceed the transfer cap. Independently, archive validation and collection limit
+each extracted file to 1 GiB, total extracted bytes to 4 GiB, and entries to
+100,000; `--max-bytes` does not increase these limits. Limit errors identify
+the budget category without exposing paths or daemon text. Ctrl+C removes
+incomplete temporary output.
 
 ## Backups
 
@@ -542,6 +551,11 @@ without inventing an encrypted manifest; encrypted legacy operations require
 Manifest.db WAL/SHM/journal sidecars are also rejected because they cannot be
 decrypted safely as an isolated completed backup.
 
+For `backup create`, `--password` is used for local `--patch-manifest` or
+`--unback` processing; it does not enable or change device backup encryption.
+Creating a backup requires a trusted pairing record with an escrow bag; unlock
+the device and respond to any device prompt during the operation.
+
 `unback` and `extract` are retained compatibility names for local operations
 over a completed backup. They preserve regular-file bytes, basic Unix
 permission bits, and safe relative symlinks. The `list-local` command lists
@@ -576,7 +590,7 @@ returns a failure and does not delete arbitrary host files.
 
 ```sh
 ios -u <UDID> ddi status
-ios -u <UDID> ddi mount --path /path/to/DeveloperDiskImage.dmg
+ios -u <UDID> ddi mount --path /path/to/DDI-directory
 ios -u <UDID> instruments ps
 ios -u <UDID> instruments cpu
 ios -u <UDID> instruments sysmon-process <PID>
@@ -595,8 +609,32 @@ ios -u <UDID> webinspector cdp --host 127.0.0.1 --port 9222 --auth-config PRIVAT
 ios -u <UDID> webinspector selenium --auth-config PRIVATE_POLICY_FILE
 ```
 
+For iOS 17–26, the DDI directory may be a `Restore` directory or its parent;
+`Restore` must contain `PersonalizedDMG.dmg`, `PersonalizedDMG.trustcache`, and
+`BuildManifest.plist`. The selected local files are used for personalization;
+an absent or unreadable file fails without downloading an alternative. Apple
+TSS is still required. If an image is already mounted, the command returns
+without loading the supplied path. For older iOS versions, the directory
+contains `DeveloperDiskImage.dmg` and its `.signature`; iOS 27+ uses the
+[Cryptex Restore directory](cryptex-ddi.md).
+
 Many developer services require Developer Mode, a mounted Developer Disk Image,
 or the CoreDevice tunnel path on newer iOS versions.
+
+### Simulated location
+
+```sh
+ios -u <UDID> location set 48.856614 2.3522219
+ios -u <UDID> location gpx route.gpx
+ios -u <UDID> location reset
+```
+
+On iOS 17 and later, these commands use the Instruments location simulation
+service; earlier versions use the legacy location simulation service. Developer
+services and their device prerequisites must be available. GPX replay sends
+track points in order using their timestamp intervals. Cancelling a replay can
+leave the last simulated location active; use `location reset` to return to
+the device's location.
 
 WebInspector CLI/CDP/WebDriver startup retains IO and timeout errors through
 safe diagnostics. A startup timeout or closed stream alone does not prove that

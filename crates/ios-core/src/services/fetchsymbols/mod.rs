@@ -23,7 +23,7 @@ const MAX_H2_STREAM_ID: u32 = 0x7fff_ffff;
 /// A dyld shared-cache catalog is small (normally a handful of entries). Keep
 /// a generous protocol ceiling so a malformed count cannot drive an enormous
 /// receive loop while leaving ample room for future device catalogs.
-const MAX_CATALOG_FILES: usize = 65_536;
+const MAX_CATALOG_FILES: usize = crate::xpc::h2_raw::MAX_EXPECTED_FILE_STREAMS;
 
 service_error!(FetchSymbolsError);
 
@@ -124,6 +124,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
         self.send_catalog_request().await?;
 
         let count = self.recv_catalog_count().await?;
+        self.framer
+            .expect_peer_file_streams(count)
+            .map_err(|err| error_mapping::h2_error("catalog file streams", err))?;
         let mut files = Vec::with_capacity(count.min(128));
         for _ in 0..count {
             files.push(self.recv_catalog_entry().await?);

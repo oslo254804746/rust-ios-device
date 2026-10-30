@@ -382,13 +382,22 @@ async fn all_original_four_joins_and_proxy_child_finish_while_runtime_roots_stay
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(header[6], 6, "first packet must contain TCP");
+    assert!(body.len() >= 20, "first packet has a truncated TCP header");
+    assert_eq!(u16::from_be_bytes([body[2], body[3]]), 58783);
+    assert_eq!(body[13] & 0x12, 0x02, "first packet must be a SYN");
     assert_eq!(runtime.task_handles.len(), 4);
     runtime.shutdown(OBSERVE).await.unwrap();
     runtime.shutdown_status().unwrap();
-    assert!(matches!(
-        tokio::time::timeout(OBSERVE, client.read(&mut [0; 1])).await,
-        Ok(Ok(0))
-    ));
+    let client_read = tokio::time::timeout(OBSERVE, client.read(&mut [0; 1])).await;
+    // Cancellation closes the proxy child; neither result certifies graceful FIN.
+    match client_read {
+        Ok(Ok(0)) => eprintln!("cancelled proxy peer outcome: EOF"),
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionReset => {
+            eprintln!("cancelled proxy peer outcome: {error:?}");
+        }
+        other => panic!("unexpected cancelled proxy peer outcome: {other:?}"),
+    }
     recovered(peer, &traffic, baseline).await;
     assert!(bank.available_permits() < TOTAL);
     drop(runtime);

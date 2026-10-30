@@ -160,6 +160,33 @@ where
     Ok(Zeroizing::new(serde_bytes::deserialize(deserializer)?))
 }
 
+/// Read the escrow bag from the explicitly selected pairing record.
+/// The bag and the serialized record are zeroized when dropped.
+pub fn load_pair_record_escrow_bag(
+    path: &std::path::Path,
+) -> Result<Zeroizing<Vec<u8>>, PairRecordError> {
+    #[derive(Deserialize)]
+    struct EscrowRecord {
+        #[serde(rename = "EscrowBag", deserialize_with = "deserialize_secret_bytes")]
+        escrow_bag: Zeroizing<Vec<u8>>,
+    }
+
+    let data = read_pair_record_bytes(path).map_err(|source| PairRecordError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let record: EscrowRecord =
+        plist::from_bytes(data.as_slice()).map_err(|error| PairRecordError::Read {
+            path: path.to_path_buf(),
+            source: crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidInput,
+                "parse pairing record escrow bag",
+                error,
+            ),
+        })?;
+    Ok(record.escrow_bag)
+}
+
 impl PairRecord {
     /// Decode an already loaded pairing record without filesystem or device IO.
     ///
@@ -258,6 +285,32 @@ mod read_admission_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_escrow_bag_preserves_data_and_rejects_missing_or_wrong_type() {
+        use std::error::Error;
+        let path =
+            std::env::temp_dir().join(format!("ios-escrow-test-{}.plist", uuid::Uuid::new_v4()));
+        let write_record = |value: Option<plist::Value>| {
+            let mut record = plist::Dictionary::new();
+            if let Some(value) = value {
+                record.insert("EscrowBag".into(), value);
+            }
+            plist::to_file_xml(&path, &plist::Value::Dictionary(record)).unwrap();
+        };
+        write_record(Some(plist::Value::Data(b"synthetic-escrow".to_vec())));
+        let bag = load_pair_record_escrow_bag(&path).unwrap();
+        assert_eq!(bag.as_slice(), b"synthetic-escrow");
+        for value in [None, Some(plist::Value::Integer(42u64.into()))] {
+            write_record(value);
+            let error = load_pair_record_escrow_bag(&path).unwrap_err();
+            assert!(error.source().is_some());
+            assert!(!format!("{error} {error:?}").contains("synthetic-escrow"));
+        }
+        std::fs::remove_file(&path).unwrap();
+        let error = load_pair_record_escrow_bag(&path).unwrap_err();
+        assert!(error.source().is_some());
+    }
 
     #[test]
     fn pair_record_error_diagnostics_hide_paths_identifiers_and_parser_data() {

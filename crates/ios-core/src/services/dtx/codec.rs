@@ -693,6 +693,7 @@ fn archive_to_ns(v: crate::proto::nskeyedarchiver::ArchiveValue) -> NSObject {
         ArchiveValue::Null => NSObject::Null,
         ArchiveValue::Bool(b) => NSObject::Bool(b),
         ArchiveValue::Int(n) => NSObject::Int(n),
+        ArchiveValue::Uint(n) => NSObject::Uint(n),
         ArchiveValue::Float(f) => NSObject::Double(f),
         ArchiveValue::String(s) => NSObject::String(s),
         ArchiveValue::Data(d) => NSObject::Data(d),
@@ -759,6 +760,17 @@ struct DtxOperation<'a, S> {
 struct DtxStream<S> {
     inner: S,
     progress: bool,
+    progress_sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// Read-only sequence of transport and message-processing progress.
+#[derive(Clone)]
+pub struct DtxOperationProgress(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl DtxOperationProgress {
+    pub fn sequence(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for DtxStream<S> {
@@ -770,7 +782,12 @@ impl<S: AsyncRead + Unpin> AsyncRead for DtxStream<S> {
         let stream = self.get_mut();
         let before = buffer.filled().len();
         let result = std::pin::Pin::new(&mut stream.inner).poll_read(cx, buffer);
-        stream.progress |= buffer.filled().len() > before;
+        if buffer.filled().len() > before {
+            stream.progress = true;
+            stream
+                .progress_sequence
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         result
     }
 }
@@ -784,7 +801,12 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for DtxStream<S> {
         let stream = self.get_mut();
         let result = std::pin::Pin::new(&mut stream.inner).poll_write(cx, data);
         if let std::task::Poll::Ready(Ok(bytes)) = result {
-            stream.progress |= bytes > 0;
+            if bytes > 0 {
+                stream.progress = true;
+                stream
+                    .progress_sequence
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         result
     }
@@ -852,6 +874,17 @@ impl<S> DtxConnection<S> {
             completed: false,
             failed: false,
         })
+    }
+
+    /// Shared sequence for detecting progress while an operation is pending.
+    pub fn operation_progress(&self) -> DtxOperationProgress {
+        DtxOperationProgress(self.stream.progress_sequence.clone())
+    }
+
+    pub(crate) fn mark_message_progress(&self) {
+        self.stream
+            .progress_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether another operation may use this connection. An I/O/protocol
@@ -937,6 +970,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
             stream: DtxStream {
                 inner: stream,
                 progress: false,
+                progress_sequence: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             },
             usable: true,
             identifier: 5,

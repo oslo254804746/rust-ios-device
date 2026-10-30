@@ -61,7 +61,7 @@ enum DdiSub {
     Unmount,
     /// Download and mount a developer disk image
     Mount {
-        /// Local DDI directory; on iOS 27+, the unpacked Cryptex Restore directory
+        /// Local DDI directory; iOS 17–26 accepts Restore or its parent
         #[arg(long)]
         path: Option<PathBuf>,
         /// Cache directory for downloaded DDIs
@@ -519,7 +519,7 @@ async fn run_mount(
 
     if version.major >= 17 {
         // Personalized DDI path
-        mount_personalized(&device, cache_dir).await
+        mount_personalized(&device, local_path, cache_dir).await
     } else {
         // Standard DDI path
         mount_standard(&device, &version, local_path, cache_dir).await
@@ -665,19 +665,20 @@ async fn mount_standard(
 
 async fn mount_personalized(
     device: &ios_core::ConnectedDevice,
+    local_path: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
 ) -> Result<()> {
     use ios_core::imagemounter::tss;
     use ios_core::imagemounter::{BuildManifest, DdiDownloader, ImageMounterClient};
 
-    let downloader = DdiDownloader::new(cache_dir);
-    let ddi = downloader
-        .download_personalized()
-        .await
-        .map_err(anyhow::Error::new)?;
+    let ddi = personalized_material(local_path.as_deref(), cache_dir, |cache_dir| async move {
+        DdiDownloader::new(cache_dir).download_personalized().await
+    })
+    .await?;
 
     crate::output::write_error_line(format_args!("Parsing BuildManifest..."))?;
     let manifest = BuildManifest::parse(&ddi.build_manifest).map_err(anyhow::Error::new)?;
+    let ecid = extract_identifier_value(&device.lockdown_get_value(Some("UniqueChipID")).await?)?;
 
     // Get personalization identifiers from device
     let mut stream = device
@@ -703,7 +704,7 @@ async fn mount_personalized(
         .map_err(|e| anyhow::Error::new(e).context("query nonce"))?;
 
     crate::output::write_error_line(format_args!("Requesting TSS ticket from Apple..."))?;
-    let tss_request = tss::build_tss_request(&ids, &nonce, identity);
+    let tss_request = tss::build_tss_request(&ids, board_id, chip_id, ecid, &nonce, identity);
     let ticket = tss::get_tss_ticket(&tss_request)
         .await
         .map_err(anyhow::Error::new)?;
@@ -723,10 +724,42 @@ async fn mount_personalized(
     Ok(())
 }
 
+async fn personalized_material<F, Fut>(
+    local_path: Option<&std::path::Path>,
+    cache_dir: Option<PathBuf>,
+    fetch: F,
+) -> Result<ios_core::imagemounter::download::PersonalizedDdi>
+where
+    F: FnOnce(Option<PathBuf>) -> Fut,
+    Fut: std::future::Future<
+        Output = std::result::Result<
+            ios_core::imagemounter::download::PersonalizedDdi,
+            ios_core::imagemounter::ImageMounterError,
+        >,
+    >,
+{
+    if let Some(path) = local_path {
+        let nested = path.join("Restore");
+        let restore = if nested.is_dir() {
+            nested
+        } else {
+            path.to_path_buf()
+        };
+        return Ok(
+            ios_core::imagemounter::download::load_personalized_from_restore_dir(&restore).await?,
+        );
+    }
+    Ok(fetch(cache_dir).await?)
+}
+
 fn extract_id(ids: &std::collections::HashMap<String, plist::Value>, key: &str) -> Result<u64> {
     let val = ids
         .get(key)
         .ok_or_else(|| crate::output::received_decision("missing personalization identifier"))?;
+    extract_identifier_value(val)
+}
+
+fn extract_identifier_value(val: &plist::Value) -> Result<u64> {
     match val {
         plist::Value::Integer(n) => n.as_unsigned().ok_or_else(|| {
             crate::output::received_decision(
@@ -917,6 +950,85 @@ mod tests {
     struct TestCli {
         #[command(subcommand)]
         command: DdiSub,
+    }
+
+    #[tokio::test]
+    async fn personalized_path_selects_local_material_without_fetch_or_fallback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ios-ddi-{}-{unique}", std::process::id()));
+        let restore = root.join("Restore");
+        tokio::fs::create_dir_all(&restore).await.unwrap();
+        for (name, bytes) in [
+            ("PersonalizedDMG.dmg", b"image".as_slice()),
+            ("PersonalizedDMG.trustcache", b"trust".as_slice()),
+            ("BuildManifest.plist", b"manifest".as_slice()),
+        ] {
+            tokio::fs::write(restore.join(name), bytes).await.unwrap();
+        }
+        let calls = AtomicUsize::new(0);
+        for path in [&root, &restore] {
+            let ddi = personalized_material(Some(path), Some(root.join("unused-cache")), |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Ok(ios_core::imagemounter::download::PersonalizedDdi {
+                        image: b"wrong source".to_vec(),
+                        trustcache: Vec::new(),
+                        build_manifest: Vec::new(),
+                    })
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(ddi.image, b"image");
+            assert_eq!(ddi.trustcache, b"trust");
+            assert_eq!(ddi.build_manifest, b"manifest");
+        }
+        tokio::fs::remove_file(restore.join("PersonalizedDMG.trustcache"))
+            .await
+            .unwrap();
+        let error = personalized_material(Some(&root), None, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Ok(ios_core::imagemounter::download::PersonalizedDdi {
+                    image: Vec::new(),
+                    trustcache: Vec::new(),
+                    build_manifest: Vec::new(),
+                })
+            }
+        })
+        .await;
+        assert!(error.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        tokio::fs::remove_file(restore.join("PersonalizedDMG.dmg"))
+            .await
+            .unwrap();
+        tokio::fs::remove_file(restore.join("BuildManifest.plist"))
+            .await
+            .unwrap();
+        tokio::fs::remove_dir(&restore).await.unwrap();
+        tokio::fs::remove_dir(&root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn personalized_without_path_uses_requested_cache_source() {
+        let cache = PathBuf::from("synthetic-cache");
+        let ddi = personalized_material(None, Some(cache.clone()), |selected| async move {
+            assert_eq!(selected, Some(cache));
+            Ok(ios_core::imagemounter::download::PersonalizedDdi {
+                image: b"from-cache-source".to_vec(),
+                trustcache: Vec::new(),
+                build_manifest: Vec::new(),
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(ddi.image, b"from-cache-source");
     }
 
     #[test]

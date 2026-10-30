@@ -127,6 +127,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
     pub async fn list(&mut self) -> Result<Vec<plist::Value>, CompanionError> {
         let request = command("GetDeviceRegistry");
         let response = self.round_trip(request).await?;
+        // Both lockdown and the RSD shim use this response when there is no
+        // paired watch. Other device errors still represent failed queries.
+        if response.get("Error").and_then(plist::Value::as_string) == Some("NoPairedWatches") {
+            return Ok(Vec::new());
+        }
         if let Some(error) = device_error(&response, "GetDeviceRegistry") {
             return Err(error);
         }
@@ -913,6 +918,26 @@ mod tests {
 
         let dict = request_dict(&stream.written);
         assert_eq!(dict["Command"].as_string(), Some("GetDeviceRegistry"));
+    }
+
+    #[tokio::test]
+    async fn list_returns_empty_for_no_paired_watches_but_preserves_other_errors() {
+        for (device_error, empty) in [("NoPairedWatches", true), ("DeviceLocked", false)] {
+            let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Error".to_string(),
+                plist::Value::String(device_error.into()),
+            )]));
+            let stream = MockStream::with_response(response);
+            let mut client = CompanionProxyClient::new(stream);
+            let result = client.list().await;
+            if empty {
+                assert!(result.unwrap().is_empty());
+            } else {
+                assert!(
+                    matches!(result, Err(CompanionError::Protocol(message)) if message.contains(device_error))
+                );
+            }
+        }
     }
 
     #[tokio::test]

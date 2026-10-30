@@ -77,6 +77,7 @@ impl SymbolsCmd {
                     .await
                     .with_context(|| format!("failed to create {}", output_dir.display()))?;
                 let files = client.list_files().await?;
+                drop(client);
                 let mut downloaded = std::collections::HashSet::<PathBuf>::new();
                 let mut total = 0u64;
                 for (index, remote_path) in files.iter().enumerate() {
@@ -86,6 +87,10 @@ impl SymbolsCmd {
                         let _ = tokio::fs::remove_file(&output).await;
                     }
                     let file = open_append(&output).await?;
+                    let stream = device
+                        .connect_service(ios_core::fetchsymbols::SERVICE_NAME)
+                        .await?;
+                    let mut client = ios_core::fetchsymbols::FetchSymbolsClient::new(stream);
                     total += client.download(index as u32, file, None).await?;
                 }
                 render_download(&output_dir, files.len(), total, json)

@@ -1,5 +1,23 @@
 # Regression evidence and cleanup
 
+The [completion check on 2026-10-29](validation/completion-2026-10-29.md)
+records complete physical archive/collect results, the cancellation-test
+contract correction and removal of an unnecessary numeric restriction.
+
+The [Terra follow-up on 2026-10-29](validation/terra-followup-2026-10-29.md)
+records independent OS trace budgets, debug foreground-session fixes, parent
+review, and the remaining device prerequisites.
+
+The [2026-10-29 CLI diagnosis](validation/cli-diagnostics-2026-10-29.md)
+records fixes, bounded device results, remaining external prerequisites and
+the final binary/source hashes for the 16 supplement candidates.
+
+For the complete Windows two-device physical test handoff (iOS <17 and >=17),
+see [the 2026-10-28 test plan](testing/real-device-2026-10-28/README.md).
+It includes the detailed case catalog, editable result sheet, Gemini handoff,
+and local go-ios/pymobiledevice3 comparison policy. The matrix below remains a
+representative runner; it does not replace that full device test plan.
+
 The [capability catalog](capabilities.md) describes implementation/maturity.
 [regression-matrix.json](regression-matrix.json) selects representative risks and
 their independent preconditions. A host result cannot satisfy a real-device row.

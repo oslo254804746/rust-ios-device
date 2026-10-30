@@ -980,6 +980,34 @@ pub(super) fn commit_uploaded_file(
     Ok(())
 }
 
+// A case-insensitive Windows directory can resolve two distinct backup names
+// to one destination. Check actual resolved names, rather than assuming the
+// volume's case rules, before a copy creates or replaces anything.
+#[cfg(windows)]
+fn reject_copy_destination_alias(root: &Path, relative: &Path) -> Result<(), Mobilebackup2Error> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return Err(Mobilebackup2Error::Protocol(
+                "backup copy destination is not a safe relative path".into(),
+            ));
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        let resolved = fs::canonicalize(&current)?;
+        if resolved.file_name() != Some(part) {
+            return Err(Mobilebackup2Error::Protocol(
+                "backup copy destination aliases an existing differently named path".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn copy_item(root: &Path, src: &Path, dst: &Path) -> Result<(), Mobilebackup2Error> {
     let src_relative = src.strip_prefix(root).map_err(|error| {
         native_error(
@@ -997,6 +1025,8 @@ pub(super) fn copy_item(root: &Path, src: &Path, dst: &Path) -> Result<(), Mobil
     })?;
     ensure_no_symlink_components_at_root(root, src_relative)?;
     ensure_no_symlink_components_at_root(root, dst_relative)?;
+    #[cfg(windows)]
+    reject_copy_destination_alias(root, dst_relative)?;
     if src == dst || dst.starts_with(src) {
         return Err(Mobilebackup2Error::Protocol(
             "cannot copy a directory into itself".into(),
@@ -1135,7 +1165,12 @@ fn device_link_modification_date(modified: SystemTime) -> plist::Date {
     let shifted = modified
         .checked_sub(APPLE_EPOCH_OFFSET)
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    plist::Date::from(shifted)
+    // Apple plist XML dates use whole seconds. Fractional seconds in a
+    // directory-listing response are not accepted by some plist readers.
+    let shifted = OffsetDateTime::from(shifted)
+        .replace_nanosecond(0)
+        .expect("zero nanoseconds are valid");
+    plist::Date::from(SystemTime::from(shifted))
 }
 
 fn device_link_local_wall_clock(modified: SystemTime) -> SystemTime {
@@ -1545,6 +1580,99 @@ mod tests {
         assert!(err.to_string().contains("escapes"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_host_copy_alias_silent_overwrite_reproduction() {
+        let root = test_temp_dir().join(format!(
+            "ios-backup-copy-alias-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = canonical_backup_root(&root).unwrap();
+        let first_source = root.join("first-source");
+        let second_source = root.join("second-source");
+        let first_target = root.join("Example");
+        let second_target = root.join("example");
+        std::fs::write(&first_source, b"first content").unwrap();
+        std::fs::write(&second_source, b"second content").unwrap();
+        copy_item(&root, &first_source, &first_target).unwrap();
+        // Copying to the exact same logical name remains an overwrite.
+        copy_item(&root, &second_source, &first_target).unwrap();
+        assert_eq!(std::fs::read(&first_target).unwrap(), b"second content");
+        copy_item(&root, &first_source, &first_target).unwrap();
+        let targets_alias = second_target.exists();
+        if targets_alias {
+            assert!(matches!(
+                copy_item(&root, &second_source, &second_target),
+                Err(Mobilebackup2Error::Protocol(_))
+            ));
+            assert_eq!(std::fs::read(&first_target).unwrap(), b"first content");
+        } else {
+            copy_item(&root, &second_source, &second_target).unwrap();
+            assert_eq!(std::fs::read(&first_target).unwrap(), b"first content");
+            assert_eq!(std::fs::read(&second_target).unwrap(), b"second content");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_host_copy_detects_alias_in_existing_parent_before_creating_leaf() {
+        let root = test_temp_dir().join(format!(
+            "ios-backup-copy-parent-alias-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = canonical_backup_root(&root).unwrap();
+        let source = root.join("source");
+        let parent = root.join("Folder");
+        let alternate_parent = root.join("folder");
+        std::fs::write(&source, b"content").unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        let target = alternate_parent.join("new-file");
+        if alternate_parent.exists() {
+            assert!(matches!(
+                copy_item(&root, &source, &target),
+                Err(Mobilebackup2Error::Protocol(_))
+            ));
+            assert!(!parent.join("new-file").exists());
+        } else {
+            copy_item(&root, &source, &target).unwrap();
+            assert_eq!(std::fs::read(&target).unwrap(), b"content");
+            assert!(!parent.join("new-file").exists());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_host_directory_copy_checks_existing_child_spelling() {
+        let root = test_temp_dir().join(format!(
+            "ios-backup-copy-child-alias-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = canonical_backup_root(&root).unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(source.join("Entry"), b"new content").unwrap();
+        std::fs::write(target.join("entry"), b"old content").unwrap();
+        if target.join("Entry").exists() {
+            assert!(matches!(
+                copy_item(&root, &source, &target),
+                Err(Mobilebackup2Error::Protocol(_))
+            ));
+            assert_eq!(std::fs::read(target.join("entry")).unwrap(), b"old content");
+        } else {
+            copy_item(&root, &source, &target).unwrap();
+            assert_eq!(std::fs::read(target.join("Entry")).unwrap(), b"new content");
+            assert_eq!(std::fs::read(target.join("entry")).unwrap(), b"old content");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// R3 regression matrix: the component walk must defer metadata queries
     /// until a complete root exists.  Canonicalized Windows paths start with a
     /// verbatim prefix (`\\?\C:`) that rejects `symlink_metadata` with
@@ -1927,7 +2055,7 @@ mod tests {
     }
 
     #[test]
-    fn device_link_modification_date_preserves_subsecond_apple_epoch_timestamp() {
+    fn device_link_modification_date_uses_whole_second_plist_xml() {
         let modified = SystemTime::UNIX_EPOCH
             + APPLE_EPOCH_OFFSET
             + Duration::from_secs(123)
@@ -1937,7 +2065,26 @@ mod tests {
         let expected = device_link_local_wall_clock(modified)
             .checked_sub(APPLE_EPOCH_OFFSET)
             .unwrap_or(SystemTime::UNIX_EPOCH);
+        let expected = OffsetDateTime::from(expected)
+            .replace_nanosecond(0)
+            .expect("zero nanoseconds are valid");
+        assert_eq!(shifted, SystemTime::from(expected));
 
-        assert_eq!(shifted, expected);
+        let mut xml = Vec::new();
+        plist::to_writer_xml(&mut xml, &plist::Value::Date(encoded)).unwrap();
+        let xml = String::from_utf8(xml).unwrap();
+        let date = xml
+            .split_once("<date>")
+            .unwrap()
+            .1
+            .split_once("</date>")
+            .unwrap()
+            .0;
+        assert_eq!(date.len(), 20, "plist date must be YYYY-MM-DDTHH:mm:ssZ");
+        assert!(date.ends_with('Z'));
+        assert!(
+            !date.contains('.'),
+            "plist date must not contain fractional seconds"
+        );
     }
 }

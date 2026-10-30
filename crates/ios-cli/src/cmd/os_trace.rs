@@ -140,9 +140,12 @@ enum OsTraceSub {
         /// Destination archive path. Existing files are atomically replaced.
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
-        /// Maximum archive size requested from the device and enforced locally.
+        /// Requested device archive size; also the host cap unless --max-bytes is set.
         #[arg(long)]
         size_limit: Option<u64>,
+        /// Hard host transfer cap in bytes, independent of the device size hint.
+        #[arg(long)]
+        max_bytes: Option<u64>,
         /// Maximum age in days of entries requested from the device.
         #[arg(long)]
         age_limit: Option<u64>,
@@ -158,9 +161,12 @@ enum OsTraceSub {
         /// Destination .logarchive directory. It must not already exist.
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
-        /// Maximum archive size requested from the device and enforced locally.
+        /// Requested device archive size; also the host cap unless --max-bytes is set.
         #[arg(long)]
         size_limit: Option<u64>,
+        /// Hard host transfer cap in bytes, independent of the device size hint.
+        #[arg(long)]
+        max_bytes: Option<u64>,
         /// Maximum age in days of entries requested from the device.
         #[arg(long)]
         age_limit: Option<u64>,
@@ -214,24 +220,26 @@ impl OsTraceCmd {
             OsTraceSub::Archive {
                 output,
                 size_limit,
+                max_bytes,
                 age_limit,
                 start_time,
                 timeout,
             } => {
                 run_archive(
-                    &udid, output, size_limit, age_limit, start_time, timeout, json,
+                    &udid, output, size_limit, max_bytes, age_limit, start_time, timeout, json,
                 )
                 .await
             }
             OsTraceSub::Collect {
                 output,
                 size_limit,
+                max_bytes,
                 age_limit,
                 start_time,
                 timeout,
             } => {
                 run_collect(
-                    &udid, output, size_limit, age_limit, start_time, timeout, json,
+                    &udid, output, size_limit, max_bytes, age_limit, start_time, timeout, json,
                 )
                 .await
             }
@@ -241,16 +249,29 @@ impl OsTraceCmd {
 
 fn archive_options(
     size_limit: Option<u64>,
+    max_bytes: Option<u64>,
     age_limit: Option<u64>,
     start_time: Option<i64>,
-) -> ios_core::ostrace::ArchiveOptions {
-    ios_core::ostrace::ArchiveOptions {
+) -> Result<ios_core::ostrace::ArchiveOptions> {
+    if size_limit == Some(0) {
+        return Err(crate::output::input_decision(
+            "--size-limit must be greater than zero",
+        ));
+    }
+    if max_bytes == Some(0) {
+        return Err(crate::output::input_decision(
+            "--max-bytes must be greater than zero",
+        ));
+    }
+    Ok(ios_core::ostrace::ArchiveOptions {
         size_limit,
         age_limit,
         start_time,
-        max_total_bytes: size_limit.unwrap_or(ios_core::ostrace::DEFAULT_MAX_ARCHIVE_BYTES),
+        max_total_bytes: max_bytes
+            .or(size_limit)
+            .unwrap_or(ios_core::ostrace::DEFAULT_MAX_ARCHIVE_BYTES),
         ..Default::default()
-    }
+    })
 }
 
 async fn connect_trace_client(
@@ -259,7 +280,10 @@ async fn connect_trace_client(
     deadline: Option<tokio::time::Instant>,
 ) -> Result<
     std::result::Result<
-        ios_core::ostrace::OsTraceClient<ios_core::device::ServiceStream>,
+        (
+            ios_core::ConnectedDevice,
+            ios_core::ostrace::OsTraceClient<ios_core::device::ServiceStream>,
+        ),
         RunTermination,
     >,
 > {
@@ -296,22 +320,25 @@ async fn connect_trace_client(
             Err(termination) => return Ok(Err(termination)),
         }
     };
-    Ok(Ok(ios_core::ostrace::OsTraceClient::new(stream)))
+    // The RSD stream borrows its userspace tunnel's lifetime. Returning only
+    // the client drops that tunnel before CreateArchive sends its request.
+    Ok(Ok((device, ios_core::ostrace::OsTraceClient::new(stream))))
 }
 
 async fn run_archive(
     udid: &str,
     output: PathBuf,
     size_limit: Option<u64>,
+    max_bytes: Option<u64>,
     age_limit: Option<u64>,
     start_time: Option<i64>,
     timeout: Option<u64>,
     json: bool,
 ) -> Result<()> {
-    let options = archive_options(size_limit, age_limit, start_time);
+    let options = archive_options(size_limit, max_bytes, age_limit, start_time)?;
     let deadline = trace_deadline(timeout)?;
     let mut stop = stop_signal();
-    let mut client = match connect_trace_client(udid, &mut stop, deadline).await? {
+    let (_device, mut client) = match connect_trace_client(udid, &mut stop, deadline).await? {
         Ok(client) => client,
         Err(termination) => return finish_termination(termination, timeout),
     };
@@ -351,15 +378,16 @@ async fn run_collect(
     udid: &str,
     output: PathBuf,
     size_limit: Option<u64>,
+    max_bytes: Option<u64>,
     age_limit: Option<u64>,
     start_time: Option<i64>,
     timeout: Option<u64>,
     json: bool,
 ) -> Result<()> {
-    let options = archive_options(size_limit, age_limit, start_time);
+    let options = archive_options(size_limit, max_bytes, age_limit, start_time)?;
     let deadline = trace_deadline(timeout)?;
     let mut stop = stop_signal();
-    let mut client = match connect_trace_client(udid, &mut stop, deadline).await? {
+    let (_device, mut client) = match connect_trace_client(udid, &mut stop, deadline).await? {
         Ok(client) => client,
         Err(termination) => return finish_termination(termination, timeout),
     };
@@ -740,6 +768,28 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn trace_connection_returns_device_guard_with_client() {
+        fn assert_guarded<
+            T: Future<
+                Output = Result<
+                    std::result::Result<
+                        (
+                            ios_core::ConnectedDevice,
+                            ios_core::ostrace::OsTraceClient<ios_core::device::ServiceStream>,
+                        ),
+                        RunTermination,
+                    >,
+                >,
+            >,
+        >(
+            _: T,
+        ) {
+        }
+        let mut stop: StopSignal = Box::pin(std::future::pending());
+        assert_guarded(connect_trace_client("private-device", &mut stop, None));
+    }
+
     #[tokio::test]
     async fn stream_contract_os_trace_signal_failure_is_not_a_clean_stop() {
         for deadline in [
@@ -899,6 +949,8 @@ mod tests {
             "logs.tar",
             "--size-limit",
             "4096",
+            "--max-bytes",
+            "8192",
             "--age-limit",
             "7",
             "--start-time",
@@ -910,6 +962,7 @@ mod tests {
         let OsTraceSub::Archive {
             output,
             size_limit,
+            max_bytes,
             age_limit,
             start_time,
             timeout,
@@ -919,6 +972,7 @@ mod tests {
         };
         assert_eq!(output, PathBuf::from("logs.tar"));
         assert_eq!(size_limit, Some(4096));
+        assert_eq!(max_bytes, Some(8192));
         assert_eq!(age_limit, Some(7));
         assert_eq!(start_time, Some(42));
         assert_eq!(timeout, Some(30));
@@ -926,6 +980,78 @@ mod tests {
         let parsed = TestCli::try_parse_from(["os-trace", "collect", "logs.logarchive"])
             .expect("collect should parse");
         assert!(matches!(parsed.command, OsTraceSub::Collect { .. }));
+    }
+
+    #[tokio::test]
+    async fn archive_limits_are_independent_and_validated_before_connecting() {
+        let default = archive_options(None, None, None, None).unwrap();
+        assert_eq!(
+            default.max_total_bytes,
+            ios_core::ostrace::DEFAULT_MAX_ARCHIVE_BYTES
+        );
+        let legacy = archive_options(Some(1024), None, None, None).unwrap();
+        assert_eq!(legacy.size_limit, Some(1024));
+        assert_eq!(legacy.max_total_bytes, 1024);
+        let separate = archive_options(Some(1024), Some(2048), Some(1), Some(42)).unwrap();
+        assert_eq!(separate.size_limit, Some(1024));
+        assert_eq!(separate.max_total_bytes, 2048);
+        assert_eq!(separate.max_extracted_bytes, default.max_extracted_bytes);
+        assert_eq!(
+            archive_options(None, Some(u64::MAX), None, None)
+                .unwrap()
+                .max_total_bytes,
+            u64::MAX
+        );
+        assert_eq!(
+            archive_options(Some(u64::MAX), None, None, None)
+                .unwrap()
+                .size_limit,
+            Some(u64::MAX)
+        );
+        for (size, max) in [(Some(0), None), (None, Some(0))] {
+            let error = run_archive(
+                "private-device",
+                PathBuf::from("private-output"),
+                size,
+                max,
+                None,
+                None,
+                None,
+                false,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
+            let error = run_collect(
+                "private-device",
+                PathBuf::from("private-output"),
+                size,
+                max,
+                None,
+                None,
+                None,
+                false,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
+        }
+        for command in ["archive", "collect"] {
+            assert!(TestCli::try_parse_from([
+                "os-trace",
+                command,
+                "x",
+                "--max-bytes",
+                "18446744073709551616"
+            ])
+            .is_err());
+        }
     }
 
     #[test]

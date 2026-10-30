@@ -23,7 +23,9 @@ pub(crate) use checked_session::{
     start_existing_trust_session, start_existing_trust_session_with_budget,
 };
 pub use client::LockdownClient;
-pub use pair_record::{default_pair_record_path, PairRecord, PairRecordError};
+pub use pair_record::{
+    default_pair_record_path, load_pair_record_escrow_bag, PairRecord, PairRecordError,
+};
 pub use protocol::{
     recv_lockdown, send_lockdown, GetValueRequest, GetValueResponse, QueryTypeRequest,
     QueryTypeResponse, RemoveValueRequest, SetValueRequest, StartServiceRequest,
@@ -33,7 +35,8 @@ pub use protocol::{
 pub use response_error::LockdownResponseError;
 pub use session::{
     handshake_only_service_tls, start_lockdown_session, start_service,
-    start_service_preserving_errors, strip_service_tls, wrap_service_tls, CORE_DEVICE_PROXY,
+    start_service_preserving_errors, strip_service_tls, wrap_service_tls,
+    wrap_service_tls_with_server_name, CORE_DEVICE_PROXY,
 };
 #[cfg(feature = "supervised-pair")]
 pub use supervised_pair::{pair_supervised, save_pair_record, FullPairRecord};

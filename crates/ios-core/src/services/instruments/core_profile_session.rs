@@ -104,11 +104,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CoreProfileSessionClient<S> {
         }
     }
 
+    /// Tracks wire progress while a DTX operation is pending.
+    pub fn operation_progress(&self) -> crate::services::dtx::codec::DtxOperationProgress {
+        self.conn.operation_progress()
+    }
+
     pub async fn next_event(&mut self) -> Result<CoreProfileEvent, DtxError> {
-        if let Some(event) = self.pending_event.take() {
-            return Ok(event);
+        loop {
+            if let Some(event) = self.next_event_step().await? {
+                return Ok(event);
+            }
         }
-        self.recv_next_event().await
+    }
+
+    /// Receive one DTX message, returning None when it is not a profile event.
+    pub async fn next_event_step(&mut self) -> Result<Option<CoreProfileEvent>, DtxError> {
+        if let Some(event) = self.pending_event.take() {
+            return Ok(Some(event));
+        }
+        self.recv_event_step().await
     }
 
     pub async fn stop(&mut self) -> Result<(), DtxError> {
@@ -117,19 +131,58 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CoreProfileSessionClient<S> {
             .await
     }
 
+    /// Send stop and wait for a `k = 5` notice on this profile channel.
+    ///
+    /// This notice followed stop on the tested iOS 14 device. It does not
+    /// establish that every device or every recording resource is released.
+    /// Callers should bound the entire operation with their cleanup deadline.
+    pub async fn stop_and_wait_for_end_notice(&mut self) -> Result<(), DtxError> {
+        // A start-time event predates this stop and cannot acknowledge it.
+        let _ = self.pending_event.take();
+        self.stop().await?;
+        loop {
+            if let Some((channel, CoreProfileEvent::Notice(NSObject::Dict(dict)))) =
+                self.recv_event_step_with_channel().await?
+            {
+                if channel == self.core_profile_channel
+                    && matches!(dict.get("k"), Some(NSObject::Int(5) | NSObject::Uint(5)))
+                {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     async fn recv_next_event(&mut self) -> Result<CoreProfileEvent, DtxError> {
         loop {
-            let msg = crate::services::dtx::codec::checked_reply(self.conn.recv().await?)?;
-            if msg.expects_reply {
-                self.conn.send_ack(&msg).await?;
-            }
-            if !is_core_profile_live_channel(msg.channel_code, self.core_profile_channel) {
-                continue;
-            }
-            if let Some(event) = decode_core_profile_payload(msg.payload)? {
+            if let Some(event) = self.recv_event_step().await? {
                 return Ok(event);
             }
         }
+    }
+
+    async fn recv_event_step(&mut self) -> Result<Option<CoreProfileEvent>, DtxError> {
+        Ok(self
+            .recv_event_step_with_channel()
+            .await?
+            .map(|(_, event)| event))
+    }
+
+    async fn recv_event_step_with_channel(
+        &mut self,
+    ) -> Result<Option<(i32, CoreProfileEvent)>, DtxError> {
+        let msg = crate::services::dtx::codec::checked_reply(self.conn.recv().await?)?;
+        // A queued message may not read the transport, but its acknowledgement
+        // must still complete before a caller can safely cancel this step.
+        self.conn.mark_message_progress();
+        if msg.expects_reply {
+            self.conn.send_ack(&msg).await?;
+        }
+        if !is_core_profile_live_channel(msg.channel_code, self.core_profile_channel) {
+            return Ok(None);
+        }
+        let channel = msg.channel_code;
+        Ok(decode_core_profile_payload(msg.payload)?.map(|event| (channel, event)))
     }
 }
 
@@ -764,6 +817,111 @@ mod tests {
             event,
             CoreProfileEvent::RawChunk(Bytes::from_static(b"broadcast-trace"))
         );
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_profile_end_notice_and_preserves_following_frame() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let mut session = CoreProfileSessionClient {
+            conn: DtxConnection::new(client),
+            device_info_channel: 1,
+            core_profile_channel: 2,
+            mach_time_info: MachTimeInfo { numer: 1, denom: 1 },
+            pending_event: Some(CoreProfileEvent::Notice(NSObject::Dict(
+                [("k".to_string(), NSObject::Int(5))].into_iter().collect(),
+            ))),
+        };
+        let mut task = tokio::spawn(async move {
+            session.stop_and_wait_for_end_notice().await.unwrap();
+            session
+        });
+        let request = read_dtx_frame(&mut server).await.unwrap();
+        assert!(
+            matches!(request.payload, DtxPayload::MethodInvocation { selector, .. } if selector == "stop")
+        );
+        assert!(!request.expects_reply);
+        let notice = |kind: i64| {
+            nskeyedarchiver_encode::archive_dict(vec![(
+                "k".to_string(),
+                Value::Integer(kind.into()),
+            )])
+        };
+        // A k=5 on the broadcast channel and the pre-stop pending k=5 are not
+        // the end notice of this profile channel.
+        server
+            .write_all(&encode_dtx(20, 0, 1, false, MSG_RESPONSE, &notice(5), &[]))
+            .await
+            .unwrap();
+        server
+            .write_all(&encode_dtx(
+                21,
+                0,
+                -2,
+                false,
+                MSG_UNKNOWN_TYPE_ONE,
+                b"trailing raw",
+                &[],
+            ))
+            .await
+            .unwrap();
+        server
+            .write_all(&encode_dtx(22, 0, -2, false, MSG_RESPONSE, &notice(6), &[]))
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut task)
+            .await
+            .is_err());
+        let final_notice = encode_dtx(23, 0, -2, false, MSG_RESPONSE, &notice(5), &[]);
+        server.write_all(&final_notice[..12]).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut task)
+            .await
+            .is_err());
+        server.write_all(&final_notice[12..]).await.unwrap();
+        server
+            .write_all(&encode_dtx(
+                24,
+                0,
+                -2,
+                false,
+                MSG_UNKNOWN_TYPE_ONE,
+                b"next frame",
+                &[],
+            ))
+            .await
+            .unwrap();
+        let mut session = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(session.next_event_step().await.unwrap(), Some(CoreProfileEvent::RawChunk(bytes)) if bytes.as_ref() == b"next frame")
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_wait_propagates_profile_error_notice() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            let mut session = CoreProfileSessionClient {
+                conn: DtxConnection::new(client),
+                device_info_channel: 1,
+                core_profile_channel: 2,
+                mach_time_info: MachTimeInfo { numer: 1, denom: 1 },
+                pending_event: None,
+            };
+            session.stop_and_wait_for_end_notice().await
+        });
+        read_dtx_frame(&mut server).await.unwrap();
+        let failure = nskeyedarchiver_encode::archive_dict(vec![
+            ("notice".into(), Value::String("synthetic failure".into())),
+            ("status".into(), Value::Integer(1.into())),
+        ]);
+        server
+            .write_all(&encode_dtx(30, 0, -2, false, MSG_RESPONSE, &failure, &[]))
+            .await
+            .unwrap();
+        let error = task.await.unwrap().unwrap_err();
+        assert!(matches!(error, DtxError::Protocol(ref message) if message == "synthetic failure"));
     }
 
     #[tokio::test]

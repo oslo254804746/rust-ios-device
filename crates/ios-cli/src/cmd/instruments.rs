@@ -938,7 +938,9 @@ async fn run_fps(udid: String, count: u64, window_ms: u64, json_output: bool) ->
 }
 
 const FPS_SETUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
-const FPS_CLEANUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+// iOS 14 can keep delivering buffered trace data for more than five seconds
+// after stop. Give that observed normal completion the same budget as setup.
+const FPS_CLEANUP_BUDGET: std::time::Duration = FPS_SETUP_BUDGET;
 const FPS_TIMESTAMP_LIMIT: usize = 262_144;
 
 fn fps_window(window_ms: u64) -> Result<std::time::Duration> {
@@ -985,45 +987,58 @@ fn append_fps_timestamps(
     Ok(())
 }
 
+struct FpsCaptureOutcome {
+    operation: Result<()>,
+    drain: Result<()>,
+    cleanup_deadline: tokio::time::Instant,
+}
+
 async fn consume_fps_events<S>(
     session: &mut ios_core::instruments::CoreProfileSessionClient<S>,
     count: u64,
     window: std::time::Duration,
     mut emit: impl FnMut(&ios_core::instruments::FpsSample, u64) -> Result<()>,
     stop: impl std::future::Future<Output = std::io::Result<()>>,
-) -> Result<()>
+    cleanup_budget: std::time::Duration,
+) -> FpsCaptureOutcome
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
     use ios_core::instruments::{CoreProfileEvent, FpsSample, FpsWindowCalculator};
     let info = session.mach_time_info().clone();
+    let progress = session.operation_progress();
     let window_ms = window.as_millis() as f64;
     let mut calculator = FpsWindowCalculator::new();
     let mut timestamps = Vec::new();
-    let mut next_deadline = fps_deadline(tokio::time::Instant::now(), window)?;
+    let mut next_deadline = match fps_deadline(tokio::time::Instant::now(), window) {
+        Ok(deadline) => deadline,
+        Err(error) => {
+            return FpsCaptureOutcome {
+                operation: Err(error),
+                drain: Ok(()),
+                cleanup_deadline: tokio::time::Instant::now() + cleanup_budget,
+            }
+        }
+    };
     let mut emitted = 0u64;
     tokio::pin!(stop);
     loop {
-        // Keep the same read future across window ticks: cancelling a partial
-        // DTX read for each sample would invalidate its framing state.
-        let event: ProfileEventResult = {
-            let next_event = session.next_event();
+        // Keep the same read future across ticks and finish a partially read
+        // operation before sending stop, within the shared cleanup deadline.
+        let event = {
+            let initial_progress = progress.sequence();
+            let next_event = session.next_event_step();
             tokio::pin!(next_event);
-            loop {
+            let (termination, completed_event) = loop {
                 tokio::select! {
                     biased;
                     signal = &mut stop => {
-                        signal.context("failed to wait for Ctrl+C")?;
-                        return Ok(());
+                        break (Some(signal.context("failed to wait for Ctrl+C")), None);
                     }
                     _ = tokio::time::sleep_until(next_deadline) => {
                         let empty = FpsSample {
-                            fps: 0.0,
-                            jank: 0,
-                            big_jank: 0,
-                            stutter: 0.0,
-                            frame_count: 0,
-                            window_ms,
+                            fps: 0.0, jank: 0, big_jank: 0, stutter: 0.0,
+                            frame_count: 0, window_ms,
                         };
                         let sample = if timestamps.is_empty() {
                             empty
@@ -1031,23 +1046,54 @@ where
                             calculator.push_timestamps(&timestamps).unwrap_or(empty)
                         };
                         emitted += 1;
-                        emit(&sample, emitted)?;
+                        if let Err(error) = emit(&sample, emitted) {
+                            break (Some(Err(error)), None);
+                        }
                         timestamps.clear();
                         if count > 0 && emitted >= count {
-                            return Ok(());
+                            break (Some(Ok(())), None);
                         }
-                        next_deadline = fps_deadline(next_deadline, window)?;
+                        match fps_deadline(next_deadline, window) {
+                            Ok(deadline) => next_deadline = deadline,
+                            Err(error) => break (Some(Err(error)), None),
+                        }
                     }
-                    event = &mut next_event => break event,
+                    event = &mut next_event => break (None, Some(event)),
                 }
+            };
+            if let Some(operation) = termination {
+                let cleanup_deadline = tokio::time::Instant::now() + cleanup_budget;
+                let drain = if progress.sequence() != initial_progress {
+                    match tokio::time::timeout_at(cleanup_deadline, &mut next_event).await {
+                        Ok(Ok(_)) => Ok(()),
+                        Ok(Err(error)) => Err(profile_event_failure(error)),
+                        Err(elapsed) => Err(anyhow::Error::new(elapsed)
+                            .context("core profile pending read cleanup timed out")),
+                    }
+                } else {
+                    Ok(())
+                };
+                return FpsCaptureOutcome {
+                    operation,
+                    drain,
+                    cleanup_deadline,
+                };
             }
+            completed_event.expect("event branch completed")
         };
-        match event {
-            Ok(CoreProfileEvent::Notice(_)) => {}
-            Ok(CoreProfileEvent::RawChunk(chunk)) => {
-                append_fps_timestamps(&mut timestamps, &chunk, &info)?
+        let operation = match event {
+            Ok(None) | Ok(Some(CoreProfileEvent::Notice(_))) => Ok(()),
+            Ok(Some(CoreProfileEvent::RawChunk(chunk))) => {
+                append_fps_timestamps(&mut timestamps, &chunk, &info)
             }
-            Err(error) => return Err(profile_event_failure(error)),
+            Err(error) => Err(profile_event_failure(error)),
+        };
+        if let Err(error) = operation {
+            return FpsCaptureOutcome {
+                operation: Err(error),
+                drain: Ok(()),
+                cleanup_deadline: tokio::time::Instant::now() + cleanup_budget,
+            };
         }
     }
 }
@@ -1063,14 +1109,22 @@ async fn capture_fps<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
-    let operation = consume_fps_events(&mut session, count, window, emit, stop).await;
-    let cleanup = match tokio::time::timeout(cleanup_budget, session.stop()).await {
+    let outcome = consume_fps_events(&mut session, count, window, emit, stop, cleanup_budget).await;
+    let cleanup = match tokio::time::timeout_at(
+        outcome.cleanup_deadline,
+        session.stop_and_wait_for_end_notice(),
+    )
+    .await
+    {
         Ok(result) => {
             result.map_err(|error| anyhow::Error::new(error).context("core profile cleanup failed"))
         }
         Err(elapsed) => Err(anyhow::Error::new(elapsed).context("core profile cleanup timed out")),
     };
-    finish_fps_capture(operation, cleanup)
+    finish_fps_capture(
+        outcome.operation,
+        finish_fps_capture(outcome.drain, cleanup),
+    )
 }
 
 struct FpsCleanupFailure {
@@ -1132,6 +1186,7 @@ fn write_fps_sample_to(
     Ok(())
 }
 
+#[cfg(test)]
 type ProfileEventResult =
     std::result::Result<ios_core::instruments::CoreProfileEvent, ios_core::dtx::DtxError>;
 
@@ -1282,6 +1337,33 @@ async fn run_kdebug(
     Ok(())
 }
 
+async fn sysmon_attributes(
+    udid: &str,
+) -> Result<(
+    Option<Vec<plist::Value>>,
+    Option<Vec<plist::Value>>,
+    Vec<String>,
+)> {
+    let (_device, stream) = connect_instruments(udid).await?;
+    let mut info = ios_core::instruments::DeviceInfoClient::connect(stream).await?;
+    let system = info.system_attributes().await?;
+    let process = info.process_attributes().await?;
+    let names = process
+        .iter()
+        .map(|value| {
+            value
+                .as_string()
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("sysmontap process attribute is not a string"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        !names.is_empty(),
+        "sysmontap returned no process attributes"
+    );
+    Ok((Some(system), Some(process), names))
+}
+
 async fn run_sysmon_process(
     udid: String,
     count: u64,
@@ -1289,26 +1371,12 @@ async fn run_sysmon_process(
     pid_filter: Option<u64>,
     json_output: bool,
 ) -> Result<()> {
-    use ios_core::instruments::{DeviceInfoClient, SysmontapConfig, SysmontapService};
+    use ios_core::instruments::{SysmontapConfig, SysmontapService};
 
     let (_device, stream) = connect_instruments(&udid).await?;
 
     // Get proc attribute names for column mapping
-    let (sys_attrs, proc_attrs, proc_attr_names) = match connect_instruments(&udid).await {
-        Ok((_dev2, stream2)) => match DeviceInfoClient::connect(stream2).await {
-            Ok(mut di) => {
-                let sys = di.system_attributes().await.unwrap_or_default();
-                let proc = di.process_attributes().await.unwrap_or_default();
-                let names: Vec<String> = proc
-                    .iter()
-                    .filter_map(|v| v.as_string().map(String::from))
-                    .collect();
-                (Some(sys), Some(proc), names)
-            }
-            Err(_) => (None, None, vec![]),
-        },
-        Err(_) => (None, None, vec![]),
-    };
+    let (sys_attrs, proc_attrs, proc_attr_names) = sysmon_attributes(&udid).await?;
 
     let cfg = SysmontapConfig::default();
     let mut svc = SysmontapService::start(stream, &cfg, sys_attrs, proc_attrs)
@@ -1389,7 +1457,7 @@ async fn run_sysmon_process(
         }
     }
 
-    svc.stop().await.ok();
+    svc.stop().await?;
     Ok(())
 }
 
@@ -1399,25 +1467,11 @@ async fn run_sysmon_threshold(
     count: u64,
     json_output: bool,
 ) -> Result<()> {
-    use ios_core::instruments::{DeviceInfoClient, SysmontapConfig, SysmontapService};
+    use ios_core::instruments::{SysmontapConfig, SysmontapService};
 
     let (_device, stream) = connect_instruments(&udid).await?;
 
-    let (sys_attrs, proc_attrs, proc_attr_names) = match connect_instruments(&udid).await {
-        Ok((_dev2, stream2)) => match DeviceInfoClient::connect(stream2).await {
-            Ok(mut di) => {
-                let sys = di.system_attributes().await.unwrap_or_default();
-                let proc = di.process_attributes().await.unwrap_or_default();
-                let names: Vec<String> = proc
-                    .iter()
-                    .filter_map(|v| v.as_string().map(String::from))
-                    .collect();
-                (Some(sys), Some(proc), names)
-            }
-            Err(_) => (None, None, vec![]),
-        },
-        Err(_) => (None, None, vec![]),
-    };
+    let (sys_attrs, proc_attrs, proc_attr_names) = sysmon_attributes(&udid).await?;
 
     let cfg = SysmontapConfig::default();
     let mut svc = SysmontapService::start(stream, &cfg, sys_attrs, proc_attrs)
@@ -1483,7 +1537,7 @@ async fn run_sysmon_threshold(
         }
     }
 
-    svc.stop().await.ok();
+    svc.stop().await?;
     Ok(())
 }
 
@@ -1636,11 +1690,24 @@ mod tests {
     }
 
     async fn fps_expect_stop(peer: &mut tokio::io::DuplexStream) {
+        use tokio::io::AsyncWriteExt;
         let request = ios_core::dtx::read_dtx_frame(peer).await.unwrap();
         assert_eq!(request.channel_code, 2);
         assert!(
             matches!(request.payload, ios_core::dtx::DtxPayload::MethodInvocation { selector, .. } if selector == "stop")
         );
+        let notice = ios_core::archive_dict(vec![("k".into(), plist::Value::Integer(5.into()))]);
+        peer.write_all(&ios_core::dtx::encode_dtx(
+            101,
+            0,
+            -2,
+            false,
+            3,
+            &notice,
+            &[],
+        ))
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1791,6 +1858,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lifecycle_fps_completion_finishes_partial_frame_before_stop() {
+        use std::sync::atomic::Ordering;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (stream, peer) = tokio::io::duplex(4096);
+        let bytes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (session, mut peer) = fps_fixture(
+            FpsReadCounter {
+                stream,
+                bytes: bytes.clone(),
+            },
+            peer,
+        )
+        .await;
+        bytes.store(0, Ordering::Relaxed);
+        let frame = fps_raw_frame(&fps_record(16_000_000));
+        peer.write_all(&frame[..16]).await.unwrap();
+        let (emitted, last_row) = tokio::sync::oneshot::channel();
+        let mut emitted = Some(emitted);
+        let caller = capture_fps(
+            session,
+            2,
+            std::time::Duration::from_millis(30),
+            |_, index| {
+                if index == 2 {
+                    emitted.take().unwrap().send(()).unwrap();
+                }
+                Ok(())
+            },
+            std::future::pending(),
+            std::time::Duration::from_secs(1),
+        );
+        let server = async {
+            while bytes.load(Ordering::Relaxed) < 16 {
+                tokio::task::yield_now().await;
+            }
+            last_row.await.unwrap();
+            assert!(tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                peer.read(&mut [0; 1])
+            )
+            .await
+            .is_err());
+            peer.write_all(&frame[16..]).await.unwrap();
+            fps_expect_stop(&mut peer).await;
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_stalled_partial_frame_reports_cleanup_timeout() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (stream, peer) = tokio::io::duplex(4096);
+        let (session, mut peer) = fps_fixture(stream, peer).await;
+        peer.write_all(&fps_raw_frame(&fps_record(16_000_000))[..16])
+            .await
+            .unwrap();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            capture_fps(
+                session,
+                1,
+                std::time::Duration::from_millis(20),
+                |_, _| Ok(()),
+                std::future::pending(),
+                std::time::Duration::from_millis(30),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_missing_end_notice_reports_cleanup_timeout() {
+        use tokio::io::AsyncWriteExt;
+        let (stream, peer) = tokio::io::duplex(4096);
+        let (session, mut peer) = fps_fixture(stream, peer).await;
+        let mut rows = 0;
+        let caller = capture_fps(
+            session,
+            1,
+            std::time::Duration::from_millis(5),
+            |_, _| {
+                rows += 1;
+                Ok(())
+            },
+            std::future::pending(),
+            std::time::Duration::from_millis(50),
+        );
+        let server = async {
+            let request = ios_core::dtx::read_dtx_frame(&mut peer).await.unwrap();
+            assert!(
+                matches!(request.payload, ios_core::dtx::DtxPayload::MethodInvocation { selector, .. } if selector == "stop")
+            );
+            peer.write_all(&fps_raw_frame(&fps_record(1)))
+                .await
+                .unwrap();
+            let notice =
+                ios_core::archive_dict(vec![("k".into(), plist::Value::Integer(6.into()))]);
+            peer.write_all(&ios_core::dtx::encode_dtx(
+                102,
+                0,
+                -2,
+                false,
+                3,
+                &notice,
+                &[],
+            ))
+            .await
+            .unwrap();
+            peer
+        };
+        let (result, _peer) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        assert_eq!(rows, 1);
+        let error = result.unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|cause| cause.is::<tokio::time::error::Elapsed>()));
+    }
+
+    #[tokio::test]
     async fn lifecycle_fps_ready_backlog_cannot_starve_elapsed_windows() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (stream, peer) = tokio::io::duplex(1_048_576);
@@ -1824,14 +2030,15 @@ mod tests {
                 Ok(())
             },
             std::future::pending(),
+            std::time::Duration::from_secs(1),
         );
-        tokio::time::timeout(std::time::Duration::from_secs(2), caller)
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), caller)
             .await
-            .unwrap()
             .unwrap();
+        outcome.operation.unwrap();
+        outcome.drain.unwrap();
         assert_eq!(indices, vec![1, 2, 3]);
-        // Completion may cancel a partially read ready frame. It must not
-        // assert that such a DTX stream can send a successful stop request.
+        // This test exercises scheduling only; capture_fps owns stop cleanup.
         drop(session);
         assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
     }

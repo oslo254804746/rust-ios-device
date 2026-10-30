@@ -2412,6 +2412,7 @@ async fn public_diagnostic_services_keep_native_sources_and_exhaustive_families(
             OsTraceError::Plist(_) => "plist",
             OsTraceError::Protocol(_) => "protocol",
             OsTraceError::Timeout => "timeout",
+            OsTraceError::ArchiveLimit(_) => "resource_limit",
         }
     }
     let error = parse_report_bytes("owned-private.ips", &[0xff]).unwrap_err();

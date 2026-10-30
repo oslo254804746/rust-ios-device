@@ -147,7 +147,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImageMounterClient<S> {
     pub async fn mount_personalized(
         &mut self,
         trustcache: &[u8],
-        build_manifest: &[u8],
+        _build_manifest: &[u8],
         image_bytes: &[u8],
         ticket: &[u8],
     ) -> Result<(), ImageMounterError> {
@@ -160,8 +160,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImageMounterClient<S> {
         tracing::debug!("personalization nonce: {} bytes", nonce.len());
 
         // 3. Upload image
-        self.upload_personalized_image(image_bytes, trustcache, build_manifest)
-            .await?;
+        self.upload_personalized_image(image_bytes, ticket).await?;
 
         // 4. Mount with ticket
         let mount_req = plist::Dictionary::from_iter([
@@ -170,11 +169,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImageMounterClient<S> {
                 "ImageType".to_string(),
                 Value::String("Personalized".into()),
             ),
-            (
-                "ImagePath".to_string(),
-                Value::String("/private/var/mobile/Media/PublicStaging/staging.dimage".into()),
-            ),
             ("ImageSignature".to_string(), Value::Data(ticket.to_vec())),
+            (
+                "ImageTrustCache".to_string(),
+                Value::Data(trustcache.to_vec()),
+            ),
         ]);
         send_plist(&mut self.stream, &Value::Dictionary(mount_req)).await?;
         let resp = recv_plist(&mut self.stream).await?;
@@ -376,8 +375,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImageMounterClient<S> {
     async fn upload_personalized_image(
         &mut self,
         image_bytes: &[u8],
-        trustcache: &[u8],
-        build_manifest: &[u8],
+        ticket: &[u8],
     ) -> Result<(), ImageMounterError> {
         let req = plist::Dictionary::from_iter([
             ("Command".to_string(), Value::String("ReceiveBytes".into())),
@@ -389,14 +387,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImageMounterClient<S> {
                 "ImageSize".to_string(),
                 Value::Integer((image_bytes.len() as i64).into()),
             ),
-            (
-                "ImageTrustCache".to_string(),
-                Value::Data(trustcache.to_vec()),
-            ),
-            (
-                "BuildManifest".to_string(),
-                Value::Data(build_manifest.to_vec()),
-            ),
+            ("ImageSignature".to_string(), Value::Data(ticket.to_vec())),
         ]);
         send_plist(&mut self.stream, &Value::Dictionary(req)).await?;
         let resp = recv_plist(&mut self.stream).await?;
@@ -910,5 +901,109 @@ mod tests {
                 .and_then(|v| v.as_string()),
             Some("Cryptex")
         );
+    }
+    #[tokio::test]
+    async fn personalized_mount_sends_ticket_and_trustcache_at_correct_stages() {
+        let (client_stream, mut device_stream) = tokio::io::duplex(8192);
+        let device = tokio::spawn(async move {
+            let ids = recv_plist(&mut device_stream).await.unwrap();
+            assert_eq!(
+                ids,
+                plist::Dictionary::from_iter([
+                    (
+                        "Command",
+                        Value::String("QueryPersonalizationIdentifiers".into())
+                    ),
+                    (
+                        "PersonalizedImageType",
+                        Value::String("DeveloperDiskImage".into())
+                    ),
+                ])
+            );
+            send_plist(
+                &mut device_stream,
+                &Value::Dictionary(plist::Dictionary::from_iter([(
+                    "PersonalizationIdentifiers",
+                    Value::Dictionary(plist::Dictionary::new()),
+                )])),
+            )
+            .await
+            .unwrap();
+            let nonce = recv_plist(&mut device_stream).await.unwrap();
+            assert_eq!(
+                nonce,
+                plist::Dictionary::from_iter([
+                    ("Command", Value::String("QueryNonce".into())),
+                    (
+                        "PersonalizedImageType",
+                        Value::String("DeveloperDiskImage".into())
+                    ),
+                ])
+            );
+            send_plist(
+                &mut device_stream,
+                &Value::Dictionary(plist::Dictionary::from_iter([(
+                    "PersonalizationNonce",
+                    Value::Data(vec![9]),
+                )])),
+            )
+            .await
+            .unwrap();
+            let upload = recv_plist(&mut device_stream).await.unwrap();
+            assert_eq!(
+                upload,
+                plist::Dictionary::from_iter([
+                    ("Command", Value::String("ReceiveBytes".into())),
+                    ("ImageType", Value::String("Personalized".into())),
+                    ("ImageSize", Value::Integer(3u64.into())),
+                    ("ImageSignature", Value::Data(vec![7, 8])),
+                ])
+            );
+            send_plist(
+                &mut device_stream,
+                &Value::Dictionary(plist::Dictionary::from_iter([(
+                    "Status",
+                    Value::String("ReceiveBytesAck".into()),
+                )])),
+            )
+            .await
+            .unwrap();
+            let mut image = [0; 3];
+            device_stream.read_exact(&mut image).await.unwrap();
+            assert_eq!(image, [1, 2, 3]);
+            send_plist(
+                &mut device_stream,
+                &Value::Dictionary(plist::Dictionary::from_iter([(
+                    "Status",
+                    Value::String("Complete".into()),
+                )])),
+            )
+            .await
+            .unwrap();
+            let mount = recv_plist(&mut device_stream).await.unwrap();
+            assert_eq!(
+                mount,
+                plist::Dictionary::from_iter([
+                    ("Command", Value::String("MountImage".into())),
+                    ("ImageType", Value::String("Personalized".into())),
+                    ("ImageSignature", Value::Data(vec![7, 8])),
+                    ("ImageTrustCache", Value::Data(vec![5, 6])),
+                ])
+            );
+            send_plist(
+                &mut device_stream,
+                &Value::Dictionary(plist::Dictionary::from_iter([(
+                    "Status",
+                    Value::String("Complete".into()),
+                )])),
+            )
+            .await
+            .unwrap();
+        });
+        ImageMounterClient::new(client_stream)
+            .mount_personalized(&[5, 6], b"manifest", &[1, 2, 3], &[7, 8])
+            .await
+            .unwrap();
+        device.await.unwrap();
     }
 }

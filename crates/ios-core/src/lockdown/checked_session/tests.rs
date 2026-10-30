@@ -234,7 +234,7 @@ async fn failure_at(stage: u8, reply: plist::Dictionary) -> LockdownError {
 
 #[tokio::test]
 async fn plaintext_exact_wire_service_ssl_flags_and_cleanup() {
-    for ssl in [false, true] {
+    for ssl in [None, Some(false), Some(true)] {
         let (host, mut peer) = tokio::io::duplex(16_384);
         let (owner, lease, shared) = admitted(BUDGET, OperationCancel::new());
         let record = record();
@@ -250,13 +250,17 @@ async fn plaintext_exact_wire_service_ssl_flags_and_cleanup() {
                     assert!(!debug.contains(SESSION_ID));
                     let info = session.start_service(SERVICE).await.unwrap();
                     assert_eq!(info.port, 23456);
-                    assert_eq!(info.enable_service_ssl, ssl);
+                    assert_eq!(info.enable_service_ssl, ssl.unwrap_or(false));
                     drop(session);
                 },
                 async {
                     established(&mut peer, false).await;
                     service_request(&mut peer).await;
-                    send_lockdown(&mut peer, &service_reply(ssl)).await.unwrap();
+                    let mut reply = service_reply(ssl.unwrap_or(false));
+                    if ssl.is_none() {
+                        reply.remove("EnableServiceSSL");
+                    }
+                    send_lockdown(&mut peer, &reply).await.unwrap();
                     eof(&mut peer).await;
                 }
             )
@@ -457,11 +461,9 @@ async fn checked_service_port_and_ssl_metadata_are_strict_and_conversion_source_
     bad_port.insert("Port".into(), "23456".into());
     let mut negative = service_reply(false);
     negative.insert("Port".into(), (-1i64).into());
-    let mut no_ssl = service_reply(false);
-    no_ssl.remove("EnableServiceSSL");
     let mut bad_ssl = service_reply(false);
     bad_ssl.insert("EnableServiceSSL".into(), 0u64.into());
-    for reply in [no_port, zero_port, bad_port, negative, no_ssl, bad_ssl] {
+    for reply in [no_port, zero_port, bad_port, negative, bad_ssl] {
         assert_eq!(
             crate::classify_error(&failure_at(2, reply).await),
             ErrorClass::Protocol

@@ -310,16 +310,15 @@ fn actual_public_archive_integer_overflow_retains_native_conversion_without_outp
     ]);
     fixture.database(&bytes, MODE_TYPE_FILE);
     let error = fixture.list().unwrap_err();
-    let archive = io_source(&error, ErrorClass::Protocol)
-        .source()
-        .unwrap()
-        .downcast_ref::<ArchiveError>()
-        .unwrap();
-    assert!(archive.source().unwrap().is::<std::num::TryFromIntError>());
+    let source = io_source(&error, ErrorClass::Protocol).source().unwrap();
+    assert!(source.is::<std::num::TryFromIntError>());
     let output = fixture.root.join("owned-output");
     let error = crate::backup2::unback_backup(&fixture.root, "owned-device", Some(&output), None)
         .unwrap_err();
-    io_source(&error, ErrorClass::Protocol);
+    assert!(io_source(&error, ErrorClass::Protocol)
+        .source()
+        .unwrap()
+        .is::<std::num::TryFromIntError>());
     assert!(!output.exists());
     assert_eq!(
         fs::read(
@@ -330,6 +329,12 @@ fn actual_public_archive_integer_overflow_retains_native_conversion_without_outp
         .unwrap(),
         b"owned-payload"
     );
+}
+
+#[test]
+fn unsigned_manifest_integer_within_signed_range_is_accepted() {
+    let dictionary = HashMap::from([("Mode".to_string(), ArchiveValue::Uint(33152))]);
+    assert_eq!(archive_integer(&dictionary, "Mode").unwrap(), Some(33152));
 }
 
 #[test]

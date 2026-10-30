@@ -102,6 +102,7 @@ fn archive_to_ns(val: crate::proto::nskeyedarchiver::ArchiveValue) -> NSObject {
         ArchiveValue::Null => NSObject::Null,
         ArchiveValue::Bool(b) => NSObject::Bool(b),
         ArchiveValue::Int(n) => NSObject::Int(n),
+        ArchiveValue::Uint(n) => NSObject::Uint(n),
         ArchiveValue::Float(f) => NSObject::Double(f),
         ArchiveValue::String(s) => NSObject::String(s),
         ArchiveValue::Data(d) => NSObject::Data(d),
