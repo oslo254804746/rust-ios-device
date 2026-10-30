@@ -536,6 +536,46 @@ fn parse_ips(path: &str, data: &[u8]) -> Result<ParsedCrashReport, CrashReportEr
         .ok_or_else(|| CrashReportError::Protocol(".ips report is missing its JSON body".into()))?;
     let header: serde_json::Value = serde_json::from_str(header_text.trim())
         .map_err(|error| report_parse_error("decode crash report header JSON", error))?;
+    // Low-battery reports can wrap a second, short JSON header and a text
+    // report in the outer .ips header. The two incident IDs may differ.
+    if header.get("bug_type").and_then(|value| value.as_str()) == Some("120") {
+        if let Some((inner_text, report_text)) = body_text.split_once('\n') {
+            if let Ok(inner) = serde_json::from_str::<serde_json::Value>(inner_text.trim()) {
+                let is_observed_header = inner.as_object().is_some_and(|object| {
+                    object.len() == 2
+                        && inner.get("bug_type") == header.get("bug_type")
+                        && inner.get("os_version").is_some()
+                        && inner.get("os_version") == header.get("os_version")
+                });
+                if is_observed_header
+                    && report_text.trim_start().starts_with("Incident Identifier:")
+                {
+                    let mut parsed = parse_legacy_crash(path, report_text.as_bytes())?;
+                    parsed.format = "ips-legacy".into();
+                    for line in report_text.lines() {
+                        if let Some(value) = line.strip_prefix("Incident Identifier:") {
+                            parsed.incident_id = nonempty(value.trim());
+                        } else if let Some(value) = line.strip_prefix("Date:") {
+                            parsed.timestamp = nonempty(value.trim());
+                        }
+                    }
+                    parsed.raw = serde_json::json!({"header": header, "inner_header": inner, "text": report_text});
+                    return Ok(parsed);
+                }
+            }
+        }
+    }
+    // Older devices also emit .ips reports with a JSON header and a legacy
+    // text body. Recognize the observed text headers before JSON decoding.
+    let legacy = body_text.trim_start();
+    if header.is_object()
+        && (legacy.starts_with("Incident Identifier:") || legacy.starts_with("Date/Time:"))
+    {
+        let mut parsed = parse_legacy_crash(path, body_text.as_bytes())?;
+        parsed.format = "ips-legacy".into();
+        parsed.raw = serde_json::json!({"header": header, "text": body_text});
+        return Ok(parsed);
+    }
     let body: serde_json::Value = serde_json::from_str(body_text.trim())
         .map_err(|error| report_parse_error("decode crash report body JSON", error))?;
     if !header.is_object() || !body.is_object() {
@@ -1480,6 +1520,54 @@ mod tests {
         assert_eq!(report.threads.len(), 1);
         assert!(report.threads[0].crashed);
         assert_eq!(report.threads[0].frames.len(), 1);
+    }
+
+    #[test]
+    fn parse_ips_with_legacy_text_body_preserves_header_and_fields() {
+        for first in ["Date/Time: 2020-01-01", "Incident Identifier: example"] {
+            let input = format!(
+                "{{\"bug_type\":\"109\"}}\n{first}\nProcess: Demo\nException Type: EXC_CRASH\n"
+            );
+            let report = parse_report_bytes("Demo.ips", input.as_bytes()).unwrap();
+            assert_eq!(report.format, "ips-legacy");
+            assert_eq!(report.process.as_deref(), Some("Demo"));
+            assert_eq!(report.exception.as_deref(), Some("EXC_CRASH"));
+            assert_eq!(report.raw["header"]["bug_type"], "109");
+            assert!(report.raw["text"].as_str().unwrap().contains(first));
+        }
+    }
+
+    #[test]
+    fn parse_low_battery_report_keeps_both_headers_and_text_identity() {
+        let text = "Incident Identifier: inner-event\nDate: 2026-01-02 03:04:05 +0000\nScreen Brightness: 0.5\n";
+        let input = format!(
+            "{{\"bug_type\":\"120\",\"os_version\":\"Example OS\",\"incident_id\":\"outer-event\",\"timestamp\":\"2026-01-02 03:04:06 +0000\"}}\n{{\"bug_type\":\"120\",\"os_version\":\"Example OS\"}}\n{text}"
+        );
+        let report = parse_report_bytes("Demo.ips", input.as_bytes()).unwrap();
+        assert_eq!(report.format, "ips-legacy");
+        assert_eq!(report.incident_id.as_deref(), Some("inner-event"));
+        assert_eq!(
+            report.timestamp.as_deref(),
+            Some("2026-01-02 03:04:05 +0000")
+        );
+        assert_eq!(report.raw["header"]["incident_id"], "outer-event");
+        assert_eq!(report.raw["inner_header"]["bug_type"], "120");
+        assert_eq!(report.raw["text"], text);
+    }
+
+    #[test]
+    fn parse_low_battery_report_rejects_unrecognized_or_damaged_segments() {
+        let outer = "{\"bug_type\":\"120\",\"os_version\":\"Example OS\"}";
+        for rest in [
+            "{\"bug_type\":\"120\"\nIncident Identifier: inner-event\n",
+            "{\"bug_type\":\"121\",\"os_version\":\"Example OS\"}\nIncident Identifier: inner-event\n",
+            "{\"bug_type\":\"120\",\"os_version\":\"Different OS\"}\nIncident Identifier: inner-event\n",
+            "{\"bug_type\":\"120\",\"os_version\":\"Example OS\"}\nnot a recognized report\n",
+            "{\"bug_type\":\"120\",\"os_version\":\"Example OS\"}\n{\"truncated\":",
+        ] {
+            let input = format!("{outer}\n{rest}");
+            assert!(parse_report_bytes("bad.ips", input.as_bytes()).is_err());
+        }
     }
 
     #[test]

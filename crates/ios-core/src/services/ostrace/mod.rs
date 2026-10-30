@@ -49,8 +49,75 @@ service_error!(
         /// The stream did not produce a complete response before the deadline.
         #[error("OS trace operation timed out")]
         Timeout,
+        /// A host-side archive safety budget was exceeded.
+        #[error("{0}")]
+        ArchiveLimit(#[from] ArchiveLimitError),
     },
 );
+
+/// Fixed categories for host archive budgets. These never contain daemon data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveLimitKind {
+    Transfer,
+    Chunk,
+    File,
+    Extracted,
+    Entries,
+}
+
+/// The limit and its original protocol error remain available to API callers.
+pub struct ArchiveLimitError {
+    pub kind: ArchiveLimitKind,
+    pub limit: u64,
+    original: Box<OsTraceError>,
+}
+
+impl fmt::Display for ArchiveLimitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.original, f)
+    }
+}
+
+impl std::error::Error for ArchiveLimitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.original.as_ref())
+    }
+}
+
+impl fmt::Debug for ArchiveLimitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ArchiveLimitError")
+            .field("kind", &self.kind)
+            .field("limit", &self.limit)
+            .finish_non_exhaustive()
+    }
+}
+
+fn archive_limit(kind: ArchiveLimitKind, limit: u64, message: String) -> OsTraceError {
+    OsTraceError::ArchiveLimit(ArchiveLimitError {
+        kind,
+        limit,
+        original: Box::new(OsTraceError::Protocol(message)),
+    })
+}
+
+fn transfer_total(current: u64, chunk_length: u64, limit: u64) -> Result<u64, OsTraceError> {
+    let total = current.checked_add(chunk_length).ok_or_else(|| {
+        archive_limit(
+            ArchiveLimitKind::Transfer,
+            limit,
+            "OS trace archive byte count overflow".into(),
+        )
+    })?;
+    if total > limit {
+        return Err(archive_limit(
+            ArchiveLimitKind::Transfer,
+            limit,
+            format!("OS trace archive exceeds max size {limit} bytes"),
+        ));
+    }
+    Ok(total)
+}
 
 fn native_error(
     kind: std::io::ErrorKind,
@@ -784,20 +851,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
                 )
             })?;
             if length > MAX_ARCHIVE_CHUNK_SIZE {
-                return Err(OsTraceError::Protocol(format!(
+                return Err(archive_limit(
+                    ArchiveLimitKind::Chunk,
+                    MAX_ARCHIVE_CHUNK_SIZE as u64,
+                    format!(
                     "OS trace archive chunk length {length} exceeds max {MAX_ARCHIVE_CHUNK_SIZE}"
-                )));
+                ),
+                ));
             }
             let length_u64 = u64::try_from(length).expect("usize fits u64");
-            let new_total = stats.bytes.checked_add(length_u64).ok_or_else(|| {
-                OsTraceError::Protocol("OS trace archive byte count overflow".into())
-            })?;
-            if new_total > options.max_total_bytes {
-                return Err(OsTraceError::Protocol(format!(
-                    "OS trace archive exceeds max size {} bytes",
-                    options.max_total_bytes
-                )));
-            }
+            let new_total = transfer_total(stats.bytes, length_u64, options.max_total_bytes)?;
             let mut remaining = length;
             let mut buffer = vec![0u8; 64 * 1024];
             while remaining != 0 {
@@ -1188,28 +1251,48 @@ fn validate_pax_archive(path: &Path, options: ArchiveOptions) -> Result<(), OsTr
     for item in archive.entries()? {
         let mut entry = item.map_err(|error| native_io("validate OS trace tar entry", error))?;
         entries = entries.checked_add(1).ok_or_else(|| {
-            OsTraceError::Protocol("OS trace archive entry count overflow".into())
+            archive_limit(
+                ArchiveLimitKind::Entries,
+                options.max_entries as u64,
+                "OS trace archive entry count overflow".into(),
+            )
         })?;
         if entries > options.max_entries {
-            return Err(OsTraceError::Protocol(format!(
-                "OS trace archive has more than {} entries",
-                options.max_entries
-            )));
+            return Err(archive_limit(
+                ArchiveLimitKind::Entries,
+                options.max_entries as u64,
+                format!(
+                    "OS trace archive has more than {} entries",
+                    options.max_entries
+                ),
+            ));
         }
         bytes = bytes.checked_add(entry.size()).ok_or_else(|| {
-            OsTraceError::Protocol("OS trace archive extracted size overflow".into())
+            archive_limit(
+                ArchiveLimitKind::Extracted,
+                options.max_extracted_bytes,
+                "OS trace archive extracted size overflow".into(),
+            )
         })?;
         if entry.size() > options.max_file_bytes {
-            return Err(OsTraceError::Protocol(format!(
-                "OS trace archive file exceeds {} bytes",
-                options.max_file_bytes
-            )));
+            return Err(archive_limit(
+                ArchiveLimitKind::File,
+                options.max_file_bytes,
+                format!(
+                    "OS trace archive file exceeds {} bytes",
+                    options.max_file_bytes
+                ),
+            ));
         }
         if bytes > options.max_extracted_bytes {
-            return Err(OsTraceError::Protocol(format!(
-                "OS trace archive extracted size exceeds {} bytes",
-                options.max_extracted_bytes
-            )));
+            return Err(archive_limit(
+                ArchiveLimitKind::Extracted,
+                options.max_extracted_bytes,
+                format!(
+                    "OS trace archive extracted size exceeds {} bytes",
+                    options.max_extracted_bytes
+                ),
+            ));
         }
         std::io::copy(&mut entry, &mut std::io::sink())?;
     }
@@ -1255,13 +1338,21 @@ fn extract_archive(
         let mut entry =
             item.map_err(|error| native_io("validate OS trace extraction entry", error))?;
         entries = entries.checked_add(1).ok_or_else(|| {
-            OsTraceError::Protocol("OS trace archive entry count overflow".into())
+            archive_limit(
+                ArchiveLimitKind::Entries,
+                options.max_entries as u64,
+                "OS trace archive entry count overflow".into(),
+            )
         })?;
         if entries > options.max_entries {
-            return Err(OsTraceError::Protocol(format!(
-                "OS trace archive has more than {} entries",
-                options.max_entries
-            )));
+            return Err(archive_limit(
+                ArchiveLimitKind::Entries,
+                options.max_entries as u64,
+                format!(
+                    "OS trace archive has more than {} entries",
+                    options.max_entries
+                ),
+            ));
         }
         let path = entry.path()?.into_owned();
         validate_entry_path(&path)?;
@@ -1279,19 +1370,31 @@ fn extract_archive(
             )));
         }
         bytes = bytes.checked_add(entry.size()).ok_or_else(|| {
-            OsTraceError::Protocol("OS trace archive extracted size overflow".into())
+            archive_limit(
+                ArchiveLimitKind::Extracted,
+                options.max_extracted_bytes,
+                "OS trace archive extracted size overflow".into(),
+            )
         })?;
         if entry.size() > options.max_file_bytes {
-            return Err(OsTraceError::Protocol(format!(
-                "OS trace archive file exceeds {} bytes",
-                options.max_file_bytes
-            )));
+            return Err(archive_limit(
+                ArchiveLimitKind::File,
+                options.max_file_bytes,
+                format!(
+                    "OS trace archive file exceeds {} bytes",
+                    options.max_file_bytes
+                ),
+            ));
         }
         if bytes > options.max_extracted_bytes {
-            return Err(OsTraceError::Protocol(format!(
-                "OS trace archive extracted size exceeds {} bytes",
-                options.max_extracted_bytes
-            )));
+            return Err(archive_limit(
+                ArchiveLimitKind::Extracted,
+                options.max_extracted_bytes,
+                format!(
+                    "OS trace archive extracted size exceeds {} bytes",
+                    options.max_extracted_bytes
+                ),
+            ));
         }
         std::io::copy(&mut entry, &mut std::io::sink())?;
     }
@@ -2283,6 +2386,11 @@ mod tests {
         let output = test_temp_dir().join(format!("ios-trace-{}.tar", uuid::Uuid::new_v4()));
         let (client, server) = tokio::io::duplex(64 * 1024);
         let archive = archive_tar();
+        let options = ArchiveOptions {
+            size_limit: Some(1),
+            max_total_bytes: archive.len() as u64,
+            ..Default::default()
+        };
         let expected_hash = Sha256::digest(&archive);
         let server_task = tokio::spawn(archive_server(
             server,
@@ -2291,7 +2399,7 @@ mod tests {
             None,
         ));
         let stats = OsTraceClient::new(client)
-            .archive_to_path(&output, ArchiveOptions::default())
+            .archive_to_path(&output, options)
             .await
             .unwrap();
         assert!(output.is_file());
@@ -2312,6 +2420,11 @@ mod tests {
             test_temp_dir().join(format!("ios-trace-{}.logarchive", uuid::Uuid::new_v4()));
         let (client, server) = tokio::io::duplex(64 * 1024);
         let archive = archive_tar();
+        let options = ArchiveOptions {
+            size_limit: Some(1),
+            max_total_bytes: archive.len() as u64,
+            ..Default::default()
+        };
         let server_task = tokio::spawn(archive_server(
             server,
             vec![archive],
@@ -2319,7 +2432,7 @@ mod tests {
             None,
         ));
         let stats = OsTraceClient::new(client)
-            .collect(&collect_output, ArchiveOptions::default())
+            .collect(&collect_output, options)
             .await
             .unwrap();
         assert_eq!(stats.entries, 1);
@@ -2566,5 +2679,228 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("exceeds max size"));
+    }
+
+    #[test]
+    fn archive_limit_diagnostics_are_typed_safe_and_keep_original() {
+        use std::error::Error;
+        for (kind, label) in [
+            (ArchiveLimitKind::Transfer, "transfer"),
+            (ArchiveLimitKind::Chunk, "chunk"),
+            (ArchiveLimitKind::File, "file"),
+            (ArchiveLimitKind::Extracted, "extracted"),
+            (ArchiveLimitKind::Entries, "entries"),
+        ] {
+            let error = archive_limit(kind, 12, "private-path device daemon text".into());
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::ResourceLimit
+            );
+            let limit = error
+                .source()
+                .and_then(|source| source.downcast_ref::<ArchiveLimitError>())
+                .expect("structured limit remains in the source chain");
+            assert!(matches!(
+                limit
+                    .source()
+                    .and_then(|source| source.downcast_ref::<OsTraceError>()),
+                Some(OsTraceError::Protocol(_))
+            ));
+            let diagnostic = crate::redaction::diagnostic_error(&error).to_string();
+            assert!(diagnostic.contains(&format!("os_trace_archive_{label}_limit")));
+            assert!(!diagnostic.contains("private-path"));
+            assert!(!diagnostic.contains("daemon text"));
+        }
+        assert_eq!(transfer_total(7, 3, 10).unwrap(), 10);
+        assert!(matches!(
+            transfer_total(7, 4, 10),
+            Err(OsTraceError::ArchiveLimit(_))
+        ));
+        assert!(matches!(
+            transfer_total(u64::MAX, 1, u64::MAX),
+            Err(OsTraceError::ArchiveLimit(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn archive_limit_refusal_keeps_outputs_and_removes_staging() {
+        for collect in [false, true] {
+            let directory =
+                test_temp_dir().join(format!("ios-trace-limit-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&directory).unwrap();
+            let output = directory.join("output");
+            if !collect {
+                fs::write(&output, b"previous").unwrap();
+            }
+            let (client, mut server) = tokio::io::duplex(65536);
+            let server_task = tokio::spawn(async move {
+                let mut length = [0u8; 4];
+                server.read_exact(&mut length).await.unwrap();
+                let mut request = vec![0u8; u32::from_be_bytes(length) as usize];
+                server.read_exact(&mut request).await.unwrap();
+                let value: plist::Value = plist::from_bytes(&request).unwrap();
+                assert_eq!(
+                    value
+                        .as_dictionary()
+                        .unwrap()
+                        .get("SizeLimit")
+                        .and_then(plist::Value::as_unsigned_integer),
+                    Some(1)
+                );
+                server
+                    .write_all(&archive_status("RequestSuccessful"))
+                    .await
+                    .unwrap();
+                server.write_all(&[ARCHIVE_CHUNK_MAGIC]).await.unwrap();
+                server.write_all(&32u32.to_le_bytes()).await.unwrap();
+                // The device ignores SizeLimit; the host rejects the announced chunk
+                // before reading or writing any of its bytes.
+                let _ = server.write_all(&[0u8; 32]).await;
+            });
+            let options = ArchiveOptions {
+                size_limit: Some(1),
+                max_total_bytes: 31,
+                ..Default::default()
+            };
+            let mut client = OsTraceClient::new(client);
+            let error = if collect {
+                client.collect(&output, options).await.unwrap_err()
+            } else {
+                client.archive_to_path(&output, options).await.unwrap_err()
+            };
+            assert!(matches!(
+                error,
+                OsTraceError::ArchiveLimit(ArchiveLimitError {
+                    kind: ArchiveLimitKind::Transfer,
+                    ..
+                })
+            ));
+            server_task.await.unwrap();
+            if collect {
+                assert!(!output.exists());
+                assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+            } else {
+                assert_eq!(fs::read(&output).unwrap(), b"previous");
+                assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_rejects_extraction_budgets_without_publishing() {
+        for (kind, max_file_bytes, max_extracted_bytes, max_entries) in [
+            (ArchiveLimitKind::File, 1, u64::MAX, 10),
+            (ArchiveLimitKind::Extracted, u64::MAX, 1, 10),
+            (ArchiveLimitKind::Entries, u64::MAX, u64::MAX, 0),
+        ] {
+            let directory =
+                test_temp_dir().join(format!("ios-trace-extract-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&directory).unwrap();
+            let output = directory.join("output");
+            let archive = archive_tar();
+            let (client, server) = tokio::io::duplex(65536);
+            let server_task = tokio::spawn(archive_server(
+                server,
+                vec![archive.clone()],
+                "RequestSuccessful",
+                None,
+            ));
+            let error = OsTraceClient::new(client)
+                .collect(
+                    &output,
+                    ArchiveOptions {
+                        max_total_bytes: archive.len() as u64,
+                        max_file_bytes,
+                        max_extracted_bytes,
+                        max_entries,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, OsTraceError::ArchiveLimit(ArchiveLimitError { kind: actual, .. }) if actual == kind)
+            );
+            server_task.await.unwrap();
+            assert!(!output.exists());
+            assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_rejects_truncated_frame_length_and_payload() {
+        for suffix in [
+            vec![ARCHIVE_CHUNK_MAGIC, 1, 0],
+            vec![ARCHIVE_CHUNK_MAGIC, 4, 0, 0, 0, 1, 2],
+        ] {
+            let (client, mut server) = tokio::io::duplex(4096);
+            let task = tokio::spawn(async move {
+                let mut length = [0u8; 4];
+                server.read_exact(&mut length).await.unwrap();
+                let mut request = vec![0u8; u32::from_be_bytes(length) as usize];
+                server.read_exact(&mut request).await.unwrap();
+                server
+                    .write_all(&archive_status("RequestSuccessful"))
+                    .await
+                    .unwrap();
+                server.write_all(&suffix).await.unwrap();
+            });
+            let mut output = Vec::new();
+            let error = OsTraceClient::new(client)
+                .create_archive(&mut TokioVecWriter(&mut output), ArchiveOptions::default())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, OsTraceError::Io(ref source) if source.kind() == std::io::ErrorKind::UnexpectedEof)
+            );
+            task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn transfer_cap_rejects_whole_over_budget_chunk() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            let mut length = [0u8; 4];
+            server.read_exact(&mut length).await.unwrap();
+            let mut request = vec![0u8; u32::from_be_bytes(length) as usize];
+            server.read_exact(&mut request).await.unwrap();
+            server
+                .write_all(&archive_status("RequestSuccessful"))
+                .await
+                .unwrap();
+            server
+                .write_all(&[ARCHIVE_CHUNK_MAGIC, 6, 0, 0, 0])
+                .await
+                .unwrap();
+            server.write_all(b"123456").await.unwrap();
+            server
+                .write_all(&[ARCHIVE_CHUNK_MAGIC, 5, 0, 0, 0])
+                .await
+                .unwrap();
+            let _ = server.write_all(b"abcde").await;
+        });
+        let mut output = Vec::new();
+        let error = OsTraceClient::new(client)
+            .create_archive(
+                &mut TokioVecWriter(&mut output),
+                ArchiveOptions {
+                    max_total_bytes: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            OsTraceError::ArchiveLimit(ArchiveLimitError {
+                kind: ArchiveLimitKind::Transfer,
+                ..
+            })
+        ));
+        assert_eq!(output, b"123456");
+        task.await.unwrap();
     }
 }

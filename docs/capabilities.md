@@ -6,7 +6,7 @@ pasteboard TLS startup取消的独立host协议证据；原572产品blob与受�
 Windows完整设备watch、物理工作流和maturity不由这些子项升级。
 
 [capabilities.json](capabilities.json) is the authoritative inventory. It lists
-all 62 top-level CLI commands, 49 public service families, Rust/C/Python entry
+all 63 top-level CLI commands, 49 public service families, Rust/C/Python entry
 points and the incomplete CDP, media, clipboard and restore workflows. Topic
 documents explain behavior; the inventory records implementation and evidence
 separately. Adding a command or service requires a corresponding record.

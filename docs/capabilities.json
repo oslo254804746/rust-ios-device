@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-27",
+  "updated": "2026-10-29",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
@@ -2779,6 +2779,88 @@
       "location": "docs/validation/remaining-development-2026-10-27.md",
       "result": "PASS",
       "scope": "CoreRestore91 (restored13) includes actual synchronous SystemImageData dispatch through original total/cancellation to ASR and continued control receive; independent-token cancellation during StartRestore/firmware, terminal rejection/partial reports and late-status exclusion. Async ports/full recovery remain unimplemented and no Update completion or device write acceptance is claimed."
+    },
+    {
+      "host_os": "Windows x86_64/MSVC",
+      "tested_commit": "ef5fd8cd6cb1c529a001d60bcef8d3e0923a21d9",
+      "date": "2026-10-29",
+      "location": "docs/validation/terra-followup-2026-10-29.md",
+      "id": "windows-terra-followup-host-20261029",
+      "level": "host-unit/protocol",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "actual owned loopback TCP",
+        "synthetic OS trace relay",
+        "local LLDB22.1.8 Mach-O target metadata"
+      ],
+      "required_state": [
+        "Frozen dirty source and binary hashes in external20261029-terra-followup/bin/verified.json; head alone is not tested-source identity"
+      ],
+      "result": "PASS",
+      "scope": "469 core and108 CLI tests passed serially (3CLI ignored); independent transfer cap/legacy behavior, source chains and safe errors, truncation/publication cleanup;8debug tests with actual loopback bytes/cancellation/ACK; actual local LLDB synthetic iOS target/path metadata, no process commands.",
+      "limitations": "No positive debugproxy device/LLDB session or complete real OS archive acceptance. Earlier parallel EOF test failure preserved and audited separately. Supplemental attempt036 reproduced Windows10054 at strictEOF;038-042 each469PASS with stronger TCP/SYN premise. Root cause remains unconfirmed; no blanket parallel-stability claim."
+    },
+    {
+      "host_os": "Windows x86_64/MSVC",
+      "tested_commit": "ef5fd8cd6cb1c529a001d60bcef8d3e0923a21d9",
+      "date": "2026-10-29",
+      "location": "docs/validation/terra-followup-2026-10-29.md",
+      "id": "windows-terra-followup-device-limited-20261029",
+      "level": "real-device",
+      "device": "D2 iPhone11,8",
+      "ios": "18.7.10 /22H374",
+      "transport": [
+        "USB",
+        "userspace RSD"
+      ],
+      "required_state": [
+        "Existing trust only; explicit target; no pairing/DDI/app/settings/input changes; bounded private output"
+      ],
+      "result": "INCONCLUSIVE",
+      "scope": "Natural CLI missing-debugproxy precondition and no generated script; archive/collect device hint1MiB with independent32MiB host cap hit ResourceLimit within45s, with no incomplete published output/staging. These are bounded negative outcomes, not positive business acceptance.",
+      "limitations": "Complete archive exceeds this run cap; debugproxy absent. No LLDB attach/launch performed."
+    },
+    {
+      "host_os": "Windows x86_64/MSVC",
+      "tested_commit": "ef5fd8cd6cb1c529a001d60bcef8d3e0923a21d9",
+      "date": "2026-10-29",
+      "location": "docs/validation/completion-2026-10-29.md",
+      "id": "windows-completion-host-20261029",
+      "level": "host-unit/protocol",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "owned loopback TCP",
+        "synthetic OS trace service",
+        "native userspace runtime fixture"
+      ],
+      "required_state": [
+        "Dirty-source hashes and final binary bound in external20261029-completion/bin/verified.json"
+      ],
+      "result": "PASS",
+      "scope": "470 core and108CLI tests passed (3CLI ignored); two additional470-test default concurrent rounds. Zero cap rejected, fullu64 accepted, actualoverflow checked. Runtime cancellation outcome remains distinct EOF/reset; natural forwarding requires fullpayload and strictEOF.",
+      "limitations": "No new product FIN guarantee; runtime cancellation may still reset. No positive debugproxy device session or Linux L04 rerun claimed."
+    },
+    {
+      "host_os": "Windows x86_64/MSVC",
+      "tested_commit": "ef5fd8cd6cb1c529a001d60bcef8d3e0923a21d9",
+      "date": "2026-10-29",
+      "location": "docs/validation/completion-2026-10-29.md",
+      "id": "windows-completion-archive-device-20261029",
+      "level": "real-device",
+      "device": "D2 iPhone11,8",
+      "ios": "18.7.10 /22H374",
+      "transport": [
+        "USB",
+        "userspace RSD os_trace_relay.shim.remote"
+      ],
+      "required_state": [
+        "Existing trust only;1MiB device hint/age1d/requested previous60s;512MiB hard host cap;120s total;private outputs"
+      ],
+      "result": "PASS",
+      "scope": "Actual archive196126720 bytes/554 independentlyread tar entries and complete regular payloads; separate collect195829760 transfer bytes with346 filesystem files and194891646 extracted bytes independently matched. Both naturalexit0 in~33s; no staging residue.",
+      "limitations": "Independent queries need not return identical content. Device hint/time selectors are requests, not proven filtering of every returned item; no all-OS/transport/parameter certification."
     }
   ],
   "capabilities": [
@@ -3970,12 +4052,25 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-terra-followup-host-20261029",
+          "scope": "Debug loopback lifecycle/script encoding and local LLDB synthetic target metadata only."
+        },
+        {
+          "level": "real-device",
+          "result": "INCONCLUSIVE",
+          "evidence": "windows-terra-followup-device-limited-20261029",
+          "scope": "Missing remote debugproxy precondition only; no positive device debugging."
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "Foreground single-client loopback session is implemented. Device must expose remote debugproxy; matching app/symbols and actual LLDB launch packet/session remain unverified. Host LLDB tests create target metadata only."
       ],
-      "topic": "docs/usage.md"
+      "topic": "docs/debug.md"
     },
     {
       "id": "cli:debugserver",
@@ -5442,10 +5537,35 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-terra-followup-host-20261029",
+          "scope": "OS trace budget/diagnostic/protocol and cleanup subset."
+        },
+        {
+          "level": "real-device",
+          "result": "INCONCLUSIVE",
+          "evidence": "windows-terra-followup-device-limited-20261029",
+          "scope": "Bounded archive/collect quota refusal; complete real archive not accepted."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-completion-host-20261029",
+          "scope": "Archive numeric range and existing protocol/cleanup contracts; no arbitraryu64::MAX rejection."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "windows-completion-archive-device-20261029",
+          "scope": "Actual archive196126720 bytes/554 independentlyread tar entries and complete regular payloads; separate collect195829760 transfer bytes with346 filesystem files and194891646 extracted bytes independently matched. Both naturalexit0 in~33s; no staging residue."
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "Independent --max-bytes is available; omitted preserves --size-limit legacy cap. Prior32/128MiB probes hit budget;512MiB bounded archive/collect completed onD2. Device may ignore size/time hints; see scoped evidence."
       ],
       "topic": "docs/usage.md"
     },
@@ -7592,10 +7712,35 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-terra-followup-host-20261029",
+          "scope": "OS trace budget/diagnostic/protocol and cleanup subset."
+        },
+        {
+          "level": "real-device",
+          "result": "INCONCLUSIVE",
+          "evidence": "windows-terra-followup-device-limited-20261029",
+          "scope": "Bounded archive/collect quota refusal; complete real archive not accepted."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-completion-host-20261029",
+          "scope": "Archive numeric range and existing protocol/cleanup contracts; no arbitraryu64::MAX rejection."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "windows-completion-archive-device-20261029",
+          "scope": "Actual archive196126720 bytes/554 independentlyread tar entries and complete regular payloads; separate collect195829760 transfer bytes with346 filesystem files and194891646 extracted bytes independently matched. Both naturalexit0 in~33s; no staging residue."
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "Independent --max-bytes is available; omitted preserves --size-limit legacy cap. Prior32/128MiB probes hit budget;512MiB bounded archive/collect completed onD2. Device may ignore size/time hints; see scoped evidence."
       ],
       "topic": "docs/usage.md"
     },

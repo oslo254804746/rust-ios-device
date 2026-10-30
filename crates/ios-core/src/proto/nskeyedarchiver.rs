@@ -21,6 +21,7 @@ pub enum ArchiveValue {
     Null,
     Bool(bool),
     Int(i64),
+    Uint(u64),
     Float(f64),
     String(String),
     Data(Bytes),
@@ -119,17 +120,13 @@ fn decode_value(
     if let Some(s) = obj.as_string() {
         return Ok(ArchiveValue::String(s.to_string()));
     }
-    // Primitive: integer.
-    // `ArchiveValue::Int` is signed, so anything above `i64::MAX` has no faithful
-    // representation. Truncating it would hand the caller a plausible-looking
-    // negative number instead of an error, which is worse than refusing the
-    // archive — real NSNumber payloads never reach that range.
-    if let Some(n) = obj.as_unsigned_integer() {
-        let value = i64::try_from(n).map_err(ArchiveError::Integer)?;
-        return Ok(ArchiveValue::Int(value));
-    }
+    // Sysmontap uses unsigned sentinels such as u64::MAX. Preserve those
+    // exactly instead of rejecting the entire process snapshot or wrapping.
     if let Some(n) = obj.as_signed_integer() {
         return Ok(ArchiveValue::Int(n));
+    }
+    if let Some(n) = obj.as_unsigned_integer() {
+        return Ok(ArchiveValue::Uint(n));
     }
     // Primitive: float
     if let Some(f) = obj.as_real() {
@@ -181,6 +178,9 @@ fn decode_value(
                     if let Some(n) = v.as_signed_integer() {
                         return Ok(ArchiveValue::Int(n));
                     }
+                    if let Some(n) = v.as_unsigned_integer() {
+                        return Ok(ArchiveValue::Uint(n));
+                    }
                 }
                 if let Some(v) = dict.get("NS.dblval") {
                     if let Some(f) = v.as_real() {
@@ -222,6 +222,7 @@ fn decode_value(
                     let key_str = match decode_object(objects, k_uid, depth + 1) {
                         Ok(ArchiveValue::String(k)) => k,
                         Ok(ArchiveValue::Int(n)) => n.to_string(),
+                        Ok(ArchiveValue::Uint(n)) => n.to_string(),
                         Ok(ArchiveValue::Float(f)) => f.to_string(),
                         Ok(ArchiveValue::Bool(b)) => b.to_string(),
                         _ => continue,
@@ -254,7 +255,17 @@ fn decode_value(
                     if key == "$class" {
                         continue;
                     }
-                    map.insert(key.clone(), decode_field_value(objects, value, depth + 1)?);
+                    // MBFile encodes scalar metadata directly as plist integers;
+                    // only its actual UID values are object-table references.
+                    // Other archived classes retain their legacy integer-UID
+                    // behavior in decode_field_value.
+                    let decoded = if other == "MBFile" && matches!(value, plist::Value::Integer(_))
+                    {
+                        decode_value(objects, value, depth + 1)?
+                    } else {
+                        decode_field_value(objects, value, depth + 1)?
+                    };
+                    map.insert(key.clone(), decoded);
                 }
                 if !map.contains_key("ObjectType") {
                     map.insert(
@@ -355,8 +366,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn actual_binary_archive_integer_overflow_keeps_native_source() {
-        use std::error::Error;
+    fn mbfile_archive_keeps_direct_integers_and_resolves_real_uids() {
+        fn archive(relative_path_uid: u64) -> Vec<u8> {
+            let root = plist::Value::Dictionary(plist::Dictionary::from_iter([
+                ("$class", plist::Value::Uid(plist::Uid::new(2))),
+                (
+                    "RelativePath",
+                    plist::Value::Uid(plist::Uid::new(relative_path_uid)),
+                ),
+                (
+                    "LastModified",
+                    plist::Value::Integer(1_788_671_599u64.into()),
+                ),
+                ("Mode", plist::Value::Integer(0o100600u64.into())),
+                ("Size", plist::Value::Integer(3u64.into())),
+                ("GroupID", plist::Value::Integer(0u64.into())),
+            ]));
+            let class = plist::Value::Dictionary(plist::Dictionary::from_iter([
+                ("$classname", plist::Value::String("MBFile".into())),
+                (
+                    "$classes",
+                    plist::Value::Array(vec!["MBFile".into(), "NSObject".into()]),
+                ),
+            ]));
+            let archive = plist::Value::Dictionary(plist::Dictionary::from_iter([
+                ("$archiver", plist::Value::String("NSKeyedArchiver".into())),
+                (
+                    "$objects",
+                    plist::Value::Array(vec!["$null".into(), root, class, "folder/file".into()]),
+                ),
+                (
+                    "$top",
+                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                        "root",
+                        plist::Value::Uid(plist::Uid::new(1)),
+                    )])),
+                ),
+            ]));
+            let mut bytes = Vec::new();
+            plist::to_writer_binary(&mut bytes, &archive).unwrap();
+            bytes
+        }
+
+        let value = unarchive(&archive(3)).unwrap();
+        let fields = value.as_dict().unwrap();
+        assert_eq!(
+            fields.get("LastModified").and_then(ArchiveValue::as_int),
+            Some(1_788_671_599)
+        );
+        assert_eq!(
+            fields.get("Mode").and_then(ArchiveValue::as_int),
+            Some(0o100600)
+        );
+        assert_eq!(fields.get("Size").and_then(ArchiveValue::as_int), Some(3));
+        assert_eq!(
+            fields.get("GroupID").and_then(ArchiveValue::as_int),
+            Some(0)
+        );
+        assert_eq!(
+            fields.get("RelativePath").and_then(ArchiveValue::as_str),
+            Some("folder/file")
+        );
+        let error = unarchive(&archive(99)).unwrap_err();
+        assert!(
+            matches!(error, ArchiveError::Invalid(message) if message.contains("out of bounds"))
+        );
+    }
+
+    #[test]
+    fn actual_binary_archive_preserves_unsigned_sentinel() {
         let mut bytes = Vec::new();
         plist::to_writer_binary(
             &mut bytes,
@@ -376,10 +454,10 @@ mod tests {
             ])),
         )
         .unwrap();
-        let error = unarchive(&bytes).unwrap_err();
-        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
-        assert!(error.source().unwrap().is::<std::num::TryFromIntError>());
-        assert!(!format!("{error:?}").contains(&u64::MAX.to_string()));
+        assert!(matches!(
+            unarchive(&bytes).unwrap(),
+            ArchiveValue::Uint(u64::MAX)
+        ));
     }
 
     #[test]
@@ -420,12 +498,9 @@ mod tests {
             Some(i64::MAX)
         );
 
-        let err = decode_object(&objects, 1, 0).unwrap_err();
-        assert!(matches!(err, ArchiveError::Integer(_)));
-        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
-        assert!(std::error::Error::source(&err)
-            .unwrap()
-            .is::<std::num::TryFromIntError>());
+        assert!(
+            matches!(decode_object(&objects, 1, 0).unwrap(), ArchiveValue::Uint(n) if n == i64::MAX as u64 + 1)
+        );
     }
 
     #[test]

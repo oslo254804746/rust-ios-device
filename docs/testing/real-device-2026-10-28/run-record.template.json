@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "run_id": "FILL_AT_EXECUTION",
+  "started_at": null,
+  "executor": "Gemini",
+  "repository": "C:\\Users\\wangbaofeng\\RustroverProjects\\rust-ios-device",
+  "expected_branch": "codex/feature/windows-return-20261027",
+  "plan_source_commit": "ef5fd8cd6cb1c529a001d60bcef8d3e0923a21d9",
+  "actual_source_commit": null,
+  "working_tree_dirty": null,
+  "source_diff_evidence": null,
+  "master_tracking_commit": null,
+  "master_reference_is_cached": true,
+  "binary": {"path": null, "sha256": null, "version": null, "build_command": null, "features": null},
+  "host": {"windows_version": null, "architecture": null, "powershell_version": null, "administrator": null, "rustc": null, "cargo": null, "python_executable": null, "python_version": null, "go_version": null, "node_version": null, "ffmpeg_version": null, "wintun_path_and_sha256": null},
+  "upstreams": {
+    "go_ios": {"repository": "raw-projects/go-ios", "checkout_head": null, "dirty": null, "dirty_evidence": null, "executable": null, "sha256": null, "version": null, "build_command": null},
+    "pymobiledevice3": {"repository": "raw-projects/pymobiledevice3", "checkout_head": null, "dirty": null, "dirty_evidence": null, "python_executable": null, "module_path": null, "installed_version": null, "dependency_manifest_evidence": null}
+  },
+  "devices": [
+    {"alias": "D1", "intended_os_range": "<17", "udid_private_reference": "private/devices.local.json#D1", "product_type": null, "product_version": null, "build_version": null, "lock_state": "UNKNOWN", "existing_trust": "UNKNOWN", "developer_mode": "UNKNOWN", "ddi": "UNKNOWN", "supervised": "UNKNOWN", "companion_available": "UNKNOWN", "usb_observed": null, "wifi_observed": null, "service_directory_evidence": null},
+    {"alias": "D2", "intended_os_range": ">=17", "udid_private_reference": "private/devices.local.json#D2", "product_type": null, "product_version": null, "build_version": null, "lock_state": "UNKNOWN", "existing_trust": "UNKNOWN", "developer_mode": "UNKNOWN", "ddi": "UNKNOWN", "supervised": "UNKNOWN", "companion_available": "UNKNOWN", "usb_observed": null, "wifi_observed": null, "service_directory_evidence": null}
+  ],
+  "authorization": {
+    "approved_by_user_at": null,
+    "devices": [],
+    "allowed_actions": [],
+    "allowed_app_bundle_ids": [],
+    "allowed_remote_test_directories": [],
+    "allowed_settings_and_original_values_private_reference": null,
+    "allowed_ports_and_services": [],
+    "allow_new_pairing": false,
+    "allow_ddi_mount": false,
+    "allow_kernel_tunnel_system_network_changes": false,
+    "allow_media_stop_all": false,
+    "allow_profiles_or_wifi_changes": false,
+    "allow_reboot": false,
+    "allow_destructive_operations": false,
+    "allow_real_tss_or_firmware_restore": false,
+    "notes": "Approval fields start false/unfilled. Record the user's actual scope; documentation is not device-operation approval."
+  },
+  "fixtures": [],
+  "baseline_private_evidence": null,
+  "results_file": "results.csv",
+  "issues_directory": "issues",
+  "deferred_development": ["F02", "F04", "F06"],
+  "restoration_checklist": [],
+  "remaining_blockers": [],
+  "finished_at": null
+}

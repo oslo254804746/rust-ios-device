@@ -366,6 +366,24 @@ fn nonce_uses_handle_and_validates_wrapper_lengths() {
 }
 
 #[test]
+fn nonce_accepts_ios18_success_without_status_but_keeps_daemon_errors() {
+    let arguments = IndexMap::from([("nonce".to_string(), XpcValue::Data(vec![0; 56].into()))]);
+    let reply = || {
+        response(IndexMap::from([(
+            "argv".to_string(),
+            XpcValue::Dictionary(arguments.clone()),
+        )]))
+    };
+    assert!(unwrap_response("get-nonce", reply()).is_ok());
+    let rejected = response(IndexMap::from([
+        ("argv".to_string(), XpcValue::Dictionary(arguments)),
+        ("error".to_string(), XpcValue::Int64(2)),
+    ]));
+    assert!(unwrap_response("get-nonce", rejected).is_err());
+    assert!(unwrap_nonce(&[]).is_err());
+}
+
+#[test]
 fn install_request_preserves_signed_and_unsigned_wire_types() {
     let arguments = install_arguments(XpcValue::Dictionary(IndexMap::new()), [1, 2, 3, 4, 5]);
     assert_eq!(arguments["image-type-index"], XpcValue::Int64(10));

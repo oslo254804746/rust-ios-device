@@ -8,8 +8,110 @@ fn connector(address: std::net::SocketAddr) -> ForwardConnector {
         _native: None,
         setup_failure: None,
         direct_test_target: Some(address),
-        fallback_test_target: None,
     }
+}
+
+#[tokio::test]
+async fn direct_port_wins_without_sending_business_data_to_proxy() {
+    let direct = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut connector = connector(direct.local_addr().unwrap());
+    connector.tunnel_proxy = Some(TunnelProxyTarget {
+        server_addr: "fd00::1".into(),
+        proxy_port: proxy.local_addr().unwrap().port(),
+    });
+    let mut stream = connector.connect(62078).await.unwrap();
+    stream.write_all(b"one-request").await.unwrap();
+    let mut peer = direct.accept().await.unwrap().0;
+    let mut data = [0; 11];
+    peer.read_exact(&mut data).await.unwrap();
+    assert_eq!(&data, b"one-request");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), proxy.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn refused_direct_port_falls_back_before_any_business_bytes() {
+    let direct = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut connector = connector(direct.local_addr().unwrap());
+    drop(direct);
+    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    connector.tunnel_proxy = Some(TunnelProxyTarget {
+        server_addr: "fd00::1".into(),
+        proxy_port: proxy.local_addr().unwrap().port(),
+    });
+    let opened = tokio::spawn(async move { connector.connect(8100).await });
+    let mut peer = proxy.accept().await.unwrap().0;
+    let mut preamble = [0; 20];
+    peer.read_exact(&mut preamble).await.unwrap();
+    assert_eq!(
+        &preamble[..16],
+        &"fd00::1".parse::<std::net::Ipv6Addr>().unwrap().octets()
+    );
+    assert_eq!(
+        &preamble[16..],
+        &(8100u32 | ios_core::USERSPACE_PROXY_CONNECT_ACK).to_le_bytes()
+    );
+    peer.write_all(&[0]).await.unwrap();
+    let mut stream = opened.await.unwrap().unwrap();
+    stream.write_all(b"one-request").await.unwrap();
+    let mut data = [0; 11];
+    peer.read_exact(&mut data).await.unwrap();
+    assert_eq!(&data, b"one-request");
+}
+
+#[tokio::test]
+async fn proxy_remote_failure_is_a_connect_error_before_business_copy() {
+    let direct = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut connector = connector(direct.local_addr().unwrap());
+    drop(direct);
+    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    connector.tunnel_proxy = Some(TunnelProxyTarget {
+        server_addr: "fd00::1".into(),
+        proxy_port: proxy.local_addr().unwrap().port(),
+    });
+    let opened = tokio::spawn(async move { connector.connect(8100).await });
+    let mut peer = proxy.accept().await.unwrap().0;
+    let mut preamble = [0; 20];
+    peer.read_exact(&mut preamble).await.unwrap();
+    peer.write_all(&[1]).await.unwrap();
+    let result = opened.await.unwrap();
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("remote refusal was accepted"),
+    };
+    assert!(error.chain().any(|cause| cause
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::ConnectionAborted)));
+    let mut data = Vec::new();
+    peer.read_to_end(&mut data).await.unwrap();
+    assert!(data.is_empty());
+}
+
+#[tokio::test]
+async fn legitimate_empty_eof_does_not_retry_on_another_route() {
+    let direct = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut connector = connector(direct.local_addr().unwrap());
+    connector.tunnel_proxy = Some(TunnelProxyTarget {
+        server_addr: "fd00::1".into(),
+        proxy_port: proxy.local_addr().unwrap().port(),
+    });
+    let mut stream = connector.connect(8100).await.unwrap();
+    let mut peer = direct.accept().await.unwrap().0;
+    peer.shutdown().await.unwrap();
+    assert_eq!(
+        stream.read_u8().await.unwrap_err().kind(),
+        std::io::ErrorKind::UnexpectedEof
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), proxy.accept())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -216,12 +318,11 @@ async fn preferred_and_fallback_real_dial_failures_keep_both_original_errors() {
         device_id: 1,
         tunnel_proxy: Some(TunnelProxyTarget {
             server_addr: "fd00::1".into(),
-            proxy_port: preferred_address.port(),
+            proxy_port: fallback_address.port(),
         }),
         _native: None,
         setup_failure: None,
-        direct_test_target: None,
-        fallback_test_target: Some(fallback_address),
+        direct_test_target: Some(preferred_address),
     };
     let error = match connector.connect(8100).await {
         Err(error) => error,

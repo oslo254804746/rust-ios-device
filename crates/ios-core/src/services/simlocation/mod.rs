@@ -4,6 +4,7 @@
 //! stream. The protocol is intentionally tiny for this first slice:
 //! - `set(lat, lon)` sends mode `0`, followed by two length-prefixed strings
 //! - `reset()` sends mode `1` only
+//! - modes and string byte lengths are big-endian 32-bit integers
 
 crate::redaction::error_debug!(SimLocationError);
 
@@ -150,7 +151,7 @@ impl<S: AsyncWrite + Unpin> SimLocationClient<S> {
         let mut request = self.begin_request(deadline)?;
         let result = await_operation(deadline, async {
             let mut io = request.io();
-            write_u32_le(&mut io, 0).await?;
+            write_u32_be(&mut io, 0).await?;
             write_prefixed_string(&mut io, latitude).await?;
             write_prefixed_string(&mut io, longitude).await?;
             io.flush().await?;
@@ -166,7 +167,7 @@ impl<S: AsyncWrite + Unpin> SimLocationClient<S> {
         let mut request = self.begin_request(deadline)?;
         let result = await_operation(deadline, async {
             let mut io = request.io();
-            write_u32_le(&mut io, 1).await?;
+            write_u32_be(&mut io, 1).await?;
             io.flush().await?;
             Ok(())
         })
@@ -297,7 +298,7 @@ pub async fn set_location<S>(
 where
     S: AsyncWrite + Unpin + ?Sized,
 {
-    write_u32_le(stream, 0).await?;
+    write_u32_be(stream, 0).await?;
     write_prefixed_string(stream, latitude).await?;
     write_prefixed_string(stream, longitude).await?;
     stream.flush().await?;
@@ -309,7 +310,7 @@ pub async fn reset_location<S>(stream: &mut S) -> Result<(), SimLocationError>
 where
     S: AsyncWrite + Unpin + ?Sized,
 {
-    write_u32_le(stream, 1).await?;
+    write_u32_be(stream, 1).await?;
     stream.flush().await?;
     Ok(())
 }
@@ -359,15 +360,15 @@ async fn write_prefixed_string<S>(stream: &mut S, value: &str) -> Result<(), std
 where
     S: AsyncWrite + Unpin + ?Sized,
 {
-    write_u32_le(stream, value.len() as u32).await?;
+    write_u32_be(stream, value.len() as u32).await?;
     stream.write_all(value.as_bytes()).await
 }
 
-async fn write_u32_le<S>(stream: &mut S, value: u32) -> Result<(), std::io::Error>
+async fn write_u32_be<S>(stream: &mut S, value: u32) -> Result<(), std::io::Error>
 where
     S: AsyncWrite + Unpin + ?Sized,
 {
-    stream.write_all(&value.to_le_bytes()).await
+    stream.write_all(&value.to_be_bytes()).await
 }
 
 fn parse_delay(previous: &str, current: &str) -> Result<Duration, SimLocationError> {
@@ -450,6 +451,21 @@ mod tests {
         assert!(!client.is_usable());
     }
 
+    #[tokio::test]
+    async fn client_gpx_replay_emits_big_endian_wire_commands() {
+        let gpx = r#"<gpx><trk><trkseg>
+            <trkpt lat="1" lon="2" />
+            <trkpt lat="3" lon="4" />
+            </trkseg></trk></gpx>"#;
+        let mut client = SimLocationClient::new(Vec::<u8>::new());
+        assert_eq!(client.replay_gpx_route(gpx).await.unwrap(), 2);
+        assert_eq!(
+            client.stream.as_deref().unwrap(),
+            b"\x00\x00\x00\x00\x00\x00\x00\x011\x00\x00\x00\x012\
+              \x00\x00\x00\x00\x00\x00\x00\x013\x00\x00\x00\x014"
+        );
+    }
+
     struct MockWriter {
         bytes: Vec<u8>,
     }
@@ -486,14 +502,10 @@ mod tests {
             .await
             .unwrap();
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(&0u32.to_le_bytes());
-        expected.extend_from_slice(&(9u32).to_le_bytes());
-        expected.extend_from_slice(b"48.856614");
-        expected.extend_from_slice(&(9u32).to_le_bytes());
-        expected.extend_from_slice(b"2.3522219");
-
-        assert_eq!(buf.bytes, expected);
+        assert_eq!(
+            buf.bytes.as_slice(),
+            b"\x00\x00\x00\x00\x00\x00\x00\x0948.856614\x00\x00\x00\x092.3522219"
+        );
     }
 
     #[tokio::test]
@@ -501,14 +513,46 @@ mod tests {
         let mut buf = MockWriter::new();
         reset_location(&mut buf).await.unwrap();
 
-        assert_eq!(buf.bytes, 1u32.to_le_bytes());
+        assert_eq!(buf.bytes, [0, 0, 0, 1]);
     }
 
     #[tokio::test]
     async fn strings_are_written_without_extra_framing() {
         let mut buf = MockWriter::new();
         write_prefixed_string(&mut buf, "abc").await.unwrap();
-        assert_eq!(buf.bytes, vec![3, 0, 0, 0, b'a', b'b', b'c']);
+        assert_eq!(buf.bytes, vec![0, 0, 0, 3, b'a', b'b', b'c']);
+    }
+
+    #[tokio::test]
+    async fn client_and_free_functions_emit_big_endian_commands_over_duplex() {
+        use tokio::io::AsyncReadExt;
+
+        let (stream, mut peer) = tokio::io::duplex(16);
+        let reader = tokio::spawn(async move {
+            for (lat, lon) in [("48.856614", "2.3522219"), ("1", "-22")] {
+                assert_eq!(peer.read_u32().await.unwrap(), 0);
+                let lat_len = peer.read_u32().await.unwrap();
+                assert_eq!(lat_len as usize, lat.len());
+                let mut bytes = vec![0; lat_len as usize];
+                peer.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(bytes, lat.as_bytes());
+                let lon_len = peer.read_u32().await.unwrap();
+                assert_eq!(lon_len as usize, lon.len());
+                let mut bytes = vec![0; lon_len as usize];
+                peer.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(bytes, lon.as_bytes());
+                assert_eq!(peer.read_u32().await.unwrap(), 1);
+            }
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+        });
+        let mut client = SimLocationClient::new(stream);
+        client.set_location("48.856614", "2.3522219").await.unwrap();
+        client.reset_location().await.unwrap();
+        let mut stream = client.stream.take().unwrap();
+        set_location(&mut stream, "1", "-22").await.unwrap();
+        reset_location(&mut stream).await.unwrap();
+        drop(stream);
+        reader.await.unwrap();
     }
 
     #[test]
@@ -554,15 +598,15 @@ mod tests {
         assert_eq!(count, 2);
 
         let mut expected = Vec::new();
-        expected.extend_from_slice(&0u32.to_le_bytes());
-        expected.extend_from_slice(&(9u32).to_le_bytes());
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        expected.extend_from_slice(&(9u32).to_be_bytes());
         expected.extend_from_slice(b"48.856614");
-        expected.extend_from_slice(&(9u32).to_le_bytes());
+        expected.extend_from_slice(&(9u32).to_be_bytes());
         expected.extend_from_slice(b"2.3522219");
-        expected.extend_from_slice(&0u32.to_le_bytes());
-        expected.extend_from_slice(&(9u32).to_le_bytes());
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        expected.extend_from_slice(&(9u32).to_be_bytes());
         expected.extend_from_slice(b"48.857000");
-        expected.extend_from_slice(&(8u32).to_le_bytes());
+        expected.extend_from_slice(&(8u32).to_be_bytes());
         expected.extend_from_slice(b"2.353000");
 
         assert_eq!(buf.bytes, expected);

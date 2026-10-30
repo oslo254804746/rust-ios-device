@@ -61,7 +61,12 @@ async fn native_source_cache_reads_and_writes_keep_original_io() {
         "PersonalizedDMG.trustcache",
         "BuildManifest.plist",
     ] {
-        errors.push(load_personalized_from_dir(&root.0).await.err().unwrap());
+        errors.push(
+            load_personalized_from_restore_dir(&root.0.join("Restore"))
+                .await
+                .err()
+                .unwrap(),
+        );
         std::fs::write(root.0.join("Restore").join(name), b"owned-private").unwrap();
     }
     let file = root.0.join("file");

@@ -121,7 +121,7 @@ async fn capture_screenshot(udid: &str) -> Result<(ScreenshotImage, &'static str
 /// Fallback is only valid when the preferred service is unavailable. Protocol,
 /// permission, and malformed-response errors must reach the caller rather
 /// than being hidden by a second transport attempt.
-fn coredevice_fallback_allowed(error: &anyhow::Error) -> bool {
+pub(super) fn coredevice_fallback_allowed(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<ios_core::error::CoreError>()
@@ -205,6 +205,38 @@ async fn try_dtx_screenshot(udid: &str) -> Result<Bytes> {
         .await
         .map_err(|e| anyhow::Error::new(e).context("DTX screenshot"))?;
     Ok(data)
+}
+
+/// Viewer captures share its original native retirement scope, including the
+/// read-only DTX fallback. Never create an unowned tunnel for a frame.
+pub(super) async fn capture_fallback_scoped(
+    udid: &str,
+    native: &crate::cmd::tunnel::NativeScope,
+) -> Result<ScreenshotImage> {
+    let result = async {
+        let version = probe_product_version(udid).await?;
+        if version.major < 17 {
+            return try_dtx_screenshot(udid).await;
+        }
+        let device = native.connect(udid, ios_core::TunMode::Userspace).await?;
+        let stream = device
+            .connect_rsd_service(ios_core::instruments::SERVICE_IOS17)
+            .await?;
+        ios_core::instruments::screenshot::take_screenshot_dtx(stream)
+            .await
+            .map_err(|error| anyhow::Error::new(error).context("DTX screenshot"))
+    }
+    .await;
+    // The original connection and stream have been dropped before collection.
+    let cleanup = native.collect(Duration::from_secs(5)).await;
+    if cleanup.is_err() {
+        return crate::cmd::viewer::finish(result.map(ScreenshotImage::from_bytes), cleanup);
+    }
+    match result {
+        Ok(data) => Ok(ScreenshotImage::from_bytes(data)),
+        Err(error) if dtx_fallback_allowed(&error) => take_legacy_screenshot(udid).await,
+        Err(error) => Err(error),
+    }
 }
 
 async fn take_legacy_screenshot(udid: &str) -> Result<ScreenshotImage> {

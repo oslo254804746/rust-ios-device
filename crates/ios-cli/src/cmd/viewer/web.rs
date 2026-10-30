@@ -23,7 +23,7 @@ use super::vnc::{
 };
 use crate::access::{AccessControl, Admission, Permission, Principal};
 
-pub const MAX_WEB_FRAME_BYTES: usize = super::media::MAX_ENCODED_BYTES;
+pub const MAX_WEB_FRAME_BYTES: usize = super::media::MAX_PNG_BYTES;
 
 #[derive(Debug, Clone)]
 pub struct WebFrame {

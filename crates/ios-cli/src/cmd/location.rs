@@ -3,6 +3,92 @@ use std::path::PathBuf;
 use anyhow::Result;
 use tokio::fs;
 
+const LOCATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+enum LocationClient {
+    Legacy(ios_core::simlocation::SimLocationClient<ios_core::device::ServiceStream>),
+    Modern(ios_core::instruments::LocationSimulationClient<ios_core::device::ServiceStream>),
+}
+
+fn uses_dvt(major: u64) -> bool {
+    major >= 17
+}
+
+async fn connect_location(udid: &str) -> Result<(ios_core::ConnectedDevice, LocationClient)> {
+    let version = crate::cmd::connect::probe_product_version(udid).await?;
+    if uses_dvt(version.major) {
+        let (device, stream) = tokio::time::timeout(
+            LOCATION_TIMEOUT,
+            crate::cmd::instruments::connect_instruments(udid),
+        )
+        .await??;
+        let client = tokio::time::timeout(
+            LOCATION_TIMEOUT,
+            ios_core::instruments::LocationSimulationClient::connect(stream),
+        )
+        .await??;
+        Ok((device, LocationClient::Modern(client)))
+    } else {
+        let (device, stream) = crate::cmd::connect::connect_lockdown_service(
+            udid,
+            ios_core::simlocation::SERVICE_NAME,
+            LOCATION_TIMEOUT,
+        )
+        .await?;
+        let mut client = ios_core::simlocation::SimLocationClient::new(stream);
+        client.set_operation_timeout(Some(LOCATION_TIMEOUT));
+        Ok((device, LocationClient::Legacy(client)))
+    }
+}
+
+impl LocationClient {
+    async fn set_location(&mut self, latitude: &str, longitude: &str) -> Result<()> {
+        match self {
+            Self::Legacy(client) => client
+                .set_location(latitude, longitude)
+                .await
+                .map_err(Into::into),
+            Self::Modern(client) => {
+                let latitude = latitude
+                    .parse::<f64>()
+                    .map_err(|e| crate::output::input_error("invalid latitude", e))?;
+                let longitude = longitude
+                    .parse::<f64>()
+                    .map_err(|e| crate::output::input_error("invalid longitude", e))?;
+                tokio::time::timeout(LOCATION_TIMEOUT, client.set_location(latitude, longitude))
+                    .await??;
+                Ok(())
+            }
+        }
+    }
+
+    async fn reset_location(&mut self) -> Result<()> {
+        match self {
+            Self::Legacy(client) => client.reset_location().await.map_err(Into::into),
+            Self::Modern(client) => {
+                tokio::time::timeout(LOCATION_TIMEOUT, client.reset_location()).await??;
+                Ok(())
+            }
+        }
+    }
+
+    async fn replay_gpx_route(&mut self, gpx: &str) -> Result<usize> {
+        match self {
+            Self::Legacy(client) => Ok(client.replay_gpx_route(gpx).await?),
+            Self::Modern(_) => {
+                let route = ios_core::simlocation::parse_gpx_route(gpx)?;
+                for point in &route {
+                    if !point.delay_from_previous.is_zero() {
+                        tokio::time::sleep(point.delay_from_previous).await;
+                    }
+                    self.set_location(&point.latitude, &point.longitude).await?;
+                }
+                Ok(route.len())
+            }
+        }
+    }
+}
+
 #[derive(clap::Args)]
 pub struct LocationCmd {
     #[command(subcommand)]
@@ -35,18 +121,11 @@ impl LocationCmd {
                     .parse::<f64>()
                     .map_err(|e| crate::output::input_error("invalid longitude", e))?;
 
-                let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
-                    &udid,
-                    ios_core::simlocation::SERVICE_NAME,
-                    std::time::Duration::from_secs(30),
-                )
-                .await?;
-                let mut client = ios_core::simlocation::SimLocationClient::new(stream);
-                client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+                let (_device, mut client) = connect_location(&udid).await?;
                 client
                     .set_location(&latitude, &longitude)
                     .await
-                    .map_err(|e| anyhow::Error::new(e).context("simlocation set failed"))?;
+                    .map_err(|e| e.context("simlocation set failed"))?;
                 crate::output::outln!("Location simulation set to {latitude}, {longitude}");
             }
             LocationSub::Gpx { file } => {
@@ -54,14 +133,7 @@ impl LocationCmd {
                     .await
                     .map_err(|e| anyhow::Error::new(e).context("failed to read GPX file"))?;
 
-                let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
-                    &udid,
-                    ios_core::simlocation::SERVICE_NAME,
-                    std::time::Duration::from_secs(30),
-                )
-                .await?;
-                let mut client = ios_core::simlocation::SimLocationClient::new(stream);
-                client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+                let (_device, mut client) = connect_location(&udid).await?;
                 let count = tokio::select! {
                     result = client.replay_gpx_route(&gpx) => result,
                     signal = tokio::signal::ctrl_c() => {
@@ -69,22 +141,15 @@ impl LocationCmd {
                         return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "GPX replay cancelled; previously sent locations may remain active").into());
                     }
                 }
-                    .map_err(|e| anyhow::Error::new(e).context("simlocation GPX replay failed"))?;
+                    .map_err(|e| e.context("simlocation GPX replay failed"))?;
                 crate::output::outln!("Replayed {count} GPX point(s) from {}", file.display());
             }
             LocationSub::Reset => {
-                let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
-                    &udid,
-                    ios_core::simlocation::SERVICE_NAME,
-                    std::time::Duration::from_secs(30),
-                )
-                .await?;
-                let mut client = ios_core::simlocation::SimLocationClient::new(stream);
-                client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+                let (_device, mut client) = connect_location(&udid).await?;
                 client
                     .reset_location()
                     .await
-                    .map_err(|e| anyhow::Error::new(e).context("simlocation reset failed"))?;
+                    .map_err(|e| e.context("simlocation reset failed"))?;
                 crate::output::outln!("Location simulation reset.");
             }
         }
@@ -98,6 +163,65 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn selects_dvt_from_ios_17() {
+        assert!(!uses_dvt(16));
+        assert!(uses_dvt(17));
+        assert!(uses_dvt(18));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn modern_gpx_replays_ordered_points_with_route_delay() {
+        use ios_core::dtx::{encode_dtx, read_dtx_frame, DtxPayload, NSObject};
+        use tokio::io::AsyncWriteExt;
+
+        let (stream, mut peer) = tokio::io::duplex(8192);
+        let device = tokio::spawn(async move {
+            let channel = read_dtx_frame(&mut peer).await.unwrap();
+            peer.write_all(&encode_dtx(
+                channel.identifier,
+                1,
+                channel.channel_code,
+                false,
+                3,
+                &[],
+                &[],
+            ))
+            .await
+            .unwrap();
+            for (latitude, longitude) in [(1.0, 2.0), (3.0, 4.0)] {
+                let request = read_dtx_frame(&mut peer).await.unwrap();
+                assert!(
+                    matches!(&request.payload, DtxPayload::MethodInvocation { selector, args }
+                    if selector == "simulateLocationWithLatitude:longitude:"
+                    && args.as_slice() == [NSObject::Double(latitude), NSObject::Double(longitude)].as_slice())
+                );
+                peer.write_all(&encode_dtx(
+                    request.identifier,
+                    1,
+                    request.channel_code,
+                    false,
+                    3,
+                    &[],
+                    &[],
+                ))
+                .await
+                .unwrap();
+            }
+        });
+        let stream: ios_core::device::ServiceStream = Box::new(stream);
+        let mut client = LocationClient::Modern(
+            ios_core::instruments::LocationSimulationClient::connect(stream)
+                .await
+                .unwrap(),
+        );
+        let route = r#"<gpx><trk><trkseg><trkpt lat="1" lon="2"><time>2026-10-26T00:00:00Z</time></trkpt><trkpt lat="3" lon="4"><time>2026-10-26T00:00:02Z</time></trkpt></trkseg></trk></gpx>"#;
+        let start = tokio::time::Instant::now();
+        assert_eq!(client.replay_gpx_route(route).await.unwrap(), 2);
+        assert_eq!(start.elapsed(), std::time::Duration::from_secs(2));
+        device.await.unwrap();
+    }
 
     #[tokio::test]
     async fn cli_native_sources_location_input_and_file_fail_before_connection() {

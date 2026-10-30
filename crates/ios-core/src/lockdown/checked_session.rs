@@ -99,16 +99,13 @@ impl<'ctx> CheckedSession<'ctx> {
                 if port == 0 {
                     return Err(protocol("checked StartService Port was zero"));
                 }
-                // Omission is distinct from a valid false value. The checked path
-                // requires explicit metadata; legacy StartService remains unchanged.
-                let ssl = reply
-                    .get("EnableServiceSSL")
-                    .and_then(plist::Value::as_boolean)
-                    .ok_or_else(|| {
-                        protocol(
-                            "checked StartService EnableServiceSSL was absent or not a boolean",
-                        )
-                    })?;
+                // Older devices omit this field for plaintext services.
+                let ssl = match reply.get("EnableServiceSSL") {
+                    None => false,
+                    Some(value) => value.as_boolean().ok_or_else(|| {
+                        protocol("checked StartService EnableServiceSSL was not a boolean")
+                    })?,
+                };
                 Ok::<_, LockdownError>(ServiceInfo {
                     port,
                     enable_service_ssl: ssl,

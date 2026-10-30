@@ -9,6 +9,9 @@
 use super::protocol::ImageMounterError;
 
 const TSS_URL: &str = "https://gs.apple.com/TSS/controller?action=2";
+// Apple Inc. Root, published at https://www.apple.com/appleca/AppleIncRootCertificate.cer
+// SHA-256: B0B1730ECBC7FF4505142C49F1295E6EDA6BCAED7E2C68C5BE91B5A11001F024
+const APPLE_ROOT_CERT: &[u8] = include_bytes!("apple-inc-root.cer");
 
 /// Get a personalized signing ticket from Apple's TSS server.
 ///
@@ -59,6 +62,9 @@ fn build_client_with_proxy(
     mut builder: reqwest::ClientBuilder,
     proxy_url: Option<&str>,
 ) -> Result<reqwest::Client, ImageMounterError> {
+    let apple_root = reqwest::Certificate::from_der(APPLE_ROOT_CERT)
+        .map_err(|source| super::native_http("parse Apple TSS root certificate", source))?;
+    builder = builder.add_root_certificate(apple_root);
     if let Some(proxy_url) = proxy_url {
         if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
             builder = builder.proxy(proxy);
@@ -158,6 +164,9 @@ fn parse_ticket_response(body: &[u8], ticket_keys: &[&str]) -> Result<Vec<u8>, I
 /// Build a TSS request dictionary from personalization identifiers, nonce, and build manifest identity.
 pub fn build_tss_request(
     identifiers: &std::collections::HashMap<String, plist::Value>,
+    board_id: u64,
+    chip_id: u64,
+    ecid: u64,
     nonce: &[u8],
     identity: &plist::Dictionary,
 ) -> plist::Dictionary {
@@ -172,26 +181,87 @@ pub fn build_tss_request(
     );
     req.insert(
         "@VersionInfo".to_string(),
-        plist::Value::String("libauthinstall-973.40.2".into()),
+        plist::Value::String("libauthinstall-1104.0.9".into()),
     );
     req.insert(
         "@UUID".to_string(),
         plist::Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()),
     );
 
-    // Copy personalization identifiers (BoardId, ChipID, etc.)
-    for (k, v) in identifiers {
+    // Only Ap-prefixed optional identifiers are passed through to TSS.
+    for (k, v) in identifiers.iter().filter(|(key, _)| key.starts_with("Ap,")) {
         req.insert(k.clone(), v.clone());
     }
 
-    // Nonce
+    req.insert("ApBoardID".into(), plist::Value::Integer(board_id.into()));
+    req.insert("ApChipID".into(), plist::Value::Integer(chip_id.into()));
+    req.insert("ApECID".into(), plist::Value::Integer(ecid.into()));
     req.insert("ApNonce".to_string(), plist::Value::Data(nonce.to_vec()));
+    req.insert("ApProductionMode".into(), plist::Value::Boolean(true));
+    req.insert(
+        "ApSecurityDomain".into(),
+        plist::Value::Integer(1u64.into()),
+    );
+    req.insert("ApSecurityMode".into(), plist::Value::Boolean(true));
     req.insert("SepNonce".to_string(), plist::Value::Data(vec![0; 20]));
+    req.insert("UID_MODE".into(), plist::Value::Boolean(false));
 
-    // Copy manifest identity entries
+    // Follow the DDI manifest's trust-cache rules for each trusted component.
     if let Some(manifest) = identity.get("Manifest").and_then(|v| v.as_dictionary()) {
+        let rules = manifest
+            .get("LoadableTrustCache")
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|entry| entry.get("Info"))
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|info| info.get("RestoreRequestRules"))
+            .and_then(plist::Value::as_array);
         for (k, v) in manifest {
-            req.insert(k.clone(), v.clone());
+            let Some(entry) = v.as_dictionary() else {
+                continue;
+            };
+            if entry
+                .get("Info")
+                .and_then(plist::Value::as_dictionary)
+                .is_none()
+                || entry.get("Trusted").and_then(plist::Value::as_boolean) != Some(true)
+            {
+                continue;
+            }
+            let mut entry = entry.clone();
+            entry.remove("Info");
+            if let Some(rules) = rules {
+                for rule in rules.iter().filter_map(plist::Value::as_dictionary) {
+                    let Some(conditions) =
+                        rule.get("Conditions").and_then(plist::Value::as_dictionary)
+                    else {
+                        continue;
+                    };
+                    let matched = conditions.iter().all(|(key, value)| {
+                        matches!(
+                            key.as_str(),
+                            "ApRawProductionMode"
+                                | "ApCurrentProductionMode"
+                                | "ApRawSecurityMode"
+                                | "ApRequiresImage4"
+                        ) && value.as_boolean() == Some(true)
+                    });
+                    if matched {
+                        if let Some(actions) =
+                            rule.get("Actions").and_then(plist::Value::as_dictionary)
+                        {
+                            for (key, value) in actions {
+                                if value.as_unsigned_integer() != Some(255) {
+                                    entry.insert(key.clone(), value.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !entry.contains_key("Digest") {
+                entry.insert("Digest".into(), plist::Value::Data(Vec::new()));
+            }
+            req.insert(k.clone(), plist::Value::Dictionary(entry));
         }
     }
 
@@ -201,6 +271,109 @@ pub fn build_tss_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn apple_tss_root_has_official_fingerprint_and_builds_client() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            hex::encode_upper(Sha256::digest(APPLE_ROOT_CERT)),
+            "B0B1730ECBC7FF4505142C49F1295E6EDA6BCAED7E2C68C5BE91B5A11001F024"
+        );
+        build_client_with_proxy(reqwest::Client::builder().no_proxy(), None).unwrap();
+    }
+
+    #[test]
+    fn personalized_request_uses_device_identity_and_trusted_manifest_rules() {
+        use plist::{Dictionary, Value};
+        let dict = |entries: Vec<(&str, Value)>| Value::Dictionary(Dictionary::from_iter(entries));
+        let rule = dict(vec![
+            (
+                "Conditions",
+                dict(vec![
+                    ("ApRawProductionMode", Value::Boolean(true)),
+                    ("ApRawSecurityMode", Value::Boolean(true)),
+                ]),
+            ),
+            (
+                "Actions",
+                dict(vec![
+                    ("EPRO", Value::Boolean(true)),
+                    ("ESEC", Value::Boolean(true)),
+                    ("Ignored", Value::Integer(255u64.into())),
+                ]),
+            ),
+        ]);
+        let false_rule = dict(vec![
+            (
+                "Conditions",
+                dict(vec![("ApRequiresImage4", Value::Boolean(false))]),
+            ),
+            ("Actions", dict(vec![("Wrong", Value::Boolean(true))])),
+        ]);
+        let info = dict(vec![(
+            "RestoreRequestRules",
+            Value::Array(vec![rule, false_rule]),
+        )]);
+        let trusted = dict(vec![
+            ("Trusted", Value::Boolean(true)),
+            ("Info", info),
+            ("Digest", Value::Data(vec![42])),
+        ]);
+        let image = dict(vec![
+            ("Trusted", Value::Boolean(true)),
+            ("Info", dict(vec![])),
+        ]);
+        let untrusted = dict(vec![
+            ("Trusted", Value::Boolean(false)),
+            ("Info", dict(vec![])),
+        ]);
+        let identity = Dictionary::from_iter([(
+            "Manifest",
+            dict(vec![
+                ("LoadableTrustCache", trusted),
+                ("PersonalizedDMG", image),
+                ("Untrusted", untrusted),
+                ("NoInfo", dict(vec![("Trusted", Value::Boolean(true))])),
+            ]),
+        )]);
+        let identifiers = std::collections::HashMap::from([
+            ("Ap,Optional".to_string(), Value::Boolean(true)),
+            ("UniqueChipID".to_string(), Value::Integer(99u64.into())),
+        ]);
+        let request = build_tss_request(&identifiers, 1, 2, 99, &[3, 4], &identity);
+        for (key, value) in [
+            ("ApBoardID", 1),
+            ("ApChipID", 2),
+            ("ApECID", 99),
+            ("ApSecurityDomain", 1),
+        ] {
+            assert_eq!(request[key].as_unsigned_integer(), Some(value));
+        }
+        assert_eq!(request["Ap,Optional"].as_boolean(), Some(true));
+        assert_eq!(request["UID_MODE"].as_boolean(), Some(false));
+        assert_eq!(request["ApProductionMode"].as_boolean(), Some(true));
+        assert_eq!(request["ApSecurityMode"].as_boolean(), Some(true));
+        assert_eq!(request["ApNonce"].as_data(), Some([3, 4].as_slice()));
+        assert!(!request.contains_key("UniqueChipID"));
+        assert!(!request.contains_key("Untrusted"));
+        assert!(!request.contains_key("NoInfo"));
+        for name in ["LoadableTrustCache", "PersonalizedDMG"] {
+            let entry = request[name].as_dictionary().unwrap();
+            assert!(!entry.contains_key("Info"));
+            assert!(!entry.contains_key("Ignored"));
+            assert!(!entry.contains_key("Wrong"));
+            assert_eq!(entry["EPRO"].as_boolean(), Some(true));
+            assert_eq!(entry["ESEC"].as_boolean(), Some(true));
+        }
+        assert_eq!(
+            request["PersonalizedDMG"].as_dictionary().unwrap()["Digest"].as_data(),
+            Some([].as_slice())
+        );
+        assert_eq!(
+            request["LoadableTrustCache"].as_dictionary().unwrap()["Digest"].as_data(),
+            Some([42].as_slice())
+        );
+    }
 
     fn reply(status: &str, tickets: &[(&str, &[u8])]) -> Vec<u8> {
         let dictionary = plist::Dictionary::from_iter(

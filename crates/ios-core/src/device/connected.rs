@@ -22,7 +22,9 @@ use super::ResolvedServiceMetadata;
 use super::{ConnectedDevice, InternationalConfiguration, ServiceStream};
 use crate::error::CoreError;
 use crate::lockdown::pair_record::PairRecord;
-use crate::lockdown::session::{start_lockdown_session, start_service, wrap_service_tls};
+use crate::lockdown::session::{
+    start_lockdown_session, start_service, start_service_with_escrow_bag, wrap_service_tls,
+};
 use crate::lockdown::LOCKDOWN_PORT;
 use crate::tunnel::manager::TunnelHandle;
 use crate::xpc::rsd::RsdHandshake;
@@ -268,6 +270,24 @@ impl ConnectedDevice {
 
     /// Open a lockdown service stream (iOS <17 or iOS 17+ services also accessible via lockdown).
     pub async fn connect_service(&self, service_name: &str) -> Result<ServiceStream, CoreError> {
+        self.connect_service_inner(service_name, None).await
+    }
+
+    /// Open a lockdown service using the explicitly provided pairing escrow bag.
+    pub async fn connect_service_with_escrow_bag(
+        &self,
+        service_name: &str,
+        escrow_bag: &[u8],
+    ) -> Result<ServiceStream, CoreError> {
+        self.connect_service_inner(service_name, Some(escrow_bag))
+            .await
+    }
+
+    async fn connect_service_inner(
+        &self,
+        service_name: &str,
+        escrow_bag: Option<&[u8]>,
+    ) -> Result<ServiceStream, CoreError> {
         let pair_record = self.pair_record()?;
         let lockdown_stream = connect_lockdown_port(
             &self.info.udid,
@@ -280,8 +300,13 @@ impl ConnectedDevice {
         let (_session_id, mut tls_reader, mut tls_writer) =
             start_lockdown_session(lockdown_stream, pair_record).await?;
 
-        let (port, enable_ssl) =
-            start_service(&mut tls_reader, &mut tls_writer, service_name).await?;
+        let (port, enable_ssl) = match escrow_bag {
+            Some(bag) => {
+                start_service_with_escrow_bag(&mut tls_reader, &mut tls_writer, service_name, bag)
+                    .await?
+            }
+            None => start_service(&mut tls_reader, &mut tls_writer, service_name).await?,
+        };
 
         let svc_stream =
             connect_lockdown_port(&self.info.udid, &self.lockdown_transport, port, false).await?;

@@ -16,6 +16,9 @@ mod transport;
 
 pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PIXEL_BYTES: usize = 12 * 1024 * 1024;
+// A full screenshot can exceed the video access-unit budget, even at native
+// phone dimensions. Bound its pixels and allow bounded PNG container overhead.
+pub const MAX_PNG_BYTES: usize = MAX_PIXEL_BYTES + 64 * 1024;
 
 /// HEVC NAL Unit types according to ITU-T H.265 / ISO/IEC 23008-2.
 #[allow(dead_code)]
@@ -347,10 +350,7 @@ pub struct DecodedFrame {
 }
 
 pub fn decode_png(data: Bytes, timestamp_ms: u64) -> Result<DecodedFrame> {
-    ensure!(
-        data.len() <= MAX_ENCODED_BYTES,
-        "encoded frame exceeds budget"
-    );
+    ensure!(data.len() <= MAX_PNG_BYTES, "encoded frame exceeds budget");
     let mut decoder = png::Decoder::new(Cursor::new(data.clone()));
     decoder.set_limits(png::Limits {
         bytes: MAX_PIXEL_BYTES,
@@ -432,25 +432,67 @@ pub fn decode_png(data: Bytes, timestamp_ms: u64) -> Result<DecodedFrame> {
 pub async fn capture_frame(
     udid: &str,
     native: &crate::cmd::tunnel::NativeScope,
+    coredevice_supported: bool,
 ) -> Result<DecodedFrame> {
-    let device = native.connect(udid, ios_core::TunMode::Userspace).await?;
-    let result = async {
-        let (xpc, meta) = device
-            .connect_xpc_service_with_metadata(ios_core::screencapture::SERVICE_NAME)
+    let data = if !coredevice_supported {
+        // Match the screenshot command's product-version gate. Older iOS
+        // releases use Instruments/legacy screenshot services and may fail
+        // during tunnel setup with a Lockdown error that is not a fallback
+        // class. Avoid starting the unsupported CoreDevice path at all.
+        Box::pin(crate::cmd::screenshot::capture_fallback_scoped(
+            udid, native,
+        ))
+        .await?
+        .data
+    } else {
+        let result = Box::pin(async {
+            let device = Box::pin(native.connect(udid, ios_core::TunMode::Userspace)).await?;
+            let (xpc, meta) = Box::pin(
+                device.connect_xpc_service_with_metadata(ios_core::screencapture::SERVICE_NAME),
+            )
             .await?;
-        let mut client = ios_core::screencapture::ScreenCaptureServiceClient::new_with_features(
-            xpc,
-            meta.features,
-        );
-        let image = client.capture_screenshot(None, "png").await?;
-        let timestamp_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis() as u64;
-        decode_png(image.data, timestamp_ms)
-    }
-    .await;
-    drop(device);
-    super::finish(result, native.collect(super::device::CLEANUP_TIMEOUT).await)
+            let mut client = ios_core::screencapture::ScreenCaptureServiceClient::new_with_features(
+                xpc,
+                meta.features,
+            );
+            let image = Box::pin(client.capture_screenshot(None, "png")).await?;
+            Ok(image.data)
+        })
+        .await;
+        match result {
+            Ok(data) => super::finish(
+                Ok(data),
+                native.collect(super::device::CLEANUP_TIMEOUT).await,
+            )?,
+            Err(error) => {
+                // Preserve cleanup failures before considering another service.
+                let error = super::finish::<()>(
+                    Err(error),
+                    native.collect(super::device::CLEANUP_TIMEOUT).await,
+                )
+                .unwrap_err();
+                if error
+                    .chain()
+                    .any(|cause| cause.is::<super::ViewerCleanupFailure>())
+                    || !crate::cmd::screenshot::coredevice_fallback_allowed(&error)
+                {
+                    return Err(error);
+                }
+                tracing::debug!(
+                    "viewer CoreDevice screenshot unavailable; trying DTX/legacy capture"
+                );
+                Box::pin(crate::cmd::screenshot::capture_fallback_scoped(
+                    udid, native,
+                ))
+                .await?
+                .data
+            }
+        }
+    };
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64;
+    decode_png(data, timestamp_ms)
 }
 
 #[cfg(test)]
@@ -502,7 +544,7 @@ async fn read_stream_png(stdout: &mut (impl tokio::io::AsyncRead + Unpin)) -> Re
         stdout.read_exact(&mut header).await?;
         let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
         ensure!(
-            size <= MAX_ENCODED_BYTES.saturating_sub(png.len() + 12),
+            size <= MAX_PNG_BYTES.saturating_sub(png.len() + 12),
             "FFmpeg PNG exceeds frame budget"
         );
         png.extend_from_slice(&header);
@@ -715,6 +757,12 @@ pub async fn produce(
         }
         unreachable!();
     }
+    let coredevice_supported = tokio::select! {
+        biased;
+        _ = stop.changed() => return Ok(()),
+        version = Box::pin(crate::cmd::connect::probe_product_version(&udid)) =>
+            version.map(|version| coredevice_capture_supported(version.major))?,
+    };
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut failures = 0;
@@ -727,7 +775,11 @@ pub async fn produce(
         let result = tokio::select! {
             biased;
             _ = stop.changed() => return Ok(()),
-            frame = tokio::time::timeout(std::time::Duration::from_secs(10), capture_frame(&udid, &native)) => frame.context("viewer capture deadline").and_then(|frame|frame),
+            // Keep the legacy DTX/Lockdown future chain off the Tokio worker stack.
+            frame = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Box::pin(capture_frame(&udid, &native, coredevice_supported)),
+            ) => frame.context("viewer capture deadline").and_then(|frame|frame),
         };
         let result = match result {
             Ok(frame) => Ok(frame),
@@ -759,6 +811,10 @@ pub async fn produce(
             Err(error) => return Err(error),
         }
     }
+}
+
+pub(super) fn coredevice_capture_supported(ios_major: u64) -> bool {
+    ios_major >= 17
 }
 
 async fn retire_failed_capture(

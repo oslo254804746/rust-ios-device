@@ -15,6 +15,8 @@ mod observations;
 pub use observations::{DecodeFailure, DecodeFailureKind, DecodeOutcome, DecodePhase};
 
 #[cfg(test)]
+mod eof_tests;
+#[cfg(test)]
 mod observation_contract_tests;
 #[cfg(test)]
 mod recording_contract_tests;
@@ -256,6 +258,26 @@ where
 struct Recording<F> {
     recorder: ProxyRecorder,
     observer: Option<F>,
+    local_eof: bool,
+}
+
+impl<F> Recording<F> {
+    fn finish_direction(&self, direction: Direction) -> Result<(), DproxyError> {
+        let decoder = match direction {
+            Direction::HostToDevice => &self.recorder.host_to_device_decoder,
+            Direction::DeviceToHost => &self.recorder.device_to_host_decoder,
+        };
+        if decoder.protocol != ProxyProtocol::Binary
+            && (!decoder.buffer.is_empty() || decoder.xpc_buffered_bytes != 0)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "dproxy peer closed inside a protocol frame",
+            )
+            .into());
+        }
+        Ok(())
+    }
 }
 
 async fn proxy_bidirectional_impl<L, R, F>(
@@ -269,7 +291,11 @@ where
     R: AsyncRead + AsyncWrite + Unpin,
     F: FnMut(DecodeFailure) + Send,
 {
-    let recorder = std::sync::Arc::new(tokio::sync::Mutex::new(Recording { recorder, observer }));
+    let recorder = std::sync::Arc::new(tokio::sync::Mutex::new(Recording {
+        recorder,
+        observer,
+        local_eof: false,
+    }));
     let (local_reader, local_writer) = tokio::io::split(local);
     let (remote_reader, remote_writer) = tokio::io::split(remote);
 
@@ -304,15 +330,43 @@ where
 {
     let mut buf = [0u8; 16 * 1024];
     loop {
-        let read = reader.read(&mut buf).await?;
+        let read = match reader.read(&mut buf).await {
+            Ok(read) => read,
+            Err(error) => {
+                // Apple lockdown TLS services may omit close_notify after our
+                // client ends the session. Accept that shutdown only after a
+                // complete local EOF and a complete remote protocol frame.
+                let recording = recorder.lock().await;
+                if matches!(direction, Direction::DeviceToHost)
+                    && error.kind() == std::io::ErrorKind::UnexpectedEof
+                    && recording.local_eof
+                    && recording.recorder.device_to_host_decoder.protocol != ProxyProtocol::Binary
+                {
+                    recording.finish_direction(direction)?;
+                    drop(recording);
+                    writer.shutdown().await?;
+                    return Ok(());
+                }
+                return Err(error.into());
+            }
+        };
         if read == 0 {
+            {
+                let mut recording = recorder.lock().await;
+                recording.finish_direction(direction)?;
+                if matches!(direction, Direction::HostToDevice) {
+                    recording.local_eof = true;
+                }
+            }
             writer.shutdown().await?;
             return Ok(());
         }
 
         {
             let mut recording = recorder.lock().await;
-            let Recording { recorder, observer } = &mut *recording;
+            let Recording {
+                recorder, observer, ..
+            } = &mut *recording;
             recorder.record_chunk_impl(direction, &buf[..read], observer.as_mut())?;
         }
 

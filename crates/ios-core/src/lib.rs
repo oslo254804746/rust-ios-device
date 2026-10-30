@@ -126,13 +126,14 @@ pub use discovery::{DeviceEvent, DeviceInfo};
 pub use error::{classify_error, CoreError, ErrorClass, OperationCancelled};
 pub use flate2;
 pub use lockdown::{
-    default_pair_record_path, handshake_only_service_tls, recv_lockdown, send_lockdown,
-    start_lockdown_session, start_service, start_service_preserving_errors, strip_service_tls,
-    wrap_service_tls, GetValueRequest, GetValueResponse, LockdownClient, LockdownError,
-    LockdownResponseError, PairRecord, PairRecordError, QueryTypeRequest, QueryTypeResponse,
-    RemoveValueRequest, ServiceInfo, SetValueRequest, StartServiceRequest, StartServiceResponse,
-    StartSessionRequest, StartSessionResponse, StopSessionRequest, ValueOperationResponse,
-    CORE_DEVICE_PROXY, LOCKDOWN_PORT,
+    default_pair_record_path, handshake_only_service_tls, load_pair_record_escrow_bag,
+    recv_lockdown, send_lockdown, start_lockdown_session, start_service,
+    start_service_preserving_errors, strip_service_tls, wrap_service_tls,
+    wrap_service_tls_with_server_name, GetValueRequest, GetValueResponse, LockdownClient,
+    LockdownError, LockdownResponseError, PairRecord, PairRecordError, QueryTypeRequest,
+    QueryTypeResponse, RemoveValueRequest, ServiceInfo, SetValueRequest, StartServiceRequest,
+    StartServiceResponse, StartSessionRequest, StartSessionResponse, StopSessionRequest,
+    ValueOperationResponse, CORE_DEVICE_PROXY, LOCKDOWN_PORT,
 };
 #[cfg(feature = "supervised-pair")]
 pub use lockdown::{pair_supervised, save_pair_record, FullPairRecord};
@@ -247,6 +248,8 @@ pub use services::{backup2, device_link, simlocation};
 pub use tunnel::forward::ForwardReaderCleanup;
 #[cfg(feature = "tunnel-userspace")]
 pub use tunnel::tun::userspace::UserspaceTunDevice;
+#[cfg(feature = "tunnel-userspace")]
+pub use tunnel::tun::userspace::LOCAL_PROXY_CONNECT_ACK as USERSPACE_PROXY_CONNECT_ACK;
 #[cfg(feature = "tunnel-private-ip")]
 pub use tunnel::TunnelShutdownFailure;
 #[cfg(feature = "tunnel-private-ip")]

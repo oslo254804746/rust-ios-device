@@ -135,7 +135,7 @@ impl DdiDownloader {
 
         if img_path.exists() && tc_path.exists() && bm_path.exists() {
             tracing::info!(path = %crate::redaction::diagnostic_id(&dir.to_string_lossy()), "Using cached personalized DDI");
-            let ddi = load_personalized_from_dir(&dir).await?;
+            let ddi = load_personalized_from_restore_dir(&dir.join("Restore")).await?;
             validate_personalized_build_id(&ddi.build_manifest)?;
             return Ok(ddi);
         }
@@ -167,7 +167,7 @@ impl DdiDownloader {
         .await?;
         let _ = tokio::fs::remove_file(&zip_path).await;
 
-        let ddi = load_personalized_from_dir(&dir).await?;
+        let ddi = load_personalized_from_restore_dir(&dir.join("Restore")).await?;
         validate_personalized_build_id(&ddi.build_manifest)?;
         Ok(ddi)
     }
@@ -287,9 +287,12 @@ async fn copy_archive_body<W: tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
-async fn load_personalized_from_dir(dir: &Path) -> Result<PersonalizedDdi, ImageMounterError> {
-    let restore = dir.join("Restore");
-
+/// Read the three personalized DDI materials from a local Restore directory.
+/// This performs no download or build selection; mounting still requires
+/// manifest parsing and device-specific personalization.
+pub async fn load_personalized_from_restore_dir(
+    restore: &Path,
+) -> Result<PersonalizedDdi, ImageMounterError> {
     let image = tokio::fs::read(restore.join("PersonalizedDMG.dmg"))
         .await
         .map_err(|source| super::native_io("read personalized DDI image", source))?;

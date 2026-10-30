@@ -4,7 +4,7 @@ use ios_core::MuxClient;
 use ios_core::TunMode;
 use ios_core::{
     connect, handshake_only_service_tls, start_lockdown_session, start_service_preserving_errors,
-    ConnectOptions, LockdownError, PairRecord, LOCKDOWN_PORT,
+    wrap_service_tls_with_server_name, ConnectOptions, LockdownError, PairRecord, LOCKDOWN_PORT,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -43,6 +43,28 @@ impl DebugserverCmd {
 trait DebugStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> DebugStream for T {}
 
+async fn wrap_debugserver_stream<S>(
+    stream: S,
+    pair_record: &PairRecord,
+    service_name: &str,
+    enable_ssl: bool,
+) -> Result<Box<dyn DebugStream>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    if !enable_ssl {
+        return Ok(Box::new(stream));
+    }
+    if service_name == ios_core::debugserver::LEGACY_SERVICE_NAME {
+        return Ok(Box::new(
+            handshake_only_service_tls(stream, pair_record, "debugserver").await?,
+        ));
+    }
+    Ok(Box::new(
+        wrap_service_tls_with_server_name(stream, pair_record, "debugserver").await?,
+    ))
+}
+
 async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
     let opts = ConnectOptions {
         tun_mode: TunMode::Userspace,
@@ -76,12 +98,7 @@ async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
         .connect_to_port(device.info.device_id, port)
         .await?;
 
-    if enable_ssl {
-        let stream = handshake_only_service_tls(svc_stream, &pair_record, "debugserver").await?;
-        return Ok(Box::new(stream));
-    }
-
-    Ok(Box::new(svc_stream))
+    wrap_debugserver_stream(svc_stream, &pair_record, resolved_service_name, enable_ssl).await
 }
 
 async fn start_debugserver_service<R, W>(
@@ -140,10 +157,104 @@ fn is_invalid_service(err: &LockdownError) -> bool {
 }
 
 #[cfg(test)]
+#[path = "doctor/device/test_assets.rs"]
+mod test_assets;
+
+#[cfg(test)]
 mod tests {
+    use std::{io, sync::Arc, time::Duration};
+
     use clap::Parser;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::DebugserverSub;
+
+    #[tokio::test]
+    async fn debugserver_uses_the_selected_services_transport_for_rsp() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cert = super::test_assets::TEST_CERT_PEM;
+        let key = super::test_assets::TEST_KEY_PEM;
+        let record = ios_core::PairRecord {
+            device_certificate: vec![],
+            host_certificate: cert.to_vec(),
+            host_private_key: key.to_vec().into(),
+            root_certificate: vec![],
+            host_id: "synthetic-host".into(),
+            system_buid: "synthetic-system".into(),
+            wifi_mac_address: None,
+        };
+        let chain = rustls_pemfile::certs(&mut io::Cursor::new(cert))
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap();
+        let key = rustls_pemfile::private_key(&mut io::Cursor::new(key))
+            .unwrap()
+            .unwrap();
+        // The legacy fixture switches to plaintext immediately after TLS 1.2.
+        // With TLS 1.3 the client can write raw RSP before the server's accept
+        // has consumed its Finished, so this duplex fixture could feed those
+        // raw bytes back into rustls as if they were another TLS record.
+        let legacy_config =
+            rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+                .with_no_client_auth()
+                .with_single_cert(chain.clone(), key.clone_key())
+                .unwrap();
+        let legacy_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(legacy_config));
+        // Keep the secure-service case on the default TLS versions and carry
+        // the entire request and response through the resulting TLS stream.
+        let mut config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        config.send_tls13_tickets = 0;
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+
+        for (name, ssl) in [
+            (ios_core::debugserver::LEGACY_SERVICE_NAME, true),
+            (ios_core::debugserver::SECURE_SERVICE_NAME, true),
+            (ios_core::debugserver::LEGACY_SERVICE_NAME, false),
+            (ios_core::debugserver::SECURE_SERVICE_NAME, false),
+        ] {
+            let (host, peer) = tokio::io::duplex(8192);
+            let client = async {
+                let stream = super::wrap_debugserver_stream(host, &record, name, ssl)
+                    .await
+                    .unwrap();
+                let mut rsp = ios_core::debugserver::GdbRemoteClient::new(stream);
+                assert_eq!(rsp.request("qSupported").await.unwrap(), "PacketSize=4000");
+            };
+            let server = async {
+                let mut stream: Box<dyn super::DebugStream> = if ssl {
+                    let selected = if name == ios_core::debugserver::LEGACY_SERVICE_NAME {
+                        &legacy_acceptor
+                    } else {
+                        &acceptor
+                    };
+                    let tls = selected.accept(peer).await.unwrap();
+                    if name == ios_core::debugserver::LEGACY_SERVICE_NAME {
+                        Box::new(tls.into_inner().0)
+                    } else {
+                        Box::new(tls)
+                    }
+                } else {
+                    Box::new(peer)
+                };
+                let mut request = [0; 15];
+                stream.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"+$qSupported#37");
+                let reply = ios_core::debugserver::format_packet("PacketSize=4000");
+                stream.write_all(reply.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+                let mut ack = [0];
+                stream.read_exact(&mut ack).await.unwrap();
+                assert_eq!(&ack, b"+");
+            };
+            tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(client, server);
+            })
+            .await
+            .unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn response_codes_debugserver_falls_back_only_for_exact_owned_code() {

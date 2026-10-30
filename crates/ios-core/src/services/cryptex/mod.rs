@@ -453,7 +453,9 @@ fn unwrap_response(routine: &str, response: XpcMessage) -> Result<IndexMap<Strin
                 "{routine}: Darwin errno {code}"
             )))
         }
-        None if routine == "read-personalization-id" => {}
+        // iOS 18 get-nonce also returns only argv on success. Its nonce
+        // structure is validated by nonce(); explicit daemon errors still fail.
+        None if matches!(routine, "read-personalization-id" | "get-nonce") => {}
         _ => {
             return Err(CryptexError::Protocol(format!(
                 "{routine}: missing or invalid error status"

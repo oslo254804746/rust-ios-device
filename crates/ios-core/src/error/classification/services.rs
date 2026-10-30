@@ -201,7 +201,8 @@ pub(super) fn class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
     });
     #[cfg(feature = "ostrace")]
     protocol_class!(error, crate::ostrace::OsTraceError, {
-        Kind::Timeout => ErrorClass::Timeout
+        Kind::Timeout => ErrorClass::Timeout,
+        Kind::ArchiveLimit(_) => ErrorClass::ResourceLimit
     });
     #[cfg(feature = "pasteboard")]
     protocol_class!(error, crate::pasteboard::PasteboardError, {

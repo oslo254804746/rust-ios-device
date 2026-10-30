@@ -32,10 +32,9 @@ mod state;
 use state::{Arrival, Membership, PeerStateAdmission};
 
 // ── Stream IDs ──────────────────────────────────────────────────────────────
-// Apple's XPC-over-HTTP/2 uses only odd-numbered client-initiated streams.
 // Stream 0 is the HTTP/2 connection control stream (per RFC 9113).
-// Stream 2 is skipped because HTTP/2 even-numbered streams are reserved for
-// server-initiated (push) streams, which this protocol does not use.
+// RemoteXPC uses odd streams 1/3 for control and even streams for peer file
+// transfers, starting at stream 2.
 
 pub const STREAM_INIT: u32 = 0; // HTTP/2 connection-level control stream
 pub const STREAM_CLIENT_SERVER: u32 = 1; // Client → device data stream
@@ -111,6 +110,10 @@ pub(crate) const MAX_TOTAL_BUFFERED_BYTES: usize = 64 * 1024 * 1024;
 /// this unknown-stream flood limit.
 pub(crate) const MAX_UNKNOWN_BUFFERED_STREAMS: usize = 32;
 
+/// Bound file-transfer streams explicitly advertised by a service catalog.
+#[cfg(any(feature = "fetchsymbols", test))]
+pub(crate) const MAX_EXPECTED_FILE_STREAMS: usize = 65_536;
+
 /// DATA frames observed while a writer is waiting for flow-control credit are
 /// retained until the single framer owner asks for them. This count bounds
 /// zero-length frames, which do not consume the byte budget.
@@ -165,6 +168,9 @@ pub struct H2Framer<S> {
     // independently of `stream_bufs` because `read_next_data_frame` returns
     // DATA directly and therefore does not need a per-stream buffer.
     peer_open_streams: Membership,
+    // Even file streams admitted by a bounded service catalog. This compact
+    // range adds no per-file allocation and leaves unknown-stream limits intact.
+    last_expected_file_stream_id: u32,
     // Flow-control state for DATA frames sent by this client. The connection
     // starts at HTTP/2's default 65535-byte window; peer SETTINGS and
     // WINDOW_UPDATE frames change these values.
@@ -396,6 +402,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             pending_window_updates: WindowMap::new(None),
             buffered_bytes: 0,
             peer_open_streams: Membership::new(None),
+            last_expected_file_stream_id: 0,
             outbound_connection_window: DEFAULT_PEER_WINDOW_SIZE,
             peer_initial_window_size: DEFAULT_PEER_WINDOW_SIZE,
             outbound_stream_windows: WindowMap::new(None),
@@ -1620,11 +1627,40 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         }
     }
 
+    /// Admit only the even file streams covered by a validated catalog count.
+    /// This emits no HEADERS or file-transfer acknowledgement. The ordinary
+    /// byte budgets, reset/EOF tracking and unknown-stream ceiling still apply.
+    #[cfg(any(feature = "fetchsymbols", test))]
+    pub(crate) fn expect_peer_file_streams(&mut self, count: usize) -> Result<(), H2Error> {
+        self.ensure_connection_open()?;
+        if count > MAX_EXPECTED_FILE_STREAMS {
+            return Err(H2Error::Protocol(format!(
+                "file stream count {count} exceeds limit {MAX_EXPECTED_FILE_STREAMS}"
+            )));
+        }
+        let last = (count as u32) * 2;
+        self.last_expected_file_stream_id = self.last_expected_file_stream_id.max(last);
+        // A peer can open a stream before the catalog count is consumed.
+        // Reclassify those entries so they no longer spend the unknown quota.
+        for stream_id in (2..=last).step_by(2) {
+            self.peer_open_streams.remove(&stream_id);
+        }
+        let last = self.last_expected_file_stream_id;
+        self.closed_unknown_order
+            .retain(|id| *id % 2 != 0 || *id > last);
+        self.reset_unknown_order
+            .retain(|id| *id % 2 != 0 || *id > last);
+        Ok(())
+    }
+
     fn is_known_stream(&self, stream_id: u32) -> bool {
         matches!(
             stream_id,
             STREAM_INIT | STREAM_CLIENT_SERVER | STREAM_SERVER_CLIENT
         ) || self.locally_open_streams.contains(&stream_id)
+            || (stream_id != 0
+                && stream_id % 2 == 0
+                && stream_id <= self.last_expected_file_stream_id)
     }
 
     fn track_peer_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
@@ -3463,6 +3499,27 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("too many unknown H2 streams"));
         assert_eq!(framer.stream_bufs.len(), MAX_UNKNOWN_BUFFERED_STREAMS);
+    }
+
+    #[tokio::test]
+    async fn expected_file_streams_are_bounded_and_leave_unknown_quota_intact() {
+        let (client, _server) = tokio::io::duplex(1024);
+        let mut framer = test_framer(client);
+        framer.track_peer_stream(2).unwrap();
+        assert_eq!(framer.peer_open_streams.len(), 1);
+        framer.expect_peer_file_streams(71).unwrap();
+        assert!(framer.peer_open_streams.is_empty());
+        for stream_id in (2..=142).step_by(2) {
+            assert!(framer.is_known_stream(stream_id));
+            framer.track_peer_stream(stream_id).unwrap();
+        }
+        assert!(!framer.is_known_stream(144));
+        for stream_id in (5..=67).step_by(2) {
+            framer.track_peer_stream(stream_id).unwrap();
+        }
+        assert!(framer.track_peer_stream(69).is_err());
+        assert!(framer.expect_peer_file_streams(usize::MAX).is_err());
+        assert!(!framer.is_known_stream(144));
     }
 
     #[tokio::test]

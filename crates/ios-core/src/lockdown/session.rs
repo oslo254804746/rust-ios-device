@@ -175,6 +175,7 @@ where
         reader,
         writer,
         service_name,
+        None,
         super::response_error::ResponseErrorPolicy::Legacy,
     )
     .await
@@ -195,30 +196,76 @@ where
         reader,
         writer,
         service_name,
+        None,
         super::response_error::ResponseErrorPolicy::Preserve,
     )
     .await
+}
+
+/// Start a service with the pair record's escrow bag and retain device errors.
+pub(crate) async fn start_service_with_escrow_bag<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    service_name: &str,
+    escrow_bag: &[u8],
+) -> Result<(u16, bool), LockdownError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    start_service_with_policy(
+        reader,
+        writer,
+        service_name,
+        Some(escrow_bag),
+        super::response_error::ResponseErrorPolicy::Preserve,
+    )
+    .await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct StartServiceEscrowRequest<'a> {
+    label: &'static str,
+    request: &'static str,
+    service: &'a str,
+    #[serde(with = "serde_bytes")]
+    escrow_bag: &'a [u8],
 }
 
 async fn start_service_with_policy<R, W>(
     reader: &mut R,
     writer: &mut W,
     service_name: &str,
+    escrow_bag: Option<&[u8]>,
     policy: super::response_error::ResponseErrorPolicy,
 ) -> Result<(u16, bool), LockdownError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    send_lockdown(
-        writer,
-        &StartServiceRequest {
-            label: "ios-rs",
-            request: "StartService",
-            service: service_name.to_string(),
-        },
-    )
-    .await?;
+    if let Some(escrow_bag) = escrow_bag {
+        send_lockdown(
+            writer,
+            &StartServiceEscrowRequest {
+                label: "ios-rs",
+                request: "StartService",
+                service: service_name,
+                escrow_bag,
+            },
+        )
+        .await?;
+    } else {
+        send_lockdown(
+            writer,
+            &StartServiceRequest {
+                label: "ios-rs",
+                request: "StartService",
+                service: service_name.to_string(),
+            },
+        )
+        .await?;
+    }
     let resp: StartServiceResponse = recv_lockdown(reader).await?;
 
     // Check if device returned an error instead of a port
@@ -299,6 +346,71 @@ mod source_contract_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn start_service_escrow_is_explicit_and_preserves_device_errors() {
+        for escrow in [false, true] {
+            let (client, mut peer) = tokio::io::duplex(8192);
+            let peer_task = tokio::spawn(async move {
+                let request: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+                let request = request.as_dictionary().unwrap();
+                assert_eq!(
+                    request.get("Service").and_then(plist::Value::as_string),
+                    Some("com.apple.mobilebackup2")
+                );
+                if escrow {
+                    assert_eq!(
+                        request.get("EscrowBag").and_then(plist::Value::as_data),
+                        Some(b"synthetic-escrow".as_slice())
+                    );
+                } else {
+                    assert!(!request.contains_key("EscrowBag"));
+                }
+                let response = plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("Port".to_string(), plist::Value::Integer(1234u64.into())),
+                    ("EnableServiceSSL".to_string(), plist::Value::Boolean(true)),
+                ]));
+                send_lockdown(&mut peer, &response).await.unwrap();
+            });
+            let (mut reader, mut writer) = tokio::io::split(client);
+            let response = if escrow {
+                start_service_with_escrow_bag(
+                    &mut reader,
+                    &mut writer,
+                    "com.apple.mobilebackup2",
+                    b"synthetic-escrow",
+                )
+                .await
+            } else {
+                start_service(&mut reader, &mut writer, "com.apple.mobilebackup2").await
+            };
+            assert_eq!(response.unwrap(), (1234, true));
+            peer_task.await.unwrap();
+        }
+
+        let (client, mut peer) = tokio::io::duplex(8192);
+        let peer_task = tokio::spawn(async move {
+            let _: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+            let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Error".to_string(),
+                plist::Value::String("PasswordProtected".into()),
+            )]));
+            send_lockdown(&mut peer, &response).await.unwrap();
+        });
+        let (mut reader, mut writer) = tokio::io::split(client);
+        let error = start_service_with_escrow_bag(
+            &mut reader,
+            &mut writer,
+            "com.apple.mobilebackup2",
+            b"synthetic-escrow",
+        )
+        .await
+        .unwrap_err();
+        let remote = crate::lockdown::LockdownResponseError::in_error_chain(&error).unwrap();
+        assert_eq!(remote.operation(), "StartService");
+        assert_eq!(remote.code(), "PasswordProtected");
+        peer_task.await.unwrap();
+    }
 
     pub(super) fn dummy_pair_record(cert: &[u8], key: &[u8]) -> PairRecord {
         PairRecord {

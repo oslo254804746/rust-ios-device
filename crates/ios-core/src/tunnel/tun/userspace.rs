@@ -88,6 +88,10 @@ const EPHEMERAL_PORT_MIN: u16 = 40000;
 const EPHEMERAL_PORT_MAX: u16 = u16::MAX;
 const EPHEMERAL_PORT_COUNT: usize = (EPHEMERAL_PORT_MAX - EPHEMERAL_PORT_MIN) as usize + 1;
 const LOCAL_PROXY_PREAMBLE_LEN: usize = 16 + 4;
+/// Opt-in extension to the go-ios preamble: wait for one connect-status byte
+/// (0 = established, 1 = aborted) before exchanging application bytes.
+/// Ordinary u16 ports retain the original transparent proxy protocol.
+pub const LOCAL_PROXY_CONNECT_ACK: u32 = 1 << 31;
 const LOCAL_PROXY_PREAMBLE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_LOCAL_PROXY_CLIENTS: usize = 64;
 
@@ -1490,7 +1494,7 @@ async fn handle_local_client_storage(
     storage: RuntimeStorage,
     authorization: private_connect::Access,
 ) {
-    let (remote_ip, remote_port) = match tokio::time::timeout(
+    let (remote_ip, remote_port, connect_ack) = match tokio::time::timeout(
         preamble_timeout,
         read_proxy_preamble(&mut client),
     )
@@ -1554,16 +1558,25 @@ async fn handle_local_client_storage(
         return;
     }
 
-    proxy_local_client(client, from_client_tx, to_client_rx, connected_rx, storage).await;
+    proxy_local_client(
+        client,
+        from_client_tx,
+        to_client_rx,
+        connected_rx,
+        storage,
+        connect_ack,
+    )
+    .await;
 }
 
 async fn read_proxy_preamble(
     client: &mut tokio::net::TcpStream,
-) -> std::io::Result<(Ipv6Address, u16)> {
+) -> std::io::Result<(Ipv6Address, u16, bool)> {
     let mut preamble = [0u8; LOCAL_PROXY_PREAMBLE_LEN];
     client.read_exact(&mut preamble).await?;
     let remote_port = u32::from_le_bytes(preamble[16..20].try_into().expect("fixed preamble"));
-    let remote_port = u16::try_from(remote_port).map_err(|source| {
+    let connect_ack = remote_port & LOCAL_PROXY_CONNECT_ACK != 0;
+    let remote_port = u16::try_from(remote_port & !LOCAL_PROXY_CONNECT_ACK).map_err(|source| {
         crate::error::context::retained_io(
             std::io::ErrorKind::InvalidInput,
             "decode userspace proxy port",
@@ -1572,19 +1585,33 @@ async fn read_proxy_preamble(
     })?;
     let mut remote_addr = [0u8; 16];
     remote_addr.copy_from_slice(&preamble[..16]);
-    Ok((Ipv6Address::from_bytes(&remote_addr), remote_port))
+    Ok((
+        Ipv6Address::from_bytes(&remote_addr),
+        remote_port,
+        connect_ack,
+    ))
 }
 
 async fn proxy_local_client(
-    client: tokio::net::TcpStream,
+    mut client: tokio::net::TcpStream,
     to_smoltcp: mpsc::Sender<OwnedBuffer>,
     mut from_smoltcp: mpsc::Receiver<OwnedBuffer>,
     connected: tokio::sync::oneshot::Receiver<()>,
     storage: RuntimeStorage,
+    connect_ack: bool,
 ) {
     // Wait for TCP connection to be established before forwarding data
     // This mirrors gVisor's behavior of waiting for Connect() to complete
-    if connected.await.is_err() {
+    let established = connected.await.is_ok();
+    if connect_ack
+        && client
+            .write_all(&[if established { 0 } else { 1 }])
+            .await
+            .is_err()
+    {
+        return;
+    }
+    if !established {
         tracing::debug!("userspace: connection aborted before established");
         return;
     }
@@ -1620,6 +1647,8 @@ async fn proxy_local_client(
     tokio::select! { _ = read_half => {} _ = write_half => {} }
 }
 
+#[cfg(test)]
+mod connect_ack_tests;
 #[cfg(test)]
 mod shutdown_tests;
 

@@ -23,10 +23,13 @@ pub mod devicestate;
 pub mod energy;
 pub mod fps;
 pub mod graphics;
+pub mod location_simulation;
 pub mod network;
 pub mod notifications;
 pub mod process_control;
 pub mod screenshot;
+#[cfg(test)]
+mod sysmon_tests;
 pub mod tap;
 
 pub use activity_trace::{
@@ -44,6 +47,7 @@ pub use fps::{
     MachTimeInfo,
 };
 pub use graphics::GraphicsMonitorClient;
+pub use location_simulation::LocationSimulationClient;
 pub use network::{
     ConnectionDetectionEvent, ConnectionUpdateEvent, InterfaceDetectionEvent, NetworkMonitorClient,
     NetworkMonitorEvent, SocketAddress,
@@ -194,7 +198,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SysmontapService<S> {
     /// Blocks until a sample arrives.
     pub async fn next_cpu_sample(&mut self) -> Result<Option<CpuSample>, DtxError> {
         loop {
-            let msg = self.conn.recv().await?;
+            let msg = checked_sysmontap_message(self.conn.recv().await?)?;
             tracing::debug!(
                 "next_cpu_sample: id={} ch={} expects_reply={} payload={:?}",
                 msg.identifier,
@@ -235,7 +239,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SysmontapService<S> {
         proc_attr_names: &[String],
     ) -> Result<Option<ProcessSample>, DtxError> {
         loop {
-            let msg = self.conn.recv().await?;
+            let msg = checked_sysmontap_message(self.conn.recv().await?)?;
             if msg.expects_reply {
                 self.conn.send_ack(&msg).await?;
             }
@@ -277,6 +281,17 @@ fn build_sysmontap_config(cfg: &SysmontapConfig) -> Vec<(String, plist::Value)> 
             plist::Value::Integer(cfg.sample_interval.into()),
         ),
     ]
+}
+
+fn checked_sysmontap_message(mut message: DtxMessage) -> Result<DtxMessage, DtxError> {
+    message = crate::services::dtx::codec::checked_reply(message)?;
+    if let DtxPayload::Raw(bytes) = &message.payload {
+        let value = crate::proto::nskeyedarchiver::unarchive(bytes).map_err(|error| {
+            DtxError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        message.payload = DtxPayload::Response(archive_value_to_nsobject(value));
+    }
+    Ok(message)
 }
 
 // ── Sample parser ─────────────────────────────────────────────────────────────
@@ -459,6 +474,7 @@ pub(crate) fn archive_value_to_nsobject(
         ArchiveValue::Null => NSObject::Null,
         ArchiveValue::Bool(value) => NSObject::Bool(value),
         ArchiveValue::Int(value) => NSObject::Int(value),
+        ArchiveValue::Uint(value) => NSObject::Uint(value),
         ArchiveValue::Float(value) => NSObject::Double(value),
         ArchiveValue::String(value) => NSObject::String(value),
         ArchiveValue::Data(value) => NSObject::Data(value),

@@ -152,6 +152,7 @@ full = [
 ]
 backup2-manifest = [
     "dep:rusqlite",
+    "dep:url",
     "dep:aes",
     "dep:aes-kw",
     "dep:cbc",
@@ -221,6 +222,7 @@ zip          = { workspace = true, optional = true }
 png          = { workspace = true, optional = true }
 crc32fast    = { workspace = true, optional = true }
 rusqlite     = { workspace = true, optional = true }
+url          = { version = "2.5", optional = true }
 tar          = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]

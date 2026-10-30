@@ -100,6 +100,22 @@ fn error_category(error: &(dyn Error + 'static)) -> (&'static str, Option<std::i
     let mut current = Some(error);
     for _ in 0..MAX_ERROR_SOURCES {
         let Some(error) = current else { break };
+        #[cfg(feature = "ostrace")]
+        if let Some(crate::ostrace::OsTraceError::ArchiveLimit(limit)) =
+            error.downcast_ref::<crate::ostrace::OsTraceError>()
+        {
+            use crate::ostrace::ArchiveLimitKind;
+            return (
+                match limit.kind {
+                    ArchiveLimitKind::Transfer => "os_trace_archive_transfer_limit",
+                    ArchiveLimitKind::Chunk => "os_trace_archive_chunk_limit",
+                    ArchiveLimitKind::File => "os_trace_archive_file_limit",
+                    ArchiveLimitKind::Extracted => "os_trace_archive_extracted_limit",
+                    ArchiveLimitKind::Entries => "os_trace_archive_entries_limit",
+                },
+                None,
+            );
+        }
         if let Some(error) = error.downcast_ref::<std::io::Error>() {
             return ("io", Some(error.kind()));
         }

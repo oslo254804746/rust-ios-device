@@ -86,7 +86,7 @@ enum BackupSubcommand {
         /// Prune Manifest.db/Manifest.mbdb and stored payloads after applying a host-side selection
         #[arg(long)]
         patch_manifest: bool,
-        /// Password used by device-side backup and local post-processing
+        /// Password for local manifest patching or --unback; does not configure device encryption
         #[arg(long)]
         password: Option<String>,
         /// Expand the completed backup (Manifest.db or legacy Manifest.mbdb) into a local domain/path tree
@@ -657,8 +657,10 @@ async fn run_create(
     let info_plist = build_backup_info_plist(&device).await?;
     let (mut afc, mut notification_proxy, lock_handle) = acquire_backup_lock(&device).await?;
     let backup_result: Result<_> = async {
+        let escrow_bag =
+            ios_core::load_pair_record_escrow_bag(&ios_core::default_pair_record_path(udid))?;
         let stream = device
-            .connect_service(ios_core::backup2::SERVICE_NAME)
+            .connect_service_with_escrow_bag(ios_core::backup2::SERVICE_NAME, &escrow_bag)
             .await?;
         let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
         client
@@ -1779,6 +1781,17 @@ mod tests {
         };
         assert_eq!(output_dir, "ios-rs-tmp/backup");
         assert!(full, "backup create should honor --full");
+    }
+
+    #[test]
+    fn backup_create_password_help_describes_local_use() {
+        let help = BackupTestCli::try_parse_from(["backup", "create", "--help"])
+            .err()
+            .expect("help is returned as a clap display result")
+            .to_string();
+        let normalized = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(normalized.contains("Password for local manifest patching or --unback"));
+        assert!(normalized.contains("does not configure device encryption"));
     }
 
     #[test]

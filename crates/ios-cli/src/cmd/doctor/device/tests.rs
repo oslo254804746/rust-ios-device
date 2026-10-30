@@ -13,6 +13,32 @@ mod test_assets;
 const UDID: &str = "owned-private-doctor-device";
 const IMAGE_PORT: u16 = 1234;
 
+#[test]
+fn image_mounter_unknown_command_is_an_explicit_unsupported_observation() {
+    use ios_core::imagemounter::ImageMounterError;
+    for probe in [Probe::DeveloperMode, Probe::DdiManifests] {
+        let check = Check::failure(
+            probe,
+            ImageMounterError::DeviceError("UnknownCommand".into()).into(),
+        );
+        assert_eq!(check.state, State::Unsupported);
+        assert_eq!(check.status, Status::Unknown);
+        assert_eq!(check.error_class, Some(ErrorClass::ServiceFailure));
+        assert!(check.error.is_some());
+    }
+    let other = Check::failure(
+        Probe::DeveloperMode,
+        ImageMounterError::DeviceError("OtherError".into()).into(),
+    );
+    assert_eq!(other.state, State::Failed);
+    assert_eq!(other.status, Status::Failed);
+    let other_probe = Check::failure(
+        Probe::DdiSignatures,
+        ImageMounterError::DeviceError("UnknownCommand".into()).into(),
+    );
+    assert_eq!(other_probe.state, State::Failed);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Call {
     Devices,
