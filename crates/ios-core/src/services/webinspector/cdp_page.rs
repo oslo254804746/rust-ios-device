@@ -98,6 +98,11 @@ pub struct PageCdpAdapter {
     next_realm_serial: u64,
     seen_realm_ids: HashSet<i64>,
     reused_realm_ids: HashSet<i64>,
+    pending_runtime_enable: Option<u64>,
+    runtime_enabled: bool,
+    page_enabled: bool,
+    console_enabled: bool,
+    network_enabled: bool,
     fetch_enabled: bool,
     fetch_stage: Option<String>,
     request_meta: HashMap<String, Value>,
@@ -130,13 +135,19 @@ impl PageCdpAdapter {
                 .is_some_and(|(owner, generation)| owner == frame && generation == serial)
     }
     fn remember_frame_origins(&mut self, tree: &Value) {
-        if let (Some(frame), Some(origin)) = (
-            tree["frame"]["id"].as_str(),
-            tree["frame"]["securityOrigin"].as_str(),
-        ) {
-            if self.frame_origins.len() < MAX_REQUESTS || self.frame_origins.contains_key(frame) {
-                self.frame_origins
-                    .insert(frame.to_owned(), origin.to_owned());
+        if let Some(frame) = tree["frame"]["id"].as_str() {
+            let origin = tree["frame"]["securityOrigin"].as_str().or_else(|| {
+                tree["frame"]["url"]
+                    .as_str()
+                    .filter(|u| *u == "about:blank" || u.is_empty())
+                    .map(|_| "null")
+            });
+            if let Some(origin) = origin {
+                if self.frame_origins.len() < MAX_REQUESTS || self.frame_origins.contains_key(frame)
+                {
+                    self.frame_origins
+                        .insert(frame.to_owned(), origin.to_owned());
+                }
             }
         }
         if let Some(children) = tree.get("childFrames").and_then(Value::as_array) {
@@ -283,6 +294,11 @@ impl PageCdpAdapter {
             next_realm_serial: 0,
             seen_realm_ids: HashSet::new(),
             reused_realm_ids: HashSet::new(),
+            pending_runtime_enable: None,
+            runtime_enabled: false,
+            page_enabled: false,
+            console_enabled: false,
+            network_enabled: false,
             fetch_enabled: false,
             fetch_stage: None,
             request_meta: HashMap::new(),
@@ -468,8 +484,32 @@ impl PageCdpAdapter {
                     "enable Performance and wait for a device memory sample",
                 ))
             }
+            "Runtime.enable" => {
+                self.runtime_enabled = true;
+                self.pending_runtime_enable = request.get("id").and_then(Value::as_u64);
+                PageCdpOutput::wire(request)
+            }
+            "Runtime.disable" => {
+                self.runtime_enabled = false;
+                PageCdpOutput::wire(request)
+            }
             "Page.enable" | "Page.disable" | "Console.enable" | "Console.disable" => {
+                match method.as_str() {
+                    "Page.enable" => self.page_enabled = true,
+                    "Page.disable" => self.page_enabled = false,
+                    "Console.enable" => self.console_enabled = true,
+                    "Console.disable" => self.console_enabled = false,
+                    _ => {}
+                }
                 self.issue(request, Translation::Pass, &method, params, None)
+            }
+            "Network.enable" => {
+                self.network_enabled = true;
+                PageCdpOutput::wire(request)
+            }
+            "Network.disable" => {
+                self.network_enabled = false;
+                PageCdpOutput::wire(request)
             }
             "Page.reload" => {
                 let ignore_cache = params
@@ -547,7 +587,7 @@ impl PageCdpAdapter {
                     .and_then(Value::as_str)
                     .map(str::to_owned);
                 let url = url.to_owned();
-                self.issue(
+                let mut output = self.issue(
                     request,
                     Translation::NavigateTree {
                         url,
@@ -556,7 +596,16 @@ impl PageCdpAdapter {
                     "Page.getResourceTree",
                     json!({}),
                     None,
-                )
+                );
+                if !self.page_enabled && !output.wire.is_empty() && self.next_id != i64::MIN {
+                    self.page_enabled = true;
+                    let id = self.next_id;
+                    self.next_id -= 1;
+                    output
+                        .wire
+                        .push(json!({"id": id, "method": "Page.enable", "params": {}}));
+                }
+                output
             }
             "Page.captureScreenshot" => {
                 if params
@@ -651,7 +700,7 @@ impl PageCdpAdapter {
                         ))
                     }
                 };
-                self.issue(
+                let mut output = self.issue(
                     request,
                     Translation::FetchAdd {
                         stage: stage.to_owned(),
@@ -659,7 +708,16 @@ impl PageCdpAdapter {
                     "Network.addInterception",
                     json!({"url":".*","stage":stage,"isRegex":true}),
                     None,
-                )
+                );
+                if !self.network_enabled && !output.wire.is_empty() && self.next_id != i64::MIN {
+                    self.network_enabled = true;
+                    let id = self.next_id;
+                    self.next_id -= 1;
+                    output
+                        .wire
+                        .push(json!({"id": id, "method": "Network.enable", "params": {}}));
+                }
+                output
             }
             "Fetch.disable" => {
                 if !self.fetch_enabled {
@@ -948,6 +1006,17 @@ impl PageCdpAdapter {
                         return context_mapping_failed();
                     };
                     self.remember_frame_origins(tree);
+                    if let Some(frame) = event["params"]["context"]["frameId"].as_str() {
+                        if !self.frame_origins.contains_key(frame)
+                            && !tree_contains_frame(tree, frame)
+                        {
+                            if let Some(id) = event["params"]["context"]["id"].as_i64() {
+                                self.realms.remove(&id);
+                                self.frame_contexts.retain(|_, ctx| *ctx != id);
+                            }
+                            return PageCdpOutput::default();
+                        }
+                    }
                     self.page_context_event(event)
                 }
                 Translation::PerformanceEnable => self.issue(
@@ -1157,7 +1226,75 @@ impl PageCdpAdapter {
                 }
             };
         }
+        if self.pending_runtime_enable.is_some()
+            && message.get("id").and_then(Value::as_u64) == self.pending_runtime_enable
+        {
+            self.pending_runtime_enable = None;
+            if message.get("result").is_some()
+                && !self.page_enabled
+                && self.realms.is_empty()
+                && self.next_id >= i64::MIN + 2
+            {
+                self.page_enabled = true;
+                let mut wire = Vec::with_capacity(3);
+                for method in ["Page.enable", "Runtime.disable", "Runtime.enable"] {
+                    let id = self.next_id;
+                    self.next_id -= 1;
+                    wire.push(json!({"id": id, "method": method, "params": {}}));
+                }
+                return PageCdpOutput {
+                    wire,
+                    client: vec![message],
+                };
+            }
+            return PageCdpOutput::client(message);
+        }
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+        if matches!(
+            method,
+            "Page.defaultUserPreferencesDidChange"
+                | "CSS.nodeLayoutFlagsChanged"
+                | "DOM.willDestroyDOMNode"
+                | "Target.targetCreated"
+                | "Target.targetDestroyed"
+        ) {
+            return PageCdpOutput::default();
+        }
+        if method == "Target.didCommitProvisionalTarget" {
+            let is_page = message
+                .get("params")
+                .and_then(|p| p.get("newTargetId"))
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.starts_with("frame-"));
+            if !is_page {
+                return PageCdpOutput::default();
+            }
+            self.tree_revision = self.tree_revision.wrapping_add(1);
+            self.frame_origins.clear();
+            self.frame_contexts.clear();
+            self.announced_contexts.clear();
+            self.realms.clear();
+            for epoch in self.frame_epochs.values_mut() {
+                *epoch = epoch.wrapping_add(1);
+            }
+            let mut wire = Vec::new();
+            for (enabled, domain_method) in [
+                (self.page_enabled, "Page.enable"),
+                (self.runtime_enabled, "Runtime.enable"),
+                (self.network_enabled, "Network.enable"),
+                (self.console_enabled, "Console.enable"),
+            ] {
+                if enabled && self.next_id != i64::MIN {
+                    let id = self.next_id;
+                    self.next_id -= 1;
+                    wire.push(json!({"id": id, "method": domain_method, "params": {}}));
+                }
+            }
+            return PageCdpOutput {
+                wire,
+                client: Vec::new(),
+            };
+        }
         if method == "Memory.trackingUpdate"
             && (self.performance_enabled || self.performance_changing())
         {
@@ -1177,6 +1314,13 @@ impl PageCdpAdapter {
                 if let (Some(frame), Some(id)) =
                     (context["frameId"].as_str(), context["id"].as_i64())
                 {
+                    if self
+                        .realms
+                        .get(&id)
+                        .is_some_and(|(owner, _)| owner == frame)
+                    {
+                        return PageCdpOutput::default();
+                    }
                     if self.realms.len() < MAX_PENDING && !self.realms.contains_key(&id) {
                         if self.frame_epochs.len() >= MAX_REQUESTS
                             && !self.frame_epochs.contains_key(frame)
@@ -1184,10 +1328,10 @@ impl PageCdpAdapter {
                             return context_mapping_failed();
                         }
                         if context["type"] == "normal" {
-                            if self.frame_contexts.contains_key(frame) {
-                                return context_mapping_failed();
+                            if let Some(old_id) = self.frame_contexts.insert(frame.to_owned(), id) {
+                                self.realms.remove(&old_id);
+                                self.announced_contexts.remove(&old_id);
                             }
-                            self.frame_contexts.insert(frame.to_owned(), id);
                         }
                         let Some(serial) = self.next_realm_serial.checked_add(1) else {
                             return context_mapping_failed();

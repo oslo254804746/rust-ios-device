@@ -197,6 +197,9 @@ async fn run_owned<R: AsyncRead + Unpin, F: Future<Output = std::io::Result<()>>
     };
     let cleanup = cleanup(&mut client, &mut owner, cleanup_budget).await;
     drop(client);
+    if device.is_some() {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
     drop(device);
     control::finish(primary, cleanup)
 }

@@ -593,7 +593,9 @@ async fn js_peer(
                         })
                     }
                     Some(
-                        "Network.addInterception"
+                        "Network.enable"
+                        | "Network.disable"
+                        | "Network.addInterception"
                         | "Network.removeInterception"
                         | "Network.setInterceptionEnabled"
                         | "Network.interceptContinue",

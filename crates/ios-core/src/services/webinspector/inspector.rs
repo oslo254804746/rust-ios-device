@@ -372,11 +372,12 @@ impl InspectorSession {
             .and_then(JsonValue::as_str)
             .is_some_and(|method| method == "Target.targetCreated")
         {
-            let target_id = message
+            let target_info = message
                 .get("params")
                 .and_then(JsonValue::as_object)
                 .and_then(|params| params.get("targetInfo"))
-                .and_then(JsonValue::as_object)
+                .and_then(JsonValue::as_object);
+            let target_id = target_info
                 .and_then(|info| info.get("targetId"))
                 .and_then(JsonValue::as_str)
                 .ok_or_else(|| {
@@ -384,7 +385,16 @@ impl InspectorSession {
                         "Target.targetCreated missing params.targetInfo.targetId".to_string(),
                     )
                 })?;
-            self.target_id = Some(target_id.to_string());
+            let is_provisional = target_info
+                .and_then(|info| info.get("isProvisional"))
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
+            let target_type = target_info
+                .and_then(|info| info.get("type"))
+                .and_then(JsonValue::as_str);
+            if !is_provisional && target_type.map_or(true, |kind| kind == "page") {
+                self.target_id = Some(target_id.to_string());
+            }
         }
 
         if message
@@ -419,7 +429,9 @@ impl InspectorSession {
                         "Target.didCommitProvisionalTarget missing params.newTargetId".to_string(),
                     )
                 })?;
-            self.target_id = Some(target_id.to_string());
+            if !target_id.starts_with("frame-") {
+                self.target_id = Some(target_id.to_string());
+            }
         }
 
         Ok(())
