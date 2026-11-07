@@ -33,6 +33,36 @@ pub const SERVICE_NAME: &str = "com.apple.afc";
 /// Alias for SERVICE_NAME.
 pub const AFC_SERVICE: &str = SERVICE_NAME;
 
+// ── AFC extended operation codes (matches pymobiledevice3 AfcOpcode) ──────────
+
+/// Truncate or extend a file at a given path (`TruncateFile`).
+pub const AFC_OP_TRUNCATE: u64 = 0x00000007;
+/// Query the current position of an open file handle (`FileRefTell`).
+pub const AFC_OP_FILE_TELL: u64 = 0x00000012;
+/// Response opcode for `FileRefTell` (`FileRefTellResult`).
+pub const AFC_OP_FILE_TELL_RES: u64 = 0x00000013;
+/// Truncate or extend an open file handle (`FileRefSetFileSize` / `ftruncate`).
+pub const AFC_OP_FILE_SET_SIZE: u64 = 0x00000015;
+/// Query AFC connection attributes such as server version (`GetConnectionInfo`).
+pub const AFC_OP_GET_CONNECTION_INFO: u64 = 0x00000016;
+/// Compute the 20-byte SHA-1 digest of a file on the device (`GetFileHash`).
+pub const AFC_OP_GET_FILE_HASH: u64 = 0x0000001D;
+/// Set the modification time (`st_mtime`) of a path in nanoseconds since epoch (`SetFileTime`).
+pub const AFC_OP_SET_MOD_TIME: u64 = 0x0000001E;
+/// Compute the 20-byte SHA-1 digest of a byte range within a file (`GetFileHashWithRange`).
+pub const AFC_OP_GET_FILE_HASH_RANGE: u64 = 0x0000001F;
+/// Compute the recursive size and block count of regular files under a directory (`GetSizeOfPathContents`).
+pub const AFC_OP_GET_SIZE_OF_PATH_CONTENTS: u64 = 0x00000021;
+/// Read from an open file handle at an explicit byte offset (`FileRefReadWithOffset` / `pread`).
+pub const AFC_OP_FILE_READ_OFFSET: u64 = 0x00000027;
+/// Write to an open file handle at an explicit byte offset (`FileRefWriteWithOffset` / `pwrite`).
+pub const AFC_OP_FILE_WRITE_OFFSET: u64 = 0x00000028;
+
+const EMPTY_SHA1_DIGEST: [u8; 20] = [
+    0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18, 0x90,
+    0xaf, 0xd8, 0x07, 0x09,
+];
+
 // ── error ─────────────────────────────────────────────────────────────────────
 
 #[derive(thiserror::Error)]
@@ -400,6 +430,97 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
             .checked_add(1)
             .ok_or_else(|| AfcError::Protocol("AFC packet identifier exhausted".into()))?;
         Ok(n)
+    }
+
+    async fn request_raw(
+        &mut self,
+        opcode: u64,
+        header_payload: &[u8],
+        payload: &[u8],
+    ) -> Result<Packet, AfcError> {
+        self.request_raw_with_response_limit(opcode, header_payload, payload, None)
+            .await
+    }
+
+    async fn request_raw_with_response_limit(
+        &mut self,
+        opcode: u64,
+        header_payload: &[u8],
+        payload: &[u8],
+        response_limit: Option<ReadResponseLimit>,
+    ) -> Result<Packet, AfcError> {
+        if !self.usable {
+            return Err(AfcError::Protocol(
+                "AFC connection is unusable; reconnect before another request".into(),
+            ));
+        }
+        let deadline = match self.request_timeout {
+            Some(budget) if budget.is_zero() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "AFC request budget is zero",
+                )
+                .into())
+            }
+            Some(budget) => Some(tokio::time::Instant::now().checked_add(budget).ok_or_else(
+                || {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "AFC request deadline is too large",
+                    )
+                },
+            )?),
+            None => None,
+        };
+        self.stream.progressed = false;
+        let mut request = AfcRequest {
+            client: self,
+            completed: false,
+        };
+        let operation = async {
+            request
+                .client
+                .send_raw(opcode, header_payload, payload)
+                .await?;
+            match response_limit {
+                Some(limit) => request.client.recv_with_response_limit(Some(limit)).await,
+                None => request.client.recv().await,
+            }
+        };
+        let result = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, operation).await {
+                Ok(result) => result,
+                Err(elapsed) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into());
+                }
+            },
+            None => operation.await,
+        };
+        request.completed = true;
+        if result.is_err() && !matches!(result, Err(AfcError::Status(_))) {
+            request.client.usable = false;
+        }
+        result
+    }
+
+    async fn send_raw(
+        &mut self,
+        opcode: u64,
+        header_payload: &[u8],
+        payload: &[u8],
+    ) -> Result<(), AfcError> {
+        let pnum = self.next_pnum()?;
+        let mut hdr = AfcHeader::new(pnum, AfcOpcode::Status, header_payload.len(), payload.len());
+        hdr.operation = zerocopy::byteorder::U64::new(opcode);
+        self.stream.write_all(hdr.as_bytes()).await?;
+        if !header_payload.is_empty() {
+            self.stream.write_all(header_payload).await?;
+        }
+        if !payload.is_empty() {
+            self.stream.write_all(payload).await?;
+        }
+        self.stream.flush().await?;
+        Ok(())
     }
 
     async fn request(
@@ -887,6 +1008,238 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
 
     pub async fn close_file(&mut self, fd: u64) -> Result<(), AfcError> {
         self.file_close(fd).await
+    }
+
+    /// Get device filesystem info.
+    /// Truncate a file at `path` to `size` bytes (`AFC_OP_TRUNCATE = 0x07`).
+    pub async fn truncate_path(&mut self, path: &str, size: u64) -> Result<(), AfcError> {
+        let mut hp = Vec::with_capacity(8 + path.len() + 1);
+        hp.extend_from_slice(&size.to_le_bytes());
+        hp.extend_from_slice(path.as_bytes());
+        hp.push(0);
+        self.request_raw(AFC_OP_TRUNCATE, &hp, &[]).await?;
+        Ok(())
+    }
+
+    /// Return the current cursor position for open file handle `fd` (`AFC_OP_FILE_TELL = 0x12`).
+    pub async fn file_tell(&mut self, fd: u64) -> Result<u64, AfcError> {
+        let hp = fd.to_le_bytes();
+        let pkt = self.request_raw(AFC_OP_FILE_TELL, &hp, &[]).await?;
+        let raw = if pkt.opcode == AFC_OP_FILE_TELL_RES || pkt.header_payload.len() >= 8 {
+            &pkt.header_payload
+        } else if pkt.payload.len() >= 8 {
+            &pkt.payload
+        } else {
+            self.usable = false;
+            return Err(AfcError::Protocol(
+                "FileRefTellResult: short response".into(),
+            ));
+        };
+        let pos = u64::from_le_bytes(raw[..8].try_into().map_err(|error| {
+            AfcError::Io(crate::error::context::received_io(
+                "decode AFC file tell offset",
+                None,
+                error,
+            ))
+        })?);
+        Ok(pos)
+    }
+
+    /// Truncate or extend open file handle `fd` to `size` bytes (`AFC_OP_FILE_SET_SIZE = 0x15`).
+    pub async fn file_set_size(&mut self, fd: u64, size: u64) -> Result<(), AfcError> {
+        let mut hp = [0u8; 16];
+        hp[..8].copy_from_slice(&fd.to_le_bytes());
+        hp[8..].copy_from_slice(&size.to_le_bytes());
+        self.request_raw(AFC_OP_FILE_SET_SIZE, &hp, &[]).await?;
+        Ok(())
+    }
+
+    /// Get AFC connection info key-value pairs (`AFC_OP_GET_CONNECTION_INFO = 0x16`).
+    pub async fn get_connection_info(&mut self) -> Result<HashMap<String, String>, AfcError> {
+        let pkt = self
+            .request_raw(AFC_OP_GET_CONNECTION_INFO, &[], &[])
+            .await?;
+        let raw = if !pkt.payload.is_empty() {
+            &pkt.payload
+        } else {
+            &pkt.header_payload
+        };
+        Ok(parse_kv_pairs(raw))
+    }
+
+    /// Compute the SHA-1 digest of `path` on the device (`AFC_OP_GET_FILE_HASH = 0x1D`).
+    ///
+    /// Note: iOS returns `AFC_E_INVALID_ARG` (`InvalidArgument`) when asked to hash a
+    /// 0-byte file; this method checks `stat_info(path)` and returns the standard SHA-1
+    /// digest of empty input (`da39a3ee5e6b4b0d3255bfef95601890afd80709`) in that case.
+    pub async fn get_file_hash(&mut self, path: &str) -> Result<Bytes, AfcError> {
+        let mut hp = Vec::with_capacity(path.len() + 1);
+        hp.extend_from_slice(path.as_bytes());
+        hp.push(0);
+        match self.request_raw(AFC_OP_GET_FILE_HASH, &hp, &[]).await {
+            Ok(pkt) => {
+                if !pkt.payload.is_empty() {
+                    Ok(pkt.payload)
+                } else {
+                    Ok(pkt.header_payload)
+                }
+            }
+            Err(AfcError::Status(AfcStatusCode::InvalidArgument)) => {
+                if self.stat_info(path).await?.size == Some(0) {
+                    Ok(Bytes::from_static(&EMPTY_SHA1_DIGEST))
+                } else {
+                    Err(AfcError::Status(AfcStatusCode::InvalidArgument))
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Compute the SHA-1 digest of a byte range `[start, start + length)` in `path`
+    /// (`AFC_OP_GET_FILE_HASH_RANGE = 0x1F`).
+    pub async fn get_file_hash_with_range(
+        &mut self,
+        path: &str,
+        start: u64,
+        length: u64,
+    ) -> Result<Bytes, AfcError> {
+        let mut hp = Vec::with_capacity(16 + path.len() + 1);
+        hp.extend_from_slice(&start.to_le_bytes());
+        hp.extend_from_slice(&length.to_le_bytes());
+        hp.extend_from_slice(path.as_bytes());
+        hp.push(0);
+        let pkt = self
+            .request_raw(AFC_OP_GET_FILE_HASH_RANGE, &hp, &[])
+            .await?;
+        if !pkt.payload.is_empty() {
+            Ok(pkt.payload)
+        } else {
+            Ok(pkt.header_payload)
+        }
+    }
+
+    /// Set the modification time of `path` in nanoseconds since the Unix epoch
+    /// (`AFC_OP_SET_MOD_TIME = 0x1E`).
+    pub async fn set_file_time(&mut self, path: &str, mtime_ns: u64) -> Result<(), AfcError> {
+        let mut hp = Vec::with_capacity(8 + path.len() + 1);
+        hp.extend_from_slice(&mtime_ns.to_le_bytes());
+        hp.extend_from_slice(path.as_bytes());
+        hp.push(0);
+        self.request_raw(AFC_OP_SET_MOD_TIME, &hp, &[]).await?;
+        Ok(())
+    }
+
+    /// Compute the total size and block count of `path` (`AFC_OP_GET_SIZE_OF_PATH_CONTENTS = 0x21`).
+    ///
+    /// Passes `options = 0` (`ALL_FILES`) and parses the returned `st_size` / `st_blocks` entries.
+    pub async fn get_size_of_path_contents(
+        &mut self,
+        path: &str,
+    ) -> Result<HashMap<String, u64>, AfcError> {
+        let mut hp = Vec::with_capacity(8 + path.len() + 1);
+        hp.extend_from_slice(&0u64.to_le_bytes());
+        hp.extend_from_slice(path.as_bytes());
+        hp.push(0);
+        let pkt = self
+            .request_raw(AFC_OP_GET_SIZE_OF_PATH_CONTENTS, &hp, &[])
+            .await?;
+        let raw = if !pkt.payload.is_empty() {
+            &pkt.payload
+        } else {
+            &pkt.header_payload
+        };
+        let kv = parse_kv_pairs(raw);
+        let mut out = HashMap::with_capacity(kv.len());
+        for (k, v) in kv {
+            let parsed = v.parse::<u64>().map_err(|_| {
+                AfcError::Protocol(format!(
+                    "GetSizeOfPathContents invalid integer for {k}: {v}"
+                ))
+            })?;
+            out.insert(k, parsed);
+        }
+        Ok(out)
+    }
+
+    /// Positional read of up to `size` bytes from `fd` starting at `offset` without
+    /// relying on the server-side file cursor (`AFC_OP_FILE_READ_OFFSET = 0x27`).
+    pub async fn pread(&mut self, fd: u64, size: u64, offset: u64) -> Result<Bytes, AfcError> {
+        const MAX_PREAD_CHUNK_SIZE: u64 = 4 * 1024 * 1024;
+        let requested_total = usize::try_from(size).map_err(|error| {
+            AfcError::Io(crate::error::context::received_io(
+                "convert AFC pread size",
+                Some(size),
+                error,
+            ))
+        })?;
+        if requested_total > Self::MAX_IN_MEMORY_FILE {
+            return Err(AfcError::Protocol(format!(
+                "AFC pread size too large: size={requested_total} limit={}",
+                Self::MAX_IN_MEMORY_FILE
+            )));
+        }
+        let mut buf = Vec::new();
+        let mut remaining = size;
+        let mut current_offset = offset;
+        while remaining > 0 {
+            let to_read = remaining.min(MAX_PREAD_CHUNK_SIZE);
+            let to_read_usize = to_read as usize;
+            let mut hp = [0u8; 24];
+            hp[..8].copy_from_slice(&fd.to_le_bytes());
+            hp[8..16].copy_from_slice(&to_read.to_le_bytes());
+            hp[16..24].copy_from_slice(&current_offset.to_le_bytes());
+            let pkt = self
+                .request_raw_with_response_limit(
+                    AFC_OP_FILE_READ_OFFSET,
+                    &hp,
+                    &[],
+                    Some(ReadResponseLimit::data(to_read_usize)),
+                )
+                .await?;
+            buf.extend_from_slice(&pkt.payload);
+            if (pkt.payload.len() as u64) < to_read {
+                break;
+            }
+            remaining -= to_read;
+            current_offset = current_offset
+                .checked_add(to_read)
+                .ok_or_else(|| AfcError::Protocol("AFC pread offset overflow".into()))?;
+        }
+        Ok(Bytes::from(buf))
+    }
+
+    /// Positional write of `data` to `fd` starting at `offset` (`AFC_OP_FILE_WRITE_OFFSET = 0x28`).
+    pub async fn pwrite(&mut self, fd: u64, data: &[u8], offset: u64) -> Result<(), AfcError> {
+        self.pwrite_chunked(fd, data, offset, 65_536).await
+    }
+
+    /// Positional write of `data` to `fd` starting at `offset` with an explicit `chunk_size`
+    /// (`AFC_OP_FILE_WRITE_OFFSET = 0x28`).
+    pub async fn pwrite_chunked(
+        &mut self,
+        fd: u64,
+        data: &[u8],
+        offset: u64,
+        chunk_size: usize,
+    ) -> Result<(), AfcError> {
+        if chunk_size == 0 {
+            return Err(AfcError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "AFC pwrite chunk_size must be positive",
+            )));
+        }
+        let mut current_offset = offset;
+        for chunk in data.chunks(chunk_size) {
+            let mut hp = [0u8; 16];
+            hp[..8].copy_from_slice(&fd.to_le_bytes());
+            hp[8..16].copy_from_slice(&current_offset.to_le_bytes());
+            self.request_raw(AFC_OP_FILE_WRITE_OFFSET, &hp, chunk)
+                .await?;
+            current_offset = current_offset
+                .checked_add(chunk.len() as u64)
+                .ok_or_else(|| AfcError::Protocol("AFC pwrite offset overflow".into()))?;
+        }
+        Ok(())
     }
 
     /// Get device filesystem info.
@@ -2070,6 +2423,308 @@ mod tests {
         assert_eq!(AfcStatusCode::from_u64(31), AfcStatusCode::NoMem);
         assert_eq!(AfcStatusCode::from_u64(32), AfcStatusCode::NotEnoughData);
         assert_eq!(AfcStatusCode::from_u64(33), AfcStatusCode::DirNotEmpty);
+    }
+
+    #[tokio::test]
+    async fn extended_afc_operations_roundtrip_on_duplex_stream() {
+        async fn read_raw_request(
+            peer: &mut tokio::io::DuplexStream,
+        ) -> (u64, u64, Vec<u8>, Vec<u8>) {
+            let mut bytes = [0u8; AfcHeader::SIZE];
+            peer.read_exact(&mut bytes).await.unwrap();
+            let header = AfcHeader::ref_from_bytes(&bytes).unwrap();
+            assert_eq!(header.magic.get(), AFC_MAGIC);
+            let mut hp = vec![0u8; header.this_len.get() as usize - AfcHeader::SIZE];
+            let mut data = vec![0u8; (header.entire_len.get() - header.this_len.get()) as usize];
+            peer.read_exact(&mut hp).await.unwrap();
+            peer.read_exact(&mut data).await.unwrap();
+            (header.packet_num.get(), header.operation.get(), hp, data)
+        }
+
+        async fn reply_raw(
+            peer: &mut tokio::io::DuplexStream,
+            id: u64,
+            opcode: u64,
+            hp: &[u8],
+            data: &[u8],
+        ) {
+            let mut header = AfcHeader::new(id, AfcOpcode::Status, hp.len(), data.len());
+            header.operation = zerocopy::byteorder::U64::new(opcode);
+            peer.write_all(header.as_bytes()).await.unwrap();
+            peer.write_all(hp).await.unwrap();
+            peer.write_all(data).await.unwrap();
+        }
+
+        let (stream, mut peer) = tokio::io::duplex(16 * 1024);
+        let mut client = AfcClient::new(stream);
+
+        let caller = async {
+            client.truncate_path("/DCIM/test.bin", 64).await.unwrap();
+            let pos = client.file_tell(9).await.unwrap();
+            assert_eq!(pos, 128);
+            client.file_set_size(9, 256).await.unwrap();
+            let conn_info = client.get_connection_info().await.unwrap();
+            assert_eq!(
+                conn_info.get("InvalidateProtected").map(String::as_str),
+                Some("1")
+            );
+            let digest = client.get_file_hash("/DCIM/test.bin").await.unwrap();
+            assert_eq!(digest.as_ref(), &[0x11; 20]);
+            let range_digest = client
+                .get_file_hash_with_range("/DCIM/test.bin", 4, 32)
+                .await
+                .unwrap();
+            assert_eq!(range_digest.as_ref(), &[0x22; 20]);
+            client
+                .set_file_time("/DCIM/test.bin", 1_700_000_000_000_000_000)
+                .await
+                .unwrap();
+            let sizes = client.get_size_of_path_contents("/DCIM").await.unwrap();
+            assert_eq!(sizes.get("st_size"), Some(&4096));
+            assert_eq!(sizes.get("st_blocks"), Some(&8));
+        };
+
+        let server = async {
+            // 1. truncate_path
+            let (id, op, hp, data) = read_raw_request(&mut peer).await;
+            assert_eq!(op, AFC_OP_TRUNCATE);
+            assert_eq!(&hp[..8], &64u64.to_le_bytes());
+            assert_eq!(&hp[8..], b"/DCIM/test.bin\0");
+            assert!(data.is_empty());
+            reply_raw(
+                &mut peer,
+                id,
+                AfcOpcode::Status as u64,
+                &0u64.to_le_bytes(),
+                &[],
+            )
+            .await;
+
+            // 2. file_tell
+            let (id, op, hp, data) = read_raw_request(&mut peer).await;
+            assert_eq!(op, AFC_OP_FILE_TELL);
+            assert_eq!(hp, 9u64.to_le_bytes());
+            assert!(data.is_empty());
+            reply_raw(
+                &mut peer,
+                id,
+                AFC_OP_FILE_TELL_RES,
+                &128u64.to_le_bytes(),
+                &[],
+            )
+            .await;
+
+            // 3. file_set_size
+            let (id, op, hp, data) = read_raw_request(&mut peer).await;
+            assert_eq!(op, AFC_OP_FILE_SET_SIZE);
+            assert_eq!(&hp[..8], &9u64.to_le_bytes());
+            assert_eq!(&hp[8..16], &256u64.to_le_bytes());
+            assert!(data.is_empty());
+            reply_raw(
+                &mut peer,
+                id,
+                AfcOpcode::Status as u64,
+                &0u64.to_le_bytes(),
+                &[],
+            )
+            .await;
+
+            // 4. get_connection_info
+            let (id, op, hp, data) = read_raw_request(&mut peer).await;
+            assert_eq!(op, AFC_OP_GET_CONNECTION_INFO);
+            assert!(hp.is_empty());
+            assert!(data.is_empty());
+            reply_raw(
+                &mut peer,
+                id,
+                AfcOpcode::Data as u64,
+                &[],
+                b"InvalidateProtected\x001\0",
+            )
+            .await;
+
+            // 5. get_file_hash
+            let (id, op, hp, data) = read_raw_request(&mut peer).await;
+            assert_eq!(op, AFC_OP_GET_FILE_HASH);
+            assert_eq!(hp, b"/DCIM/test.bin\0");
+            assert!(data.is_empty());
+            reply_raw(&mut peer, id, AfcOpcode::Data as u64, &[], &[0x11; 20]).await;
+
+            // 6. get_file_hash_with_range
+            let (id, op, hp, data) = read_raw_request(&mut peer).await;
+            assert_eq!(op, AFC_OP_GET_FILE_HASH_RANGE);
+            assert_eq!(&hp[..8], &4u64.to_le_bytes());
+            assert_eq!(&hp[8..16], &32u64.to_le_bytes());
+            assert_eq!(&hp[16..], b"/DCIM/test.bin\0");
+            assert!(data.is_empty());
+            reply_raw(&mut peer, id, AfcOpcode::Data as u64, &[], &[0x22; 20]).await;
+
+            // 7. set_file_time
+            let (id, op, hp, data) = read_raw_request(&mut peer).await;
+            assert_eq!(op, AFC_OP_SET_MOD_TIME);
+            assert_eq!(&hp[..8], &1_700_000_000_000_000_000u64.to_le_bytes());
+            assert_eq!(&hp[8..], b"/DCIM/test.bin\0");
+            assert!(data.is_empty());
+            reply_raw(
+                &mut peer,
+                id,
+                AfcOpcode::Status as u64,
+                &0u64.to_le_bytes(),
+                &[],
+            )
+            .await;
+
+            // 8. get_size_of_path_contents
+            let (id, op, hp, data) = read_raw_request(&mut peer).await;
+            assert_eq!(op, AFC_OP_GET_SIZE_OF_PATH_CONTENTS);
+            assert_eq!(&hp[..8], &0u64.to_le_bytes());
+            assert_eq!(&hp[8..], b"/DCIM\0");
+            assert!(data.is_empty());
+            reply_raw(
+                &mut peer,
+                id,
+                AfcOpcode::Data as u64,
+                &[],
+                b"st_size\x004096\0st_blocks\x008\0",
+            )
+            .await;
+        };
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(caller, server);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_file_hash_returns_empty_sha1_when_zero_byte_file_returns_invalid_arg() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = AfcClient::new(stream);
+
+        let caller = async {
+            let digest = client.get_file_hash("/empty.txt").await.unwrap();
+            assert_eq!(digest.as_ref(), &EMPTY_SHA1_DIGEST);
+        };
+
+        let server = async {
+            let mut bytes = [0u8; AfcHeader::SIZE];
+            peer.read_exact(&mut bytes).await.unwrap();
+            let header = AfcHeader::ref_from_bytes(&bytes).unwrap();
+            assert_eq!(header.operation.get(), AFC_OP_GET_FILE_HASH);
+            let mut hp = vec![0u8; header.this_len.get() as usize - AfcHeader::SIZE];
+            peer.read_exact(&mut hp).await.unwrap();
+            assert_eq!(hp, b"/empty.txt\0");
+            // Reply with AFC_E_INVALID_ARG (7)
+            lifecycle_reply(
+                &mut peer,
+                header.packet_num.get(),
+                AfcOpcode::Status,
+                &7u64.to_le_bytes(),
+                &[],
+            )
+            .await;
+
+            // Client falls back to stat_info("/empty.txt")
+            let (id, hp, _) = lifecycle_read_request(&mut peer, AfcOpcode::GetFileInfo).await;
+            assert_eq!(hp, b"/empty.txt\0");
+            lifecycle_reply(
+                &mut peer,
+                id,
+                AfcOpcode::Data,
+                &[],
+                b"st_ifmt\0S_IFREG\0st_size\x000\0",
+            )
+            .await;
+        };
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(caller, server);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pread_and_pwrite_roundtrip_on_duplex_stream() {
+        let (stream, mut peer) = tokio::io::duplex(16 * 1024);
+        let mut client = AfcClient::new(stream);
+
+        let caller = async {
+            let data = client.pread(11, 5, 32).await.unwrap();
+            assert_eq!(data.as_ref(), b"hello");
+
+            client.pwrite_chunked(11, b"abcdef", 100, 4).await.unwrap();
+        };
+
+        let server = async {
+            // pread(fd=11, size=5, offset=32)
+            let mut bytes = [0u8; AfcHeader::SIZE];
+            peer.read_exact(&mut bytes).await.unwrap();
+            let header = AfcHeader::ref_from_bytes(&bytes).unwrap();
+            assert_eq!(header.operation.get(), AFC_OP_FILE_READ_OFFSET);
+            let mut hp = vec![0u8; header.this_len.get() as usize - AfcHeader::SIZE];
+            peer.read_exact(&mut hp).await.unwrap();
+            assert_eq!(&hp[..8], &11u64.to_le_bytes());
+            assert_eq!(&hp[8..16], &5u64.to_le_bytes());
+            assert_eq!(&hp[16..24], &32u64.to_le_bytes());
+            lifecycle_reply(
+                &mut peer,
+                header.packet_num.get(),
+                AfcOpcode::Data,
+                &[],
+                b"hello",
+            )
+            .await;
+
+            // pwrite chunk 1: offset 100, "abcd"
+            peer.read_exact(&mut bytes).await.unwrap();
+            let header = AfcHeader::ref_from_bytes(&bytes).unwrap();
+            assert_eq!(header.operation.get(), AFC_OP_FILE_WRITE_OFFSET);
+            assert_eq!(header.this_len.get() as usize, AfcHeader::SIZE + 16);
+            let mut hp = vec![0u8; 16];
+            let mut payload = vec![0u8; (header.entire_len.get() - header.this_len.get()) as usize];
+            peer.read_exact(&mut hp).await.unwrap();
+            peer.read_exact(&mut payload).await.unwrap();
+            assert_eq!(&hp[..8], &11u64.to_le_bytes());
+            assert_eq!(&hp[8..16], &100u64.to_le_bytes());
+            assert_eq!(payload, b"abcd");
+            lifecycle_reply(
+                &mut peer,
+                header.packet_num.get(),
+                AfcOpcode::Status,
+                &0u64.to_le_bytes(),
+                &[],
+            )
+            .await;
+
+            // pwrite chunk 2: offset 104, "ef"
+            peer.read_exact(&mut bytes).await.unwrap();
+            let header = AfcHeader::ref_from_bytes(&bytes).unwrap();
+            assert_eq!(header.operation.get(), AFC_OP_FILE_WRITE_OFFSET);
+            assert_eq!(header.this_len.get() as usize, AfcHeader::SIZE + 16);
+            let mut hp = vec![0u8; 16];
+            let mut payload = vec![0u8; (header.entire_len.get() - header.this_len.get()) as usize];
+            peer.read_exact(&mut hp).await.unwrap();
+            peer.read_exact(&mut payload).await.unwrap();
+            assert_eq!(&hp[..8], &11u64.to_le_bytes());
+            assert_eq!(&hp[8..16], &104u64.to_le_bytes());
+            assert_eq!(payload, b"ef");
+            lifecycle_reply(
+                &mut peer,
+                header.packet_num.get(),
+                AfcOpcode::Status,
+                &0u64.to_le_bytes(),
+                &[],
+            )
+            .await;
+        };
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(caller, server);
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

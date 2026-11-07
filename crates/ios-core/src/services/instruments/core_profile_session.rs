@@ -44,6 +44,37 @@ pub enum CoreProfileEvent {
     RawChunk(Bytes),
 }
 
+pub const STACKSHOT_SHARED_CACHE_KEY: &str = "shared_cache_dyld_load_info";
+
+/// Resolve `shared_cache_dyld_load_info` for a task inside a stackshot dictionary.
+///
+/// iOS 17.1+ / iOS 27 stackshots store `shared_cache_dyld_load_info` per task inside
+/// `task_snapshots[pid]` and carry no top-level `shared_cache_dyld_load_info`.
+/// Older stackshots store `shared_cache_dyld_load_info` at the top-level stackshot
+/// dictionary (or under `kcdata_stackshot`). This helper resolves the task-level
+/// entry first and falls back to the top-level stackshot dictionary.
+pub fn resolve_stackshot_task_shared_cache<'a>(
+    stackshot: &'a NSObject,
+    task: &'a NSObject,
+) -> Option<&'a NSObject> {
+    if let NSObject::Dict(task_dict) = task {
+        if let Some(info) = task_dict.get(STACKSHOT_SHARED_CACHE_KEY) {
+            return Some(info);
+        }
+    }
+    if let NSObject::Dict(stackshot_dict) = stackshot {
+        if let Some(info) = stackshot_dict.get(STACKSHOT_SHARED_CACHE_KEY) {
+            return Some(info);
+        }
+        if let Some(NSObject::Dict(kcdata)) = stackshot_dict.get("kcdata_stackshot") {
+            if let Some(info) = kcdata.get(STACKSHOT_SHARED_CACHE_KEY) {
+                return Some(info);
+            }
+        }
+    }
+    None
+}
+
 pub struct CoreProfileSessionClient<S> {
     conn: DtxConnection<S>,
     device_info_channel: i32,
@@ -622,6 +653,67 @@ mod tests {
 
     const MSG_RESPONSE: u32 = 3;
     const MSG_UNKNOWN_TYPE_ONE: u32 = 1;
+
+    #[test]
+    fn resolve_stackshot_task_shared_cache_prefers_task_and_falls_back_to_stackshot() {
+        let task_cache = NSObject::Dict(
+            [("imageLoadAddress".to_string(), NSObject::Uint(0x180000000))]
+                .into_iter()
+                .collect(),
+        );
+        let root_cache = NSObject::Dict(
+            [("imageLoadAddress".to_string(), NSObject::Uint(0x190000000))]
+                .into_iter()
+                .collect(),
+        );
+
+        // 1. iOS 17.1+ / iOS 27: task has its own shared_cache_dyld_load_info, no top-level entry
+        let stackshot_no_root = NSObject::Dict(Default::default());
+        let task_with_cache = NSObject::Dict(
+            [(STACKSHOT_SHARED_CACHE_KEY.to_string(), task_cache.clone())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_no_root, &task_with_cache),
+            Some(&task_cache)
+        );
+
+        // 2. Both present: task-level entry takes precedence over top-level fallback
+        let stackshot_with_root = NSObject::Dict(
+            [(STACKSHOT_SHARED_CACHE_KEY.to_string(), root_cache.clone())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_with_root, &task_with_cache),
+            Some(&task_cache)
+        );
+
+        // 3. Task lacks entry: falls back to top-level stackshot["shared_cache_dyld_load_info"]
+        let task_without_cache = NSObject::Dict(Default::default());
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_with_root, &task_without_cache),
+            Some(&root_cache)
+        );
+
+        // 4. Nested kcdata_stackshot fallback
+        let stackshot_kcdata = NSObject::Dict(
+            [("kcdata_stackshot".to_string(), stackshot_with_root.clone())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_kcdata, &task_without_cache),
+            Some(&root_cache)
+        );
+
+        // 5. Neither present: returns None
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_no_root, &task_without_cache),
+            None
+        );
+    }
 
     #[test]
     fn default_fps_config_matches_reference_shape() {

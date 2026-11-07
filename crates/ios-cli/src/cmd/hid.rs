@@ -7,7 +7,7 @@ use ios_core::display::{DisplayServiceClient, MediaStreamOptions, MediaStreamSes
 use ios_core::hid::{
     ButtonState, IndigoHidServiceClient, KeyboardUsage, TouchCoordinate, TouchPhase,
     UniversalHidServiceClient, DEFAULT_KEYBOARD_SERVICE_ID, DEFAULT_TOUCHSCREEN_SERVICE_ID,
-    MAX_TEXT_LENGTH, MAX_TOUCH_REPORTS,
+    MAX_TEXT_LENGTH, MAX_TOUCH_REPORTS, TOUCH_SURFACE_AUTH_SETTLE,
 };
 use ios_core::{connect, ConnectOptions, TunMode};
 
@@ -345,7 +345,7 @@ async fn connect_universal_with_media(
     media.spawn_drain();
     // Match pmd3's touch_session: backboardd needs a short interval to
     // re-match the HID surfaces as authenticated before the first report.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(TOUCH_SURFACE_AUTH_SETTLE).await;
     let (xpc, metadata) = match device
         .connect_xpc_service_with_metadata(ios_core::hid::UNIVERSAL_SERVICE_NAME)
         .await

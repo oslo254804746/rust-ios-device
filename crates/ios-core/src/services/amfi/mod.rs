@@ -16,6 +16,8 @@ pub const SERVICE_NAME: &str = "com.apple.amfi.lockdown";
 
 const DEVELOPER_MODE_REVEAL: u64 = 0;
 const DEVELOPER_MODE_ENABLE: u64 = 1;
+const DEVELOPER_MODE_ACCEPT: u64 = 2;
+const TRUST_APP_SIGNER: u64 = 4;
 
 #[derive(thiserror::Error)]
 pub enum AmfiError {
@@ -135,13 +137,38 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AmfiClient<S> {
         self.send_action(DEVELOPER_MODE_REVEAL).await
     }
 
+    /// Confirm the Developer Mode prompt shown after the device restarts.
+    pub async fn accept_developer_mode(&mut self) -> Result<(), AmfiError> {
+        self.send_action(DEVELOPER_MODE_ACCEPT).await
+    }
+
+    /// Trust the developer app signer of an installed provisioning profile.
+    pub async fn trust_app_signer(&mut self, uuid: &str) -> Result<(), AmfiError> {
+        let mut req = plist::Dictionary::new();
+        req.insert(
+            "action".to_string(),
+            plist::Value::Integer(TRUST_APP_SIGNER.into()),
+        );
+        req.insert(
+            "input_profile_uuid".to_string(),
+            plist::Value::String(uuid.to_string()),
+        );
+        self.send_request(plist::Value::Dictionary(req)).await
+    }
+
     async fn send_action(&mut self, action: u64) -> Result<(), AmfiError> {
+        let mut req = plist::Dictionary::new();
+        req.insert("action".to_string(), plist::Value::Integer(action.into()));
+        self.send_request(plist::Value::Dictionary(req)).await
+    }
+
+    async fn send_request(&mut self, req: plist::Value) -> Result<(), AmfiError> {
         let deadline = self.deadline()?;
         check_deadline(deadline, Ok(()))?;
         let mut request = self.begin_request(deadline)?;
         let result = await_operation(deadline, async {
             let mut io = request.io();
-            send_developer_mode_action_inner(&mut io, action).await
+            send_amfi_request_inner(&mut io, req).await
         })
         .await;
         request.finish(check_deadline(deadline, result))
@@ -270,6 +297,31 @@ where
     send_developer_mode_action_inner(stream, DEVELOPER_MODE_REVEAL).await
 }
 
+/// Confirm the Developer Mode prompt after reboot (legacy compatibility wrapper).
+pub async fn accept_developer_mode<S>(stream: &mut S) -> Result<(), AmfiError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    send_developer_mode_action_inner(stream, DEVELOPER_MODE_ACCEPT).await
+}
+
+/// Trust the developer app signer of an installed provisioning profile (legacy compatibility wrapper).
+pub async fn trust_app_signer<S>(stream: &mut S, uuid: &str) -> Result<(), AmfiError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut d = plist::Dictionary::new();
+    d.insert(
+        "action".to_string(),
+        plist::Value::Integer(TRUST_APP_SIGNER.into()),
+    );
+    d.insert(
+        "input_profile_uuid".to_string(),
+        plist::Value::String(uuid.to_string()),
+    );
+    send_amfi_request_inner(stream, plist::Value::Dictionary(d)).await
+}
+
 async fn send_developer_mode_action_inner<S>(stream: &mut S, action: u64) -> Result<(), AmfiError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -279,7 +331,13 @@ where
         d.insert("action".to_string(), plist::Value::Integer(action.into()));
         d
     });
+    send_amfi_request_inner(stream, req).await
+}
 
+async fn send_amfi_request_inner<S>(stream: &mut S, req: plist::Value) -> Result<(), AmfiError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut buf = Vec::new();
     plist::to_writer_xml(&mut buf, &req)?;
     stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
@@ -422,5 +480,66 @@ mod tests {
         );
 
         let _ = server_task.await;
+    }
+
+    #[tokio::test]
+    async fn amfi_accept_developer_mode_sends_action_2() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut client = AmfiClient::new(client_io);
+        client.set_operation_timeout(Some(Duration::from_secs(5)));
+
+        let server_task = tokio::spawn(async move {
+            let mut len_buf = [0u8; 4];
+            server_io.read_exact(&mut len_buf).await.unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut buf = vec![0u8; len];
+            server_io.read_exact(&mut buf).await.unwrap();
+            let req: plist::Dictionary = plist::from_bytes(&buf).unwrap();
+            assert_eq!(
+                req.get("action").and_then(|v| v.as_unsigned_integer()),
+                Some(2)
+            );
+            server_io
+                .write_all(&make_amfi_success_response())
+                .await
+                .unwrap();
+        });
+
+        client.accept_developer_mode().await.unwrap();
+        assert!(client.is_usable());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn amfi_trust_app_signer_sends_action_4_and_profile_uuid() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut client = AmfiClient::new(client_io);
+        client.set_operation_timeout(Some(Duration::from_secs(5)));
+
+        let uuid = "00000000-0000-0000-0000-000000000042";
+        let server_task = tokio::spawn(async move {
+            let mut len_buf = [0u8; 4];
+            server_io.read_exact(&mut len_buf).await.unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut buf = vec![0u8; len];
+            server_io.read_exact(&mut buf).await.unwrap();
+            let req: plist::Dictionary = plist::from_bytes(&buf).unwrap();
+            assert_eq!(
+                req.get("action").and_then(|v| v.as_unsigned_integer()),
+                Some(4)
+            );
+            assert_eq!(
+                req.get("input_profile_uuid").and_then(|v| v.as_string()),
+                Some(uuid)
+            );
+            server_io
+                .write_all(&make_amfi_success_response())
+                .await
+                .unwrap();
+        });
+
+        client.trust_app_signer(uuid).await.unwrap();
+        assert!(client.is_usable());
+        server_task.await.unwrap();
     }
 }

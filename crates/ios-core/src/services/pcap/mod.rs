@@ -28,6 +28,21 @@ pub struct CapturedPacket {
     pub payload: Vec<u8>,
 }
 
+impl CapturedPacket {
+    /// Returns true if `filter` matches this packet's full unit-qualified interface name
+    /// (e.g. `en0`, `pdp_ip0`) or its unitless interface base name (e.g. `en`, `pdp_ip`).
+    pub fn matches_interface(&self, filter: &str) -> bool {
+        let filter = filter.trim();
+        if filter.is_empty() {
+            return false;
+        }
+        let base = self
+            .interface_name
+            .trim_end_matches(|c: char| c.is_ascii_digit());
+        self.interface_name == filter || (!base.is_empty() && base == filter)
+    }
+}
+
 /// IP addresses observed in packets sourced by the device's Wi-Fi MAC.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct NetworkInfo {
@@ -284,8 +299,16 @@ fn decode_packet(buf: &[u8]) -> Result<CapturedPacket, PcapError> {
         )));
     }
 
+    let unit = be_u16(buf, 10)?;
     let frame_pre_length = be_u32(buf, 17)?;
-    let interface_name = parse_fixed_string(buf, 25, 16)?;
+    let raw_interface_name = parse_fixed_string(buf, 25, 16)?;
+    let interface_name = if !raw_interface_name.is_empty()
+        && !raw_interface_name.ends_with(|c: char| c.is_ascii_digit())
+    {
+        format!("{raw_interface_name}{unit}")
+    } else {
+        raw_interface_name
+    };
     let pid = le_i32(buf, 41)?;
     let proc_name = parse_fixed_string(buf, 45, 17)?;
     let pid2 = le_i32(buf, 66)?;
@@ -313,6 +336,14 @@ fn decode_packet(buf: &[u8]) -> Result<CapturedPacket, PcapError> {
         proc_name2,
         payload,
     })
+}
+
+fn be_u16(buf: &[u8], offset: usize) -> Result<u16, PcapError> {
+    let bytes = buf
+        .get(offset..offset + 2)
+        .ok_or_else(|| PcapError::Protocol(format!("missing u16 at offset {offset}")))?;
+    // Safety: .get(offset..offset+2) returns exactly 2 bytes, so try_into::<[u8; 2]>() is infallible.
+    Ok(u16::from_be_bytes(bytes.try_into().unwrap()))
 }
 
 fn be_u32(buf: &[u8], offset: usize) -> Result<u32, PcapError> {
@@ -418,6 +449,24 @@ mod tests {
         assert_eq!(packet.proc_name, "Safari");
         assert_eq!(&packet.payload[..14], &FAKE_ETHERNET_HEADER);
         assert_eq!(&packet.payload[14..], &[0x45, 0x00, 0x00, 0x14]);
+    }
+
+    #[test]
+    fn decode_packet_qualifies_unitless_interface_name_and_matches_interface() {
+        let mut raw = sample_header(14);
+        raw[10..12].copy_from_slice(&2u16.to_be_bytes());
+        raw[25..41].fill(0);
+        raw[25..31].copy_from_slice(b"pdp_ip");
+        raw.extend_from_slice(&[0xaa, 0xbb]);
+
+        let packet = decode_packet(&raw).unwrap();
+        assert_eq!(packet.interface_name, "pdp_ip2");
+        assert!(packet.matches_interface("pdp_ip2"));
+        assert!(packet.matches_interface("pdp_ip"));
+        assert!(!packet.matches_interface("pdp_ip0"));
+        assert!(!packet.matches_interface("pdp"));
+        assert!(!packet.matches_interface("en0"));
+        assert!(!packet.matches_interface(""));
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub const DEFAULT_SKIP_SETUP_KEYS: &[&str] = &[
     "Biometric",
     "CameraButton",
     "CloudStorage",
+    "DeviceFeaturesTour",
     "DeviceProtection",
     "DeviceToDeviceMigration",
     "Diagnostics",
@@ -338,5 +339,12 @@ mod diagnostic_tests {
         assert!(!output.contains(&hex::encode(&secret)));
         assert!(output.contains("SupervisionIdentity"));
         assert_eq!(identity.private_key_pem, secret);
+    }
+
+    #[test]
+    fn default_skip_setup_keys_include_ios27_keys() {
+        assert!(DEFAULT_SKIP_SETUP_KEYS.contains(&"AgeAssurance"));
+        assert!(DEFAULT_SKIP_SETUP_KEYS.contains(&"LiquidGlass"));
+        assert!(DEFAULT_SKIP_SETUP_KEYS.contains(&"DeviceFeaturesTour"));
     }
 }

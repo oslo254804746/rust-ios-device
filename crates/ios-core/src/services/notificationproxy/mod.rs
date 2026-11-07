@@ -44,6 +44,7 @@ pub enum NotificationProxyEvent {
 pub struct NotificationProxyClient<S> {
     stream: S,
     observing: HashSet<String>,
+    last_relay_state: Option<u64>,
     state: NotificationState,
 }
 
@@ -52,8 +53,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
         Self {
             stream,
             observing: HashSet::new(),
+            last_relay_state: None,
             state: NotificationState::default(),
         }
+    }
+
+    /// Returns the 64-bit `notify_get_state()` value carried by the most recent
+    /// `RelayNotification` message (sent by the secure service since iOS 27.2), if present.
+    pub fn last_relay_state(&self) -> Option<u64> {
+        self.last_relay_state
     }
 
     pub async fn observe(&mut self, notification: &str) -> Result<(), NotificationProxyError> {
@@ -159,12 +167,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
         let message = self.recv_message().await?;
 
         match message.command.as_deref() {
-            Some("RelayNotification") => message
-                .name
-                .map(NotificationProxyEvent::Notification)
-                .ok_or_else(|| {
+            Some("RelayNotification") => {
+                let name = message.name.ok_or_else(|| {
                     NotificationProxyError::Protocol("RelayNotification missing Name field".into())
-                }),
+                })?;
+                self.last_relay_state = message.state;
+                Ok(NotificationProxyEvent::Notification(name))
+            }
             Some("ProxyDeath") => Ok(NotificationProxyEvent::ProxyDeath),
             other => Err(NotificationProxyError::Protocol(format!(
                 "unexpected notification proxy command: {}",
@@ -201,11 +210,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
     async fn recv_event_inner(&mut self) -> Result<NotificationEvent, NotificationProxyError> {
         let message = self.recv_message().await?;
         match message.command.as_deref() {
-            Some("RelayNotification") => Ok(NotificationEvent::Notification(
-                message.name.ok_or_else(|| {
+            Some("RelayNotification") => {
+                let name = message.name.ok_or_else(|| {
                     NotificationProxyError::Protocol("RelayNotification missing Name".to_string())
-                })?,
-            )),
+                })?;
+                self.last_relay_state = message.state;
+                Ok(NotificationEvent::Notification(name))
+            }
             Some("ProxyDeath") => Ok(NotificationEvent::ProxyDeath),
             Some(other) => Err(NotificationProxyError::Protocol(format!(
                 "unexpected notification proxy command: {other}"
@@ -282,6 +293,23 @@ struct NotificationProxyMessage {
     command: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_state")]
+    state: Option<u64>,
+}
+
+fn deserialize_optional_state<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<plist::Integer> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(int) => int
+            .as_unsigned()
+            .or_else(|| int.as_signed().map(|v| v as u64))
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("invalid notification State integer")),
+    }
 }
 
 #[cfg(test)]
@@ -369,6 +397,44 @@ mod tests {
             .wait_for("com.apple.example.ready", Duration::from_millis(100))
             .await
             .unwrap();
+        assert_eq!(client.last_relay_state(), None);
+    }
+
+    #[tokio::test]
+    async fn relay_notification_with_state_is_accepted_and_recorded() {
+        let make_state_frame = || {
+            plist_frame(plist::Value::Dictionary(plist::Dictionary::from_iter([
+                (
+                    "Command".to_string(),
+                    plist::Value::String("RelayNotification".into()),
+                ),
+                (
+                    "Name".to_string(),
+                    plist::Value::String("com.apple.springboard.lockstate".into()),
+                ),
+                ("State".to_string(), plist::Value::from(42u64)),
+            ])))
+        };
+
+        let mut stream = MockStream::with_frames(vec![make_state_frame()]);
+        let mut client = NotificationProxyClient::new(&mut stream);
+        let event = client.next_event(Duration::from_millis(100)).await.unwrap();
+        assert_eq!(
+            event,
+            NotificationProxyEvent::Notification("com.apple.springboard.lockstate".into())
+        );
+        assert_eq!(client.last_relay_state(), Some(42));
+
+        let mut stream = MockStream::with_frames(vec![make_state_frame()]);
+        let mut client = NotificationProxyClient::new(&mut stream);
+        client
+            .wait_for(
+                "com.apple.springboard.lockstate",
+                Duration::from_millis(100),
+            )
+            .await
+            .unwrap();
+        assert_eq!(client.last_relay_state(), Some(42));
     }
 
     #[tokio::test]

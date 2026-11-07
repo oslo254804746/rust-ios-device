@@ -424,6 +424,186 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         .await
     }
 
+    /// Check whether an application's automation page is already paired with or held by
+    /// another automation session or WebInspector connection.
+    pub fn is_automation_session_held_by_other(
+        &self,
+        application_id: &str,
+        session_id: &str,
+    ) -> bool {
+        let Some(pages) = self.application_pages.get(application_id) else {
+            return false;
+        };
+        pages.values().any(|page| {
+            if page.page_type != WirType::Automation {
+                return false;
+            }
+            if let Some(active_session) = page.automation_session_id.as_deref() {
+                if !active_session.is_empty() {
+                    return active_session != session_id;
+                }
+            }
+            if let Some(active_conn) = page.automation_connection_id.as_deref() {
+                if !active_conn.is_empty() {
+                    return active_conn != self.connection_id.as_str();
+                }
+            }
+            page.automation_is_paired == Some(true)
+        })
+    }
+
+    /// Build a diagnostic message when waiting for a Safari / WebInspector automation session
+    /// times out on iOS 17+ / iOS 27.2.
+    pub fn automation_session_unavailable_diagnostic(
+        &self,
+        application_id: &str,
+        session_id: &str,
+        timeout: Duration,
+    ) -> String {
+        let secs = timeout.as_secs_f64();
+        let connected_summary: Vec<String> = self
+            .applications
+            .values()
+            .map(|app| format!("{} ({})", app.bundle_identifier, app.id))
+            .collect();
+        if self.is_automation_session_held_by_other(application_id, session_id)
+            || !connected_summary.is_empty()
+        {
+            format!(
+                "Timed out after {secs:.1}s waiting for Safari automation session {session_id} on {application_id} \
+                 (connected applications: [{}]). Safari allows only one active automation session at a time; \
+                 another client or orphaned process may still hold the automation session, or Safari needs \
+                 to be foregrounded with the device unlocked.",
+                connected_summary.join(", ")
+            )
+        } else {
+            format!(
+                "Timed out after {secs:.1}s waiting for Safari automation session {session_id} on {application_id}. \
+                 Ensure Remote Automation is enabled in Settings > Safari > Advanced, the device is unlocked, \
+                 and Safari is foregrounded."
+            )
+        }
+    }
+
+    /// Return a `WebInspectorError` with actionable diagnostics when an automation session
+    /// cannot be acquired within `timeout`.
+    pub fn automation_session_unavailable_error(
+        &self,
+        application_id: &str,
+        session_id: &str,
+        timeout: Duration,
+    ) -> WebInspectorError {
+        WebInspectorError::Protocol(self.automation_session_unavailable_diagnostic(
+            application_id,
+            session_id,
+            timeout,
+        ))
+    }
+
+    /// Build a diagnostic message when waiting for an application launch / registration or
+    /// automation target times out.
+    pub fn application_launch_timeout_diagnostic(
+        &self,
+        bundle_identifier: &str,
+        timeout: Duration,
+    ) -> String {
+        let secs = timeout.as_secs_f64();
+        let connected_summary: Vec<String> = self
+            .applications
+            .values()
+            .map(|app| format!("{} ({})", app.bundle_identifier, app.id))
+            .collect();
+        if !connected_summary.is_empty() {
+            format!(
+                "Timed out after {secs:.1}s waiting for application {bundle_identifier} automation target \
+                 while connected applications exist ([{}]). Safari's single automation session may be held \
+                 by another client or orphaned process, or Safari needs to be foregrounded/unlocked.",
+                connected_summary.join(", ")
+            )
+        } else {
+            format!(
+                "Timed out after {secs:.1}s waiting for application {bundle_identifier} to register with WebInspector. \
+                 Ensure Safari is foregrounded, the device is unlocked, and Web Inspector / Remote Automation is enabled."
+            )
+        }
+    }
+
+    /// Wait for an application with `bundle_identifier` to be registered in WebInspector.
+    ///
+    /// Aligns with upstream `pymobiledevice3` (`90142d22`): if the application is already present
+    /// in the connected application dictionary (e.g. from `_rpc_reportConnectedApplicationList:`
+    /// during startup when Safari was already running), it is returned immediately; if waiting
+    /// times out while connected applications exist, the error explains that Safari's automation
+    /// session may be held by another client or that Safari needs to be foregrounded/unlocked.
+    pub async fn open_application(
+        &mut self,
+        bundle_identifier: &str,
+        timeout_duration: Duration,
+    ) -> Result<Application, WebInspectorError> {
+        self.ensure_usable()?;
+        if let Some(app) = self
+            .applications
+            .values()
+            .find(|app| app.bundle_identifier == bundle_identifier)
+            .cloned()
+        {
+            return Ok(app);
+        }
+        let deadline = self.deadline(Some(timeout_duration))?;
+        let operation = WebInspectorOperation::with_deadline(self, deadline)?;
+        let result = async {
+            operation
+                .client
+                .send_message(
+                    deadline,
+                    "_rpc_getConnectedApplications:",
+                    plist::Dictionary::new(),
+                )
+                .await?;
+            loop {
+                if let Some(app) = operation
+                    .client
+                    .applications
+                    .values()
+                    .find(|app| app.bundle_identifier == bundle_identifier)
+                    .cloned()
+                {
+                    return Ok(app);
+                }
+                match operation.client.next_event_with_deadline(deadline).await {
+                    Ok(_) => {
+                        if let Some(app) = operation
+                            .client
+                            .applications
+                            .values()
+                            .find(|app| app.bundle_identifier == bundle_identifier)
+                            .cloned()
+                        {
+                            return Ok(app);
+                        }
+                    }
+                    Err(err)
+                        if matches!(
+                            &err,
+                            WebInspectorError::Io(io_err)
+                                if io_err.kind() == std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        return Err(WebInspectorError::Protocol(
+                            operation.client.application_launch_timeout_diagnostic(
+                                bundle_identifier,
+                                timeout_duration,
+                            ),
+                        ));
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+        .await;
+        operation.finish(result)
+    }
+
     /// Close a debugger forwarding socket before another client attaches to the page.
     pub async fn send_socket_teardown(
         &mut self,
@@ -1180,6 +1360,64 @@ mod tests {
             assert!(matches!(error, WebInspectorError::Protocol(_)));
             assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
         }
+    }
+
+    #[test]
+    fn automation_session_and_launch_timeout_diagnostics_explain_held_session() {
+        let stream = tokio::io::empty();
+        let mut client = WebInspectorClient::with_connection_id(stream, "CONN-SELF");
+        client.applications.insert(
+            "PID:42".into(),
+            Application {
+                id: "PID:42".into(),
+                bundle_identifier: "com.apple.mobilesafari".into(),
+                pid: 42,
+                name: "Safari".into(),
+                availability: AutomationAvailability::Available,
+                is_active: true,
+                is_proxy: false,
+                is_ready: true,
+                host_application_identifier: None,
+            },
+        );
+        client.application_pages.insert(
+            "PID:42".into(),
+            IndexMap::from_iter([(
+                1,
+                Page {
+                    id: 1,
+                    listing_key: "page-1".into(),
+                    page_type: WirType::Automation,
+                    title: Some("Safari Automation".into()),
+                    url: Some("about:blank".into()),
+                    automation_is_paired: Some(true),
+                    automation_name: Some("Safari".into()),
+                    automation_version: Some("17.0".into()),
+                    automation_session_id: Some("OTHER-SESSION".into()),
+                    automation_connection_id: Some("CONN-OTHER".into()),
+                },
+            )]),
+        );
+
+        assert!(client.is_automation_session_held_by_other("PID:42", "MY-SESSION"));
+        assert!(!client.is_automation_session_held_by_other("PID:42", "OTHER-SESSION"));
+
+        let err = client.automation_session_unavailable_error(
+            "PID:42",
+            "MY-SESSION",
+            Duration::from_secs(3),
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("another client or orphaned process"));
+        assert!(msg.contains("foregrounded"));
+        assert!(msg.contains("unlocked"));
+        assert!(msg.contains("com.apple.mobilesafari (PID:42)"));
+
+        let launch_diag = client
+            .application_launch_timeout_diagnostic("com.apple.webapp", Duration::from_secs(5));
+        assert!(launch_diag.contains("held by another client"));
+        assert!(launch_diag.contains("foregrounded/unlocked"));
+        assert!(launch_diag.contains("com.apple.mobilesafari (PID:42)"));
     }
 
     #[test]
