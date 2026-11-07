@@ -10,7 +10,7 @@ use super::runtime_storage::charge;
 use super::{Ledger, OwnedTask, ParentRole, TunnelError};
 
 pub(super) enum PreparedWorker<F> {
-    Legacy(F),
+    Legacy(Pin<Box<F>>),
     Metered(AdmittedFuture<F>),
 }
 
@@ -34,7 +34,7 @@ where
 {
     pub(super) fn prepare(future: F, bank: Option<&Arc<Semaphore>>) -> Result<Self, TunnelError> {
         let Some(bank) = bank else {
-            return Ok(Self::Legacy(future));
+            return Ok(Self::Legacy(Box::pin(future)));
         };
         let bytes = std::mem::size_of_val(&future);
         #[cfg(test)]
