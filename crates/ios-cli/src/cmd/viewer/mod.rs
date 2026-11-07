@@ -134,6 +134,45 @@ fn owner_principal(
         .map_err(|_| anyhow!("viewer Connect device/port scope rejected"))?;
     Ok(principal)
 }
+async fn spawn_device_worker(
+    udid: String,
+    share_clipboard: bool,
+    requests: mpsc::Receiver<DeviceRequest>,
+    frames: watch::Receiver<Option<media::DecodedFrame>>,
+    stop: watch::Receiver<bool>,
+    native: crate::cmd::tunnel::NativeScope,
+) -> Result<()> {
+    let handle = tokio::runtime::Handle::current();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let (abort_tx, mut abort_rx) = tokio::sync::oneshot::channel::<()>();
+    std::thread::Builder::new()
+        .name("ios-viewer-device-worker".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let result = handle.block_on(async move {
+                let worker = Box::pin(device_worker(
+                    udid,
+                    share_clipboard,
+                    requests,
+                    frames,
+                    stop,
+                    native,
+                ));
+                tokio::select! {
+                    biased;
+                    _ = &mut abort_rx => Ok(()),
+                    res = worker => res,
+                }
+            });
+            let _ = done_tx.send(result);
+        })
+        .context("failed to spawn viewer device worker thread")?;
+    let _abort_guard = abort_tx;
+    done_rx
+        .await
+        .map_err(|_| anyhow!("viewer device worker thread terminated unexpectedly"))?
+}
+
 async fn device_worker(
     udid: String,
     share_clipboard: bool,
@@ -158,14 +197,14 @@ async fn device_worker(
             }
             let work = async {
                 match &request.command {
-                    DeviceCommand::Input(action) => { device.apply(action).await?; Ok(None) },
-                    DeviceCommand::ReadClipboard => device.read_clipboard().await,
+                    DeviceCommand::Input(action) => { Box::pin(device.apply(action)).await?; Ok(None) },
+                    DeviceCommand::ReadClipboard => Box::pin(device.read_clipboard()).await,
                 }
             };
             let result = tokio::select! {
                 biased;
                 _ = stop.changed() => return Ok(()),
-                result = request.principal.run(tokio::time::timeout(OPERATION_TIMEOUT, work)) => {
+                result = request.principal.run(tokio::time::timeout(OPERATION_TIMEOUT, Box::pin(work))) => {
                     result.map_err(|_| anyhow!("viewer request authorization revoked"))
                         .and_then(|value| value.context("viewer device operation deadline"))
                         .and_then(|value| value)
@@ -174,10 +213,10 @@ async fn device_worker(
             let failed = result.is_err();
             let _ = request.reply.send(result);
             // A failed transition may have reached the device. Release before admitting another request.
-            if failed { tokio::time::timeout(CLEANUP_TIMEOUT, device.close()).await.context("viewer failed transition cleanup deadline")??; }
+            if failed { tokio::time::timeout(CLEANUP_TIMEOUT, Box::pin(device.close())).await.context("viewer failed transition cleanup deadline")??; }
         }
     }.await;
-    let cleanup = tokio::time::timeout(CLEANUP_TIMEOUT, device.close())
+    let cleanup = tokio::time::timeout(CLEANUP_TIMEOUT, Box::pin(device.close()))
         .await
         .context("viewer device cleanup deadline")
         .and_then(|value| value);
@@ -221,7 +260,7 @@ async fn run_web_server(
     let (frames, mut frame_rx) = watch::channel(None);
     let (requests, receiver) = mpsc::channel(8);
     *state.backend.write().await = Some(requests);
-    let mut device = tokio::spawn(device_worker(
+    let mut device = tokio::spawn(spawn_device_worker(
         udid.clone(),
         share_clipboard,
         receiver,
@@ -376,7 +415,7 @@ async fn run_vnc_server(
     let (frames, mut frame_rx) = watch::channel(None);
     let (requests, receiver) = mpsc::channel(8);
     let state = VncServerState::new(0, 0, password, principal.clone(), share_clipboard, requests);
-    let mut device = tokio::spawn(device_worker(
+    let mut device = tokio::spawn(spawn_device_worker(
         udid.clone(),
         share_clipboard,
         receiver,
@@ -464,11 +503,11 @@ async fn run_clipboard_sync(udid: String, principal: Principal) -> Result<()> {
                         let payload = clipboard::ClipboardPayload::Text(text);
                         payload.validate_bounds()?;
                         if sync.should_sync(&payload, clipboard::ClipboardSource::Host) {
-                            device.apply(&vnc::VncInputAction::ClipboardOut(payload)).await?;
+                            Box::pin(device.apply(&vnc::VncInputAction::ClipboardOut(payload))).await?;
                         }
                     }
                 }
-                if let Some(payload) = device.read_clipboard().await? {
+                if let Some(payload) = Box::pin(device.read_clipboard()).await? {
                     if sync.should_sync(&payload, clipboard::ClipboardSource::Device) {
                         if let clipboard::ClipboardPayload::Text(text) = payload { clipboard.set_text(text)?; }
                     }
@@ -476,13 +515,13 @@ async fn run_clipboard_sync(udid: String, principal: Principal) -> Result<()> {
                 baseline = false;
                 Ok::<_, anyhow::Error>(())
             };
-            principal.run(tokio::time::timeout(OPERATION_TIMEOUT, work)).await
+            principal.run(tokio::time::timeout(OPERATION_TIMEOUT, Box::pin(work))).await
                 .map_err(|_| anyhow!("clipboard authorization revoked"))?.context("clipboard operation deadline")??;
         }
     }.await;
     let released = finish(
         operation,
-        tokio::time::timeout(CLEANUP_TIMEOUT, device.close())
+        tokio::time::timeout(CLEANUP_TIMEOUT, Box::pin(device.close()))
             .await
             .context("clipboard cleanup deadline")
             .and_then(|value| value),

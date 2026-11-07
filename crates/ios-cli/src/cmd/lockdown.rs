@@ -583,6 +583,41 @@ async fn run_accessibility_toggle(
     Ok(())
 }
 
+fn is_lockdown_missing_value(error: &(dyn std::error::Error + 'static)) -> bool {
+    if ios_core::LockdownResponseError::in_error_chain(error)
+        .is_some_and(|obs| obs.operation() == "GetValue" && obs.code() == "MissingValue")
+    {
+        return true;
+    }
+    let mut current = Some(error);
+    for _ in 0..32 {
+        let Some(err) = current else { break };
+        if let Some(ios_core::LockdownError::Protocol(msg)) =
+            err.downcast_ref::<ios_core::LockdownError>()
+        {
+            if msg.contains("MissingValue") {
+                return true;
+            }
+        }
+        current = err.source();
+    }
+    false
+}
+
+fn resolve_wifi_connections_value(
+    result: std::result::Result<plist::Value, ios_core::CoreError>,
+) -> Result<bool> {
+    match result {
+        Ok(value) => plist_value_to_bool(&value).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{ENABLE_WIFI_CONNECTIONS_KEY} was not a boolean-compatible value: {value:?}"
+            )
+        }),
+        Err(error) if is_lockdown_missing_value(&error) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 async fn run_wifi_connections_toggle(
     device: &ios_core::ConnectedDevice,
     state: Option<ToggleState>,
@@ -599,17 +634,14 @@ async fn run_wifi_connections_toggle(
             .await?;
     }
 
-    let value = device
-        .lockdown_get_value_in_domain(
-            Some(WIRELESS_LOCKDOWN_DOMAIN),
-            Some(ENABLE_WIFI_CONNECTIONS_KEY),
-        )
-        .await?;
-    let enabled = plist_value_to_bool(&value).ok_or_else(|| {
-        anyhow::anyhow!(
-            "{ENABLE_WIFI_CONNECTIONS_KEY} was not a boolean-compatible value: {value:?}"
-        )
-    })?;
+    let enabled = resolve_wifi_connections_value(
+        device
+            .lockdown_get_value_in_domain_preserving_errors(
+                Some(WIRELESS_LOCKDOWN_DOMAIN),
+                Some(ENABLE_WIFI_CONNECTIONS_KEY),
+            )
+            .await,
+    )?;
 
     if json {
         crate::output::outln!(
@@ -1146,6 +1178,20 @@ mod tests {
     fn formats_fractional_unix_timestamp() {
         let rendered = format_unix_timestamp(1_710_000_000.25).expect("timestamp should format");
         assert_eq!(rendered, "2024-03-09T16:00:00.250000000Z");
+    }
+
+    #[test]
+    fn wifi_connections_treats_missing_value_as_false() {
+        assert!(resolve_wifi_connections_value(Ok(plist::Value::Boolean(true))).unwrap());
+        assert!(!resolve_wifi_connections_value(Ok(plist::Value::Boolean(false))).unwrap());
+        let missing_legacy = ios_core::CoreError::Lockdown(ios_core::LockdownError::Protocol(
+            "GetValue failed for domain=Some(\"com.apple.mobile.wireless_lockdown\") key=Some(\"EnableWifiConnections\"): MissingValue".into(),
+        ));
+        assert!(!resolve_wifi_connections_value(Err(missing_legacy)).unwrap());
+        let other_err = ios_core::CoreError::Lockdown(ios_core::LockdownError::Protocol(
+            "GetValue failed: InvalidDomain".into(),
+        ));
+        assert!(resolve_wifi_connections_value(Err(other_err)).is_err());
     }
 }
 

@@ -328,6 +328,51 @@ async fn run_navigate(udid: &str, direction: &str, timeout: u64, json: bool) -> 
     finish_inspection(&mut client, result).await
 }
 
+async fn acquire_focused_element<S>(
+    client: &mut AccessibilityAuditClient<S>,
+    timeout: Duration,
+) -> Result<Option<FocusElement>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
+    let step_timeout = (timeout / 3)
+        .clamp(Duration::from_millis(500), Duration::from_millis(1200))
+        .min(timeout);
+
+    client.move_focus(MoveDirection::First).await?;
+    if let Some(focus) = client
+        .next_focus_change_with_idle_timeout(step_timeout)
+        .await?
+    {
+        return Ok(Some(focus));
+    }
+
+    // When focus was already on the First element, MoveDirection::First is a no-op
+    // and axAuditDaemon does not emit hostInspectorCurrentElementChanged:. Nudge
+    // focus to a neighboring element and back to First so the event fires.
+    for nudge in [MoveDirection::Next, MoveDirection::Last] {
+        client.move_focus(nudge).await?;
+        if let Some(nudged) = client
+            .next_focus_change_with_idle_timeout(step_timeout)
+            .await?
+        {
+            client.move_focus(MoveDirection::First).await?;
+            if let Some(first) = client
+                .next_focus_change_with_idle_timeout(step_timeout)
+                .await?
+            {
+                return Ok(Some(first));
+            }
+            return Ok(Some(nudged));
+        }
+    }
+
+    client.focus_on_element().await?;
+    Ok(client
+        .next_focus_change_with_idle_timeout(step_timeout)
+        .await?)
+}
+
 async fn run_tap(udid: &str, timeout: u64, json: bool) -> Result<()> {
     let (_device, stream, version, use_rsd) = connect_accessibility_audit(udid).await?;
     let mut client = if use_rsd {
@@ -343,8 +388,7 @@ async fn run_tap(udid: &str, timeout: u64, json: bool) -> Result<()> {
         client.set_show_visuals(true).await?;
 
         // Get current element first
-        client.move_focus(MoveDirection::First).await?;
-        let focus = client.next_focus_change_with_idle_timeout(timeout).await?;
+        let focus = acquire_focused_element(&mut client, timeout).await?;
         match focus {
             Some(focus) => {
                 let element_bytes = decode_focus_identifier(&focus.platform_identifier)?;
@@ -385,8 +429,7 @@ async fn run_describe(udid: &str, timeout: u64, json: bool) -> Result<()> {
         client.set_monitored_event_type(2).await?;
         client.set_show_visuals(true).await?;
 
-        client.move_focus(MoveDirection::First).await?;
-        let focus = client.next_focus_change_with_idle_timeout(timeout).await?;
+        let focus = acquire_focused_element(&mut client, timeout).await?;
         match focus {
             Some(focus) => {
                 if json {

@@ -26,6 +26,7 @@ ios-rs-tmp
 *.pem
 *.key
 *.cer
+!crates/ios-core/src/services/imagemounter/apple-inc-root.cer
 *.der
 pair-record*.plist
 remote_*.plist

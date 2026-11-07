@@ -395,6 +395,7 @@ impl FileCmd {
                 device.rsd(),
                 ios_core::fileservice::CONTROL_SERVICE_NAME,
             )?;
+            ensure_coredevice_fileservice_subcommand_supported(device.rsd(), &sub)?;
             let mut fileservice =
                 open_coredevice_file_session(&device, domain, &identifier).await?;
             run_coredevice_subcommand(&device, &mut fileservice, sub, json_output).await?;
@@ -618,10 +619,63 @@ fn open_coredevice_file_session<'a>(
             .connect_xpc_service(ios_core::fileservice::CONTROL_SERVICE_NAME)
             .await?;
         let fileservice =
-            ios_core::fileservice::FileServiceClient::connect(control, domain.into(), identifier)
+            connect_coredevice_fileservice_session(device, control, domain.into(), identifier)
                 .await?;
         Ok(fileservice)
     })
+}
+
+async fn connect_coredevice_fileservice_session(
+    device: &ios_core::ConnectedDevice,
+    control: ios_core::XpcClient,
+    domain: ios_core::fileservice::Domain,
+    identifier: &str,
+) -> Result<ios_core::fileservice::FileServiceClient> {
+    let client = if let Some(features) = device
+        .rsd()
+        .and_then(|rsd| {
+            rsd.get_resolved_service_features(ios_core::fileservice::CONTROL_SERVICE_NAME)
+        })
+        .map(|slice| slice.to_vec())
+    {
+        ios_core::fileservice::FileServiceClient::connect_with_features(
+            control, domain, identifier, features,
+        )
+        .await?
+    } else {
+        ios_core::fileservice::FileServiceClient::connect(control, domain, identifier).await?
+    };
+    Ok(client)
+}
+
+fn ensure_coredevice_fileservice_subcommand_supported(
+    rsd: Option<&ios_core::RsdHandshake>,
+    sub: &FileSub,
+) -> Result<()> {
+    let required_feature = match sub {
+        FileSub::Ls { .. } => Some(ios_core::fileservice::FEATURE_LIST_FILES),
+        FileSub::Pull { .. } | FileSub::Push { .. } => {
+            Some(ios_core::fileservice::FEATURE_TRANSFER_FILES)
+        }
+        FileSub::Rm { .. } | FileSub::Mkdir { .. } | FileSub::Mv { .. } => {
+            Some(ios_core::fileservice::FEATURE_FILE_SYSTEM_OPERATION)
+        }
+        FileSub::DeviceInfo | FileSub::Stat { .. } | FileSub::Tree { .. } => None,
+    };
+    let Some(feature) = required_feature else {
+        return Ok(());
+    };
+    if let Some(features) = rsd
+        .and_then(|r| r.get_resolved_service_features(ios_core::fileservice::CONTROL_SERVICE_NAME))
+    {
+        if !features.is_empty() && !features.iter().any(|item| item == feature) {
+            return Err(anyhow::anyhow!(
+                "CoreDevice feature {feature} is not advertised by RSD for '{}'",
+                ios_core::fileservice::CONTROL_SERVICE_NAME
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn run_coredevice_subcommand<'a>(
@@ -666,12 +720,13 @@ fn run_coredevice_subcommand<'a>(
                 device.rsd(),
                 ios_core::fileservice::DATA_SERVICE_NAME,
             )?;
+            let mut output = LocalOutput::create(Path::new(&local), force).await?;
+            let ticket = fileservice.retrieve_file_ticket(&remote).await?;
             let mut data_stream = device
                 .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
                 .await?;
-            let mut output = LocalOutput::create(Path::new(&local), force).await?;
             let bytes = fileservice
-                .download_file_to_writer(&remote, &mut data_stream, &mut output.file)
+                .download_file_data_to_writer(&mut data_stream, &ticket, &mut output.file)
                 .await?;
             output.commit().await?;
             crate::output::write_error_line(format_args!("Done ({bytes} bytes)"))?;
