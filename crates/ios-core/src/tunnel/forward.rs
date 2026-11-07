@@ -195,7 +195,7 @@ where
                     // TUN → iOS stream: read packet from OS, forward to device
                     result = tun.read_packet() => {
                         let packet = result?;
-                        if packet.first().is_none_or(|b| b >> 4 != 6) {
+                        if !matches!(packet.first(), Some(b) if (b >> 4) == 6) {
                             return Ok(ForwardStep::Continue);
                         }
                         if packet.len() > mtu.as_usize() {

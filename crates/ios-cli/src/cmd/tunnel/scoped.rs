@@ -114,6 +114,35 @@ impl Connector for NativeConnector {
     }
 }
 
+#[cfg(test)]
+struct LoopbackFixtureConnector {
+    rsd_port: u16,
+    tunnel_port: u16,
+}
+
+#[cfg(test)]
+impl Connector for LoopbackFixtureConnector {
+    type Device = ConnectedDevice;
+
+    async fn connect<'a>(
+        &'a self,
+        udid: &'a str,
+        _options: ConnectOptions,
+        owner: &'a dyn TunnelOwner,
+    ) -> Result<Self::Device> {
+        let stream =
+            tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, self.tunnel_port))
+                .await?;
+        Ok(ios_core::device::workflow_loopback_fixture_with_tunnel(
+            udid,
+            self.rsd_port,
+            stream,
+            owner,
+        )
+        .await?)
+    }
+}
+
 impl NativeScope {
     pub(crate) fn new() -> Result<Self> {
         Self::from_registry(Registry::new()?)
@@ -139,6 +168,29 @@ impl NativeScope {
     }
     pub(crate) async fn connect(&self, udid: &str, mode: TunMode) -> Result<NativeConnection> {
         self.prepare_connect(udid, mode, NativeConnector)?.await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn connect_loopback_fixture(
+        &self,
+        udid: &str,
+        rsd_port: u16,
+        tunnel_port: u16,
+    ) -> Result<NativeConnection> {
+        self.prepare_connect(
+            udid,
+            TunMode::Userspace,
+            LoopbackFixtureConnector {
+                rsd_port,
+                tunnel_port,
+            },
+        )?
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn occupied_owners(&self) -> usize {
+        self.0.registry.snapshot().occupied()
     }
 
     fn prepare_connect<'a, C: Connector + 'a>(

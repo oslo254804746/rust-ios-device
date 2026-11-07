@@ -234,7 +234,7 @@ where
 mod workflow_fixture;
 #[cfg(all(feature = "test-tunnel", feature = "mdns"))]
 #[doc(hidden)]
-pub use workflow_fixture::workflow_loopback_fixture;
+pub use workflow_fixture::{workflow_loopback_fixture, workflow_loopback_fixture_with_tunnel};
 
 #[cfg(all(feature = "tunnel", any(feature = "mdns", test)))]
 mod tunnel_connect;
