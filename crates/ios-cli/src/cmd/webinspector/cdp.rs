@@ -304,6 +304,10 @@ async fn handle_cdp_socket(
     let cleanup =
         super::tasks::session_owner::cleanup(&mut client, &mut owner, CDP_PAGE_CLEANUP_TIMEOUT)
             .await;
+    drop(client);
+    if _device.is_some() {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
     super::tasks::control::finish(bridge_result, cleanup)
 }
 
@@ -478,6 +482,7 @@ async fn handle_cdp_browser_socket(
     let mut retiring = BrowserPageCleanup::new(Vec::new(), CDP_PAGE_CLEANUP_TIMEOUT);
     let mut poll = tokio::time::interval(CDP_TARGET_POLL);
     poll.tick().await;
+    let mut auto_attach_pending = false;
     let result = tokio::select! {
         biased;
         _ = &mut stop => Err(anyhow::Error::new(ios_core::OperationCancelled::new())
@@ -486,6 +491,7 @@ async fn handle_cdp_browser_socket(
         loop {
             tokio::task::yield_now().await;
             tokio::select! {
+                biased;
                 inbound = receiver.next() => {
                     match inbound {
                         Some(Ok(Message::Text(text))) => {
@@ -561,7 +567,7 @@ async fn handle_cdp_browser_socket(
                                     }
                                 }
                             }
-                            auto_attach_cdp_pages(server, &mut state, &mut sessions, &page_output_tx, &mut sender).await?;
+                            auto_attach_pending = !state.unattached_targets().is_empty();
                         }
                         Some(Ok(Message::Close(_))) | None => break,
                         Some(Ok(_)) => {},
@@ -598,8 +604,12 @@ async fn handle_cdp_browser_socket(
                             retire_cdp_browser_page(&id, RetireReason { discovery_closed: true, notify: true }, &mut sessions, &mut retiring, &mut state, &mut sender, &mut page_outputs).await?;
                         }
                         send_cdp_messages(&mut sender, refresh.messages).await?;
-                        auto_attach_cdp_pages(server, &mut state, &mut sessions, &page_output_tx, &mut sender).await?;
+                        auto_attach_pending = !state.unattached_targets().is_empty();
                     }
+                }
+                _ = std::future::ready(()), if auto_attach_pending => {
+                    auto_attach_pending = false;
+                    auto_attach_cdp_pages(server, &mut state, &mut sessions, &page_output_tx, &mut sender).await?;
                 }
             }
         }
@@ -908,6 +918,10 @@ async fn open_cdp_browser_page_at(
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .cleanup(cleanup);
+        drop(client);
+        if _device.is_some() {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
         task_outcome
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())

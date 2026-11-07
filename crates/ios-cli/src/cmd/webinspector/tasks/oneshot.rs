@@ -121,6 +121,9 @@ async fn run(
     // The supplied stream and real device guard remain owned through cleanup.
     let cleanup = cleanup(&mut client, &mut session, cleanup_budget).await;
     drop(client);
+    if device.is_some() {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
     drop(device);
     control::finish(primary, cleanup)
 }

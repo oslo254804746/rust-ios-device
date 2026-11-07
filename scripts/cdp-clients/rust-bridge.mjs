@@ -113,8 +113,9 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
     assert.equal(evaluated.result.value, 42);
     steps.push('evaluated');
     let unknown;
+    const unknownContextId = contexts.includes(contextId + 1) ? Math.max(...contexts) + 1000 : contextId + 1;
     try {
-      await session.send('Runtime.evaluate', { expression: '6*7', contextId: contextId + 1 });
+      await session.send('Runtime.evaluate', { expression: '6*7', contextId: unknownContextId });
     } catch (error) {
       unknown = failure(error, 'unknown-context');
     }
