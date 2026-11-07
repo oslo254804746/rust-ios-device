@@ -20,7 +20,7 @@ use crate::mux::MuxClient;
 use std::time::Duration;
 
 pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice, CoreError> {
-    Box::pin(connect_inner(udid, opts, None, None, Immediate)).await
+    Box::pin(connect_with_mobdev2_fallback(udid, opts, None)).await
 }
 
 /// Connect with caller cleanup ownership established before native activation
@@ -30,7 +30,35 @@ pub async fn connect_with_owner(
     opts: ConnectOptions,
     owner: &dyn TunnelOwner,
 ) -> Result<ConnectedDevice, CoreError> {
-    Box::pin(connect_inner(udid, opts, Some(owner), None, Immediate)).await
+    Box::pin(connect_with_mobdev2_fallback(udid, opts, Some(owner))).await
+}
+
+async fn connect_with_mobdev2_fallback(
+    udid: &str,
+    opts: ConnectOptions,
+    owner: Option<&dyn TunnelOwner>,
+) -> Result<ConnectedDevice, CoreError> {
+    match connect_inner(udid, opts.clone(), owner, None, Immediate).await {
+        Ok(device) => Ok(device),
+        Err(CoreError::DeviceNotFound(missing_udid)) => {
+            #[cfg(feature = "mdns")]
+            if let Ok(paired) = super::discovery_match::discover_paired_mobdev2_devices().await {
+                if let Some(target) = paired.into_iter().find(|target| target.udid == udid) {
+                    return connect_tcp_lockdown_tunnel_inner(
+                        udid,
+                        &target.host,
+                        opts,
+                        owner,
+                        None,
+                        Immediate,
+                    )
+                    .await;
+                }
+            }
+            Err(CoreError::DeviceNotFound(missing_udid))
+        }
+        Err(err) => Err(err),
+    }
 }
 
 async fn connect_inner<P: ActivationPolicy>(

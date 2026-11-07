@@ -91,6 +91,90 @@ pub(super) async fn connect_lockdown_port(
     }
 }
 
+static TCP_HEARTBEATS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), tokio::task::AbortHandle>>,
+> = std::sync::OnceLock::new();
+
+pub(super) async fn ensure_tcp_heartbeat(
+    udid: &str,
+    transport: &LockdownTransport,
+    pair_record: &Arc<PairRecord>,
+) -> Result<(), CoreError> {
+    let LockdownTransport::Tcp { host } = transport else {
+        return Ok(());
+    };
+    if host.is_empty() || host == "127.0.0.1" || host == "::1" {
+        return Ok(());
+    }
+    let key = (udid.to_string(), host.clone());
+    let map =
+        TCP_HEARTBEATS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(guard) = map.lock() {
+        if let Some(handle) = guard.get(&key) {
+            if !handle.is_finished() {
+                return Ok(());
+            }
+        }
+    }
+
+    let lockdown_stream =
+        connect_lockdown_port(udid, transport, crate::lockdown::LOCKDOWN_PORT, true).await?;
+    let (_session_id, mut tls_reader, mut tls_writer) =
+        crate::lockdown::session::start_lockdown_session(lockdown_stream, pair_record).await?;
+    let (hb_port, enable_ssl) = crate::lockdown::session::start_service(
+        &mut tls_reader,
+        &mut tls_writer,
+        "com.apple.mobile.heartbeat",
+    )
+    .await?;
+    let raw_hb = connect_lockdown_port(udid, transport, hb_port, false).await?;
+    let mut hb_stream: ServiceStream = if enable_ssl {
+        Box::new(crate::lockdown::session::wrap_service_tls(raw_hb, pair_record).await?)
+    } else {
+        raw_hb
+    };
+
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Polo {
+        command: &'static str,
+    }
+
+    let _marco: plist::Value = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::lockdown::protocol::recv_lockdown(&mut hb_stream),
+    )
+    .await
+    .map_err(|source| {
+        crate::error::context::deadline_io(
+            "heartbeat Marco recv",
+            std::time::Duration::from_secs(5),
+            source,
+        )
+    })??;
+    crate::lockdown::protocol::send_lockdown(&mut hb_stream, &Polo { command: "Polo" }).await?;
+
+    let join = tokio::spawn(async move {
+        while crate::lockdown::protocol::recv_lockdown::<_, plist::Value>(&mut hb_stream)
+            .await
+            .is_ok()
+        {
+            if crate::lockdown::protocol::send_lockdown(&mut hb_stream, &Polo { command: "Polo" })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    if let Ok(mut guard) = map.lock() {
+        if let Some(old) = guard.insert(key, join.abort_handle()) {
+            old.abort();
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn connect_via_lockdown_transport<P: ActivationPolicy>(
     info: DeviceInfo,
     pair_record: Arc<PairRecord>,
@@ -135,6 +219,7 @@ pub(super) async fn connect_via_lockdown_transport<P: ActivationPolicy>(
     #[cfg(feature = "tunnel")]
     {
         let reservation = owner.reserve()?;
+        let _ = ensure_tcp_heartbeat(&info.udid, &lockdown_transport, &pair_record).await;
         let lockdown_stream =
             connect_lockdown_port(&info.udid, &lockdown_transport, LOCKDOWN_PORT, true).await?;
 
