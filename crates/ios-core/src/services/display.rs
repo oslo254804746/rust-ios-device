@@ -51,6 +51,8 @@ pub const DEFAULT_TRANSPORT_PROTOCOL_TYPE: i64 = 2;
 pub const MAX_RTP_PACKET_BYTES: usize = 65_535;
 pub const DEFAULT_MAX_ACCESS_UNIT_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_MAX_ACCESS_UNIT_PACKETS: usize = 4_096;
+/// Minimum iOS major version required for DisplayService media streaming (`dtremotedisplayd`).
+pub const MIN_DISPLAY_STREAM_IOS_MAJOR: u32 = 27;
 
 // Apple's DisplayService appends this fixed footer to the final fragment of
 // some coded-slice NALs. It is not part of the Annex-B HEVC access unit; match
@@ -76,6 +78,22 @@ pub enum DisplayError {
     Reconnect(XpcError),
     #[error("the device camera or microphone is in use (CoreDevice 9022); close the app using it and retry")]
     MediaInUse,
+    #[error("display media streaming requires iOS 27 or later (device is running {0})")]
+    VersionNotSupported(String),
+}
+
+/// Verify that `product_version` is at least iOS [`MIN_DISPLAY_STREAM_IOS_MAJOR`] (27).
+pub fn ensure_display_stream_supported_version(product_version: &str) -> Result<(), DisplayError> {
+    let major_str = product_version.trim().split('.').next().unwrap_or("");
+    let major = major_str.parse::<u32>().map_err(|_| {
+        DisplayError::Protocol(format!("invalid device ProductVersion {product_version:?}"))
+    })?;
+    if major < MIN_DISPLAY_STREAM_IOS_MAJOR {
+        return Err(DisplayError::VersionNotSupported(
+            product_version.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2414,5 +2432,22 @@ mod tests {
             "RemoteSSRC"
         )
         .is_err());
+    }
+
+    #[test]
+    fn display_stream_requires_ios_27_or_later() {
+        for unsupported in ["18.7.10", "26.4"] {
+            let err = ensure_display_stream_supported_version(unsupported).unwrap_err();
+            assert!(matches!(
+                &err,
+                DisplayError::VersionNotSupported(version) if version == unsupported
+            ));
+            assert_eq!(
+                err.to_string(),
+                format!("display media streaming requires iOS 27 or later (device is running {unsupported})")
+            );
+        }
+        assert!(ensure_display_stream_supported_version("27.0").is_ok());
+        assert!(ensure_display_stream_supported_version("27.2").is_ok());
     }
 }

@@ -235,6 +235,9 @@ async fn capture_display(
     // UDP socket cannot receive packets injected into that private stack, so
     // require the kernel TUN path instead of reporting a false capture.
     let (client, device) = connect_display(udid, TunMode::Kernel).await?;
+    if let Ok(version) = device.product_version().await {
+        ios_core::display::ensure_display_stream_supported_version(&version.to_string())?;
+    }
     let sender_ip = capture
         .sender_ip
         .or_else(|| device.server_address().map(str::to_owned))

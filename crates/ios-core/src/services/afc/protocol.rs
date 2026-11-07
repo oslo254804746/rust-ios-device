@@ -1,2 +1,7 @@
 // AFC protocol re-exports (implementation lives in mod.rs directly)
-pub use super::{AfcClient, AfcError};
+pub use super::{
+    AfcClient, AfcError, AFC_OP_FILE_READ_OFFSET, AFC_OP_FILE_SET_SIZE, AFC_OP_FILE_TELL,
+    AFC_OP_FILE_TELL_RES, AFC_OP_FILE_WRITE_OFFSET, AFC_OP_GET_CONNECTION_INFO,
+    AFC_OP_GET_FILE_HASH, AFC_OP_GET_FILE_HASH_RANGE, AFC_OP_GET_SIZE_OF_PATH_CONTENTS,
+    AFC_OP_SET_MOD_TIME, AFC_OP_TRUNCATE,
+};

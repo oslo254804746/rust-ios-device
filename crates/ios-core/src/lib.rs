@@ -252,9 +252,12 @@ pub use tunnel::tun::userspace::UserspaceTunDevice;
 pub use tunnel::tun::userspace::LOCAL_PROXY_CONNECT_ACK as USERSPACE_PROXY_CONNECT_ACK;
 #[cfg(feature = "tunnel-private-ip")]
 pub use tunnel::TunnelShutdownFailure;
+pub use tunnel::{
+    build_icmpv6_echo_request, TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager,
+    UserspaceNudgeWatchdog, ICMPV6_ECHO_PACKET_LEN, USERSPACE_NUDGE_DELAY,
+};
 #[cfg(feature = "tunnel-private-ip")]
 pub use tunnel::{PhaseCleanup, PhaseFailure};
-pub use tunnel::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
 #[cfg(feature = "tunnel")]
 pub use xpc::client::XpcClient;
 #[cfg(feature = "tunnel")]
