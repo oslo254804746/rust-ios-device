@@ -456,6 +456,32 @@ impl<R: Read + Seek> IpswPreflight<R> {
             read_zip_member(&mut self.archive, path, MAX_PREFLIGHT_FIRMWARE_BYTES)
         })
     }
+
+    /// Read a named component from the selected identity's `Manifest` with a bounded size limit.
+    pub fn read_manifest_component(
+        &mut self,
+        component_name: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, RestoreError> {
+        let path = self
+            .identity
+            .get("Manifest")
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|m| m.get(component_name))
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|c| c.get("Info"))
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|i| i.get("Path"))
+            .and_then(plist::Value::as_string)
+            .filter(|p| safe_ipsw_path(p))
+            .ok_or_else(|| {
+                RestoreError::Protocol(format!(
+                    "selected identity has no safe path for component {component_name}"
+                ))
+            })?
+            .to_owned();
+        read_zip_member(&mut self.archive, &path, max_bytes)
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

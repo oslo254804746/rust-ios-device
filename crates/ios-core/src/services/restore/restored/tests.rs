@@ -878,3 +878,373 @@ async fn rejected_requests_retain_report_and_cannot_consume_late_success() {
             .unwrap();
     }
 }
+
+#[tokio::test]
+async fn full_restored_protocol_session_dispatches_all_upstream_data_requests_and_asr() {
+    use tokio::io::AsyncWriteExt;
+
+    let comp = |path: &str, fw: bool, fud: bool, ean: bool| {
+        let mut info = Dictionary::from_iter([("Path".to_owned(), Value::String(path.into()))]);
+        if fw {
+            info.insert("IsFirmwarePayload".into(), Value::Boolean(true));
+        }
+        if fud {
+            info.insert("IsFUDFirmware".into(), Value::Boolean(true));
+        }
+        if ean {
+            info.insert("IsEarlyAccessFirmware".into(), Value::Boolean(true));
+        }
+        Value::Dictionary(Dictionary::from_iter([(
+            "Info".to_owned(),
+            Value::Dictionary(info),
+        )]))
+    };
+
+    let identity = Dictionary::from_iter([
+        ("ApBoardID".to_owned(), Value::Integer(0x0c.into())),
+        ("ApChipID".to_owned(), Value::Integer(0x8110.into())),
+        (
+            "Manifest".to_owned(),
+            Value::Dictionary(Dictionary::from_iter([
+                (
+                    "LLB".to_owned(),
+                    comp("Firmware/all_flash/LLB.im4p", true, false, false),
+                ),
+                (
+                    "iBoot".to_owned(),
+                    comp("Firmware/all_flash/iBoot.im4p", true, false, false),
+                ),
+                (
+                    "DeviceTree".to_owned(),
+                    comp("Firmware/all_flash/DeviceTree.im4p", true, false, false),
+                ),
+                (
+                    "RestoreSEP".to_owned(),
+                    comp("Firmware/all_flash/RestoreSEP.im4p", false, false, false),
+                ),
+                (
+                    "SEP".to_owned(),
+                    comp("Firmware/all_flash/SEP.im4p", false, false, false),
+                ),
+                (
+                    "KernelCache".to_owned(),
+                    comp("kernelcache.release", false, false, false),
+                ),
+                (
+                    "SystemVolume".to_owned(),
+                    comp("090-root.dmg.trustcache", false, false, false),
+                ),
+                (
+                    "Ap,SystemVolumeCanonicalMetadata".to_owned(),
+                    comp("090-root.mtree", false, false, false),
+                ),
+                (
+                    "AOP".to_owned(),
+                    comp("Firmware/AOP/aop.im4p", false, true, true),
+                ),
+                (
+                    "StaticTrustCache".to_owned(),
+                    comp("Firmware/trustcache", false, false, false),
+                ),
+                (
+                    "RBM".to_owned(),
+                    comp("Firmware/rbm.im4p", false, false, false),
+                ),
+            ])),
+        ),
+    ]);
+
+    let (control, mut peer) = tokio::io::duplex(65536);
+    let (asr_stream, mut asr_peer) = tokio::io::duplex(16384);
+    let (asr_done_tx, asr_done_rx) = tokio::sync::oneshot::channel();
+
+    let remote = tokio::spawn(async move {
+        handshake(&mut peer, 42).await;
+        let start = read(&mut peer).await;
+        assert_eq!(start["Request"].as_string(), Some("StartRestore"));
+
+        // 1. BuildIdentityDict
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("DataRequestMsg".into())),
+                (
+                    "DataType".to_owned(),
+                    Value::String("BuildIdentityDict".into()),
+                ),
+            ]),
+        )
+        .await;
+        let reply = read(&mut peer).await;
+        assert!(reply.contains_key("BuildIdentityDict"));
+
+        // 2. RootTicket
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("DataRequestMsg".into())),
+                ("DataType".to_owned(), Value::String("RootTicket".into())),
+            ]),
+        )
+        .await;
+        let reply = read(&mut peer).await;
+        assert_eq!(
+            reply["RootTicketData"].as_data(),
+            Some(&b"AP_TICKET_DATA"[..])
+        );
+
+        // 3. NORData (array mode: iBoot must be first in NorImageData)
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("DataRequestMsg".into())),
+                ("DataType".to_owned(), Value::String("NORData".into())),
+            ]),
+        )
+        .await;
+        let reply = read(&mut peer).await;
+        let llb_parsed =
+            super::super::img4::parse_img4_envelope(reply["LlbImageData"].as_data().unwrap())
+                .unwrap();
+        assert_eq!(&llb_parsed.fourcc, b"illb");
+        let nor_arr = reply["NorImageData"].as_array().unwrap();
+        assert_eq!(nor_arr.len(), 2);
+        let first_nor =
+            super::super::img4::parse_img4_envelope(nor_arr[0].as_data().unwrap()).unwrap();
+        assert_eq!(&first_nor.fourcc, b"ibot");
+        assert!(reply.contains_key("RestoreSEPImageData"));
+        assert!(reply.contains_key("SEPImageData"));
+
+        // 4. FDRTrustData
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("DataRequestMsg".into())),
+                ("DataType".to_owned(), Value::String("FDRTrustData".into())),
+            ]),
+        )
+        .await;
+        let reply = read(&mut peer).await;
+        assert!(reply.is_empty());
+
+        // 5. KernelCache & DeviceTree
+        for (dt, key, fourcc) in [
+            ("KernelCache", "KernelCacheFile", *b"krnl"),
+            ("DeviceTree", "DeviceTreeFile", *b"dtre"),
+            ("SystemImageRootHash", "SystemImageRootHashFile", *b"isys"),
+            (
+                "SystemImageCanonicalMetadata",
+                "SystemImageCanonicalMetadataFile",
+                *b"msys",
+            ),
+            ("ReceiptManifest", "ReceiptManifest", *b"rmbt"),
+        ] {
+            write(
+                &mut peer,
+                Dictionary::from_iter([
+                    ("MsgType".to_owned(), Value::String("DataRequestMsg".into())),
+                    ("DataType".to_owned(), Value::String(dt.into())),
+                ]),
+            )
+            .await;
+            let reply = read(&mut peer).await;
+            let env =
+                super::super::img4::parse_img4_envelope(reply[key].as_data().unwrap()).unwrap();
+            assert_eq!(env.fourcc, fourcc);
+        }
+
+        // 6. SourceBootObjectV4 (chunked FileData + FileDataDone)
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                (
+                    "MsgType".to_owned(),
+                    Value::String("AsyncDataRequestMsg".into()),
+                ),
+                (
+                    "DataType".to_owned(),
+                    Value::String("SourceBootObjectV4".into()),
+                ),
+                (
+                    "Arguments".to_owned(),
+                    Value::Dictionary(Dictionary::from_iter([(
+                        "ImageName".to_owned(),
+                        Value::String("StaticTrustCache".into()),
+                    )])),
+                ),
+            ]),
+        )
+        .await;
+        let chunk_msg = read(&mut peer).await;
+        let env = super::super::img4::parse_img4_envelope(chunk_msg["FileData"].as_data().unwrap())
+            .unwrap();
+        assert_eq!(&env.fourcc, b"trst");
+        let done_msg = read(&mut peer).await;
+        assert_eq!(done_msg["FileDataDone"].as_boolean(), Some(true));
+
+        // 7. FUDData, PersonalizedData, EANData, HostSystemTime, RestoreAttestation, BBUpdateStatusMsg
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("DataRequestMsg".into())),
+                ("DataType".to_owned(), Value::String("FUDData".into())),
+                (
+                    "Arguments".to_owned(),
+                    Value::Dictionary(Dictionary::from_iter([(
+                        "ImageList".to_owned(),
+                        Value::Boolean(true),
+                    )])),
+                ),
+            ]),
+        )
+        .await;
+        let fud_list = read(&mut peer).await;
+        assert_eq!(fud_list["FUDImageList"].as_array().unwrap().len(), 1);
+
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("DataRequestMsg".into())),
+                (
+                    "DataType".to_owned(),
+                    Value::String("HostSystemTime".into()),
+                ),
+            ]),
+        )
+        .await;
+        let time_reply = read(&mut peer).await;
+        assert!(time_reply.contains_key("SetHostTimeOnDevice"));
+
+        write(
+            &mut peer,
+            Dictionary::from_iter([(
+                "MsgType".to_owned(),
+                Value::String("RestoreAttestation".into()),
+            )]),
+        )
+        .await;
+        let attest_reply = read(&mut peer).await;
+        assert_eq!(
+            attest_reply["RestoreShouldAttest"].as_boolean(),
+            Some(false)
+        );
+
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                (
+                    "MsgType".to_owned(),
+                    Value::String("BBUpdateStatusMsg".into()),
+                ),
+                ("Accepted".to_owned(), Value::Boolean(true)),
+            ]),
+        )
+        .await;
+
+        // 8. SystemImageData over ASR
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                (
+                    "MsgType".to_owned(),
+                    Value::String("AsyncDataRequestMsg".into()),
+                ),
+                (
+                    "DataType".to_owned(),
+                    Value::String("SystemImageData".into()),
+                ),
+                ("DataPort".to_owned(), Value::Integer(12345.into())),
+            ]),
+        )
+        .await;
+        asr_done_rx.await.unwrap();
+
+        // 9. Final StatusMsg(0) and expect ReceivedFinalStatusMsg ack
+        write(
+            &mut peer,
+            Dictionary::from_iter([
+                ("MsgType".to_owned(), Value::String("StatusMsg".into())),
+                ("Status".to_owned(), Value::Integer(0.into())),
+            ]),
+        )
+        .await;
+        let final_ack = read(&mut peer).await;
+        assert_eq!(
+            final_ack["MsgType"].as_string(),
+            Some("ReceivedFinalStatusMsg")
+        );
+    });
+
+    let asr_task = tokio::spawn(async move {
+        asr_peer
+            .write_all(b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Command</key><string>Initiate</string></dict></plist>\n")
+            .await
+            .unwrap();
+        let mut offer = Vec::new();
+        while !offer.ends_with(b"</plist>\n") {
+            offer.push(asr_peer.read_u8().await.unwrap());
+        }
+        asr_peer
+            .write_all(b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Command</key><string>Payload</string></dict></plist>\n")
+            .await
+            .unwrap();
+        let mut received = [0u8; 6];
+        asr_peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"ROOTFS");
+        asr_done_tx.send(()).unwrap();
+    });
+
+    let cancel = OperationCancel::new();
+    let mut client = RestoredClient::connect(control, 42, Duration::from_secs(5), cancel.clone())
+        .await
+        .unwrap();
+    let mut sm = RestoreStateMachine::new();
+    sm.receive_nonces(Some(vec![1, 2, 3, 4]), None).unwrap();
+
+    let assets = RestoredProtocolAssets::new(
+        identity,
+        b"AP_TICKET_DATA".to_vec(),
+        Dictionary::new(),
+        Some(vec![1, 2, 3, 4]),
+    );
+    let mut image = std::io::Cursor::new(b"ROOTFS".to_vec());
+    let mut asr_stream_opt = Some(asr_stream);
+
+    let report = run_restored_protocol_session(
+        &mut client,
+        sm,
+        Dictionary::from_iter([("RestoreBehavior".to_owned(), Value::String("Update".into()))]),
+        &assets,
+        |comp_name| Ok(format!("PAYLOAD_{comp_name}").into_bytes()),
+        |updater, _req| {
+            Ok((
+                Dictionary::from_iter([("Updater".to_owned(), Value::String(updater.to_owned()))]),
+                b"FW_BYTES".to_vec(),
+            ))
+        },
+        &mut image,
+        |port| {
+            assert_eq!(port, 12345);
+            std::future::ready(Ok(asr_stream_opt.take().unwrap()))
+        },
+        &cancel,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.final_state, RestoreState::Completed);
+    assert!(report
+        .data_requests_served
+        .contains(&"BuildIdentityDict".to_string()));
+    assert!(report.data_requests_served.contains(&"NORData".to_string()));
+    assert!(report
+        .data_requests_served
+        .contains(&"KernelCache".to_string()));
+    assert!(report
+        .data_requests_served
+        .contains(&"SystemImageData".to_string()));
+    assert!(report.total_bytes_transferred > 0);
+
+    asr_task.await.unwrap();
+    remote.await.unwrap();
+}
