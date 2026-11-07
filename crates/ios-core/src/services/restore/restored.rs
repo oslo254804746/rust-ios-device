@@ -346,6 +346,76 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoredClient<S> {
         }
         Ok(())
     }
+
+    /// Send a plist dictionary response on the restored control stream and count its encoded
+    /// payload bytes toward `firmware_bytes_written`.
+    pub async fn send_plist_response(
+        &mut self,
+        body: &Dictionary,
+        counted_bytes: u64,
+    ) -> Result<(), RestoreError> {
+        self.live()?;
+        if !self.started {
+            return Err(RestoreError::Protocol(
+                "StartRestore has not been sent".into(),
+            ));
+        }
+        let total = self
+            .written
+            .checked_add(counted_bytes)
+            .filter(|n| *n <= MAX_TRANSFER)
+            .ok_or_else(|| {
+                RestoreError::Protocol("restored firmware byte budget exceeded".into())
+            })?;
+        self.send(body).await?;
+        self.written = total;
+        Ok(())
+    }
+
+    /// Serve a synchronous or asynchronous SystemImageData / RecoveryOSASRImage request through
+    /// the separately selected ASR port.
+    pub async fn send_system_image_any_request<R, DataStream, F, Fut>(
+        &mut self,
+        incoming: &Dictionary,
+        image: &mut R,
+        connect_port: F,
+    ) -> Result<super::asr::AsrTransferReceipt, RestoreError>
+    where
+        R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin,
+        DataStream: AsyncRead + AsyncWrite + Unpin,
+        F: FnOnce(u16) -> Fut,
+        Fut: Future<Output = Result<DataStream, RestoreError>>,
+    {
+        self.live()?;
+        let msg_type = incoming.get("MsgType").and_then(Value::as_string);
+        let data_type = incoming.get("DataType").and_then(Value::as_string);
+        if !self.started
+            || !matches!(msg_type, Some("DataRequestMsg" | "AsyncDataRequestMsg"))
+            || !matches!(data_type, Some("SystemImageData" | "RecoveryOSASRImage"))
+        {
+            return Err(RestoreError::Protocol(
+                "unsupported ASR system-image route".into(),
+            ));
+        }
+        let port = match incoming.get("DataPort") {
+            None => super::asr::DEFAULT_PORT,
+            Some(value) => value
+                .as_unsigned_integer()
+                .and_then(|value| u16::try_from(value).ok())
+                .filter(|port| *port != 0)
+                .ok_or_else(|| RestoreError::Protocol("invalid ASR DataPort".into()))?,
+        };
+        self.terminal = true;
+        let result = bounded(self.deadline, &self.cancel, async {
+            let stream = connect_port(port).await?;
+            super::asr::send_image_until(stream, image, self.deadline, self.cancel.clone()).await
+        })
+        .await;
+        if result.is_ok() {
+            self.terminal = false;
+        }
+        result
+    }
 }
 
 /// Convert an incoming plist dictionary from restored into a typed lifecycle event.
@@ -622,6 +692,716 @@ where
         }
     }
     }.await;
+    client.terminal = true;
+    result.map_err(|error| {
+        if crate::classify_error(&error) == crate::ErrorClass::Cancelled {
+            state_machine.cancel();
+        }
+        failed_execution(&state_machine, error)
+    })
+}
+
+/// Complete set of IPSW / TSS / personalization assets used by `run_restored_protocol_session`
+/// to serve synchronous and asynchronous `restored` data requests.
+pub struct RestoredProtocolAssets {
+    pub build_identity: Dictionary,
+    pub ap_img4_ticket: Vec<u8>,
+    pub tss_response: Dictionary,
+    pub boot_nonce: Option<Vec<u8>>,
+    pub restore_version_plist: Vec<u8>,
+    pub system_version_plist: Vec<u8>,
+    pub global_manifest_plist: Vec<u8>,
+    pub fdr_trust_data: Option<Vec<u8>>,
+    pub acknowledge_final_status: bool,
+}
+
+impl RestoredProtocolAssets {
+    pub fn new(
+        build_identity: Dictionary,
+        ap_img4_ticket: Vec<u8>,
+        tss_response: Dictionary,
+        boot_nonce: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            build_identity,
+            ap_img4_ticket,
+            tss_response,
+            boot_nonce,
+            restore_version_plist: b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>ProductBuildVersion</key><string>21F90</string></dict></plist>".to_vec(),
+            system_version_plist: b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>ProductVersion</key><string>17.5.1</string></dict></plist>".to_vec(),
+            global_manifest_plist: b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Manifest</key><string>Global</string></dict></plist>".to_vec(),
+            fdr_trust_data: None,
+            acknowledge_final_status: true,
+        }
+    }
+
+    fn stitch_component_with_provider<C>(
+        &self,
+        component_name: &str,
+        fourcc_override: Option<[u8; 4]>,
+        component_provider: &mut C,
+    ) -> Result<Vec<u8>, RestoreError>
+    where
+        C: FnMut(&str) -> Result<Vec<u8>, RestoreError>,
+    {
+        let raw = component_provider(component_name)?;
+        let stitched = super::img4::stitch_img4_component(
+            component_name,
+            &raw,
+            &self.ap_img4_ticket,
+            Some(&self.tss_response),
+            self.boot_nonce.as_deref(),
+            fourcc_override,
+        )?;
+        Ok(stitched.img4_bytes)
+    }
+
+    fn build_nor_response<C>(
+        &self,
+        arguments: Option<&Dictionary>,
+        component_provider: &mut C,
+    ) -> Result<(Dictionary, u64), RestoreError>
+    where
+        C: FnMut(&str) -> Result<Vec<u8>, RestoreError>,
+    {
+        let flash_version_1 = arguments
+            .and_then(|a| a.get("FlashVersion1"))
+            .and_then(Value::as_boolean)
+            .unwrap_or(false);
+
+        let llb_bytes = self.stitch_component_with_provider("LLB", None, component_provider)?;
+        let mut counted_bytes = llb_bytes.len() as u64;
+
+        let manifest = self
+            .build_identity
+            .get("Manifest")
+            .and_then(Value::as_dictionary)
+            .ok_or_else(|| RestoreError::Protocol("BuildIdentity missing Manifest".into()))?;
+
+        let mut firmware_entries = Vec::new();
+        for (name, entry) in manifest {
+            if matches!(name.as_str(), "LLB" | "SEP" | "RestoreSEP") {
+                continue;
+            }
+            let Some(info) = entry
+                .as_dictionary()
+                .and_then(|d| d.get("Info"))
+                .and_then(Value::as_dictionary)
+            else {
+                continue;
+            };
+            let is_fw = info
+                .get("IsFirmwarePayload")
+                .and_then(Value::as_boolean)
+                .unwrap_or(false)
+                || info
+                    .get("IsSecondaryFirmwarePayload")
+                    .and_then(Value::as_boolean)
+                    .unwrap_or(false);
+            let has_path = info
+                .get("Path")
+                .and_then(Value::as_string)
+                .is_some_and(|p| !p.is_empty());
+            if is_fw && has_path {
+                firmware_entries.push(name.clone());
+            }
+        }
+        firmware_entries.sort();
+
+        let mut iboot_data: Option<Vec<u8>> = None;
+        let mut other_payloads: Vec<(String, Vec<u8>)> = Vec::new();
+        for comp_name in firmware_entries {
+            let stitched =
+                self.stitch_component_with_provider(&comp_name, None, component_provider)?;
+            counted_bytes = counted_bytes.saturating_add(stitched.len() as u64);
+            if comp_name == "iBoot" {
+                iboot_data = Some(stitched);
+            } else {
+                other_payloads.push((comp_name, stitched));
+            }
+        }
+
+        let nor_image_value = if flash_version_1 {
+            let mut dict = Dictionary::new();
+            if let Some(ref iboot) = iboot_data {
+                dict.insert("iBoot".to_owned(), Value::Data(iboot.clone()));
+                dict.insert("Bootloader".to_owned(), Value::Data(iboot.clone()));
+            }
+            for (name, bytes) in other_payloads {
+                dict.insert(name, Value::Data(bytes));
+            }
+            Value::Dictionary(dict)
+        } else {
+            let mut list = Vec::new();
+            if let Some(iboot) = iboot_data {
+                list.push(Value::Data(iboot));
+            }
+            for (_name, bytes) in other_payloads {
+                list.push(Value::Data(bytes));
+            }
+            Value::Array(list)
+        };
+
+        let mut response = Dictionary::from_iter([
+            ("LlbImageData".to_owned(), Value::Data(llb_bytes)),
+            ("NorImageData".to_owned(), nor_image_value),
+        ]);
+
+        if manifest
+            .get("RestoreSEP")
+            .and_then(Value::as_dictionary)
+            .and_then(|d| d.get("Info"))
+            .and_then(Value::as_dictionary)
+            .and_then(|i| i.get("Path"))
+            .and_then(Value::as_string)
+            .is_some_and(|p| !p.is_empty())
+        {
+            let rsep =
+                self.stitch_component_with_provider("RestoreSEP", None, component_provider)?;
+            counted_bytes = counted_bytes.saturating_add(rsep.len() as u64);
+            response.insert("RestoreSEPImageData".to_owned(), Value::Data(rsep));
+        }
+
+        if manifest
+            .get("SEP")
+            .and_then(Value::as_dictionary)
+            .and_then(|d| d.get("Info"))
+            .and_then(Value::as_dictionary)
+            .and_then(|i| i.get("Path"))
+            .and_then(Value::as_string)
+            .is_some_and(|p| !p.is_empty())
+        {
+            let sep = self.stitch_component_with_provider("SEP", None, component_provider)?;
+            counted_bytes = counted_bytes.saturating_add(sep.len() as u64);
+            response.insert("SEPImageData".to_owned(), Value::Data(sep));
+        }
+
+        Ok((response, counted_bytes))
+    }
+}
+
+/// Run a complete `restored` protocol session aligned with `pymobiledevice3/restore/restore.py`,
+/// dispatching both `DataRequestMsg` and `AsyncDataRequestMsg` across `BuildIdentityDict`,
+/// `RootTicket`, `KernelCache`, `DeviceTree`, `NORData`, `FDRTrustData`,
+/// `FirmwareUpdaterPreflight` / `DeviceRestoreInfoPreflight`, `FirmwareUpdaterData`,
+/// `PersonalizedBootObjectV3` / `SourceBootObjectV4` / `SourceBootObjectV5`,
+/// `SystemImageRootHash`, `SystemImageCanonicalMetadata`, `FUDData`, `PersonalizedData`,
+/// `EANData`, `ReceiptManifest`, `HostSystemTime`, `SystemImageData` (ASR),
+/// `RestoreAttestation`, `BBUpdateStatusMsg`, and `StatusMsg` final acknowledgement.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_restored_protocol_session<S, C, F, R, DataStream, P, Fut>(
+    client: &mut RestoredClient<S>,
+    mut state_machine: RestoreStateMachine,
+    options: Dictionary,
+    assets: &RestoredProtocolAssets,
+    mut component_provider: C,
+    mut firmware_provider: F,
+    mut system_image: &mut R,
+    mut connect_port: P,
+    cancel: &OperationCancel,
+) -> Result<RestoreExecutionReport, RestoreError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: FnMut(&str) -> Result<Vec<u8>, RestoreError>,
+    F: FnMut(&str, &Dictionary) -> Result<(Dictionary, Vec<u8>), RestoreError>,
+    R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin,
+    DataStream: AsyncRead + AsyncWrite + Unpin,
+    P: FnMut(u16) -> Fut,
+    Fut: Future<Output = Result<DataStream, RestoreError>>,
+{
+    let deadline = client.deadline;
+    let result = async {
+        let protocol_version = client.protocol_version().clone();
+        if *state_machine.state() == RestoreState::TssRequest {
+            state_machine.finish_tss_phase()?;
+        }
+        bounded(
+            deadline,
+            cancel,
+            client.start_update(&protocol_version, options),
+        )
+        .await?;
+
+        loop {
+            if cancel.is_cancelled() {
+                client.terminal = true;
+                state_machine.cancel();
+                return Err(RestoreError::Io(std::io::Error::other(
+                    crate::OperationCancelled::new(),
+                )));
+            }
+
+            let incoming = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                result = client.next_message() => Some(result),
+            };
+            let incoming = match incoming {
+                None => {
+                    client.terminal = true;
+                    state_machine.cancel();
+                    return Err(RestoreError::Io(std::io::Error::other(
+                        crate::OperationCancelled::new(),
+                    )));
+                }
+                Some(Ok(msg)) => msg,
+                Some(Err(err)) => return Err(err),
+            };
+
+            let msg_type = incoming.get("MsgType").and_then(Value::as_string);
+            if msg_type == Some("RestoreAttestation") {
+                let body = Dictionary::from_iter([(
+                    "RestoreShouldAttest".to_owned(),
+                    Value::Boolean(false),
+                )]);
+                client.send_plist_response(&body, 0).await?;
+                state_machine.record_data_request_served("RestoreAttestation".into());
+                continue;
+            }
+            if msg_type == Some("BBUpdateStatusMsg") {
+                let accepted = incoming
+                    .get("Accepted")
+                    .and_then(Value::as_boolean)
+                    .unwrap_or(false);
+                if !accepted {
+                    return Err(RestoreError::Protocol(format!(
+                        "BBUpdateStatusMsg rejected baseband update: {:?}",
+                        incoming.get("Error")
+                    )));
+                }
+                state_machine.record_data_request_served("BBUpdateStatusMsg".into());
+                continue;
+            }
+
+            let event = restore_event_from_plist(&incoming);
+
+            if let RestoreLifecycleEvent::DataRequest {
+                data_type: Some(ref dt),
+                ..
+            } = event
+            {
+                let arguments = incoming.get("Arguments").and_then(Value::as_dictionary);
+                match dt.as_str() {
+                    "BuildIdentityDict" | "RecoveryOSLocalPolicy" => {
+                        let body = Dictionary::from_iter([(
+                            "BuildIdentityDict".to_owned(),
+                            Value::Dictionary(assets.build_identity.clone()),
+                        )]);
+                        client.send_plist_response(&body, 0).await?;
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "RootTicket" | "RecoveryOSRootTicketData" => {
+                        let len = assets.ap_img4_ticket.len() as u64;
+                        let body = Dictionary::from_iter([(
+                            "RootTicketData".to_owned(),
+                            Value::Data(assets.ap_img4_ticket.clone()),
+                        )]);
+                        client.send_plist_response(&body, len).await?;
+                        state_machine.record_bytes_transferred(len as usize);
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "NORData" => {
+                        let (body, bytes_count) =
+                            assets.build_nor_response(arguments, &mut component_provider)?;
+                        client.send_plist_response(&body, bytes_count).await?;
+                        state_machine.record_bytes_transferred(bytes_count as usize);
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "FDRTrustData" => {
+                        let (body, len) = match &assets.fdr_trust_data {
+                            Some(data) => (
+                                Dictionary::from_iter([(
+                                    "FDRTrustData".to_owned(),
+                                    Value::Data(data.clone()),
+                                )]),
+                                data.len() as u64,
+                            ),
+                            None => (Dictionary::new(), 0u64),
+                        };
+                        client.send_plist_response(&body, len).await?;
+                        state_machine.record_bytes_transferred(len as usize);
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "FirmwareUpdaterPreflight" | "DeviceRestoreInfoPreflight" => {
+                        let body = Dictionary::new();
+                        client.send_plist_response(&body, 0).await?;
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "FirmwareUpdaterData" => {
+                        let updater_name = arguments
+                            .and_then(|args| args.get("UpdaterName"))
+                            .and_then(Value::as_string)
+                            .filter(|name| !name.is_empty())
+                            .ok_or_else(|| {
+                                RestoreError::Protocol("missing restored UpdaterName".into())
+                            })?;
+                        let (header, firmware) = firmware_provider(updater_name, &incoming)?;
+                        if firmware.is_empty() {
+                            return Err(RestoreError::Protocol(
+                                "restored firmware provider returned no component bytes".into(),
+                            ));
+                        }
+                        let mut sync_incoming = incoming.clone();
+                        sync_incoming
+                            .insert("MsgType".to_owned(), Value::String("DataRequestMsg".into()));
+                        sync_incoming.remove("DataPort");
+                        let before = client.firmware_bytes_written();
+                        client
+                            .send_firmware_response(&sync_incoming, header, &firmware)
+                            .await?;
+                        state_machine.record_bytes_transferred(
+                            (client.firmware_bytes_written() - before) as usize,
+                        );
+                        state_machine.record_data_request_served(format!("{dt}:{updater_name}"));
+                    }
+                    "KernelCache" => {
+                        let bytes = assets.stitch_component_with_provider(
+                            "KernelCache",
+                            None,
+                            &mut component_provider,
+                        )?;
+                        let len = bytes.len();
+                        let body = Dictionary::from_iter([(
+                            "KernelCacheFile".to_owned(),
+                            Value::Data(bytes),
+                        )]);
+                        client.send_plist_response(&body, len as u64).await?;
+                        state_machine.record_bytes_transferred(len);
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "DeviceTree" => {
+                        let bytes = assets.stitch_component_with_provider(
+                            "DeviceTree",
+                            None,
+                            &mut component_provider,
+                        )?;
+                        let len = bytes.len();
+                        let body = Dictionary::from_iter([(
+                            "DeviceTreeFile".to_owned(),
+                            Value::Data(bytes),
+                        )]);
+                        client.send_plist_response(&body, len as u64).await?;
+                        state_machine.record_bytes_transferred(len);
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "SystemImageRootHash" => {
+                        let bytes = assets.stitch_component_with_provider(
+                            "SystemVolume",
+                            None,
+                            &mut component_provider,
+                        )?;
+                        let len = bytes.len();
+                        let body = Dictionary::from_iter([(
+                            "SystemImageRootHashFile".to_owned(),
+                            Value::Data(bytes),
+                        )]);
+                        client.send_plist_response(&body, len as u64).await?;
+                        state_machine.record_bytes_transferred(len);
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "SystemImageCanonicalMetadata" => {
+                        let bytes = assets.stitch_component_with_provider(
+                            "Ap,SystemVolumeCanonicalMetadata",
+                            None,
+                            &mut component_provider,
+                        )?;
+                        let len = bytes.len();
+                        let body = Dictionary::from_iter([(
+                            "SystemImageCanonicalMetadataFile".to_owned(),
+                            Value::Data(bytes),
+                        )]);
+                        client.send_plist_response(&body, len as u64).await?;
+                        state_machine.record_bytes_transferred(len);
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "PersonalizedBootObjectV3"
+                    | "SourceBootObjectV4"
+                    | "SourceBootObjectV5"
+                    | "BootabilityBundle"
+                    | "BootabilityBundleV2"
+                    | "RecoveryOSImage"
+                    | "RecoveryOSIBootFWFilesImages" => {
+                        let image_name = arguments
+                            .and_then(|a| a.get("ImageName"))
+                            .and_then(Value::as_string)
+                            .unwrap_or(dt.as_str());
+                        let payload = match image_name {
+                            "__GlobalManifest__" => assets.global_manifest_plist.clone(),
+                            "__RestoreVersion__" => assets.restore_version_plist.clone(),
+                            "__SystemVersion__" => assets.system_version_plist.clone(),
+                            other => assets.stitch_component_with_provider(
+                                other,
+                                None,
+                                &mut component_provider,
+                            )?,
+                        };
+                        if payload.is_empty() {
+                            client.send_plist_response(&Dictionary::new(), 0).await?;
+                        } else {
+                            for chunk in payload.chunks(8192) {
+                                let chunk_msg = Dictionary::from_iter([(
+                                    "FileData".to_owned(),
+                                    Value::Data(chunk.to_vec()),
+                                )]);
+                                client
+                                    .send_plist_response(&chunk_msg, chunk.len() as u64)
+                                    .await?;
+                            }
+                            let done_msg = Dictionary::from_iter([(
+                                "FileDataDone".to_owned(),
+                                Value::Boolean(true),
+                            )]);
+                            client.send_plist_response(&done_msg, 0).await?;
+                            state_machine.record_bytes_transferred(payload.len());
+                        }
+                        state_machine.record_data_request_served(format!("{dt}:{image_name}"));
+                    }
+                    "FUDData" => {
+                        let is_list = arguments
+                            .and_then(|a| a.get("ImageList"))
+                            .and_then(Value::as_boolean)
+                            .unwrap_or(false);
+                        if is_list {
+                            let mut names = Vec::new();
+                            if let Some(manifest) = assets
+                                .build_identity
+                                .get("Manifest")
+                                .and_then(Value::as_dictionary)
+                            {
+                                for (name, entry) in manifest {
+                                    let is_fud = entry
+                                        .as_dictionary()
+                                        .and_then(|d| d.get("Info"))
+                                        .and_then(Value::as_dictionary)
+                                        .and_then(|i| i.get("IsFUDFirmware"))
+                                        .and_then(Value::as_boolean)
+                                        .unwrap_or(false);
+                                    if is_fud {
+                                        names.push(Value::String(name.clone()));
+                                    }
+                                }
+                            }
+                            let body = Dictionary::from_iter([(
+                                "FUDImageList".to_owned(),
+                                Value::Array(names),
+                            )]);
+                            client.send_plist_response(&body, 0).await?;
+                            state_machine.record_data_request_served("FUDData:ImageList".into());
+                        } else {
+                            let image_name = arguments
+                                .and_then(|a| a.get("ImageName"))
+                                .and_then(Value::as_string)
+                                .ok_or_else(|| {
+                                    RestoreError::Protocol("FUDData missing ImageName".into())
+                                })?;
+                            let bytes = assets.stitch_component_with_provider(
+                                image_name,
+                                None,
+                                &mut component_provider,
+                            )?;
+                            let len = bytes.len();
+                            let body = Dictionary::from_iter([
+                                ("FUDImageData".to_owned(), Value::Data(bytes)),
+                                (
+                                    "UpdaterName".to_owned(),
+                                    Value::String(image_name.to_owned()),
+                                ),
+                            ]);
+                            client.send_plist_response(&body, len as u64).await?;
+                            state_machine.record_bytes_transferred(len);
+                            state_machine
+                                .record_data_request_served(format!("FUDData:{image_name}"));
+                        }
+                    }
+                    "PersonalizedData" => {
+                        let is_list = arguments
+                            .and_then(|a| a.get("ImageList"))
+                            .and_then(Value::as_boolean)
+                            .unwrap_or(false);
+                        if is_list {
+                            let body = Dictionary::from_iter([(
+                                "ImageList".to_owned(),
+                                Value::Array(vec![Value::String(String::new())]),
+                            )]);
+                            client.send_plist_response(&body, 0).await?;
+                            state_machine
+                                .record_data_request_served("PersonalizedData:ImageList".into());
+                        } else {
+                            let image_name = arguments
+                                .and_then(|a| a.get("ImageName"))
+                                .and_then(Value::as_string)
+                                .ok_or_else(|| {
+                                    RestoreError::Protocol(
+                                        "PersonalizedData missing ImageName".into(),
+                                    )
+                                })?;
+                            let bytes = assets.stitch_component_with_provider(
+                                image_name,
+                                None,
+                                &mut component_provider,
+                            )?;
+                            let len = bytes.len();
+                            let body = Dictionary::from_iter([(
+                                "ImageData".to_owned(),
+                                Value::Data(bytes),
+                            )]);
+                            client.send_plist_response(&body, len as u64).await?;
+                            state_machine.record_bytes_transferred(len);
+                            state_machine.record_data_request_served(format!(
+                                "PersonalizedData:{image_name}"
+                            ));
+                        }
+                    }
+                    "EANData" => {
+                        let is_list = arguments
+                            .and_then(|a| a.get("EarlyAccessNANDImageList"))
+                            .and_then(Value::as_boolean)
+                            .unwrap_or(false);
+                        if is_list {
+                            let mut names = Vec::new();
+                            if let Some(manifest) = assets
+                                .build_identity
+                                .get("Manifest")
+                                .and_then(Value::as_dictionary)
+                            {
+                                for (name, entry) in manifest {
+                                    let is_ean = entry
+                                        .as_dictionary()
+                                        .and_then(|d| d.get("Info"))
+                                        .and_then(Value::as_dictionary)
+                                        .and_then(|i| i.get("IsEarlyAccessFirmware"))
+                                        .and_then(Value::as_boolean)
+                                        .unwrap_or(false);
+                                    if is_ean {
+                                        names.push(Value::String(name.clone()));
+                                    }
+                                }
+                            }
+                            let body = Dictionary::from_iter([(
+                                "EANImageList".to_owned(),
+                                Value::Array(names),
+                            )]);
+                            client.send_plist_response(&body, 0).await?;
+                            state_machine.record_data_request_served("EANData:ImageList".into());
+                        } else {
+                            let image_name = arguments
+                                .and_then(|a| a.get("ImageName"))
+                                .and_then(Value::as_string)
+                                .ok_or_else(|| {
+                                    RestoreError::Protocol("EANData missing ImageName".into())
+                                })?;
+                            let bytes = assets.stitch_component_with_provider(
+                                image_name,
+                                None,
+                                &mut component_provider,
+                            )?;
+                            let len = bytes.len();
+                            let body =
+                                Dictionary::from_iter([("EANData".to_owned(), Value::Data(bytes))]);
+                            client.send_plist_response(&body, len as u64).await?;
+                            state_machine.record_bytes_transferred(len);
+                            state_machine
+                                .record_data_request_served(format!("EANData:{image_name}"));
+                        }
+                    }
+                    "ReceiptManifest" => {
+                        let bytes = assets.stitch_component_with_provider(
+                            "RBM",
+                            Some(*b"rmbt"),
+                            &mut component_provider,
+                        )?;
+                        let len = bytes.len();
+                        let body = Dictionary::from_iter([(
+                            "ReceiptManifest".to_owned(),
+                            Value::Data(bytes),
+                        )]);
+                        client.send_plist_response(&body, len as u64).await?;
+                        state_machine.record_bytes_transferred(len);
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "HostSystemTime" => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default();
+                        let body = Dictionary::from_iter([
+                            (
+                                "SetHostTimeOnDevice".to_owned(),
+                                Value::Integer((now.as_secs()).into()),
+                            ),
+                            (
+                                "SetHostTimeOnDeviceMicroSeconds".to_owned(),
+                                Value::Integer((now.subsec_micros() as u64).into()),
+                            ),
+                        ]);
+                        client.send_plist_response(&body, 0).await?;
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    "SystemImageData" | "RecoveryOSASRImage" => {
+                        let receipt = client
+                            .send_system_image_any_request(
+                                &incoming,
+                                &mut system_image,
+                                &mut connect_port,
+                            )
+                            .await?;
+                        state_machine.record_bytes_transferred(
+                            usize::try_from(receipt.image_bytes_sent).unwrap_or(usize::MAX),
+                        );
+                        state_machine.record_data_request_served(dt.clone());
+                    }
+                    other => {
+                        client.terminal = true;
+                        return Err(RestoreError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            format!("unserved restored data request: {other}"),
+                        )));
+                    }
+                }
+            } else if matches!(
+                event,
+                RestoreLifecycleEvent::DataRequest { .. } | RestoreLifecycleEvent::Unknown { .. }
+            ) {
+                return Err(RestoreError::Protocol(
+                    "malformed or unsupported restored lifecycle message".into(),
+                ));
+            }
+
+            if assets.acknowledge_final_status
+                && matches!(
+                    event,
+                    RestoreLifecycleEvent::Status {
+                        code: 0,
+                        finished: true,
+                        ..
+                    }
+                )
+            {
+                let ack = Dictionary::from_iter([(
+                    "MsgType".to_owned(),
+                    Value::String("ReceivedFinalStatusMsg".into()),
+                )]);
+                client.send_plist_response(&ack, 0).await?;
+            }
+
+            state_machine.process_event(&event)?;
+
+            if state_machine.is_terminal() {
+                match state_machine.state() {
+                    RestoreState::Completed => {
+                        return Ok(state_machine.generate_report());
+                    }
+                    RestoreState::Failed(reason) => {
+                        return Err(RestoreError::Protocol(format!(
+                            "restored execution failed: {:?}",
+                            reason
+                        )));
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+    .await;
     client.terminal = true;
     result.map_err(|error| {
         if crate::classify_error(&error) == crate::ErrorClass::Cancelled {

@@ -95,10 +95,75 @@ enum RestoreSub {
         #[arg(long, default_value_t = 600)]
         timeout_secs: u64,
     },
+    /// Run a controlled local restore protocol simulation (IMG4 personalization + Recovery/Ramdisk handoff + restored/ASR/TSS peer) without touching physical hardware
+    SimulateRestore {
+        /// Path to local IPSW ZIP archive
+        #[arg(long)]
+        ipsw: std::path::PathBuf,
+        /// Path to saved TSS / SHSH blob plist
+        #[arg(long)]
+        tss: std::path::PathBuf,
+        /// Restore behavior: Update (default) or Erase
+        #[arg(long, default_value = "Update")]
+        behavior: String,
+        /// Explicit ApBoardID (hex or decimal)
+        #[arg(long, default_value = "0x0c")]
+        board_id: String,
+        /// Explicit ApChipID (hex or decimal)
+        #[arg(long, default_value = "0x8110")]
+        chip_id: String,
+        /// Explicit hardware DeviceClass
+        #[arg(long, default_value = "d63ap")]
+        device_class: String,
+        /// Explicit ECID (hex or decimal)
+        #[arg(long, default_value = "42")]
+        ecid: String,
+        /// Expected hex AP nonce
+        #[arg(long, default_value = "01020304")]
+        ap_nonce_hex: String,
+        /// Required confirmation to run the local simulated restore session
+        #[arg(long)]
+        confirm_simulation: bool,
+        /// Overall timeout in seconds
+        #[arg(long, default_value_t = 60)]
+        timeout_secs: u64,
+    },
 }
 
 impl RestoreCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
+        if let RestoreSub::SimulateRestore {
+            ipsw,
+            tss,
+            behavior,
+            board_id,
+            chip_id,
+            device_class,
+            ecid,
+            ap_nonce_hex,
+            confirm_simulation,
+            timeout_secs,
+        } = self.sub
+        {
+            crate::output::require_force(
+                confirm_simulation,
+                "run simulated restore pipeline",
+                "simulation requires explicit --confirm-simulation and never touches physical hardware",
+            )?;
+            return handle_simulate_restore(
+                ipsw,
+                tss,
+                behavior,
+                board_id,
+                chip_id,
+                device_class,
+                ecid,
+                ap_nonce_hex,
+                timeout_secs,
+                json,
+            )
+            .await;
+        }
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for restore"))?;
         // Guard before connecting: these three change device state, unlike the
         // read-only queries below.
@@ -123,15 +188,13 @@ impl RestoreCmd {
                 dry_run,
                 tss,
                 ..
-            } => {
-                if !*dry_run {
-                    crate::output::require_force(
-                        *force,
-                        "execute experimental restore update",
-                        "this operation attempts to modify device firmware",
-                    )?;
-                    ensure_update_prerequisites(*dry_run, tss.as_deref())?;
-                }
+            } if !*dry_run => {
+                crate::output::require_force(
+                    *force,
+                    "execute experimental restore update",
+                    "this operation attempts to modify device firmware",
+                )?;
+                ensure_update_prerequisites(*dry_run, tss.as_deref())?;
             }
             _ => {}
         }
@@ -254,7 +317,8 @@ impl RestoreCmd {
             RestoreSub::RestoreLang { language } => client.restore_lang(language).await?,
             RestoreSub::Events { .. }
             | RestoreSub::PreflightRequests { .. }
-            | RestoreSub::Update { .. } => unreachable!("handled above"),
+            | RestoreSub::Update { .. }
+            | RestoreSub::SimulateRestore { .. } => unreachable!("handled above"),
         };
 
         let rendered =
@@ -624,6 +688,307 @@ fn ensure_update_prerequisites(dry_run: bool, _tss: Option<&std::path::Path>) ->
 #[cfg(test)]
 fn ensure_update_inspection_only(dry_run: bool) -> Result<()> {
     ensure_update_prerequisites(dry_run, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_simulate_restore(
+    ipsw: std::path::PathBuf,
+    tss: std::path::PathBuf,
+    behavior: String,
+    board_id_str: String,
+    chip_id_str: String,
+    device_class: String,
+    ecid_str: String,
+    ap_nonce_hex: String,
+    timeout_secs: u64,
+    json: bool,
+) -> Result<()> {
+    use std::io::Read;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    anyhow::ensure!(timeout_secs > 0, "timeout must be positive");
+    anyhow::ensure!(
+        behavior == "Update",
+        "only behavior 'Update' is supported by simulated restore; got '{behavior}'"
+    );
+
+    let board_id = parse_id_u64(&board_id_str)?;
+    let chip_id = parse_id_u64(&chip_id_str)?;
+    let ecid = parse_id_u64(&ecid_str)?;
+    let ap_nonce = hex::decode(ap_nonce_hex.trim())
+        .map_err(|e| anyhow::anyhow!("invalid hex --ap-nonce-hex: {e}"))?;
+    anyhow::ensure!(!ap_nonce.is_empty(), "--ap-nonce-hex must not be empty");
+
+    let ipsw_file = std::fs::File::open(&ipsw)
+        .map_err(|e| anyhow::anyhow!("failed to open IPSW at {}: {e}", ipsw.display()))?;
+    let selector = ios_core::restore::preflight::IpswIdentitySelector {
+        board_id,
+        chip_id,
+        device_class: &device_class,
+        restore_behavior: &behavior,
+    };
+    let mut ipsw_preflight =
+        ios_core::restore::preflight::IpswPreflight::open(ipsw_file, selector)?;
+    ipsw_preflight.verify_hardware_evidence(board_id, chip_id, &device_class)?;
+    let components = ipsw_preflight.validate_components(32 * 1024 * 1024 * 1024)?;
+
+    let tss_file = std::fs::File::open(&tss)
+        .map_err(|e| anyhow::anyhow!("failed to open saved TSS at {}: {e}", tss.display()))?;
+    anyhow::ensure!(
+        tss_file.metadata()?.is_file(),
+        "saved TSS must be a regular file"
+    );
+    let mut tss_bytes = Vec::new();
+    tss_file
+        .take(16 * 1024 * 1024 + 1)
+        .read_to_end(&mut tss_bytes)?;
+    anyhow::ensure!(
+        tss_bytes.len() <= 16 * 1024 * 1024,
+        "saved TSS exceeds byte budget"
+    );
+    let saved_tss: plist::Value = plist::from_bytes(&tss_bytes)?;
+    ios_core::restore::preflight::inspect_saved_tss(
+        &saved_tss, ecid, board_id, chip_id, &ap_nonce, None,
+    )?;
+    let ap_ticket = ios_core::restore::preflight::extract_saved_tss_ticket(&saved_tss)?;
+    let tss_response_dict = saved_tss
+        .as_dictionary()
+        .and_then(|d| d.get("Response"))
+        .and_then(plist::Value::as_dictionary)
+        .cloned()
+        .unwrap_or_default();
+
+    let identity = ipsw_preflight.identity().clone();
+    let ramdisk_plan = ios_core::restore::build_recovery_ramdisk_plan(
+        ios_core::restore::RecoveryDeviceMode::NormalLockdown,
+        ecid,
+        &identity,
+        &ap_ticket,
+        Some(&tss_response_dict),
+        Some(&ap_nonce),
+        |comp_name, _path| ipsw_preflight.read_manifest_component(comp_name, 64 * 1024 * 1024),
+    )?;
+
+    let mut os_image_buf = Vec::new();
+    let cancel = ios_core::session::OperationCancel::new();
+    let _os_inspection = ipsw_preflight.extract_system_image(
+        &mut os_image_buf,
+        512 * 1024 * 1024,
+        Duration::from_secs(timeout_secs),
+        &cancel,
+    )?;
+
+    let (control_client_stream, mut control_peer_stream) = tokio::io::duplex(65536);
+    let (asr_client_stream, mut asr_peer_stream) = tokio::io::duplex(65536);
+    let (asr_done_tx, asr_done_rx) = tokio::sync::oneshot::channel();
+
+    let expected_os_len = os_image_buf.len() as u64;
+    let peer_task = tokio::spawn(async move {
+        let write_frame = |w: &mut tokio::io::DuplexStream, dict: plist::Dictionary| {
+            let mut buf = Vec::new();
+            plist::to_writer_xml(&mut buf, &dict).unwrap();
+            let mut out = (buf.len() as u32).to_be_bytes().to_vec();
+            out.extend_from_slice(&buf);
+            let _ = w;
+            out
+        };
+        async fn read_frame(r: &mut tokio::io::DuplexStream) -> plist::Dictionary {
+            use tokio::io::AsyncReadExt;
+            let mut len_bytes = [0u8; 4];
+            r.read_exact(&mut len_bytes).await.unwrap();
+            let len = u32::from_be_bytes(len_bytes) as usize;
+            let mut buf = vec![0u8; len];
+            r.read_exact(&mut buf).await.unwrap();
+            plist::from_bytes::<plist::Dictionary>(&buf).unwrap()
+        }
+
+        // 1. QueryType
+        let q = read_frame(&mut control_peer_stream).await;
+        assert_eq!(q["Request"].as_string(), Some("QueryType"));
+        let reply = write_frame(
+            &mut control_peer_stream,
+            plist::Dictionary::from_iter([
+                (
+                    "Type",
+                    plist::Value::String("com.apple.mobile.restored".into()),
+                ),
+                ("RestoreProtocolVersion", plist::Value::Integer(15.into())),
+            ]),
+        );
+        control_peer_stream.write_all(&reply).await.unwrap();
+
+        // 2. HardwareInfo
+        let hw = read_frame(&mut control_peer_stream).await;
+        assert_eq!(hw["QueryKey"].as_string(), Some("HardwareInfo"));
+        let reply = write_frame(
+            &mut control_peer_stream,
+            plist::Dictionary::from_iter([(
+                "HardwareInfo",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "UniqueChipID",
+                    plist::Value::Integer(ecid.into()),
+                )])),
+            )]),
+        );
+        control_peer_stream.write_all(&reply).await.unwrap();
+
+        // 3. StartRestore
+        let start = read_frame(&mut control_peer_stream).await;
+        assert_eq!(start["Request"].as_string(), Some("StartRestore"));
+
+        // 4. Request BuildIdentityDict, RootTicket, NORData, KernelCache, DeviceTree, FDRTrustData, SystemImageData
+        for dt in [
+            "BuildIdentityDict",
+            "RootTicket",
+            "NORData",
+            "FDRTrustData",
+            "KernelCache",
+            "DeviceTree",
+            "HostSystemTime",
+        ] {
+            let req = write_frame(
+                &mut control_peer_stream,
+                plist::Dictionary::from_iter([
+                    ("MsgType", plist::Value::String("DataRequestMsg".into())),
+                    ("DataType", plist::Value::String(dt.into())),
+                ]),
+            );
+            control_peer_stream.write_all(&req).await.unwrap();
+            let _resp = read_frame(&mut control_peer_stream).await;
+        }
+
+        // 5. SystemImageData via ASR
+        let asr_req = write_frame(
+            &mut control_peer_stream,
+            plist::Dictionary::from_iter([
+                (
+                    "MsgType",
+                    plist::Value::String("AsyncDataRequestMsg".into()),
+                ),
+                ("DataType", plist::Value::String("SystemImageData".into())),
+                ("DataPort", plist::Value::Integer(12345.into())),
+            ]),
+        );
+        control_peer_stream.write_all(&asr_req).await.unwrap();
+        asr_done_rx.await.unwrap();
+
+        // 6. StatusMsg(0) and wait for ReceivedFinalStatusMsg
+        let done_msg = write_frame(
+            &mut control_peer_stream,
+            plist::Dictionary::from_iter([
+                ("MsgType", plist::Value::String("StatusMsg".into())),
+                ("Status", plist::Value::Integer(0.into())),
+                (
+                    "Log",
+                    plist::Value::String("Simulated restore complete".into()),
+                ),
+            ]),
+        );
+        control_peer_stream.write_all(&done_msg).await.unwrap();
+        let ack = read_frame(&mut control_peer_stream).await;
+        assert_eq!(ack["MsgType"].as_string(), Some("ReceivedFinalStatusMsg"));
+    });
+
+    let asr_task = tokio::spawn(async move {
+        asr_peer_stream
+            .write_all(b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Command</key><string>Initiate</string></dict></plist>\n")
+            .await
+            .unwrap();
+        let mut offer = Vec::new();
+        while !offer.ends_with(b"</plist>\n") {
+            offer.push(asr_peer_stream.read_u8().await.unwrap());
+        }
+        let offer_dict: plist::Dictionary = plist::from_bytes(&offer).unwrap();
+        assert_eq!(
+            offer_dict["Payload"].as_dictionary().unwrap()["Size"].as_unsigned_integer(),
+            Some(expected_os_len)
+        );
+        asr_peer_stream
+            .write_all(b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Command</key><string>Payload</string></dict></plist>\n")
+            .await
+            .unwrap();
+        let mut received = vec![0u8; expected_os_len as usize];
+        asr_peer_stream.read_exact(&mut received).await.unwrap();
+        let _ = asr_done_tx.send(());
+    });
+
+    let mut transport = ios_core::restore::SimulatedRecoveryTransport::new(
+        ios_core::restore::RecoveryDeviceMode::NormalLockdown,
+        ecid,
+        control_client_stream,
+    );
+    let (restored_stream, handoff_receipt) =
+        ios_core::restore::execute_recovery_ramdisk_handoff(&ramdisk_plan, &mut transport).await?;
+
+    let mut restored_client = ios_core::restore::RestoredClient::connect(
+        restored_stream,
+        ecid,
+        Duration::from_secs(timeout_secs),
+        cancel.clone(),
+    )
+    .await?;
+
+    let mut sm = ios_core::restore::RestoreStateMachine::new();
+    sm.start_mode_transition()?;
+    sm.transition_to_recovery()?;
+    sm.receive_nonces(Some(ap_nonce.clone()), None)?;
+
+    let assets = ios_core::restore::RestoredProtocolAssets::new(
+        identity,
+        ap_ticket,
+        tss_response_dict,
+        Some(ap_nonce),
+    );
+    let mut os_cursor = std::io::Cursor::new(os_image_buf);
+    let mut asr_opt = Some(asr_client_stream);
+
+    let session_report = ios_core::restore::run_restored_protocol_session(
+        &mut restored_client,
+        sm,
+        plist::Dictionary::from_iter([(
+            "RestoreBehavior".to_owned(),
+            plist::Value::String(behavior),
+        )]),
+        &assets,
+        |comp_name| ipsw_preflight.read_manifest_component(comp_name, 64 * 1024 * 1024),
+        |updater, _req| {
+            Ok((
+                plist::Dictionary::from_iter([(
+                    "Updater".to_owned(),
+                    plist::Value::String(updater.to_owned()),
+                )]),
+                b"SIMULATED_FW".to_vec(),
+            ))
+        },
+        &mut os_cursor,
+        |port| {
+            assert_eq!(port, 12345);
+            std::future::ready(Ok(asr_opt.take().unwrap()))
+        },
+        &cancel,
+    )
+    .await?;
+
+    asr_task.await?;
+    peer_task.await?;
+
+    let output = serde_json::json!({
+        "operation": "restore_simulate_update",
+        "physical_device_touched": false,
+        "components_validated": components.len(),
+        "recovery_handoff": handoff_receipt,
+        "restored_session": session_report,
+    });
+    if json {
+        crate::output::outln!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        crate::output::outln!(
+            "Simulated Restore Session Completed (final_state={:?}, requests_served={})",
+            session_report.final_state,
+            session_report.data_requests_served.len()
+        );
+    }
+    Ok(())
 }
 
 async fn read_restore_events<S>(
@@ -1219,5 +1584,161 @@ mod tests {
             ios_core::ErrorClass::Cancelled
         );
         remote.abort();
+    }
+
+    #[tokio::test]
+    async fn simulate_restore_rejects_without_explicit_confirmation_before_opening_files() {
+        let cmd = RestoreCmd {
+            sub: RestoreSub::SimulateRestore {
+                ipsw: "nonexistent.ipsw".into(),
+                tss: "nonexistent.shsh".into(),
+                behavior: "Update".into(),
+                board_id: "0x0c".into(),
+                chip_id: "0x8110".into(),
+                device_class: "d63ap".into(),
+                ecid: "42".into(),
+                ap_nonce_hex: "01020304".into(),
+                confirm_simulation: false,
+                timeout_secs: 5,
+            },
+        };
+        let err = cmd.run(None, true).await.unwrap_err();
+        assert!(err.to_string().contains("--force"));
+    }
+
+    #[tokio::test]
+    async fn simulate_restore_executes_full_img4_ramdisk_reenumeration_and_restored_asr_session() {
+        use std::io::Write;
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("ios_cli_sim_restore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let ipsw_path = temp_dir.join("synthetic.ipsw");
+        let tss_path = temp_dir.join("saved.shsh");
+
+        let comp = |path: &str, fw: bool| {
+            let mut info =
+                plist::Dictionary::from_iter([("Path", plist::Value::String(path.into()))]);
+            if fw {
+                info.insert("IsFirmwarePayload".into(), plist::Value::Boolean(true));
+            }
+            plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Info",
+                plist::Value::Dictionary(info),
+            )]))
+        };
+
+        let identity = plist::Dictionary::from_iter([
+            ("ApBoardID", plist::Value::Integer(0x0c.into())),
+            ("ApChipID", plist::Value::Integer(0x8110.into())),
+            ("ProductBuildVersion", plist::Value::String("21F90".into())),
+            (
+                "Info",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("DeviceClass", plist::Value::String("d63ap".into())),
+                    ("RestoreBehavior", plist::Value::String("Update".into())),
+                    (
+                        "Variant",
+                        plist::Value::String("Upgrade Install (IPSW)".into()),
+                    ),
+                ])),
+            ),
+            (
+                "Manifest",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("LLB", comp("Firmware/LLB.im4p", true)),
+                    ("iBoot", comp("Firmware/iBoot.im4p", true)),
+                    ("DeviceTree", comp("Firmware/DeviceTree.im4p", true)),
+                    ("RestoreLogo", comp("Firmware/RestoreLogo.im4p", false)),
+                    ("RestoreRamDisk", comp("Firmware/RestoreRamDisk.dmg", false)),
+                    (
+                        "RestoreDeviceTree",
+                        comp("Firmware/RestoreDeviceTree.im4p", false),
+                    ),
+                    ("RestoreSEP", comp("Firmware/RestoreSEP.im4p", false)),
+                    ("SEP", comp("Firmware/SEP.im4p", false)),
+                    (
+                        "RestoreKernelCache",
+                        comp("Firmware/RestoreKernelCache.im4p", false),
+                    ),
+                    ("KernelCache", comp("Firmware/KernelCache.im4p", false)),
+                    ("OS", comp("090-OS.dmg", false)),
+                ])),
+            ),
+        ]);
+
+        let build_manifest = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            ("ProductVersion", plist::Value::String("17.5.1".into())),
+            ("ProductBuildVersion", plist::Value::String("21F90".into())),
+            (
+                "BuildIdentities",
+                plist::Value::Array(vec![plist::Value::Dictionary(identity)]),
+            ),
+        ]));
+        let mut manifest_xml = Vec::new();
+        plist::to_writer_xml(&mut manifest_xml, &build_manifest).unwrap();
+
+        let ipsw_file = std::fs::File::create(&ipsw_path).unwrap();
+        let mut zip = zip::ZipWriter::new(ipsw_file);
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.start_file("BuildManifest.plist", opts).unwrap();
+        zip.write_all(&manifest_xml).unwrap();
+        for path in [
+            "Firmware/LLB.im4p",
+            "Firmware/iBoot.im4p",
+            "Firmware/DeviceTree.im4p",
+            "Firmware/RestoreLogo.im4p",
+            "Firmware/RestoreRamDisk.dmg",
+            "Firmware/RestoreDeviceTree.im4p",
+            "Firmware/RestoreSEP.im4p",
+            "Firmware/SEP.im4p",
+            "Firmware/RestoreKernelCache.im4p",
+            "Firmware/KernelCache.im4p",
+            "090-OS.dmg",
+        ] {
+            zip.start_file(path, opts).unwrap();
+            zip.write_all(format!("SYNTHETIC_BYTES_FOR_{path}").as_bytes())
+                .unwrap();
+        }
+        zip.finish().unwrap();
+
+        let saved_tss = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                "Request",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("ApECID", plist::Value::Integer(42.into())),
+                    ("ApBoardID", plist::Value::Integer(0x0c.into())),
+                    ("ApChipID", plist::Value::Integer(0x8110.into())),
+                    ("ApNonce", plist::Value::Data(vec![1, 2, 3, 4])),
+                ])),
+            ),
+            (
+                "Response",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "ApImg4Ticket",
+                    plist::Value::Data(b"SYNTHETIC_AP_IMG4_TICKET".to_vec()),
+                )])),
+            ),
+        ]));
+        let mut tss_xml = Vec::new();
+        plist::to_writer_xml(&mut tss_xml, &saved_tss).unwrap();
+        std::fs::write(&tss_path, &tss_xml).unwrap();
+
+        let cmd = RestoreCmd {
+            sub: RestoreSub::SimulateRestore {
+                ipsw: ipsw_path,
+                tss: tss_path,
+                behavior: "Update".into(),
+                board_id: "0x0c".into(),
+                chip_id: "0x8110".into(),
+                device_class: "d63ap".into(),
+                ecid: "42".into(),
+                ap_nonce_hex: "01020304".into(),
+                confirm_simulation: true,
+                timeout_secs: 10,
+            },
+        };
+        cmd.run(None, true).await.unwrap();
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

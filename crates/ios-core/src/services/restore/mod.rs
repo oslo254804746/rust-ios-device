@@ -11,13 +11,26 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod asr;
 mod error_mapping;
+pub mod img4;
 pub mod preflight;
+pub mod recovery;
 pub mod restored;
 pub mod state_machine;
 pub mod tss;
 use error_mapping::{native_h2, native_xpc};
 
-pub use restored::{run_restored_update_loop, RestoredClient};
+pub use img4::{
+    component_fourcc, parse_img4_envelope, stitch_img4_component, ParsedImg4Envelope,
+    RestoreProperty, RestorePropertyValue, StitchedImg4Component,
+};
+pub use recovery::{
+    build_recovery_ramdisk_plan, execute_recovery_ramdisk_handoff, RecoveryBootStep,
+    RecoveryDeviceMode, RecoveryHandoffReceipt, RecoveryRamdiskPlan,
+    RecoveryReenumerationTransport, SimulatedRecoveryTransport,
+};
+pub use restored::{
+    run_restored_protocol_session, run_restored_update_loop, RestoredClient, RestoredProtocolAssets,
+};
 pub use state_machine::{
     run_experimental_restore_loop, RestoreExecutionReport, RestoreFailure, RestoreProtocolGaps,
     RestoreState, RestoreStateMachine, RestoreStepOutcome,
@@ -69,24 +82,110 @@ service_error!(RestoreError);
 /// as their older counterparts when a restore transport is available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreDataRequestKind {
+    BuildIdentityDict,
+    PersonalizedBootObjectV3,
     SourceBootObjectV4,
     SourceBootObjectV5,
+    RecoveryOSLocalPolicy,
+    RecoveryOSRootTicketData,
+    RecoveryOSFileAssetImage,
+    RecoveryOSIBootFWFilesImages,
+    RecoveryOSImage,
+    RecoveryOSVersionData,
+    RootTicket,
+    NORData,
+    BasebandData,
+    FDRTrustData,
+    FirmwareUpdaterData,
     FirmwareUpdaterPreflight,
     DeviceRestoreInfoPreflight,
-    FirmwareUpdaterData,
+    KernelCache,
+    DeviceTree,
+    SystemImageData,
+    RecoveryOSASRImage,
+    SystemImageRootHash,
+    SystemImageCanonicalMetadata,
+    FUDData,
+    PersonalizedData,
+    EANData,
+    BootabilityBundle,
+    BootabilityBundleV2,
+    ReceiptManifest,
     HostSystemTime,
+    SystemImageWorkloads,
 }
 
 impl RestoreDataRequestKind {
     pub fn from_data_type(data_type: &str) -> Option<Self> {
         match data_type {
+            "BuildIdentityDict" => Some(Self::BuildIdentityDict),
+            "PersonalizedBootObjectV3" => Some(Self::PersonalizedBootObjectV3),
             "SourceBootObjectV4" => Some(Self::SourceBootObjectV4),
             "SourceBootObjectV5" => Some(Self::SourceBootObjectV5),
+            "RecoveryOSLocalPolicy" => Some(Self::RecoveryOSLocalPolicy),
+            "RecoveryOSRootTicketData" => Some(Self::RecoveryOSRootTicketData),
+            "RecoveryOSFileAssetImage" => Some(Self::RecoveryOSFileAssetImage),
+            "RecoveryOSIBootFWFilesImages" => Some(Self::RecoveryOSIBootFWFilesImages),
+            "RecoveryOSImage" => Some(Self::RecoveryOSImage),
+            "RecoveryOSVersionData" => Some(Self::RecoveryOSVersionData),
+            "RootTicket" => Some(Self::RootTicket),
+            "NORData" => Some(Self::NORData),
+            "BasebandData" => Some(Self::BasebandData),
+            "FDRTrustData" => Some(Self::FDRTrustData),
+            "FirmwareUpdaterData" => Some(Self::FirmwareUpdaterData),
             "FirmwareUpdaterPreflight" => Some(Self::FirmwareUpdaterPreflight),
             "DeviceRestoreInfoPreflight" => Some(Self::DeviceRestoreInfoPreflight),
-            "FirmwareUpdaterData" => Some(Self::FirmwareUpdaterData),
+            "KernelCache" => Some(Self::KernelCache),
+            "DeviceTree" => Some(Self::DeviceTree),
+            "SystemImageData" => Some(Self::SystemImageData),
+            "RecoveryOSASRImage" => Some(Self::RecoveryOSASRImage),
+            "SystemImageRootHash" => Some(Self::SystemImageRootHash),
+            "SystemImageCanonicalMetadata" => Some(Self::SystemImageCanonicalMetadata),
+            "FUDData" => Some(Self::FUDData),
+            "PersonalizedData" => Some(Self::PersonalizedData),
+            "EANData" => Some(Self::EANData),
+            "BootabilityBundle" => Some(Self::BootabilityBundle),
+            "BootabilityBundleV2" => Some(Self::BootabilityBundleV2),
+            "ReceiptManifest" => Some(Self::ReceiptManifest),
             "HostSystemTime" => Some(Self::HostSystemTime),
+            "SystemImageWorkloads" => Some(Self::SystemImageWorkloads),
             _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::BuildIdentityDict => "BuildIdentityDict",
+            Self::PersonalizedBootObjectV3 => "PersonalizedBootObjectV3",
+            Self::SourceBootObjectV4 => "SourceBootObjectV4",
+            Self::SourceBootObjectV5 => "SourceBootObjectV5",
+            Self::RecoveryOSLocalPolicy => "RecoveryOSLocalPolicy",
+            Self::RecoveryOSRootTicketData => "RecoveryOSRootTicketData",
+            Self::RecoveryOSFileAssetImage => "RecoveryOSFileAssetImage",
+            Self::RecoveryOSIBootFWFilesImages => "RecoveryOSIBootFWFilesImages",
+            Self::RecoveryOSImage => "RecoveryOSImage",
+            Self::RecoveryOSVersionData => "RecoveryOSVersionData",
+            Self::RootTicket => "RootTicket",
+            Self::NORData => "NORData",
+            Self::BasebandData => "BasebandData",
+            Self::FDRTrustData => "FDRTrustData",
+            Self::FirmwareUpdaterData => "FirmwareUpdaterData",
+            Self::FirmwareUpdaterPreflight => "FirmwareUpdaterPreflight",
+            Self::DeviceRestoreInfoPreflight => "DeviceRestoreInfoPreflight",
+            Self::KernelCache => "KernelCache",
+            Self::DeviceTree => "DeviceTree",
+            Self::SystemImageData => "SystemImageData",
+            Self::RecoveryOSASRImage => "RecoveryOSASRImage",
+            Self::SystemImageRootHash => "SystemImageRootHash",
+            Self::SystemImageCanonicalMetadata => "SystemImageCanonicalMetadata",
+            Self::FUDData => "FUDData",
+            Self::PersonalizedData => "PersonalizedData",
+            Self::EANData => "EANData",
+            Self::BootabilityBundle => "BootabilityBundle",
+            Self::BootabilityBundleV2 => "BootabilityBundleV2",
+            Self::ReceiptManifest => "ReceiptManifest",
+            Self::HostSystemTime => "HostSystemTime",
+            Self::SystemImageWorkloads => "SystemImageWorkloads",
         }
     }
 }
