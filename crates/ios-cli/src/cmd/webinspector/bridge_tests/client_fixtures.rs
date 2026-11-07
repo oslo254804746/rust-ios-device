@@ -763,6 +763,12 @@ async fn js_peer(
                                     }
                                 }
                             })
+                        } else if command["params"]["expression"]
+                            .as_str()
+                            .is_some_and(|expr| expr.starts_with("/*cdp-input:"))
+                        {
+                            receipt.evaluations += 1;
+                            json!({"id": cmd_id, "result": {"result": {"type": "boolean", "value": true}}})
                         } else if command["params"]["expression"] == "6*7"
                             || (closure.is_some()
                                 && matches!(
@@ -1038,6 +1044,20 @@ async fn join_pipe(mut task: JoinHandle<Result<Vec<u8>>>) -> Result<Vec<u8>> {
     }
 }
 
+fn resolve_node_binary() -> std::ffi::OsString {
+    if let Some(node) = std::env::var_os("IOS_CDP_CLIENT_NODE") {
+        return node;
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let candidate = PathBuf::from(home)
+            .join(".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe");
+        if candidate.is_file() {
+            return candidate.into_os_string();
+        }
+    }
+    "node".into()
+}
+
 pub(super) fn launch_client(
     client: &str,
     port: u16,
@@ -1046,7 +1066,7 @@ pub(super) fn launch_client(
     evidence: SharedEvidence,
 ) -> Result<OwnedClient> {
     let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/cdp-clients");
-    let node = std::env::var_os("IOS_CDP_CLIENT_NODE").unwrap_or_else(|| "node".into());
+    let node = resolve_node_binary();
     let mut command = tokio::process::Command::new(node);
     command
         .arg(directory.join("rust-bridge.mjs"))

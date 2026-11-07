@@ -66,6 +66,7 @@ pub struct BrowserCdpState {
     auto_attach: bool,
     auto_attach_filter: Vec<(Option<String>, bool)>,
     events_session: Option<String>,
+    download_behavior: Option<super::cdp::DownloadBehaviorPolicy>,
 }
 
 impl BrowserCdpState {
@@ -84,7 +85,12 @@ impl BrowserCdpState {
             auto_attach: false,
             auto_attach_filter: Vec::new(),
             events_session: None,
+            download_behavior: None,
         }
+    }
+
+    pub fn download_behavior(&self) -> Option<&super::cdp::DownloadBehaviorPolicy> {
+        self.download_behavior.as_ref()
     }
 
     pub fn auto_attach(&self) -> bool {
@@ -95,10 +101,60 @@ impl BrowserCdpState {
         if !self.auto_attach {
             return Vec::new();
         }
+        let has_non_blank = self.targets.values().any(|info| {
+            self.filter_allows(info)
+                && info
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|u| !u.is_empty() && u != "about:blank")
+        });
+        let candidate_allows = |id: &String| -> bool {
+            let info = &self.targets[id];
+            self.filter_allows(info)
+                && (!has_non_blank
+                    || info
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .is_some_and(|u| !u.is_empty() && u != "about:blank"))
+        };
+        let mut attached_page_apps: HashSet<&str> = HashSet::new();
+        let mut preferred_page_per_app: HashMap<&str, (u64, &str)> = HashMap::new();
+        for ((app_id, page_id), target_id) in &self.native_targets {
+            if let Some(info) = self.targets.get(target_id) {
+                if info.get("type").and_then(Value::as_str) == Some("page") {
+                    if self.target_sessions.contains_key(target_id) {
+                        attached_page_apps.insert(app_id.as_str());
+                    } else if candidate_allows(target_id) {
+                        match preferred_page_per_app.get(app_id.as_str()) {
+                            Some((best_id, _)) if *best_id >= *page_id => {}
+                            _ => {
+                                preferred_page_per_app
+                                    .insert(app_id.as_str(), (*page_id, target_id.as_str()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         self.targets
             .keys()
             .filter(|id| {
-                !self.target_sessions.contains_key(*id) && self.filter_allows(&self.targets[*id])
+                if self.target_sessions.contains_key(*id) || !candidate_allows(id) {
+                    return false;
+                }
+                if self.targets[*id].get("type").and_then(Value::as_str) == Some("page") {
+                    if let Some((app_id, _)) = self.native_page_for_target(id) {
+                        if attached_page_apps.contains(app_id.as_str()) {
+                            return false;
+                        }
+                        if let Some((_, preferred_target)) =
+                            preferred_page_per_app.get(app_id.as_str())
+                        {
+                            return *preferred_target == id.as_str();
+                        }
+                    }
+                }
+                true
             })
             .cloned()
             .collect()
@@ -423,11 +479,16 @@ impl BrowserCdpState {
                 "jsVersion": "",
             }),
             "Browser.setDownloadBehavior" => {
-                return BrowserCdpAction::Send(vec![error(
-                    &message,
-                    -32601,
-                    "Browser.setDownloadBehavior has no verified WebInspector download manager mapping",
-                )]);
+                let raw_params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+                match super::cdp::validate_download_behavior_params(&raw_params) {
+                    Ok(policy) => {
+                        self.download_behavior = Some(policy);
+                        json!({})
+                    }
+                    Err(reason) => {
+                        return BrowserCdpAction::Send(vec![error(&message, -32602, &reason)]);
+                    }
+                }
             }
             "Target.attachToBrowserTarget" => {
                 let session_id = Uuid::new_v4().to_string().to_uppercase();
@@ -746,6 +807,16 @@ pub fn is_verified_page_domain_method(method: &str) -> bool {
             | "Page.navigate"
             | "Page.captureScreenshot"
             | "Page.setDownloadBehavior"
+            | "Page.setLifecycleEventsEnabled"
+            | "Page.addScriptToEvaluateOnNewDocument"
+            | "Page.removeScriptToEvaluateOnNewDocument"
+            | "Page.setFontFamilies"
+            | "Page.setInterceptFileChooserDialog"
+            | "Page.createIsolatedWorld"
+            | "Input.dispatchMouseEvent"
+            | "Input.dispatchKeyEvent"
+            | "Input.insertText"
+            | "Input.dispatchTouchEvent"
             | "Console.enable"
             | "Console.disable"
             | "Fetch.enable"
@@ -1329,11 +1400,30 @@ mod tests {
         let mut state = BrowserCdpState::new("ios-cli");
         state.refresh(&[page("PID:42", "1", WirType::WebPage)]);
         let session = state.register_attachment("PID:42:1").unwrap();
+        let browser_dl = sent(
+            &mut state,
+            json!({"id": 100, "method": "Browser.setDownloadBehavior", "params": {"behavior": "allowAndName", "downloadPath": "C:/tmp", "eventsEnabled": true}}),
+        );
+        assert_eq!(browser_dl[0]["result"], json!({}));
+        assert_eq!(
+            state.download_behavior().map(|p| p.behavior.as_str()),
+            Some("allowAndName")
+        );
+        let invalid_browser_dl = sent(
+            &mut state,
+            json!({"id": 101, "method": "Browser.setDownloadBehavior", "params": {"behavior": "invalid"}}),
+        );
+        assert_eq!(invalid_browser_dl[0]["error"]["code"], -32602);
         for method in [
             "Page.enable",
             "Page.getFrameTree",
             "Page.navigate",
             "Page.captureScreenshot",
+            "Page.setDownloadBehavior",
+            "Input.dispatchMouseEvent",
+            "Input.dispatchKeyEvent",
+            "Input.insertText",
+            "Input.dispatchTouchEvent",
             "Fetch.enable",
             "Fetch.continueRequest",
             "Performance.enable",
@@ -1350,8 +1440,8 @@ mod tests {
             );
         }
         for method in [
-            "Input.dispatchMouseEvent",
-            "Input.dispatchKeyEvent",
+            "Input.synthesizePinchGesture",
+            "Input.imeSetComposition",
             "Memory.getDOMCounters",
         ] {
             let responses = sent(

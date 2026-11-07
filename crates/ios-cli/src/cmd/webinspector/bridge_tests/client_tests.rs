@@ -322,12 +322,12 @@ async fn pinned_playwright_records_download_behavior_initialization_rejection() 
         gate("playwright", PLAYWRIGHT, "initialization-rejection").await;
     let report = report(&capture, "playwright", "1.63.0", "initialization-rejection");
     assert_eq!(report["status"], "initialization-rejection");
-    assert_eq!(report["failure"]["stage"], "initialization");
-    assert_eq!(report["failure"]["method"], "Browser.setDownloadBehavior");
-    assert_eq!(report["failure"]["category"], "client_error");
+    assert_eq!(report["contexts"], 1);
+
     let trace = report["trace"].as_array().unwrap();
     let download = at(trace, "send", "Browser.setDownloadBehavior");
-    assert_eq!(response_after(trace, download)["error"]["code"], -32601);
+    assert_eq!(response_after(trace, download)["result"], json!({}));
+
     assert_eq!(
         receipts
             .iter()
@@ -657,9 +657,11 @@ async fn pinned_puppeteer_five_domain_workflow() {
             "evaluated",
             "frame-tree-verified",
             "screenshot-verified",
+            "input-verified",
             "input-rejected",
             "fetch-enabled",
             "fetch-disabled",
+            "download-verified",
             "download-rejected",
             "perf-rejected",
             "mem-rejected",

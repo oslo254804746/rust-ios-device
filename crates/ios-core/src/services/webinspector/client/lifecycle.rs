@@ -24,6 +24,8 @@ pub(super) struct WebInspectorState {
     progressed: bool,
     failed: bool,
     inherited_deadline: Option<Deadline>,
+    committed_depth: usize,
+    in_progress: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for WebInspectorState {
@@ -34,7 +36,18 @@ impl Default for WebInspectorState {
             progressed: false,
             failed: false,
             inherited_deadline: None,
+            committed_depth: 0,
+            in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+}
+
+impl WebInspectorState {
+    fn sync_in_progress(&self) {
+        self.in_progress.store(
+            self.progressed || self.committed_depth > 0,
+            std::sync::atomic::Ordering::Release,
+        );
     }
 }
 
@@ -49,6 +62,12 @@ impl<S> WebInspectorClient<S> {
     /// liveness or authorize retrying an interrupted device operation.
     pub fn is_usable(&self) -> bool {
         self.state.usable
+    }
+
+    /// Returns a shared flag that is `true` while a frame read/write has made
+    /// progress or an operation is committed between retained event boundaries.
+    pub fn in_progress_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.state.in_progress.clone()
     }
 
     /// Set a total budget for one client operation, including automatic listing
@@ -104,6 +123,7 @@ impl<S> WebInspectorClient<S> {
         self.ensure_usable()?;
         self.state.progressed = false;
         self.state.failed = false;
+        self.state.sync_in_progress();
         Ok(WebInspectorFrame {
             client: self,
             completed: false,
@@ -145,6 +165,8 @@ impl<S> WebInspectorFrame<'_, S> {
         if self.client.state.failed || (result.is_err() && self.client.state.progressed) {
             self.client.invalidate();
         }
+        self.client.state.progressed = false;
+        self.client.state.sync_in_progress();
         result
     }
 }
@@ -154,6 +176,8 @@ impl<S> Drop for WebInspectorFrame<'_, S> {
         if !self.completed && (self.client.state.progressed || self.client.state.failed) {
             self.client.invalidate();
         }
+        self.client.state.progressed = false;
+        self.client.state.sync_in_progress();
     }
 }
 
@@ -194,13 +218,25 @@ impl<'a, S> WebInspectorOperation<'a, S> {
     }
 
     pub(in super::super) fn commit(&mut self) {
-        self.committed = true;
+        if !self.committed {
+            self.committed = true;
+            self.client.state.committed_depth += 1;
+            self.client.state.sync_in_progress();
+        }
+    }
+
+    fn uncommit(&mut self) {
+        if self.committed {
+            self.committed = false;
+            self.client.state.committed_depth = self.client.state.committed_depth.saturating_sub(1);
+            self.client.state.sync_in_progress();
+        }
     }
 
     /// A fully routed unrelated event is retained, with no partial frame or
     /// automatic write outstanding. Cancellation can restore these same events.
     pub(in super::super) fn retained_event_boundary(&mut self) {
-        self.committed = false;
+        self.uncommit();
     }
 
     pub(in super::super) fn preserve(
@@ -229,7 +265,7 @@ impl<'a, S> WebInspectorOperation<'a, S> {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        self.committed = false;
+        self.uncommit();
         self.finish(result)
     }
 
@@ -241,7 +277,9 @@ impl<'a, S> WebInspectorOperation<'a, S> {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         self.completed = true;
-        if result.is_err() && self.committed {
+        let was_committed = self.committed;
+        self.uncommit();
+        if result.is_err() && was_committed {
             self.client.invalidate();
             return result;
         }
@@ -257,7 +295,9 @@ impl<'a, S> WebInspectorOperation<'a, S> {
 
 impl<S> Drop for WebInspectorOperation<'_, S> {
     fn drop(&mut self) {
-        if !self.completed && self.committed {
+        let was_committed = self.committed;
+        self.uncommit();
+        if !self.completed && was_committed {
             self.client.invalidate();
         } else if !self.completed && self.client.is_usable() && !self.skipped.is_empty() {
             // preserve() already admitted these immutable events together with
@@ -288,6 +328,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for WebInspectorIo<'_, S> {
         self.state.progressed |= buf.filled().len() > before;
         self.state.failed |= matches!(result, Poll::Ready(Err(_)))
             || (requested && matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() == before);
+        self.state.sync_in_progress();
         result
     }
 }
@@ -302,6 +343,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for WebInspectorIo<'_, S> {
         self.state.progressed |= matches!(result, Poll::Ready(Ok(n)) if n > 0);
         self.state.failed |= matches!(result, Poll::Ready(Err(_)))
             || (!bytes.is_empty() && matches!(result, Poll::Ready(Ok(0))));
+        self.state.sync_in_progress();
         result
     }
 

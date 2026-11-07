@@ -202,6 +202,7 @@ async fn handle_cdp_socket(
         .await?;
 
     let mut page_adapter = js_adapter.is_none().then(|| PageCdpAdapter::new(timeout));
+    let client_in_progress = client.in_progress_handle();
     let (mut sender, mut receiver) = socket.split();
     let bridge_result = tokio::select! {
         biased;
@@ -214,7 +215,14 @@ async fn handle_cdp_socket(
             tokio::task::yield_now().await;
             let translation_deadline = page_adapter.as_ref().and_then(PageCdpAdapter::next_deadline);
             tokio::select! {
-                inbound = receiver.next() => {
+                biased;
+                inbound = std::future::poll_fn(|cx| {
+                    if client_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+                        std::task::Poll::Pending
+                    } else {
+                        receiver.poll_next_unpin(cx)
+                    }
+                }) => {
                     match inbound {
                         Some(Ok(Message::Text(text))) => {
                             let message: JsonValue = serde_json::from_str(text.as_ref())?;
@@ -521,9 +529,15 @@ async fn handle_cdp_browser_socket(
                                     }
                                 }
                             }
+                            let is_set_auto_attach = request.get("method").and_then(JsonValue::as_str) == Some("Target.setAutoAttach");
                             let action = state.handle(request);
                             match action {
-                                BrowserCdpAction::Send(messages) => send_cdp_messages(&mut sender, messages).await?,
+                                BrowserCdpAction::Send(messages) => {
+                                    send_cdp_messages(&mut sender, messages).await?;
+                                    if is_set_auto_attach && !state.unattached_targets().is_empty() {
+                                        auto_attach_cdp_pages(server, &mut state, &mut sessions, &page_output_tx, &mut sender).await?;
+                                    }
+                                }
                                 BrowserCdpAction::Attach { request, target_id } => {
                                     let id = state.register_attachment_for_request(&target_id, &request).expect("known target");
                                     let identity = state.native_page_for_target(&target_id);
@@ -788,12 +802,16 @@ async fn open_cdp_browser_page_at(
     let (cancel, mut cancellation) = watch::channel(false);
     let timeout = server.timeout;
     let cdp_session_id = cdp_session_id.to_string();
+    let page_target_id = target_id.to_string();
     let outcome = browser_tasks::outcome();
     let task_outcome = outcome.clone();
     let task = tokio::spawn(async move {
         let _guard = guard;
         let _device = device;
-        let mut page_adapter = js_adapter.is_none().then(|| PageCdpAdapter::new(timeout));
+        let mut page_adapter = js_adapter
+            .is_none()
+            .then(|| PageCdpAdapter::with_target_id(timeout, page_target_id));
+        let client_in_progress = client.in_progress_handle();
         let stop = async {
             loop {
                 if *cancellation.borrow() {
@@ -815,7 +833,14 @@ async fn open_cdp_browser_page_at(
             tokio::task::yield_now().await;
             let translation_deadline = page_adapter.as_ref().and_then(PageCdpAdapter::next_deadline);
             tokio::select! {
-                inbound = receiver.recv() => {
+                biased;
+                inbound = std::future::poll_fn(|cx| {
+                    if client_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+                        std::task::Poll::Pending
+                    } else {
+                        receiver.poll_recv(cx)
+                    }
+                }) => {
                     match inbound {
                         Some(message) => {
                             if let Some(error) = cdp_browser::unverified_page_error(&message) {
