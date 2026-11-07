@@ -258,10 +258,14 @@ impl AppServiceClient {
         self.request_timeout = timeout;
     }
 
-    async fn call(&mut self, body: XpcValue) -> Result<XpcMessage, AppServiceError> {
+    async fn call_any_stream(&mut self, body: XpcValue) -> Result<XpcMessage, AppServiceError> {
         Ok(match self.request_timeout {
-            Some(budget) => self.client.call_with_timeout(body, budget).await?,
-            None => self.client.call(body).await?,
+            Some(budget) => {
+                self.client
+                    .call_any_stream_with_timeout(body, budget)
+                    .await?
+            }
+            None => self.client.call_any_stream(body).await?,
         })
     }
 
@@ -301,7 +305,7 @@ impl AppServiceClient {
     pub async fn list_processes(&mut self) -> Result<Vec<RunningAppProcess>, AppServiceError> {
         self.ensure_feature(FEATURE_LIST_PROCESSES)?;
         let response = self
-            .call(self.request(
+            .call_any_stream(self.request(
                 FEATURE_LIST_PROCESSES,
                 XpcValue::Dictionary(IndexMap::new()),
             ))
@@ -364,7 +368,7 @@ impl AppServiceClient {
 
         self.ensure_feature(FEATURE_LIST_APPS)?;
         let response = self
-            .call(self.request(FEATURE_LIST_APPS, build_list_apps_input(options)))
+            .call_any_stream(self.request(FEATURE_LIST_APPS, build_list_apps_input(options)))
             .await?;
         parse_apps(&response)
     }
@@ -449,7 +453,7 @@ impl AppServiceClient {
     pub async fn list_roots(&mut self) -> Result<XpcValue, AppServiceError> {
         self.ensure_feature(FEATURE_LIST_ROOTS)?;
         let response = self
-            .call(self.request(FEATURE_LIST_ROOTS, build_list_roots_input()))
+            .call_any_stream(self.request(FEATURE_LIST_ROOTS, build_list_roots_input()))
             .await?;
         parse_output_value(response)
     }
@@ -463,7 +467,9 @@ impl AppServiceClient {
     pub async fn send_signal(&mut self, pid: u64, signal: i64) -> Result<(), AppServiceError> {
         self.ensure_feature(FEATURE_SEND_SIGNAL)?;
         let response = self
-            .call(self.request(FEATURE_SEND_SIGNAL, build_send_signal_input(pid, signal)?))
+            .call_any_stream(
+                self.request(FEATURE_SEND_SIGNAL, build_send_signal_input(pid, signal)?),
+            )
             .await?;
         ensure_no_error(&response)?;
         Ok(())
@@ -476,7 +482,7 @@ impl AppServiceClient {
     ) -> Result<Option<u64>, AppServiceError> {
         self.ensure_feature(FEATURE_LAUNCH_APPLICATION)?;
         let response = self
-            .call(self.request(
+            .call_any_stream(self.request(
                 FEATURE_LAUNCH_APPLICATION,
                 build_launch_application_input(bundle_id)?,
             ))
@@ -510,10 +516,10 @@ impl AppServiceClient {
         let response = match self.request_timeout {
             Some(budget) => {
                 self.client
-                    .call_observed_with_timeout(request, budget, sent)
+                    .call_any_stream_observed_with_timeout(request, budget, sent)
                     .await?
             }
-            None => self.client.call_observed(request, sent).await?,
+            None => self.client.call_any_stream_observed(request, sent).await?,
         };
         ensure_no_error(&response)?;
         Ok(parse_pid(response.body.as_ref()))
@@ -527,7 +533,7 @@ impl AppServiceClient {
     ) -> Result<Option<u64>, AppServiceError> {
         self.ensure_feature(FEATURE_SPAWN_EXECUTABLE)?;
         let response = self
-            .call(self.request(
+            .call_any_stream(self.request(
                 FEATURE_SPAWN_EXECUTABLE,
                 build_spawn_executable_input(executable, arguments)?,
             ))
@@ -550,7 +556,7 @@ impl AppServiceClient {
     ) -> Result<Vec<AppIcon>, AppServiceError> {
         self.ensure_feature(FEATURE_FETCH_APP_ICONS)?;
         let response = self
-            .call(self.request(
+            .call_any_stream(self.request(
                 FEATURE_FETCH_APP_ICONS,
                 build_fetch_app_icons_input(bundle_id, width, height, scale, allow_placeholder),
             ))
@@ -566,7 +572,7 @@ impl AppServiceClient {
         self.ensure_feature(FEATURE_MONITOR_PROCESS_TERMINATION)?;
         let response = self
             .client
-            .call(self.request(
+            .call_any_stream(self.request(
                 FEATURE_MONITOR_PROCESS_TERMINATION,
                 build_monitor_process_termination_input(pid)?,
             ))

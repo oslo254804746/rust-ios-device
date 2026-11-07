@@ -134,6 +134,23 @@ fn parse_plist_int(val: &plist::Value) -> Option<u64> {
     }
 }
 
+/// Identify Cryptex BuildIdentity entries that do not target a device board/chip.
+fn is_cryptex_identity(identity_dict: &plist::Dictionary) -> bool {
+    identity_dict.get("ApBoardID").is_none()
+        && identity_dict.get("ApChipID").is_none()
+        && (identity_dict.keys().any(|key| key.starts_with("Cryptex"))
+            || identity_dict
+                .get("Ap,TargetType")
+                .and_then(plist::Value::as_string)
+                .is_some_and(|target| target.eq_ignore_ascii_case("ioscryptex"))
+            || identity_dict
+                .get("Info")
+                .and_then(plist::Value::as_dictionary)
+                .and_then(|info| info.get("Variant"))
+                .and_then(plist::Value::as_string)
+                .is_some_and(|variant| variant.contains("Cryptex")))
+}
+
 /// Helper to sanitize a relative path from plist (prevent path traversal).
 fn safe_relative_path(path_str: &str) -> Option<PathBuf> {
     let path = Path::new(path_str);
@@ -508,16 +525,21 @@ fn evaluate_single_manifest(
 
     // Filter identities matching board and chip
     let mut matching_identities = Vec::new();
-    let mut unresolved_identity = false;
+    let mut unresolved_target_identity = false;
+    let mut unresolved_generic_identity = false;
 
     for identity_val in identities {
         let identity_dict = match identity_val.as_dictionary() {
             Some(d) => d,
             None => {
-                unresolved_identity = true;
+                unresolved_generic_identity = true;
                 continue;
             }
         };
+
+        if is_cryptex_identity(identity_dict) {
+            continue;
+        }
 
         let id_board = identity_dict.get("ApBoardID").and_then(parse_plist_int);
         let id_chip = identity_dict.get("ApChipID").and_then(parse_plist_int);
@@ -536,7 +558,11 @@ fn evaluate_single_manifest(
             || id_chip.is_none()
             || (evidence.security_domain.is_some() && id_sec_domain.is_none())
         {
-            unresolved_identity = true;
+            if id_board.is_some() || id_chip.is_some() {
+                unresolved_target_identity = true;
+            } else {
+                unresolved_generic_identity = true;
+            }
             continue;
         }
         let board_matches = target_board == id_board;
@@ -548,6 +574,8 @@ fn evaluate_single_manifest(
         }
     }
 
+    let unresolved_identity = unresolved_target_identity
+        || (matching_identities.is_empty() && unresolved_generic_identity);
     if matching_identities.is_empty() || unresolved_identity {
         return TargetManifestMetadata {
             manifest_path: Some(manifest_display),
@@ -1453,6 +1481,83 @@ mod tests {
         let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
         assert_eq!(meta.outcome, Some(MatchOutcome::NoMatchingIdentity));
         assert!(!meta.is_ok());
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn cryptex_build_identity_does_not_poison_device_identity_evaluation() {
+        let temp = std::env::temp_dir().join(format!("cryptex_manifest_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+
+        let comp_content = b"sample-personalized-image-data";
+        let mut hasher = Sha256::new();
+        hasher.update(comp_content);
+        let digest = hasher.finalize().to_vec();
+        std::fs::write(temp.join("PersonalizedDMG.dmg"), comp_content).unwrap();
+
+        let manifest_path = create_test_manifest(
+            &temp,
+            12,
+            32800,
+            Some(1),
+            Some("1.0"),
+            &[("PersonalizedDMG", "PersonalizedDMG.dmg", Some(&digest))],
+        );
+
+        let mut root = plist::Value::from_file(&manifest_path).unwrap();
+        let mut cryptex = plist::Dictionary::new();
+        cryptex.insert("Ap,SDKPlatform".into(), plist::Value::String("none".into()));
+        cryptex.insert(
+            "Ap,TargetType".into(),
+            plist::Value::String("ioscryptex".into()),
+        );
+        cryptex.insert(
+            "Cryptex1,ChipID".into(),
+            plist::Value::String("0xFF10".into()),
+        );
+        cryptex.insert(
+            "Manifest".into(),
+            plist::Value::Dictionary(plist::Dictionary::new()),
+        );
+        root.as_dictionary_mut()
+            .unwrap()
+            .get_mut("BuildIdentities")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+            .push(plist::Value::Dictionary(cryptex));
+        root.to_file_xml(&manifest_path).unwrap();
+
+        let mut evidence = TargetEvidence {
+            udid: "00008020-0000000000000000".into(),
+            board_id: Some(12),
+            chip_id: Some(32800),
+            security_domain: Some(1),
+            product_version: Some("18.7.10".into()),
+            ..Default::default()
+        };
+
+        // Valid components match despite trailing Cryptex identity
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
+        assert_eq!(meta.outcome, Some(MatchOutcome::Matched));
+        assert_eq!(meta.matched_identities, 1);
+        assert_eq!(meta.total_identities, 2);
+
+        // Corrupted component digest is reported as DigestMismatch
+        std::fs::write(temp.join("PersonalizedDMG.dmg"), b"corrupted").unwrap();
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
+        assert_eq!(meta.outcome, Some(MatchOutcome::DigestMismatch));
+
+        // Missing component is reported as MissingFile
+        std::fs::remove_file(temp.join("PersonalizedDMG.dmg")).unwrap();
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
+        assert_eq!(meta.outcome, Some(MatchOutcome::MissingFile));
+
+        // Mismatched board/chip is reported as NoMatchingIdentity
+        evidence.board_id = Some(99);
+        let meta = evaluate_target_manifest(&evidence, std::slice::from_ref(&temp));
+        assert_eq!(meta.outcome, Some(MatchOutcome::NoMatchingIdentity));
 
         let _ = std::fs::remove_dir_all(temp);
     }

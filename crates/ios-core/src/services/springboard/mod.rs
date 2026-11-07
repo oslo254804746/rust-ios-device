@@ -250,6 +250,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SpringboardClient<S> {
     }
 
     pub async fn get_homescreen_wallpaper_pngdata(&mut self) -> Result<Vec<u8>, SpringboardError> {
+        match self
+            .request(
+                &CommandRequest {
+                    command: "getHomeScreenWallpaperPNGData",
+                },
+                |response| parse_homescreen_wallpaper_png_data(response?),
+            )
+            .await?
+        {
+            HomescreenWallpaperPngData::Png(png) => Ok(png),
+            HomescreenWallpaperPngData::NoStoredImage => {
+                match self.get_wallpaper_preview_image("homescreen").await {
+                    Ok(png) => Ok(png),
+                    Err(_) => Err(SpringboardError::Service(
+                        "This wallpaper has no image".into(),
+                    )),
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    async fn get_homescreen_wallpaper_pngdata_strict(
+        &mut self,
+    ) -> Result<Vec<u8>, SpringboardError> {
         self.request(
             &CommandRequest {
                 command: "getHomeScreenWallpaperPNGData",
@@ -354,6 +379,27 @@ fn parse_screens(value: plist::Value) -> Result<Vec<Vec<Icon>>, SpringboardError
             icons.into_iter().map(|icon| parse_icon(icon, 0)).collect()
         })
         .collect()
+}
+
+enum HomescreenWallpaperPngData {
+    Png(Vec<u8>),
+    NoStoredImage,
+}
+
+pub fn is_wallpaper_image_unavailable_error(message: &str) -> bool {
+    message.contains("This wallpaper has no image")
+}
+
+fn parse_homescreen_wallpaper_png_data(
+    value: plist::Value,
+) -> Result<HomescreenWallpaperPngData, SpringboardError> {
+    match parse_png_data(value) {
+        Ok(png) => Ok(HomescreenWallpaperPngData::Png(png)),
+        Err(SpringboardError::Service(error)) if is_wallpaper_image_unavailable_error(&error) => {
+            Ok(HomescreenWallpaperPngData::NoStoredImage)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_png_data(value: plist::Value) -> Result<Vec<u8>, SpringboardError> {
@@ -835,5 +881,57 @@ mod tests {
 
         let err = parse_png_data(value).unwrap_err();
         assert!(matches!(err, SpringboardError::Service(message) if message == "No such bundle"));
+    }
+
+    #[tokio::test]
+    async fn get_homescreen_wallpaper_pngdata_falls_back_to_preview_when_poster_wallpaper_has_no_image(
+    ) {
+        let (client_side, mut server_side) = tokio::io::duplex(8192);
+
+        tokio::spawn(async move {
+            let first_req = read_plist_frame(&mut server_side).await;
+            let first_val: plist::Value = plist::from_bytes(&first_req).unwrap();
+            let first_dict = first_val.into_dictionary().unwrap();
+            assert_eq!(
+                first_dict.get("command").and_then(|v| v.as_string()),
+                Some("getHomeScreenWallpaperPNGData")
+            );
+
+            let first_resp = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Error".to_string(),
+                plist::Value::String("This wallpaper has no image".into()),
+            )]));
+            let mut buf = Vec::new();
+            plist::to_writer_xml(&mut buf, &first_resp).unwrap();
+            let len = buf.len() as u32;
+            server_side.write_all(&len.to_be_bytes()).await.unwrap();
+            server_side.write_all(&buf).await.unwrap();
+
+            let second_req = read_plist_frame(&mut server_side).await;
+            let second_val: plist::Value = plist::from_bytes(&second_req).unwrap();
+            let second_dict = second_val.into_dictionary().unwrap();
+            assert_eq!(
+                second_dict.get("command").and_then(|v| v.as_string()),
+                Some("getWallpaperPreviewImage")
+            );
+            assert_eq!(
+                second_dict.get("wallpaperName").and_then(|v| v.as_string()),
+                Some("homescreen")
+            );
+
+            let second_resp = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "pngData".to_string(),
+                plist::Value::Data(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+            )]));
+            let mut buf = Vec::new();
+            plist::to_writer_xml(&mut buf, &second_resp).unwrap();
+            let len = buf.len() as u32;
+            server_side.write_all(&len.to_be_bytes()).await.unwrap();
+            server_side.write_all(&buf).await.unwrap();
+        });
+
+        let mut client = SpringboardClient::new(client_side);
+        let png = client.get_homescreen_wallpaper_pngdata().await.unwrap();
+        assert_eq!(png, vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
     }
 }

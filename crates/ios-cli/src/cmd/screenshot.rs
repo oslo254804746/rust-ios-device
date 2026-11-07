@@ -49,7 +49,7 @@ impl ScreenshotCmd {
         // Checked before the capture so a doomed shot costs nothing; stream mode
         // writes no file and is deliberately not guarded.
         crate::cmd::file::ensure_local_overwrite_allowed(Path::new(&self.output), self.force)?;
-        let (image, transport) = capture_screenshot(&udid).await?;
+        let (image, transport) = Box::pin(capture_screenshot(&udid)).await?;
         crate::cmd::file::write_local_bytes_atomic(
             Path::new(&self.output),
             &image.data,
@@ -76,7 +76,7 @@ impl ScreenshotCmd {
             ))?;
             let udid = udid.to_string();
             tokio::spawn(async move {
-                if let Err(err) = serve_stream_client(socket, &udid).await {
+                if let Err(err) = Box::pin(serve_stream_client_on_large_stack(socket, udid)).await {
                     let _ = crate::output::write_error_line(format_args!(
                         "screenshot stream client error: {}",
                         crate::output::error_message(&err)
@@ -90,8 +90,8 @@ impl ScreenshotCmd {
 async fn capture_screenshot(udid: &str) -> Result<(ScreenshotImage, &'static str)> {
     let version = probe_product_version(udid).await?;
     if version.major >= 17 {
-        match connect_userspace_tunnel(udid).await {
-            Ok(device) => match try_coredevice_screenshot(&device).await {
+        match Box::pin(connect_userspace_tunnel(udid)).await {
+            Ok(device) => match Box::pin(try_coredevice_screenshot(&device)).await {
                 Ok(image) => return Ok((ScreenshotImage::from_bytes(image.data), "coredevice")),
                 Err(error) if coredevice_fallback_allowed(&error) => {
                     // Screenshot is read-only, so falling back after a modern
@@ -107,11 +107,11 @@ async fn capture_screenshot(udid: &str) -> Result<(ScreenshotImage, &'static str
             Err(error) => return Err(error),
         }
     }
-    match try_dtx_screenshot(udid).await {
+    match Box::pin(try_dtx_screenshot(udid)).await {
         Ok(data) => Ok((ScreenshotImage::from_bytes(data), "dtx")),
         Err(e) if dtx_fallback_allowed(&e) => {
             tracing::debug!(error = %crate::output::error_message(&e), "DTX screenshot failed, falling back to legacy");
-            let data = take_legacy_screenshot(udid).await?;
+            let data = Box::pin(take_legacy_screenshot(udid)).await?;
             Ok((data, "legacy"))
         }
         Err(e) => Err(e),
@@ -200,7 +200,7 @@ async fn try_coredevice_screenshot(
 async fn try_dtx_screenshot(udid: &str) -> Result<Bytes> {
     use crate::cmd::instruments::connect_instruments;
 
-    let (_device, stream) = connect_instruments(udid).await?;
+    let (_device, stream) = Box::pin(connect_instruments(udid)).await?;
     let data = ios_core::instruments::screenshot::take_screenshot_dtx(stream)
         .await
         .map_err(|e| anyhow::Error::new(e).context("DTX screenshot"))?;
@@ -216,9 +216,9 @@ pub(super) async fn capture_fallback_scoped(
     let result = async {
         let version = probe_product_version(udid).await?;
         if version.major < 17 {
-            return try_dtx_screenshot(udid).await;
+            return Box::pin(try_dtx_screenshot(udid)).await;
         }
-        let device = native.connect(udid, ios_core::TunMode::Userspace).await?;
+        let device = Box::pin(native.connect(udid, ios_core::TunMode::Userspace)).await?;
         let stream = device
             .connect_rsd_service(ios_core::instruments::SERVICE_IOS17)
             .await?;
@@ -234,7 +234,7 @@ pub(super) async fn capture_fallback_scoped(
     }
     match result {
         Ok(data) => Ok(ScreenshotImage::from_bytes(data)),
-        Err(error) if dtx_fallback_allowed(&error) => take_legacy_screenshot(udid).await,
+        Err(error) if dtx_fallback_allowed(&error) => Box::pin(take_legacy_screenshot(udid)).await,
         Err(error) => Err(error),
     }
 }
@@ -250,7 +250,31 @@ async fn take_legacy_screenshot(udid: &str) -> Result<ScreenshotImage> {
     crate::output::write_error_line(format_args!("Capturing screenshot (legacy screenshotr)..."))?;
     let mut client = ios_core::screenshot::ScreenshotClient::new(stream);
     client.set_operation_timeout(Some(Duration::from_secs(30)));
-    Ok(client.take_screenshot().await?)
+    Ok(Box::pin(client.take_screenshot()).await?)
+}
+
+async fn serve_stream_client_on_large_stack(socket: TcpStream, udid: String) -> Result<()> {
+    let handle = tokio::runtime::Handle::current();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let (abort_tx, mut abort_rx) = tokio::sync::oneshot::channel::<()>();
+    std::thread::Builder::new()
+        .name("ios-screenshot-stream".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let result = handle.block_on(async move {
+                let client = Box::pin(serve_stream_client(socket, &udid));
+                tokio::select! {
+                    biased;
+                    _ = &mut abort_rx => Ok(()),
+                    res = client => res,
+                }
+            });
+            let _ = done_tx.send(result);
+        })?;
+    let _abort_guard = abort_tx;
+    done_rx
+        .await
+        .map_err(|_| anyhow::anyhow!("screenshot stream worker thread terminated unexpectedly"))?
 }
 
 async fn serve_stream_client(mut socket: TcpStream, udid: &str) -> Result<()> {
@@ -259,7 +283,7 @@ async fn serve_stream_client(mut socket: TcpStream, udid: &str) -> Result<()> {
         .await?;
 
     loop {
-        let (frame, _) = capture_screenshot(udid).await?;
+        let (frame, _) = Box::pin(capture_screenshot(udid)).await?;
         let multipart = encode_multipart_frame(&frame);
         socket.write_all(&multipart).await?;
         socket.flush().await?;

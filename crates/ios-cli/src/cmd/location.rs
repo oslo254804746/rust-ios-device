@@ -41,6 +41,30 @@ async fn connect_location(udid: &str) -> Result<(ios_core::ConnectedDevice, Loca
     }
 }
 
+fn parse_latitude(latitude: &str) -> Result<f64> {
+    let value = latitude
+        .parse::<f64>()
+        .map_err(|e| crate::output::input_error("invalid latitude", e))?;
+    if !value.is_finite() || !(-90.0..=90.0).contains(&value) {
+        return Err(crate::output::input_decision(
+            "latitude must be a finite value in [-90.0, 90.0]",
+        ));
+    }
+    Ok(value)
+}
+
+fn parse_longitude(longitude: &str) -> Result<f64> {
+    let value = longitude
+        .parse::<f64>()
+        .map_err(|e| crate::output::input_error("invalid longitude", e))?;
+    if !value.is_finite() || !(-180.0..=180.0).contains(&value) {
+        return Err(crate::output::input_decision(
+            "longitude must be a finite value in [-180.0, 180.0]",
+        ));
+    }
+    Ok(value)
+}
+
 impl LocationClient {
     async fn set_location(&mut self, latitude: &str, longitude: &str) -> Result<()> {
         match self {
@@ -49,12 +73,8 @@ impl LocationClient {
                 .await
                 .map_err(Into::into),
             Self::Modern(client) => {
-                let latitude = latitude
-                    .parse::<f64>()
-                    .map_err(|e| crate::output::input_error("invalid latitude", e))?;
-                let longitude = longitude
-                    .parse::<f64>()
-                    .map_err(|e| crate::output::input_error("invalid longitude", e))?;
+                let latitude = parse_latitude(latitude)?;
+                let longitude = parse_longitude(longitude)?;
                 tokio::time::timeout(LOCATION_TIMEOUT, client.set_location(latitude, longitude))
                     .await??;
                 Ok(())
@@ -98,7 +118,12 @@ pub struct LocationCmd {
 #[derive(clap::Subcommand)]
 enum LocationSub {
     /// Set a custom simulated location
-    Set { latitude: String, longitude: String },
+    Set {
+        #[arg(allow_hyphen_values = true)]
+        latitude: String,
+        #[arg(allow_hyphen_values = true)]
+        longitude: String,
+    },
     /// Replay a GPX track file against the device
     Gpx { file: PathBuf },
     /// Reset location simulation back to the device's GPS
@@ -114,12 +139,8 @@ impl LocationCmd {
                 latitude,
                 longitude,
             } => {
-                latitude
-                    .parse::<f64>()
-                    .map_err(|e| crate::output::input_error("invalid latitude", e))?;
-                longitude
-                    .parse::<f64>()
-                    .map_err(|e| crate::output::input_error("invalid longitude", e))?;
+                parse_latitude(&latitude)?;
+                parse_longitude(&longitude)?;
 
                 let (_device, mut client) = connect_location(&udid).await?;
                 client
@@ -290,6 +311,48 @@ mod tests {
                 assert_eq!(longitude, "2.3522219");
             }
             LocationSub::Gpx { .. } | LocationSub::Reset => panic!("expected set subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_negative_set_coordinates_without_double_dash() {
+        let cmd = TestCli::parse_from(["location", "set", "37.7749", "-122.4194"]);
+        match cmd.command {
+            LocationSub::Set {
+                latitude,
+                longitude,
+            } => {
+                assert_eq!(latitude, "37.7749");
+                assert_eq!(longitude, "-122.4194");
+            }
+            LocationSub::Gpx { .. } | LocationSub::Reset => panic!("expected set subcommand"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_out_of_range_and_non_finite_coordinates_before_connection() {
+        for (latitude, longitude) in [
+            ("999", "0"),
+            ("-90.001", "0"),
+            ("0", "180.001"),
+            ("0", "-180.001"),
+            ("NaN", "0"),
+            ("0", "inf"),
+        ] {
+            let command = LocationCmd {
+                sub: LocationSub::Set {
+                    latitude: latitude.to_owned(),
+                    longitude: longitude.to_owned(),
+                },
+            };
+            let error = command
+                .run(Some("owned-private-device".to_owned()))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
         }
     }
 

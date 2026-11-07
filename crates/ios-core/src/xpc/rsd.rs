@@ -1962,8 +1962,12 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
 
     fn next_id(&mut self) -> Result<u64, XpcError> {
         let id = self.msg_id;
+        // RemoteXPC client-initiated request IDs must always be odd (1, 3, 5, ...).
+        // Asking a daemon to reply on the reply channel to an even ID causes libxpc
+        // to abort the service ("Attempted to send non-reply msg on the reply channel").
         self.msg_id = id
             .checked_add(1)
+            .map(|next| next | 1)
             .ok_or_else(|| XpcError::Tls("XPC message identifier exhausted".into()))?;
         Ok(id)
     }
@@ -2039,6 +2043,75 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         })
         .await;
         operation.finish(result)
+    }
+
+    pub(crate) async fn call_any_stream(
+        &mut self,
+        body: XpcValue,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcMessage, XpcError> {
+        self.call_any_stream_observed(body, budget, &mut false)
+            .await
+    }
+
+    pub(crate) async fn call_any_stream_observed(
+        &mut self,
+        body: XpcValue,
+        budget: Option<std::time::Duration>,
+        sent: &mut bool,
+    ) -> Result<XpcMessage, XpcError> {
+        let operation = self.begin_operation(budget)?;
+        let result = await_xpc_operation(operation.deadline, async {
+            let connection = &mut *operation.connection;
+            let id = connection
+                .send_with_flags_inner(body, flags::WANTING_REPLY)
+                .await?;
+            *sent = true;
+            connection.recv_service_reply_inner(id).await
+        })
+        .await;
+        operation.finish(result)
+    }
+
+    fn is_ignorable_service_ack(message: &XpcMessage) -> bool {
+        match &message.body {
+            None => true,
+            Some(XpcValue::Dictionary(values)) if values.is_empty() => {
+                message.msg_id == 0 && (message.flags & flags::REPLY) == 0
+            }
+            _ => false,
+        }
+    }
+
+    async fn recv_service_reply_inner(&mut self, msg_id: u64) -> Result<XpcMessage, XpcError> {
+        for stream_id in [
+            crate::xpc::h2_raw::STREAM_SERVER_CLIENT,
+            crate::xpc::h2_raw::STREAM_CLIENT_SERVER,
+        ] {
+            if let Some(message) = self.take_pending_message(stream_id, msg_id) {
+                if !Self::is_ignorable_service_ack(&message) {
+                    return Ok(message);
+                }
+            }
+        }
+        for stream_id in [
+            crate::xpc::h2_raw::STREAM_SERVER_CLIENT,
+            crate::xpc::h2_raw::STREAM_CLIENT_SERVER,
+        ] {
+            while let Some(message) = self.pop_next_pending_message(stream_id) {
+                if !Self::is_ignorable_service_ack(&message) {
+                    return Ok(message);
+                }
+            }
+        }
+
+        loop {
+            let message = self.recv_any_stream_inner().await?;
+            if Self::is_ignorable_service_ack(&message) {
+                continue;
+            }
+            return Ok(message);
+        }
     }
 
     #[cfg(feature = "pasteboard")]

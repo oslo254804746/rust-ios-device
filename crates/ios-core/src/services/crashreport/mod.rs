@@ -323,6 +323,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CrashReportClient<S> {
                     .map(|remaining| options.poll_interval.min(remaining))
                     .unwrap_or(options.poll_interval);
                 tokio::time::sleep(sleep_for).await;
+                if let Some(timeout) = options.timeout {
+                    if started.elapsed() >= timeout {
+                        break;
+                    }
+                }
+                if let Some(deadline) = deadline {
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                }
                 let reports = if let Some(deadline) = deadline {
                     tokio::time::timeout_at(
                         deadline,

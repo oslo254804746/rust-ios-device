@@ -180,6 +180,41 @@ impl XpcClient {
             .await
     }
 
+    /// Send an XPC dictionary and receive the response from whichever control stream replies.
+    pub async fn call_any_stream(&mut self, body: XpcValue) -> Result<XpcMessage, XpcError> {
+        self.inner.call_any_stream(body, None).await
+    }
+
+    /// Send an XPC dictionary and receive the response from whichever control stream replies under a shared budget.
+    pub async fn call_any_stream_with_timeout(
+        &mut self,
+        body: XpcValue,
+        budget: std::time::Duration,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner.call_any_stream(body, Some(budget)).await
+    }
+
+    /// Observe full local submission while receiving the response from whichever control stream replies.
+    pub async fn call_any_stream_observed(
+        &mut self,
+        body: XpcValue,
+        sent: &mut bool,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner.call_any_stream_observed(body, None, sent).await
+    }
+
+    /// Observe full local submission under a shared budget while receiving the response from whichever control stream replies.
+    pub async fn call_any_stream_observed_with_timeout(
+        &mut self,
+        body: XpcValue,
+        budget: std::time::Duration,
+        sent: &mut bool,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner
+            .call_any_stream_observed(body, Some(budget), sent)
+            .await
+    }
+
     /// Send an XPC dictionary and receive the response from stream 1.
     pub async fn call_recv_client_server(
         &mut self,
@@ -593,9 +628,9 @@ mod tests {
                         crate::xpc::message::decode_message(bytes.into())
                             .unwrap()
                             .msg_id,
-                        2
+                        3
                     );
-                    peer.write_all(&data_frame(1, &lifecycle_xpc_message(2)))
+                    peer.write_all(&data_frame(1, &lifecycle_xpc_message(3)))
                         .await
                         .unwrap();
                 }
@@ -603,7 +638,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(reply.unwrap().msg_id, 2);
+        assert_eq!(reply.unwrap().msg_id, 3);
         assert!(client.is_usable());
         peer.write_all(&data_frame(5, &lifecycle_xpc_message(92)))
             .await
@@ -885,7 +920,7 @@ mod tests {
                     assert!(pasteboard.get().await.is_ok());
                 },
                 async {
-                    for id in [1, 2] {
+                    for id in [1, 3] {
                         let (_, _, bytes) = lifecycle_xpc_frame(&mut peer).await;
                         let request = crate::decode_xpc_message(bytes.into()).unwrap();
                         assert_eq!(request.msg_id, id);

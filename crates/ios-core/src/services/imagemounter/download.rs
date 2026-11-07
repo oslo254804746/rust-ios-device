@@ -129,11 +129,9 @@ impl DdiDownloader {
             .join(LATEST_PERSONALIZED_DDI_BUILD_ID);
 
         // Check cache
-        let img_path = dir.join("Restore").join("PersonalizedDMG.dmg");
-        let tc_path = dir.join("Restore").join("PersonalizedDMG.trustcache");
-        let bm_path = dir.join("Restore").join("BuildManifest.plist");
+        let restore_dir = dir.join("Restore");
 
-        if img_path.exists() && tc_path.exists() && bm_path.exists() {
+        if has_cached_personalized_ddi(&restore_dir) {
             tracing::info!(path = %crate::redaction::diagnostic_id(&dir.to_string_lossy()), "Using cached personalized DDI");
             let ddi = load_personalized_from_restore_dir(&dir.join("Restore")).await?;
             validate_personalized_build_id(&ddi.build_manifest)?;
@@ -293,12 +291,13 @@ async fn copy_archive_body<W: tokio::io::AsyncWrite + Unpin>(
 pub async fn load_personalized_from_restore_dir(
     restore: &Path,
 ) -> Result<PersonalizedDdi, ImageMounterError> {
-    let image = tokio::fs::read(restore.join("PersonalizedDMG.dmg"))
+    let image = read_personalized_component(restore, "PersonalizedDMG.dmg", "PersonalizedDMG")
         .await
         .map_err(|source| super::native_io("read personalized DDI image", source))?;
-    let trustcache = tokio::fs::read(restore.join("PersonalizedDMG.trustcache"))
-        .await
-        .map_err(|source| super::native_io("read personalized DDI trustcache", source))?;
+    let trustcache =
+        read_personalized_component(restore, "PersonalizedDMG.trustcache", "LoadableTrustCache")
+            .await
+            .map_err(|source| super::native_io("read personalized DDI trustcache", source))?;
     let build_manifest = tokio::fs::read(restore.join("BuildManifest.plist"))
         .await
         .map_err(|source| super::native_io("read personalized DDI manifest", source))?;
@@ -321,8 +320,124 @@ where
 {
     let mut archive = zip::ZipArchive::new(reader)
         .map_err(|source| super::native_zip("open personalized DDI archive", source))?;
-    extract_zip_archive(&mut archive, dest)
+    extract_zip_archive(&mut archive, dest)?;
+    populate_canonical_restore_files(&dest.join("Restore"));
+    Ok(())
 }
+
+fn has_cached_personalized_ddi(restore: &Path) -> bool {
+    let bm_path = restore.join("BuildManifest.plist");
+    if !bm_path.exists() {
+        return false;
+    }
+    if restore.join("PersonalizedDMG.dmg").exists()
+        && restore.join("PersonalizedDMG.trustcache").exists()
+    {
+        return true;
+    }
+    let Ok(manifest_bytes) = std::fs::read(&bm_path) else {
+        return false;
+    };
+    let Some(dmg_rel) = resolve_manifest_component_path(&manifest_bytes, "PersonalizedDMG") else {
+        return false;
+    };
+    let Some(tc_rel) = resolve_manifest_component_path(&manifest_bytes, "LoadableTrustCache")
+    else {
+        return false;
+    };
+    restore.join(dmg_rel).exists() && restore.join(tc_rel).exists()
+}
+
+fn resolve_manifest_component_path(manifest_bytes: &[u8], component: &str) -> Option<PathBuf> {
+    let manifest: plist::Value = plist::from_bytes(manifest_bytes).ok()?;
+    let identities = manifest
+        .as_dictionary()?
+        .get("BuildIdentities")?
+        .as_array()?;
+    for identity in identities {
+        let Some(rel_str) = identity
+            .as_dictionary()
+            .and_then(|dict| dict.get("Manifest"))
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|manifest| manifest.get(component))
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|comp| comp.get("Info"))
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|info| info.get("Path"))
+            .and_then(plist::Value::as_string)
+        else {
+            continue;
+        };
+        let normalized = rel_str.replace('\\', "/");
+        let parts = normalized
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        if parts.is_empty()
+            || parts
+                .iter()
+                .any(|part| matches!(*part, "." | "..") || part.contains(':'))
+        {
+            continue;
+        }
+        let mut path = PathBuf::new();
+        path.extend(parts);
+        return Some(path);
+    }
+    None
+}
+
+fn populate_canonical_restore_files(restore: &Path) {
+    let bm_path = restore.join("BuildManifest.plist");
+    let Ok(manifest_bytes) = std::fs::read(&bm_path) else {
+        return;
+    };
+    let canonical_dmg = restore.join("PersonalizedDMG.dmg");
+    if !canonical_dmg.exists() {
+        if let Some(rel_dmg) = resolve_manifest_component_path(&manifest_bytes, "PersonalizedDMG") {
+            let src = restore.join(rel_dmg);
+            if src.exists() {
+                let _ = std::fs::copy(&src, &canonical_dmg);
+            }
+        }
+    }
+    let canonical_tc = restore.join("PersonalizedDMG.trustcache");
+    if !canonical_tc.exists() {
+        if let Some(rel_tc) = resolve_manifest_component_path(&manifest_bytes, "LoadableTrustCache")
+        {
+            let src = restore.join(rel_tc);
+            if src.exists() {
+                let _ = std::fs::copy(&src, &canonical_tc);
+            }
+        }
+    }
+}
+
+async fn read_personalized_component(
+    restore: &Path,
+    canonical_name: &str,
+    manifest_component: &str,
+) -> std::io::Result<Vec<u8>> {
+    match tokio::fs::read(restore.join(canonical_name)).await {
+        Ok(bytes) => Ok(bytes),
+        Err(err) => {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                if let Ok(bm) = tokio::fs::read(restore.join("BuildManifest.plist")).await {
+                    if let Some(rel) = resolve_manifest_component_path(&bm, manifest_component) {
+                        let fallback = restore.join(rel);
+                        if fallback.exists() {
+                            return tokio::fs::read(fallback).await;
+                        }
+                    }
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn finish_zip_extraction_noop() {}
 
 fn extract_zip_archive<R>(
     archive: &mut zip::ZipArchive<R>,

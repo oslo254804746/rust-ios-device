@@ -313,7 +313,28 @@ impl SpringboardCmd {
                 }
             }
             SpringboardSub::WallpaperHomeScreen { output, json } => {
-                let png = client.get_homescreen_wallpaper_pngdata().await?;
+                let png = match client.get_homescreen_wallpaper_pngdata().await {
+                    Ok(png) => png,
+                    Err(err) if is_homescreen_wallpaper_unavailable(&err) => {
+                        tracing::info!(
+                            "The wallpaper has no stored image (a poster wallpaper); saving its rendered preview instead"
+                        );
+                        if !client.is_usable() {
+                            let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+                                &udid,
+                                ios_core::springboard::SERVICE_NAME,
+                                Duration::from_secs(30),
+                            )
+                            .await?;
+                            client = SpringboardClient::new(stream);
+                            client.set_operation_timeout(Some(Duration::from_millis(
+                                self.request_timeout_ms,
+                            )));
+                        }
+                        client.get_wallpaper_preview_image("homescreen").await?
+                    }
+                    Err(err) => return Err(err.into()),
+                };
                 let bytes = png.len();
                 fs::write(&output, png).await?;
                 if json {
@@ -446,6 +467,18 @@ fn icon_result_to_json(bundle_id: &str, output: &str, bytes: usize) -> serde_jso
         "output": output,
         "bytes": bytes,
     })
+}
+
+fn is_homescreen_wallpaper_unavailable(err: &ios_core::springboard::SpringboardError) -> bool {
+    match err {
+        ios_core::springboard::SpringboardError::Service(message) => {
+            ios_core::springboard::is_wallpaper_image_unavailable_error(message)
+        }
+        ios_core::springboard::SpringboardError::Io(io_err) => {
+            io_err.kind() == std::io::ErrorKind::UnexpectedEof
+        }
+        _ => false,
+    }
 }
 
 fn png_result_to_json(name: &str, output: &str, bytes: usize) -> serde_json::Value {
@@ -872,6 +905,23 @@ mod tests {
         assert_eq!(InterfaceOrientation::Portrait.label(), "portrait");
         assert_eq!(InterfaceOrientation::Landscape.raw_value(), 3);
         assert_eq!(InterfaceOrientation::Unknown(9).label(), "unknown");
+    }
+
+    #[test]
+    fn detects_poster_wallpaper_unavailable_errors() {
+        let service_err =
+            ios_core::springboard::SpringboardError::Service("This wallpaper has no image".into());
+        assert!(is_homescreen_wallpaper_unavailable(&service_err));
+
+        let other_service_err =
+            ios_core::springboard::SpringboardError::Service("No such bundle".into());
+        assert!(!is_homescreen_wallpaper_unavailable(&other_service_err));
+
+        let eof_err = ios_core::springboard::SpringboardError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "connection terminated",
+        ));
+        assert!(is_homescreen_wallpaper_unavailable(&eof_err));
     }
 }
 

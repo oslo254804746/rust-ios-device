@@ -140,7 +140,7 @@ enum OsTraceSub {
         /// Destination archive path. Existing files are atomically replaced.
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
-        /// Requested device archive size; also the host cap unless --max-bytes is set.
+        /// Requested device archive size hint sent to CreateArchive.
         #[arg(long)]
         size_limit: Option<u64>,
         /// Hard host transfer cap in bytes, independent of the device size hint.
@@ -161,7 +161,7 @@ enum OsTraceSub {
         /// Destination .logarchive directory. It must not already exist.
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
-        /// Requested device archive size; also the host cap unless --max-bytes is set.
+        /// Requested device archive size hint sent to CreateArchive.
         #[arg(long)]
         size_limit: Option<u64>,
         /// Hard host transfer cap in bytes, independent of the device size hint.
@@ -267,9 +267,7 @@ fn archive_options(
         size_limit,
         age_limit,
         start_time,
-        max_total_bytes: max_bytes
-            .or(size_limit)
-            .unwrap_or(ios_core::ostrace::DEFAULT_MAX_ARCHIVE_BYTES),
+        max_total_bytes: max_bytes.unwrap_or(ios_core::ostrace::DEFAULT_MAX_ARCHIVE_BYTES),
         ..Default::default()
     })
 }
@@ -991,7 +989,10 @@ mod tests {
         );
         let legacy = archive_options(Some(1024), None, None, None).unwrap();
         assert_eq!(legacy.size_limit, Some(1024));
-        assert_eq!(legacy.max_total_bytes, 1024);
+        assert_eq!(
+            legacy.max_total_bytes,
+            ios_core::ostrace::DEFAULT_MAX_ARCHIVE_BYTES
+        );
         let separate = archive_options(Some(1024), Some(2048), Some(1), Some(42)).unwrap();
         assert_eq!(separate.size_limit, Some(1024));
         assert_eq!(separate.max_total_bytes, 2048);

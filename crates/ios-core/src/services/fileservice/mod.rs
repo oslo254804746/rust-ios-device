@@ -17,6 +17,12 @@ use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
 pub const CONTROL_SERVICE_NAME: &str = "com.apple.coredevice.fileservice.control";
 /// RSD service name for file payload transfer streams.
 pub const DATA_SERVICE_NAME: &str = "com.apple.coredevice.fileservice.data";
+/// RSD feature identifier for listing directory contents.
+pub const FEATURE_LIST_FILES: &str = "com.apple.coredevice.feature.listFiles";
+/// RSD feature identifier for transferring files (pull and push).
+pub const FEATURE_TRANSFER_FILES: &str = "com.apple.coredevice.feature.transferFiles";
+/// RSD feature identifier for filesystem mutations (`mkdir`, `rm`, `mv`).
+pub const FEATURE_FILE_SYSTEM_OPERATION: &str = "com.apple.coredevice.feature.filesystemoperation";
 /// Conservative upper bound for a single file transfer.
 pub const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 /// Maximum payload size inlined in a `ProposeFile` control request.
@@ -110,6 +116,7 @@ impl Default for FileWriteOptions {
 pub struct FileServiceClient {
     control: XpcClient,
     session_id: String,
+    service_features: Option<Vec<String>>,
 }
 
 impl FileServiceClient {
@@ -120,12 +127,13 @@ impl FileServiceClient {
         identifier: impl AsRef<str>,
     ) -> Result<Self, FileServiceError> {
         let response = control
-            .call(build_create_session_request(domain, identifier.as_ref()))
+            .call_any_stream(build_create_session_request(domain, identifier.as_ref()))
             .await?;
         let session_id = parse_create_session_response(response)?;
         Ok(Self {
             control,
             session_id,
+            service_features: None,
         })
     }
 
@@ -134,19 +142,50 @@ impl FileServiceClient {
         Self {
             control,
             session_id: session_id.into(),
+            service_features: None,
         }
     }
 
     /// Return the CoreDevice session identifier.
+    /// Create a new fileservice session while recording the RSD advertised feature list.
+    pub async fn connect_with_features(
+        control: XpcClient,
+        domain: Domain,
+        identifier: impl AsRef<str>,
+        service_features: Vec<String>,
+    ) -> Result<Self, FileServiceError> {
+        let mut client = Self::connect(control, domain, identifier).await?;
+        client.service_features = Some(service_features);
+        Ok(client)
+    }
+
+    /// Attach an RSD advertised feature list to this session client.
+    pub fn with_service_features(mut self, service_features: Vec<String>) -> Self {
+        self.service_features = Some(service_features);
+        self
+    }
+
+    fn ensure_feature(&self, feature: &str) -> Result<(), FileServiceError> {
+        if let Some(features) = self.service_features.as_deref() {
+            if !features.is_empty() && !features.iter().any(|item| item == feature) {
+                return Err(FileServiceError::Protocol(format!(
+                    "CoreDevice feature {feature} is not advertised by RSD"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
     /// List child names for `path` within the active session domain.
     pub async fn list_directory(&mut self, path: &str) -> Result<Vec<String>, FileServiceError> {
+        self.ensure_feature(FEATURE_LIST_FILES)?;
         let response = self
             .control
-            .call_recv_client_server(build_retrieve_directory_list_request(
+            .call_any_stream(build_retrieve_directory_list_request(
                 &self.session_id,
                 path,
             ))
@@ -159,9 +198,17 @@ impl FileServiceClient {
         &mut self,
         path: &str,
     ) -> Result<FileTransferTicket, FileServiceError> {
+        self.ensure_feature(FEATURE_TRANSFER_FILES)?;
+        self.retrieve_file_ticket_inner(path).await
+    }
+
+    async fn retrieve_file_ticket_inner(
+        &mut self,
+        path: &str,
+    ) -> Result<FileTransferTicket, FileServiceError> {
         let response = self
             .control
-            .call(build_retrieve_file_request(&self.session_id, path))
+            .call_any_stream(build_retrieve_file_request(&self.session_id, path))
             .await?;
         parse_retrieve_file_response(response)
     }
@@ -202,9 +249,18 @@ impl FileServiceClient {
         path: &str,
         options: FileWriteOptions,
     ) -> Result<(), FileServiceError> {
+        self.ensure_feature(FEATURE_TRANSFER_FILES)?;
+        self.propose_empty_file_inner(path, options).await
+    }
+
+    async fn propose_empty_file_inner(
+        &mut self,
+        path: &str,
+        options: FileWriteOptions,
+    ) -> Result<(), FileServiceError> {
         let response = self
             .control
-            .call(build_propose_empty_file_request(
+            .call_any_stream(build_propose_empty_file_request(
                 &self.session_id,
                 path,
                 options,
@@ -223,9 +279,18 @@ impl FileServiceClient {
         path: &str,
         recursive: bool,
     ) -> Result<(), FileServiceError> {
+        self.ensure_feature(FEATURE_FILE_SYSTEM_OPERATION)?;
+        self.remove_item_inner(path, recursive).await
+    }
+
+    async fn remove_item_inner(
+        &mut self,
+        path: &str,
+        recursive: bool,
+    ) -> Result<(), FileServiceError> {
         let response = self
             .control
-            .call(build_remove_item_request(&self.session_id, path, recursive))
+            .call_any_stream(build_remove_item_request(&self.session_id, path, recursive))
             .await?;
         let body = response_body(response)?;
         ensure_no_error(&body)
@@ -237,9 +302,18 @@ impl FileServiceClient {
         path: &str,
         options: FileWriteOptions,
     ) -> Result<(), FileServiceError> {
+        self.ensure_feature(FEATURE_FILE_SYSTEM_OPERATION)?;
+        self.create_directory_inner(path, options).await
+    }
+
+    async fn create_directory_inner(
+        &mut self,
+        path: &str,
+        options: FileWriteOptions,
+    ) -> Result<(), FileServiceError> {
         let response = self
             .control
-            .call(build_create_directory_request(
+            .call_any_stream(build_create_directory_request(
                 &self.session_id,
                 path,
                 options,
@@ -251,9 +325,10 @@ impl FileServiceClient {
 
     /// Rename or move an item within the active session domain.
     pub async fn rename_item(&mut self, from: &str, to: &str) -> Result<(), FileServiceError> {
+        self.ensure_feature(FEATURE_FILE_SYSTEM_OPERATION)?;
         let response = self
             .control
-            .call(build_rename_item_request(&self.session_id, from, to))
+            .call_any_stream(build_rename_item_request(&self.session_id, from, to))
             .await?;
         let body = response_body(response)?;
         ensure_no_error(&body)
@@ -266,6 +341,7 @@ impl FileServiceClient {
         data: Bytes,
         options: FileWriteOptions,
     ) -> Result<(), FileServiceError> {
+        self.ensure_feature(FEATURE_TRANSFER_FILES)?;
         if data.is_empty() {
             return self.propose_empty_file(path, options).await;
         }
@@ -278,7 +354,7 @@ impl FileServiceClient {
 
         let response = self
             .control
-            .call(build_propose_file_request(
+            .call_any_stream(build_propose_file_request(
                 &self.session_id,
                 path,
                 data.len() as u64,
@@ -298,6 +374,7 @@ impl FileServiceClient {
         options: FileWriteOptions,
     ) -> Result<FileTransferTicket, FileServiceError> {
         validate_file_size(file_size)?;
+        self.ensure_feature(FEATURE_TRANSFER_FILES)?;
         if file_size <= MAX_INLINE_DATA_SIZE {
             return Err(FileServiceError::Protocol(format!(
                 "file size {file_size} fits inline; use upload_inline_file"
@@ -306,7 +383,7 @@ impl FileServiceClient {
 
         let response = self
             .control
-            .call(build_propose_file_request(
+            .call_any_stream(build_propose_file_request(
                 &self.session_id,
                 path,
                 file_size,
@@ -332,6 +409,21 @@ impl FileServiceClient {
         R: AsyncRead + Unpin,
     {
         upload_file_data(data_stream, ticket, reader, file_size).await
+    }
+
+    /// Stream downloaded file bytes from the data service using a previously issued ticket.
+    pub async fn download_file_data_to_writer<S, W>(
+        &mut self,
+        data_stream: &mut S,
+        ticket: &FileTransferTicket,
+        writer: &mut W,
+    ) -> Result<u64, FileServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        send_download_wire_request(data_stream, ticket).await?;
+        receive_file_data_to_writer(data_stream, writer).await
     }
 }
 
