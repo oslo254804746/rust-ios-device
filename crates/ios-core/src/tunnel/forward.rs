@@ -195,6 +195,9 @@ where
                     // TUN → iOS stream: read packet from OS, forward to device
                     result = tun.read_packet() => {
                         let packet = result?;
+                        if packet.first().is_none_or(|b| b >> 4 != 6) {
+                            return Ok(ForwardStep::Continue);
+                        }
                         if packet.len() > mtu.as_usize() {
                             return Err(TunnelError::Protocol(format!(
                                 "TUN packet length {} exceeds negotiated MTU {}",
@@ -554,6 +557,23 @@ mod tests {
         let expected = ipv6_packet(b"from-tun");
         let (mut peer, stream) = tokio::io::duplex(4096);
         let tun = MockTun::with_read_packets([expected.clone()]);
+        let (cancel_tx, task) = run_forward_for_packet_test(stream, tun).await;
+
+        let mut received = vec![0u8; expected.len()];
+        peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, expected);
+
+        drop(cancel_tx);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn forward_packets_ignores_non_ipv6_tun_packets() {
+        let mut ipv4 = vec![0u8; 20];
+        ipv4[0] = 0x45;
+        let expected = ipv6_packet(b"from-tun-after-ipv4");
+        let (mut peer, stream) = tokio::io::duplex(4096);
+        let tun = MockTun::with_read_packets([ipv4, expected.clone()]);
         let (cancel_tx, task) = run_forward_for_packet_test(stream, tun).await;
 
         let mut received = vec![0u8; expected.len()];
