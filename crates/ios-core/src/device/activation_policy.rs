@@ -35,7 +35,7 @@ impl ActivationPolicy for Immediate {
         mode: crate::TunMode,
         reservation: Option<super::TunnelReservationOwner<'_>>,
     ) -> Result<Self::Output, CoreError> {
-        super::tunnel_activation::activate_tunnel(connection, stream, mode, reservation).await
+        Box::pin(super::tunnel_activation::activate_tunnel(connection, stream, mode, reservation)).await
     }
 }
 

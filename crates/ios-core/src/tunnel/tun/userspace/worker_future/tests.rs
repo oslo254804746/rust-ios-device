@@ -284,3 +284,17 @@ async fn actual_client_payload_refusal_keeps_original_fatal_joins_and_both_stric
     drop(held.lock().unwrap().take());
     assert_eq!(bank.available_permits(), quota);
 }
+
+#[test]
+fn legacy_prepared_worker_boxes_large_future_off_stack() {
+    let payload = [0u8; 65_536];
+    let future = async move {
+        let _ = payload[0];
+        Ok::<(), TunnelError>(())
+    };
+    let prepared = PreparedWorker::prepare(future, None).unwrap();
+    assert!(
+        std::mem::size_of_val(&prepared) <= 64,
+        "PreparedWorker should stay pointer-sized on the stack"
+    );
+}

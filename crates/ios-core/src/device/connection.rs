@@ -20,7 +20,7 @@ use crate::mux::MuxClient;
 use std::time::Duration;
 
 pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice, CoreError> {
-    connect_inner(udid, opts, None, None, Immediate).await
+    Box::pin(connect_inner(udid, opts, None, None, Immediate)).await
 }
 
 /// Connect with caller cleanup ownership established before native activation
@@ -30,7 +30,7 @@ pub async fn connect_with_owner(
     opts: ConnectOptions,
     owner: &dyn TunnelOwner,
 ) -> Result<ConnectedDevice, CoreError> {
-    connect_inner(udid, opts, Some(owner), None, Immediate).await
+    Box::pin(connect_inner(udid, opts, Some(owner), None, Immediate)).await
 }
 
 async fn connect_inner<P: ActivationPolicy>(
