@@ -119,3 +119,18 @@ Core原1 ignored也不计PASS。无0匹配门禁；未放宽期限、删除或ig
 真实iOS/TSS/恢复、物理输入/剪贴板/媒体、macOS/Linux和独立桌面客户端按原报告保留NOT_RUN。
 用户没有iPhone14,2/d63ap iOS17.5.1/21F90离线IPSW；不重复询问、不以缺文件掩盖完整执行器缺口。
 原L02收口和Q04全部排除保持，主项分母30。
+
+## 2026-11-07 F02 / F04 / F06 最终代码收口与真机/全量验证
+
+分支 `codex/feature/windows-return-20261027` 完成剩余三项（`F04`、`F02`、`F06`）代码收口：
+
+1. **F04（`c71fd5cdda785d467a55a0baa21f45f88424beb7`）**：
+   - `crates/ios-core/src/services/webinspector/cdp.rs` 实现 primitive-only `console.log`/`info`/`warn`/`error`/`debug`（无 `objectId` 参数时）向当前活动主框架默认 `normal` `contextId` 合成 `Runtime.consoleAPICalled`，同时保留含 `objectId` 时的 `isolated world` 与 `injectedScriptId` 世代/退役校验；
+   - 补齐受控 CDP `Input.dispatchMouseEvent`、`Input.dispatchKeyEvent`、`Input.insertText`、`Input.dispatchTouchEvent`、`Page.setDownloadBehavior`、`Browser.setDownloadBehavior` 以及 `Performance.enable`/`Performance.getMetrics`；
+   - 固定客户端 16 项全过，真机 `00008020-0004553E02F2002E`（`D2`，iPhone11,8，iOS 18.7.10）`WEB-001..WEB-023` 全量 23/23 `PASS`（`WEB-019`、`WEB-020` 消除 `KNOWN_GAP`）。
+2. **F02（`9caed46d1090a69f98f697898760cded78e20031`）**：
+   - `crates/ios-core/src/services/testmanager/workflow.rs` 提供可复用 `execute_reusable_test_workflow_plan` 编排入口与 `reconcile_unconfirmed_runner_launch` 未确认 PID 进程查回/清理；
+   - `crates/ios-cli/src/cmd/test_workflow/modern_fixture_tests.rs` 新增串联 ZIPConduit/InstallationProxy 安装 + 现代 RSD/AppService/DTX 测试执行与重跑 + Syslog/OSTrace 采集 + JUnit/sidecar 报告 + 卸载 + 原生 `NativeScope` 隧道任务退休的端到端回归测试（`test_workflow` 25 项、`runtest` 14 项、`workflow_api` 2 项通过）。
+3. **F06（`a2a805a8dd9cdf26e65e8de86b5bee7cfeb741bb`）**：
+   - `crates/ios-core/src/services/restore/{img4.rs, recovery.rs, restored.rs}` 对齐 `pymobiledevice3/restore` 补齐 ASN.1 DER `IM4P`/`IM4M`/`IM4R` 组装、Recovery/Ramdisk 重枚举衔接、31 类 `restored` 同步/异步 `DataRequest` 状态机与 ASR 流转；
+   - `crates/ios-cli/src/cmd/restore.rs` 提供受控 `--confirm-simulation` 校验门禁的本地模拟恢复 CLI，真机真实刷机保持安全拒绝（`services::restore` 95 项、`cmd::restore` 18 项通过）。

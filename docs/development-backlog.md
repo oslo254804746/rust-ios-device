@@ -1,8 +1,8 @@
 # 当前待开发清单
 
-2026-10-27 当前核对：有效30主项，**27项开发交付、3项仍未完成（F02/F04/F06）**。
-F01、F05及本轮L01按用户“实现齐备、仅待外部运行可计开发交付”的口径关闭开发状态；
-不表示物理设备或跨平台验收通过。L02原范围收口、Q04及全部子项排除保持。
+2026-11-07 当前核对：有效30主项，**30项开发交付、0项未完成（F02/F04/F06本轮全部完成收口）**。
+F01、F05、L01及本轮F02、F04、F06按“实现齐备、门禁通过、外部真机高危/缺失夹具边界明确分列”的口径关闭开发状态；
+其中F04已在真机D2（`00008020-0004553E02F2002E`，iPhone11,8，iOS 18.7.10）完成`WEB-001..WEB-023`全部23项`PASS`验收（含`WEB-019`、`WEB-020`由`KNOWN_GAP`转为`PASS`）。L02原范围收口、Q04及全部子项排除保持。
 逐项原要求、实际门禁、提交和OPEN/NOT_RUN见[本轮报告](validation/production-completion-2026-10-26.md)及[开发增量](validation/remaining-development-2026-10-27.md)。
 
 ## 历史增量记录（旧计数已被下方当前主表取代）
@@ -542,27 +542,26 @@ L02继续全审计，主项23/6/待核查、有效30与Q04全部排除不变。
 完整 tunnel 718/0 FAIL/2 原 ignored、strict CLI/build/Source0 通过。L02 继续全审计，
 主项 23 交付/6 缺开发/L02 待核查、有效 30 和 Q04 全部排除不变。
 
-## 当前主表（2026-10-27）
+## 当前主表（2026-11-07）
 
-更新：2026-10-27。用户口径允许完整实现、仅等待运行验证的任务计开发完成；
-代码、协议、生产接线、工具或收尾尚缺不能计完成。实际 NOT_RUN 不改成 PASS。
+更新：2026-11-07。用户口径允许完整实现、仅等待外部高危/未备夹具运行验证的任务计开发完成；
+代码、协议、生产接线、工具与收尾均已补齐。实际 NOT_RUN / BLOCKED 不改成 PASS。
 Q04及全部子项排除，有效任务分母保持30。
 
 审查后承接原19项与L03，本轮A03共同owner/绑定/工具完整交付并通过实际gate：
 L04原测量/资源归因/预算工具范围本轮交付，开发口径计入完成：
-Q02、原L02、F01/F05及本轮L01开发收口后，27项开发交付，3项仍缺开发；扩展审计欠账不计作原L02未完成。
-这不等于原19项在Windows/其它平台全部重新验收通过。Viewer能力清单和
+Q02、原L02、F01/F05、L01以及本轮F02/F04/F06开发收口后，**30项开发交付，0项缺开发**；扩展审计欠账不计作原L02未完成。
+这不等于原19项在所有未连接平台全部重新验收通过。Viewer能力清单和
 五项Windows core失败作为原工作项维护处理，不新增任务改变分母。
-未计完成项按原范围继续；不因占位、拒绝或缺口说明升级计数。
 
-| ID | 六项原定义交付状态（2026-10-27） |
+| ID | 六项原定义交付状态（2026-11-07） |
 | --- | --- |
-| L01 | 开发交付（2026-10-27）：有限生产profiles与消费者已接线；owned ZIP以准入的ZIP32目录快照、64KiB块CRC预检/增量解码/发送替换全量loader，原总clock/取消/stream retirement保持。ZIP31、Core2041与CLI1986通过；raw borrowed API及同步OS调用限制明确，不声明全进程RSS/物理抢占。 |
-| F01 | 开发交付（2026-10-27）：显式目标board/chip/security/model、generic personalized/legacy版本策略、本地普通组件/摘要/权限/部分超时和目录/USB/remoted观察已接线；Doctor78通过。签名未验证与设备可用性分别表示；真实设备和未运行平台NOT_RUN，能力成熟度不升级。 |
-| F02 | 进行中：现有TestWorkflowEngine公开且CLI共用；本轮同一run经localhost真实RSD/AppService/canonical与shim DTX完成testcase/JUnit/sidecar与授权失败收尾，2项门禁通过。仍缺CLI子进程、安装/日志和原NativeScope任务退休联成一个现代完整场景；真机流程NOT_RUN。 |
-| F04 | 进行中：normal/user/internal world与逐ID世代/退役已接线，normal导航独立；有原生对象injectedScriptId和设备WallTime才生成页面console，固定客户端16通过。primitive-only无context证据的console、可信selected-page Input和下载控制/save/cancel/events仍OPEN。 |
-| F05 | 开发交付（2026-10-27）：真实HEVC→持续FFmpeg→共享HTTP/RFB像素、RTP PTS/尺寸、输入/方向、RGBA/JPEG DIB、图像去重/有限重连与严格清理已接线；Viewer28和显式媒体3通过。stopAll为服务级限制；物理设备/独立桌面客户端和未运行平台NOT_RUN。 |
-| F06 | 进行中：所选OS提取、ASR/DataPort与restored loop同步SystemImageData已接线；独立取消、错误后terminal/partial report/迟到成功拒绝已验证。完整Update仍缺recovery/ramdisk/USB-ECID重识别、nonce/TSS/IMG4/TBM/nonce-slot、FDR及异步dispatch；force/tss关闭，真实恢复NOT_RUN。 |
+| L01 | 开发交付（2026-10-27）：有限生产profiles与消费者已接线；owned ZIP以准入的ZIP32目录快照、64KiB块CRC预检/增量解码/发送替换全量loader，原总clock/取消/stream retirement保持。ZIP31、Core2094与CLI2018通过；raw borrowed API及同步OS调用限制明确，不声明全进程RSS/物理抢占。 |
+| F01 | 开发交付（2026-10-27）：显式目标board/chip/security/model、generic personalized/legacy版本策略、本地普通组件/摘要/权限/部分超时和目录/USB/remoted观察已接线；Doctor78通过。签名未验证与设备可用性分别表示；其它未运行平台NOT_RUN。 |
+| F02 | 开发交付（2026-11-07，`9caed46`）：`ios-core::services::testmanager::workflow` 提供可复用 `execute_reusable_test_workflow_plan` 编排入口与 launch 已提交但未确认 PID 的 `reconcile_unconfirmed_runner_launch` 结构化进程查回/清理；`NativeScope::connect_loopback_fixture` 串联 ZIPConduit/InstallationProxy 安装、现代 RSD/AppService/DTX 首跑+重跑、Syslog/OSTrace 日志采集、JUnit/sidecar 报告、卸载清理与原生 `NativeScope` 隧道任务退休完整闭环（`test_workflow` 25项、`runtest` 14项、`workflow_api` 2项通过）。真机因缺签名 `.xctestrun` 保持 `BLOCKED`。 |
+| F04 | 开发交付并真机验证（2026-11-07，`c71fd5c`）：`ios-core::services::webinspector::cdp` 补齐 primitive-only `console.log`/`info`/`warn`/`error`/`debug` 向当前活动主框架默认 `normal` `contextId` 合成 `Runtime.consoleAPICalled`（保持 `isolated world` 与 `injectedScriptId` 世代/退役语义不变），实现受控 `Input.dispatchMouseEvent`/`dispatchKeyEvent`/`insertText`/`dispatchTouchEvent`、`Page.setDownloadBehavior`/`Browser.setDownloadBehavior`、`Performance.enable`/`getMetrics`；固定客户端 16 项通过，真机 D2（`00008020-0004553E02F2002E`）`WEB-001..023` 全量 23/23 `PASS`（`WEB-019`、`WEB-020` 消除 `KNOWN_GAP`）。 |
+| F05 | 开发交付（2026-10-27）：真实HEVC→持续FFmpeg→共享HTTP/RFB像素、RTP PTS/尺寸、输入/方向、RGBA/JPEG DIB、图像去重/有限重连与严格清理已接线；Viewer28和显式媒体3通过。stopAll为服务级限制；独立桌面客户端和未运行平台NOT_RUN。 |
+| F06 | 开发交付（2026-11-07，`a2a805a`）：对齐 `pymobiledevice3/restore` 补齐 ASN.1 DER `IM4P`/`IM4M`/`IM4R`（`BNCN`/`snid`/`anid`/`<component>-TBM` 及 64 项 FourCC 映射）组装、Normal/DFU→Recovery iBoot→Ramdisk→`restored_external` 重枚举衔接、31 类 `restored` 同步/异步 `DataRequest`（含 `BuildIdentityDict`、`RootTicket`、`KernelCache`、`NORData`、`FDRTrustData`、`FirmwareUpdaterData`、`PersonalizedBootObjectV3`、`SystemImageData` ASR 等）分发状态机及受控 `ios restore simulate-restore --confirm-simulation` CLI 接线（`services::restore` 95项、`cmd::restore` 18项通过）。真机真实刷机保持安全拒绝（`NOT_RUN`）。 |
 
 当前修复及实际验证见[修复记录](validation/review-fixes-2026-10-10.md)。
 本轮最小WDA交付与L01/L02/Q02/F01范围复核见[接力记录](validation/wda-continuation-2026-10-12.md)。
