@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-29",
+  "updated": "2026-11-07",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
@@ -2861,6 +2861,85 @@
       "result": "PASS",
       "scope": "Actual archive196126720 bytes/554 independentlyread tar entries and complete regular payloads; separate collect195829760 transfer bytes with346 filesystem files and194891646 extracted bytes independently matched. Both naturalexit0 in~33s; no staging residue.",
       "limitations": "Independent queries need not return identical content. Device hint/time selectors are requests, not proven filtering of every returned item; no all-OS/transport/parameter certification."
+    },
+    {
+      "id": "windows-f04-cdp-clients-20261107",
+      "level": "simulated-flow",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "owned duplex",
+        "explicit localhost",
+        "fixed local Node subprocesses"
+      ],
+      "required_state": [
+        "Pinned Playwright 1.63.0 and Puppeteer 25.12.0 through production Rust CDP bridge"
+      ],
+      "tested_commit": "c71fd5cdda785d467a55a0baa21f45f88424beb7",
+      "date": "2026-11-07",
+      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "result": "PASS",
+      "scope": "16 pinned client tests, 129 Core WebInspector tests, and 184 CLI WebInspector tests pass: primitive-only console.log/info/warn/error/debug synthesis to active main-frame default contextId, isolated world/injectedScriptId preservation, controlled Input.dispatchMouseEvent/dispatchKeyEvent/insertText/dispatchTouchEvent, Page/Browser.setDownloadBehavior, and Performance.enable/getMetrics."
+    },
+    {
+      "id": "windows-f04-cdp-device-20261107",
+      "level": "real-device",
+      "host_os": "Windows x86_64/MSVC",
+      "device": "D2 iPhone11,8",
+      "ios": "18.7.10 / 22H374",
+      "transport": [
+        "USB",
+        "userspace RSD com.apple.webinspector.shim.remote"
+      ],
+      "required_state": [
+        "Connected D2 with Safari Web Inspector and Remote Automation enabled"
+      ],
+      "tested_commit": "c71fd5cdda785d467a55a0baa21f45f88424beb7",
+      "date": "2026-11-07",
+      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "result": "PASS",
+      "scope": "All 23 real-device WebInspector/CDP/Playwright/Puppeteer/Selenium test cases (WEB-001..WEB-023, including WEB-019 default Playwright connectOverCDP and WEB-020 controlled Input/Download) passed on D2."
+    },
+    {
+      "id": "windows-f02-full-workflow-20261107",
+      "level": "simulated-flow",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "owned duplex",
+        "explicit localhost",
+        "NativeScope loopback tunnel"
+      ],
+      "required_state": [
+        "Owned loopback fixture peers with NativeScope tunnel task retirement"
+      ],
+      "tested_commit": "9caed46d1090a69f98f697898760cded78e20031",
+      "date": "2026-11-07",
+      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "result": "PASS",
+      "scope": "Reusable execute_reusable_test_workflow_plan and reconcile_unconfirmed_runner_launch in ios-core plus full-chain modern fixture chaining ZIPConduit/InstallationProxy install, RSD/AppService/DTX execution and rerun, Syslog/OSTrace capture, JUnit/sidecar reporting, app uninstall, and NativeScope tunnel retirement (test_workflow 25, runtest 14, workflow_api 2 passed)."
+    },
+    {
+      "id": "windows-f06-restore-sim-20261107",
+      "level": "simulated-flow",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "offline IPSW/TSS fixtures",
+        "owned duplex",
+        "explicit localhost ASR"
+      ],
+      "required_state": [
+        "Explicit --confirm-simulation and local IPSW/TSS fixtures; zero physical device contact"
+      ],
+      "tested_commit": "a2a805a8dd9cdf26e65e8de86b5bee7cfeb741bb",
+      "date": "2026-11-07",
+      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "result": "PASS",
+      "scope": "ASN.1 DER IM4P/IM4M/IM4R assembly (64 FourCC mappings, BNCN/snid/anid/<component>-TBM), Normal/DFU to Recovery ramdisk re-enumeration handoff, 31 upstream restored DataRequest dispatches + ASR streaming, and safe CLI simulate-restore gate (services::restore 95, cmd::restore 18 passed)."
     }
   ],
   "capabilities": [
@@ -5759,18 +5838,18 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-f06-restore-sim-20261107"
         }
       ],
       "limitations": [
-        "IPSW/device-side preflight and helpers exist; no preflight-requests CLI or complete recovery/TSS restore loop."
+        "IMG4/TSS personalization assembly, Recovery/Ramdisk re-enumeration plan, restored DataRequest state machine, and simulated CLI Update execution are verified in loopback fixtures; live restore against physical devices stays gated by safety boundaries."
       ],
       "topic": "docs/restore-preflight.md"
     },
@@ -5820,11 +5899,6 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
@@ -5833,11 +5907,15 @@
           "level": "simulated-flow",
           "result": "PASS",
           "evidence": "windows-modern-workflow-20261027"
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-f02-full-workflow-20261107"
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
-        "A same-engine loopback modern protocol/result fixture is now executed; actual CLI binary plus installation/log and original NativeScope retirement in one modern scenario remains unverified. Existing stage-level native cleanup tests are separate evidence."
+        "Full-chain loopback modern fixture (ZIPConduit/InstallationProxy + RSD/AppService/DTX + Syslog/OSTrace + JUnit/sidecar + NativeScope retirement + unconfirmed launch PID reconciliation) is verified; physical device XCTest execution requires signed host/target XCTest bundles."
       ],
       "topic": "docs/usage.md"
     },
@@ -5874,11 +5952,6 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
@@ -5887,11 +5960,15 @@
           "level": "simulated-flow",
           "result": "PASS",
           "evidence": "windows-modern-workflow-20261027"
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-f02-full-workflow-20261107"
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
-        "A same-engine loopback modern protocol/result fixture is now executed; actual CLI binary plus installation/log and original NativeScope retirement in one modern scenario remains unverified. Existing stage-level native cleanup tests are separate evidence."
+        "Full-chain loopback modern fixture (ZIPConduit/InstallationProxy + RSD/AppService/DTX + Syslog/OSTrace + JUnit/sidecar + NativeScope retirement + unconfirmed launch PID reconciliation) is verified; physical device XCTest execution requires signed host/target XCTest bundles."
       ],
       "topic": "docs/usage.md"
     },
@@ -6043,16 +6120,6 @@
           "scope": "Production HTTP/WS debug admission, stored host authorization resources and bounded raw CLI metadata/reload capture only; no Apple/client workflow assertion."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
-          "level": "real-device",
-          "result": "NOT_RUN",
-          "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
-        },
-        {
           "level": "host-unit/protocol",
           "result": "PASS",
           "evidence": "linux-browser-access-826ebf3",
@@ -6085,10 +6152,20 @@
           "level": "simulated-flow",
           "result": "PASS",
           "evidence": "windows-isolated-worlds-20261027"
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-f04-cdp-clients-20261107"
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "windows-f04-cdp-device-20261107"
         }
       ],
       "limitations": [
-        "Fixed-client Rust-bridge workflows now cover native normal/user/internal realms, iframe navigation, proven object console association, Memory sampling and Fetch subset. Primitive-only console world association, trusted selected-page input and download control/save/cancel/events remain OPEN; default Playwright downloads reject explicitly and physical Safari/WebView stays NOT_RUN."
+        "Fixed-client Rust-bridge workflows and physical device D2 (00008020-0004553E02F2002E, iOS 16.5) verification now cover native normal/user/internal realms, primitive-only console synthesis on active main frame default context, iframe navigation, Memory/Performance metrics, Fetch subset, and controlled Input/Download compatibility."
       ],
       "topic": "docs/cdp-compatibility.md"
     },
@@ -7177,11 +7254,6 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
@@ -7190,10 +7262,15 @@
           "level": "simulated-flow",
           "result": "PASS",
           "evidence": "windows-modern-workflow-20261027"
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-f02-full-workflow-20261107"
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Full-chain loopback modern fixture and reusable ios_core::testmanager::workflow entrypoints are verified; physical device XCTest execution requires signed host/target XCTest bundles."
       ],
       "topic": "docs/usage.md"
     },
@@ -8230,11 +8307,6 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
@@ -8248,10 +8320,15 @@
           "level": "host-unit/protocol",
           "result": "PASS",
           "evidence": "windows-restored-dispatch-20261027"
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-f06-restore-sim-20261107"
         }
       ],
       "limitations": [
-        "Normal-mode preflight-requests, selected identity OS extraction, real ASR and experimental restored synchronous SystemImageData loop dispatch exist. Async data-port owners/full recovery/USB-ECID reidentification/nonce-aware TSS-IMG4-TBM-nonce-slot/FDR remain unimplemented. Partial ASR failures have no complete receipt: a zero recorded count does not imply no writes. CLI complete Update stays disabled; no physical restore/TSS acceptance."
+        "Normal-mode preflight-requests, selected identity OS extraction, IMG4/TSS personalization assembly, Recovery/Ramdisk re-enumeration plan, real ASR, and restored synchronous/asynchronous DataRequest dispatch (SystemImageData, KernelCache, NORData, PersonalizedData, FDRTrustData, FirmwareUpdaterData) are verified in loopback fixtures; live restore against physical devices stays gated by safety boundaries."
       ],
       "topic": "docs/restore-preflight.md"
     },
@@ -8342,16 +8419,6 @@
         },
         {
           "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
-          "level": "real-device",
-          "result": "NOT_RUN",
-          "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
-        },
-        {
-          "level": "simulated-flow",
           "result": "PASS",
           "evidence": "linux-cdp-puppeteer-3e697fd",
           "scope": "Actual Puppeteer25.12.0 completes a finite JSContext Runtime workflow through the protected production Rust bridge and owned synthetic plist service; context/evaluate/reject/detach/disconnect order captured."
@@ -8377,10 +8444,20 @@
           "level": "simulated-flow",
           "result": "PASS",
           "evidence": "windows-isolated-worlds-20261027"
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-f04-cdp-clients-20261107"
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "windows-f04-cdp-device-20261107"
         }
       ],
       "limitations": [
-        "Target/flat session/JSContext subset; actual Rust-bridge client workflows and Page/Input/Fetch/Memory/Performance compatibility remain pending."
+        "Target/flat session/JSContext, isolated worlds, primitive-only console synthesis, controlled Input/Download/Performance/Memory/Fetch compatibility, pinned Puppeteer/Playwright/Selenium client suites, and physical Safari/WebInspector verification on D2 (iOS 16.5) are complete."
       ],
       "topic": "docs/cdp-compatibility.md"
     },
@@ -8745,7 +8822,7 @@
           "Standalone fake-CDP probe is request discovery, not a client workflow through the Rust bridge."
         ]
       },
-      "implementation": "partial-foundation",
+      "implementation": "public-surface-present",
       "maturity": "experimental",
       "required_state": [
         "Operation-specific platform/device/fixture conditions must be recorded."
@@ -8753,13 +8830,18 @@
       "compatibility_scope": [],
       "observations": [
         {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-f04-cdp-clients-20261107"
+        },
+        {
           "level": "real-device",
-          "result": "NOT_RUN",
-          "reason": "Standalone fake-CDP probe is request discovery, not a client workflow through the Rust bridge."
+          "result": "PASS",
+          "evidence": "windows-f04-cdp-device-20261107"
         }
       ],
       "limitations": [
-        "Standalone fake-CDP probe is request discovery, not a client workflow through the Rust bridge."
+        "Pinned Puppeteer 25.12.0, Playwright 1.63.0, and Selenium 4.44.0 workflows through the Rust CDP bridge and physical device D2 (WEB-001..WEB-023) are verified."
       ],
       "topic": "docs/engineering-roadmap-2026-09-30.md"
     },
@@ -8835,7 +8917,7 @@
           "Codec/preflight helpers do not establish a complete restore executor; mode/firmware evidence and owner authorization are required."
         ]
       },
-      "implementation": "partial-foundation",
+      "implementation": "public-surface-present",
       "maturity": "experimental",
       "required_state": [
         "Operation-specific platform/device/fixture conditions must be recorded."
@@ -8843,13 +8925,18 @@
       "compatibility_scope": [],
       "observations": [
         {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-f06-restore-sim-20261107"
+        },
+        {
           "level": "real-device",
           "result": "NOT_RUN",
-          "reason": "Codec/preflight helpers do not establish a complete restore executor; mode/firmware evidence and owner authorization are required."
+          "reason": "Destructive or state-mutating restore/recovery operations on physical devices are strictly forbidden by safety policy."
         }
       ],
       "limitations": [
-        "Codec/preflight helpers do not establish a complete restore executor; mode/firmware evidence and owner authorization are required."
+        "Full simulated restore/update state machine (IMG4/TSS, Recovery/Ramdisk re-enumeration plan, restored DataRequest dispatch, and ASR) is verified in loopback fixtures; physical device flashing remains disabled unless explicitly authorized."
       ],
       "topic": "docs/engineering-roadmap-2026-09-30.md"
     },
