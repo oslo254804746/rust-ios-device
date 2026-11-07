@@ -323,6 +323,7 @@ async fn connect_trace_client(
     Ok(Ok((device, ios_core::ostrace::OsTraceClient::new(stream))))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_archive(
     udid: &str,
     output: PathBuf,
@@ -372,6 +373,7 @@ async fn run_archive(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_collect(
     udid: &str,
     output: PathBuf,

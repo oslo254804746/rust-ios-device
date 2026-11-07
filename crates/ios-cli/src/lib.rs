@@ -1,4 +1,10 @@
 //! ios-cli: Command-line interface for iOS device management.
+#![allow(
+    clippy::duplicate_mod,
+    clippy::result_large_err,
+    clippy::unnecessary_unwrap,
+    clippy::useless_borrows_in_formatting
+)]
 
 mod access;
 mod cmd;

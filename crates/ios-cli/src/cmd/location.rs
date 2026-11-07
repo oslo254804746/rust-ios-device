@@ -5,6 +5,7 @@ use tokio::fs;
 
 const LOCATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+#[allow(clippy::large_enum_variant)]
 enum LocationClient {
     Legacy(ios_core::simlocation::SimLocationClient<ios_core::device::ServiceStream>),
     Modern(ios_core::instruments::LocationSimulationClient<ios_core::device::ServiceStream>),

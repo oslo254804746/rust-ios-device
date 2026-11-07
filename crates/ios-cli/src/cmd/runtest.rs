@@ -24,18 +24,31 @@ use uuid::Uuid;
 mod startup_tests;
 
 #[cfg(test)]
+#[derive(Clone, Default)]
 pub(crate) struct WorkflowLoopbackFixture {
     pub udid: String,
     pub rsd_port: u16,
     pub readiness_port: u16,
+    pub install_proxy_port: Option<u16>,
+    pub zipconduit_port: Option<u16>,
+    pub syslog_port: Option<u16>,
+    pub os_trace_port: Option<u16>,
+    pub tunnel_port: Option<u16>,
+    pub native_retired_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[cfg(test)]
 pub(crate) fn workflow_fixture_for(udid: &str) -> Result<Option<(u16, u16)>> {
-    match WORKFLOW_LOOPBACK.try_with(|fixture| {
-        (fixture.udid == udid).then_some((fixture.rsd_port, fixture.readiness_port))
-    }) {
-        Ok(Some(ports)) => Ok(Some(ports)),
+    Ok(
+        workflow_fixture_config_for(udid)?
+            .map(|fixture| (fixture.rsd_port, fixture.readiness_port)),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn workflow_fixture_config_for(udid: &str) -> Result<Option<WorkflowLoopbackFixture>> {
+    match WORKFLOW_LOOPBACK.try_with(|fixture| (fixture.udid == udid).then(|| fixture.clone())) {
+        Ok(Some(fixture)) => Ok(Some(fixture)),
         Ok(None) => Err(anyhow::anyhow!("workflow loopback fixture target mismatch")),
         Err(_) => Ok(None),
     }
@@ -250,21 +263,31 @@ impl TestStartupCleanup {
                 Some((bundle, Some(previous))),
             ) = (&mut self.controller, self.pending_runner.take())
             {
+                let mut pending = ios_core::testmanager::workflow::PendingRunnerLaunch {
+                    bundle_id: Some(bundle),
+                    baseline_pids: Some(previous),
+                    launch_submitted: true,
+                    confirmed_pid: None,
+                };
                 result = tokio::time::timeout(Duration::from_secs(2), async {
-                    controller.reconnect().await?;
-                    let processes = controller.list_processes().await?;
-                    let candidates: Vec<_> = processes
-                        .iter()
-                        .filter(|process| {
-                            process.bundle_id.as_deref() == Some(bundle.as_str())
-                                && !previous.contains(&process.pid)
-                        })
-                        .collect();
-                    if candidates.len() != 1 {
-                        return Err(anyhow::Error::new(RunnerLaunchUnconfirmed));
+                    match ios_core::testmanager::workflow::reconcile_unconfirmed_runner_launch(
+                        controller,
+                        &mut pending,
+                    )
+                    .await
+                    {
+                        Ok(_) => Ok(()),
+                        Err(
+                            ios_core::testmanager::workflow::UnconfirmedLaunchReconcileError::Ambiguous(
+                                err,
+                            ),
+                        ) => Err(anyhow::Error::new(err)),
+                        Err(
+                            ios_core::testmanager::workflow::UnconfirmedLaunchReconcileError::AppService(
+                                err,
+                            ),
+                        ) => Err(anyhow::Error::new(err)),
                     }
-                    controller.kill_process(candidates[0].pid).await?;
-                    Ok(())
                 })
                 .await
                 .map_err(anyhow::Error::new)
@@ -307,14 +330,7 @@ impl TestStartupCleanup {
     }
 }
 
-#[derive(Debug)]
-pub struct RunnerLaunchUnconfirmed;
-impl std::fmt::Display for RunnerLaunchUnconfirmed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("XCTest launch was submitted but its PID could not be reconciled; a runner may remain active on the selected device")
-    }
-}
-impl std::error::Error for RunnerLaunchUnconfirmed {}
+pub use ios_core::testmanager::workflow::RunnerLaunchUnconfirmed;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TestmanagerTransport {
@@ -886,9 +902,16 @@ pub(crate) async fn connect_testmanager_device_scoped(
     native: &crate::cmd::tunnel::NativeScope,
 ) -> Result<OwnedTestDevice> {
     #[cfg(test)]
-    if let Some((port, _)) = workflow_fixture_for(udid)? {
+    if let Some(fixture) = workflow_fixture_config_for(udid)? {
+        if let Some(tunnel_port) = fixture.tunnel_port {
+            return Ok(OwnedTestDevice::Scoped(Box::new(
+                native
+                    .connect_loopback_fixture(udid, fixture.rsd_port, tunnel_port)
+                    .await?,
+            )));
+        }
         return Ok(OwnedTestDevice::Plain(Box::new(
-            ios_core::device::workflow_loopback_fixture(udid, port).await?,
+            ios_core::device::workflow_loopback_fixture(udid, fixture.rsd_port).await?,
         )));
     }
     let version = Box::pin(crate::cmd::connect::probe_product_version(udid)).await?;
@@ -944,6 +967,20 @@ pub async fn lookup_installed_app(
     device: &ConnectedDevice,
     bundle_id: &str,
 ) -> Result<InstalledAppInfo> {
+    #[cfg(test)]
+    let stream: ServiceStream = match workflow_fixture_config_for(&device.info.udid)?
+        .and_then(|fixture| fixture.install_proxy_port)
+    {
+        Some(port) => Box::new(
+            tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port))
+                .await
+                .context("failed to connect fixture installation_proxy")?,
+        ),
+        None => Box::pin(device.connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE))
+            .await
+            .context("failed to connect installation_proxy")?,
+    };
+    #[cfg(not(test))]
     let stream = Box::pin(device.connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE))
         .await
         .context("failed to connect installation_proxy")?;

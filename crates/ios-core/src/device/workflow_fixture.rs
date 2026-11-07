@@ -51,3 +51,67 @@ pub async fn workflow_loopback_fixture(
         lockdown_transport: LockdownTransport::Tcp { host: "::1".into() },
     })
 }
+
+/// Construct a device for an explicit loopback workflow fixture that also
+/// attaches a real `UserspaceTunDevice` tunnel handle to `owner` so that
+/// `NativeScope` retirement is exercised end-to-end.
+#[doc(hidden)]
+pub async fn workflow_loopback_fixture_with_tunnel<T>(
+    udid: &str,
+    rsd_port: u16,
+    tunnel_stream: T,
+    owner: &dyn TunnelOwner,
+) -> Result<ConnectedDevice, crate::CoreError>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    if udid.is_empty() || rsd_port == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "fixture requires a target and loopback RSD port",
+        )
+        .into());
+    }
+    let mut reservation = owner.reserve_owned()?;
+    let directory = crate::xpc::rsd::handshake(std::net::Ipv6Addr::LOCALHOST, rsd_port).await?;
+    if directory.udid != udid {
+        return Err(crate::CoreError::Protocol(
+            "fixture RSD identity mismatch".into(),
+        ));
+    }
+    let (rsd, initial_rsd_probe) =
+        rsd_observation::RsdProbeOutcome::Completed(Ok(directory)).into_parts();
+    let runtime =
+        crate::UserspaceTunDevice::start("fd00::2", "fd00::1", 1280, tunnel_stream).await?;
+    let mut handle = TunnelHandle::new_userspace(
+        udid.to_owned(),
+        crate::TunnelInfo {
+            server_address: "::1".into(),
+            server_rsd_port: rsd_port,
+            client_address: "::1".into(),
+            client_mtu: 1280,
+        },
+        runtime,
+    );
+    handle.userspace_port = None;
+    let handle = Arc::new(handle);
+    reservation.attach(handle.clone())?;
+    reservation.complete();
+    Ok(ConnectedDevice {
+        info: DeviceInfo {
+            udid: udid.to_owned(),
+            device_id: 0,
+            connection_type: "Loopback fixture".into(),
+            product_id: 0,
+        },
+        tunnel: Some(handle),
+        rsd,
+        owned_initial_rsd: None,
+        owned_initial_bank: None,
+        owned_prepared_rsd: None,
+        prepared_rsd: None,
+        initial_rsd_probe,
+        pair_record: None,
+        lockdown_transport: LockdownTransport::Tcp { host: "::1".into() },
+    })
+}

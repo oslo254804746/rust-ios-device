@@ -1,7 +1,6 @@
 //! Composable test execution workflow: application management, test runner execution,
 //! syslog streaming capture, JUnit XML reporting, cancellation recovery, and failure reruns (F02).
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -10,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ios_core::device::ConnectedDevice;
-use ios_core::testmanager::results::{TestCaseStatus, TestRunOutcome, TestRunSummary};
+use ios_core::testmanager::results::{TestRunOutcome, TestRunSummary};
 use ios_core::testmanager::workflow::TestLaunchPlan;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
@@ -288,7 +287,104 @@ impl LogCaptureGuard {
     /// If syslog connection fails, records an explanatory banner so partial logs are never missing.
     pub async fn start(udid: &str, destination: PathBuf) -> Self {
         let target_udid = udid.to_string();
+        #[cfg(test)]
+        let fixture_cfg = crate::cmd::runtest::workflow_fixture_config_for(&target_udid);
         Self::start_connecting(destination, async move {
+            #[cfg(test)]
+            if let Some(fixture) = fixture_cfg? {
+                match (fixture.syslog_port, fixture.os_trace_port) {
+                    (Some(syslog_port), None) => {
+                        return Ok(Box::new(
+                            tokio::net::TcpStream::connect((
+                                std::net::Ipv6Addr::LOCALHOST,
+                                syslog_port,
+                            ))
+                            .await?,
+                        ) as ios_core::device::ServiceStream);
+                    }
+                    (syslog_port, Some(os_trace_port)) => {
+                        let listener =
+                            tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0))
+                                .await?;
+                        let addr = listener.local_addr()?;
+                        let (reader_res, accepted_res) =
+                            tokio::join!(tokio::net::TcpStream::connect(addr), listener.accept(),);
+                        let reader = reader_res?;
+                        let (mut writer, _) = accepted_res?;
+                        tokio::spawn(async move {
+                            use tokio::io::AsyncReadExt;
+                            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                            let sys_task = syslog_port.map(|sys_port| {
+                                let tx_sys = tx.clone();
+                                tokio::spawn(async move {
+                                    if let Ok(stream) = tokio::net::TcpStream::connect((
+                                        std::net::Ipv6Addr::LOCALHOST,
+                                        sys_port,
+                                    ))
+                                    .await
+                                    {
+                                        let log_stream = ios_core::syslog::into_stream(stream);
+                                        tokio::pin!(log_stream);
+                                        while let Some(Ok(line)) = log_stream.next().await {
+                                            if tx_sys.send(line).is_err() {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                })
+                            });
+                            let tx_os = tx;
+                            let os_task = tokio::spawn(async move {
+                                if let Ok(stream) = tokio::net::TcpStream::connect((
+                                    std::net::Ipv6Addr::LOCALHOST,
+                                    os_trace_port,
+                                ))
+                                .await
+                                {
+                                    let client = ios_core::ostrace::OsTraceClient::new(stream);
+                                    if let Ok(mut trace_stream) = client
+                                        .start_activity(ios_core::ostrace::TraceOptions::default())
+                                        .await
+                                    {
+                                        while let Ok(Some(entry)) = trace_stream.next_entry().await
+                                        {
+                                            let line = format!(
+                                                "[ostrace pid={} level={}] {}",
+                                                entry.pid, entry.level, entry.message
+                                            );
+                                            if tx_os.send(line).is_err() {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                            let mut close_probe = [0u8; 1];
+                            loop {
+                                tokio::select! {
+                                    _ = writer.read(&mut close_probe) => break,
+                                    maybe_line = rx.recv() => {
+                                        let Some(line) = maybe_line else { break };
+                                        let mut frame = line.into_bytes();
+                                        frame.push(b'\n');
+                                        frame.push(0);
+                                        if writer.write_all(&frame).await.is_err() {
+                                            break;
+                                        }
+                                        let _ = writer.flush().await;
+                                    }
+                                }
+                            }
+                            if let Some(task) = sys_task {
+                                task.abort();
+                            }
+                            os_task.abort();
+                        });
+                        return Ok(Box::new(reader) as ios_core::device::ServiceStream);
+                    }
+                    (None, None) => {}
+                }
+            }
             let connect_opts = ios_core::device::ConnectOptions {
                 tun_mode: ios_core::TunMode::Userspace,
                 pair_record_path: None,
@@ -422,90 +518,12 @@ impl Drop for LogCaptureGuard {
 
 /// Extract failed test selector strings from a summary (e.g. `ClassName/methodName`).
 pub fn extract_failed_selectors(summary: &TestRunSummary) -> Vec<String> {
-    if summary.terminal_outcome().is_err() {
-        return Vec::new();
-    }
-    summary
-        .suites
-        .iter()
-        .flat_map(|suite| suite.cases.iter())
-        .filter(|case| matches!(case.status, Some(TestCaseStatus::Failed)))
-        .map(|case| format!("{}/{}", case.class_name, case.method_name))
-        .collect()
+    ios_core::testmanager::workflow::extract_failed_selectors(summary)
 }
 
 /// Merge rerun test results into the primary summary, replacing prior failures with new outcomes.
 pub fn merge_rerun_summary(primary: &mut TestRunSummary, rerun: TestRunSummary) -> Result<()> {
-    rerun.terminal_outcome()?;
-    let expected: std::collections::HashSet<_> = primary
-        .suites
-        .iter()
-        .flat_map(|suite| &suite.cases)
-        .filter(|case| matches!(case.status, Some(TestCaseStatus::Failed)))
-        .map(|case| (case.class_name.clone(), case.method_name.clone()))
-        .collect();
-    let mut rerun_cases = HashMap::new();
-    for suite in rerun.suites {
-        for case in suite.cases {
-            let key = (case.class_name.clone(), case.method_name.clone());
-            anyhow::ensure!(
-                expected.contains(&key),
-                "rerun returned an unselected test case"
-            );
-            anyhow::ensure!(
-                rerun_cases.insert(key, case).is_none(),
-                "rerun returned a duplicate test case"
-            );
-        }
-    }
-    anyhow::ensure!(
-        rerun_cases.len() == expected.len(),
-        "rerun omitted a selected failed test case"
-    );
-
-    let mut failed_count = 0u64;
-    for suite in &mut primary.suites {
-        for case in &mut suite.cases {
-            let key = (case.class_name.clone(), case.method_name.clone());
-            if let Some(new_case) = rerun_cases.remove(&key) {
-                // Preserve the initial failure in the collected run artifact
-                // before replacing its current outcome with the rerun result.
-                if matches!(case.status, Some(TestCaseStatus::Failed)) {
-                    primary
-                        .debug_logs
-                        .push(format!("workflow rerun prior result: {case:?}"));
-                }
-                *case = new_case;
-            }
-            if matches!(case.status, Some(TestCaseStatus::Failed)) {
-                failed_count += 1;
-            }
-        }
-        suite.failures = Some(
-            suite
-                .cases
-                .iter()
-                .filter(|case| matches!(case.status, Some(TestCaseStatus::Failed)))
-                .count() as u64,
-        );
-        suite.skipped = Some(
-            suite
-                .cases
-                .iter()
-                .filter(|case| matches!(case.status, Some(TestCaseStatus::Skipped)))
-                .count() as u64,
-        );
-    }
-    primary.failed_tests = failed_count;
-    primary.skipped_tests = primary
-        .suites
-        .iter()
-        .flat_map(|suite| &suite.cases)
-        .filter(|case| matches!(case.status, Some(TestCaseStatus::Skipped)))
-        .count() as u64;
-    primary.logs.extend(rerun.logs);
-    primary.debug_logs.extend(rerun.debug_logs);
-    Ok(())
+    ios_core::testmanager::workflow::merge_rerun_summary(primary, rerun).map_err(anyhow::Error::msg)
 }
 
 /// Add the final workflow outcome only after cleanup and artifact owners have finished.
@@ -556,6 +574,21 @@ impl AppLifecycleTracker {
     pub async fn cleanup(&self, udid: &str) -> Result<()> {
         if !self.should_cleanup || self.installed_bundles.is_empty() {
             return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(install_port) = crate::cmd::runtest::workflow_fixture_config_for(udid)?
+            .and_then(|fixture| fixture.install_proxy_port)
+        {
+            let cleanup = async {
+                let stream =
+                    tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, install_port))
+                        .await?;
+                let mut proxy = ios_core::apps::InstallationProxy::new(stream);
+                self.cleanup_connected(&mut proxy).await
+            };
+            return tokio::time::timeout(Duration::from_secs(15), cleanup)
+                .await
+                .context("workflow uninstall cleanup deadline expired")?;
         }
         let connect_opts = ios_core::device::ConnectOptions {
             tun_mode: ios_core::TunMode::Userspace,
@@ -619,6 +652,39 @@ pub async fn install_package_if_present(
         path.display()
     );
     let bundle_id = package_bundle_id(path)?;
+
+    #[cfg(test)]
+    if let Some((install_port, zip_port)) = crate::cmd::runtest::workflow_fixture_config_for(udid)?
+        .and_then(|f| f.install_proxy_port.zip(f.zipconduit_port))
+    {
+        let existed = super::connect::finite_service_operation(Duration::from_secs(30), async {
+            let lookup_stream =
+                tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, install_port))
+                    .await
+                    .context("checking fixture package ownership before installation")?;
+            let mut proxy = ios_core::apps::InstallationProxy::new(lookup_stream);
+            Ok(proxy.lookup_app(&bundle_id).await?.is_some())
+        })
+        .await?;
+        if !existed {
+            tracker.track(bundle_id);
+        }
+        tracing::info!(package = %path.display(), "test workflow: installing package");
+        let stream: ios_core::device::ServiceStream = Box::new(
+            tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, zip_port))
+                .await
+                .context("failed to connect fixture streaming_zip_conduit service")?,
+        );
+        ios_core::apps::install_ipa_owned_with_timeout(
+            stream,
+            path,
+            None,
+            Duration::from_secs(300),
+        )
+        .await
+        .with_context(|| format!("failed installing package '{}'", path.display()))?;
+        return Ok(());
+    }
 
     let connect_opts = ios_core::device::ConnectOptions {
         tun_mode: ios_core::TunMode::Userspace,
@@ -1372,6 +1438,14 @@ impl<'a> TestWorkflowEngine<'a> {
             native.close(Duration::from_secs(5)).await,
             "workflow original native shutdown failed",
         );
+        #[cfg(test)]
+        if native.occupied_owners() == 0 {
+            if let Ok(Some(flag)) = crate::cmd::runtest::workflow_fixture_config_for(self.udid)
+                .map(|opt| opt.and_then(|f| f.native_retired_flag))
+            {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
 
         let recorded = if let Err(error) = &outcome {
             let record = attempts.fail(error, None);
@@ -1473,7 +1547,7 @@ mod modern_fixture_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ios_core::testmanager::results::{TestCaseSummary, TestSuiteSummary};
+    use ios_core::testmanager::results::{TestCaseStatus, TestCaseSummary, TestSuiteSummary};
 
     #[tokio::test]
     async fn review_regression_readiness_respects_legacy_and_personalized_query_profiles() {
