@@ -213,7 +213,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
             let status = val
                 .as_dictionary()
                 .and_then(|d| d.get("Status"))
-                .and_then(|v| v.as_unsigned_integer())
+                .and_then(|v| {
+                    v.as_unsigned_integer()
+                        .or_else(|| v.as_signed_integer().map(|s| s as u32 as u64))
+                })
                 .unwrap_or(0);
             if status != 0 {
                 return Err(MisagentError::Status(status));
@@ -580,5 +583,26 @@ mod tests {
         assert!(profiles.is_empty());
         assert!(client.is_usable());
         assert!(client.stream.is_some());
+    }
+}
+
+#[cfg(test)]
+mod signed_status_tests {
+    use super::*;
+    use crate::test_util::MockStream;
+
+    #[tokio::test]
+    async fn misagent_client_negative_signed_status_error_retires_stream() {
+        let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "Status".to_string(),
+            plist::Value::Integer((-402_620_398i64).into()),
+        )]));
+        let stream = MockStream::with_response(response);
+        let mut client = MisagentClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_secs(5)));
+
+        let err = client.install(b"EXPIRED-PROFILE").await.unwrap_err();
+        assert!(matches!(err, MisagentError::Status(0xe8008012)));
+        assert!(!client.is_usable());
     }
 }
