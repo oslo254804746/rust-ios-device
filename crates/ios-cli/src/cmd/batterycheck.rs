@@ -1,7 +1,6 @@
 use anyhow::Result;
-use ios_core::MuxClient;
 use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions, LockdownClient, PairRecord, LOCKDOWN_PORT};
+use ios_core::{connect, ConnectOptions, ConnectedDevice};
 
 const BATTERY_DOMAIN: &str = "com.apple.mobile.battery";
 
@@ -47,37 +46,33 @@ async fn fetch_battery_info(udid: &str) -> Result<BatteryInfo> {
         skip_tunnel: true,
     };
     let device = connect(udid, opts).await?;
-    let pair_record = PairRecord::load(udid)?;
-
-    let mut mux = MuxClient::connect().await?;
-    mux.read_pair_record(udid).await?;
-    let stream = mux
-        .connect_to_port(device.info.device_id, LOCKDOWN_PORT)
-        .await?;
-    let mut client = LockdownClient::connect_with_stream(stream, &pair_record).await?;
 
     Ok(BatteryInfo {
-        battery_current_capacity: query_u64(&mut client, BATTERY_DOMAIN, "BatteryCurrentCapacity")
+        battery_current_capacity: query_u64(&device, BATTERY_DOMAIN, "BatteryCurrentCapacity")
             .await?,
-        battery_is_charging: query_bool(&mut client, BATTERY_DOMAIN, "BatteryIsCharging").await?,
-        external_charge_capable: query_bool(&mut client, BATTERY_DOMAIN, "ExternalChargeCapable")
+        battery_is_charging: query_bool(&device, BATTERY_DOMAIN, "BatteryIsCharging").await?,
+        external_charge_capable: query_bool(&device, BATTERY_DOMAIN, "ExternalChargeCapable")
             .await?,
-        external_connected: query_bool(&mut client, BATTERY_DOMAIN, "ExternalConnected").await?,
-        fully_charged: query_bool(&mut client, BATTERY_DOMAIN, "FullyCharged").await?,
-        gas_gauge_capability: query_bool(&mut client, BATTERY_DOMAIN, "GasGaugeCapability").await?,
-        has_battery: query_bool(&mut client, BATTERY_DOMAIN, "HasBattery").await?,
+        external_connected: query_bool(&device, BATTERY_DOMAIN, "ExternalConnected").await?,
+        fully_charged: query_bool(&device, BATTERY_DOMAIN, "FullyCharged").await?,
+        gas_gauge_capability: query_bool(&device, BATTERY_DOMAIN, "GasGaugeCapability").await?,
+        has_battery: query_bool(&device, BATTERY_DOMAIN, "HasBattery").await?,
     })
 }
 
-async fn query_bool(client: &mut LockdownClient, domain: &str, key: &str) -> Result<bool> {
-    let value = client.get_value(Some(domain), Some(key)).await?;
+async fn query_bool(device: &ConnectedDevice, domain: &str, key: &str) -> Result<bool> {
+    let value = device
+        .lockdown_get_value_in_domain(Some(domain), Some(key))
+        .await?;
     value
         .as_boolean()
         .ok_or_else(|| anyhow::anyhow!("{key} is not a boolean"))
 }
 
-async fn query_u64(client: &mut LockdownClient, domain: &str, key: &str) -> Result<u64> {
-    let value = client.get_value(Some(domain), Some(key)).await?;
+async fn query_u64(device: &ConnectedDevice, domain: &str, key: &str) -> Result<u64> {
+    let value = device
+        .lockdown_get_value_in_domain(Some(domain), Some(key))
+        .await?;
     value
         .as_unsigned_integer()
         .ok_or_else(|| anyhow::anyhow!("{key} is not an unsigned integer"))

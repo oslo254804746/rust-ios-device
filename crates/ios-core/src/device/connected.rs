@@ -289,6 +289,14 @@ impl ConnectedDevice {
         escrow_bag: Option<&[u8]>,
     ) -> Result<ServiceStream, CoreError> {
         let pair_record = self.pair_record()?;
+        if service_name != "com.apple.mobile.heartbeat" {
+            let _ = super::lockdown_transport::ensure_tcp_heartbeat(
+                &self.info.udid,
+                &self.lockdown_transport,
+                pair_record,
+            )
+            .await;
+        }
         let lockdown_stream = connect_lockdown_port(
             &self.info.udid,
             &self.lockdown_transport,
