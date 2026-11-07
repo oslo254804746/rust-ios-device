@@ -40,7 +40,7 @@ function arguments_() {
   assert.equal(endpoint.hostname, '127.0.0.1');
   assert(endpoint.port && endpoint.pathname === '/' && !endpoint.search && !endpoint.hash);
   assert(!endpoint.username && !endpoint.password);
-  assert(['initialization-rejection', 'runtime-workflow', 'console-workflow', 'fetch-workflow', 'metrics-workflow', 'iframe-workflow', 'world-workflow', 'five-domain-workflow', 'native-page-closure', 'native-application-closure', 'native-discovery-page-closure', 'native-discovery-application-closure', 'native-discovery-race-closure'].includes(expectation));
+  assert(['connected', 'connect-over-cdp', 'initialization-rejection', 'runtime-workflow', 'console-workflow', 'fetch-workflow', 'metrics-workflow', 'iframe-workflow', 'world-workflow', 'five-domain-workflow', 'native-page-closure', 'native-application-closure', 'native-discovery-page-closure', 'native-discovery-application-closure', 'native-discovery-race-closure'].includes(expectation));
   return { client, endpoint: endpoint.origin, targetUrl, expectation };
 }
 
@@ -288,7 +288,12 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
 
       let inputRejected = false;
       try {
-        await session.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 10, y: 10 });
+        await session.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 10, y: 10, button: 'left', clickCount: 1 });
+        await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', text: 'a' });
+        await session.send('Input.insertText', { text: 'hello' });
+        await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 10, y: 10 }] });
+        steps.push('input-verified');
+        await session.send('Input.synthesizePinchGesture', { x: 10, y: 10, scaleFactor: 1.5 });
       } catch (err) {
         inputRejected = true;
       }
@@ -303,7 +308,9 @@ async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
 
       let downloadRejected = false;
       try {
-        await session.send('Page.setDownloadBehavior', { behavior: 'allow' });
+        await session.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: '/tmp' });
+        steps.push('download-verified');
+        await session.send('Page.setDownloadBehavior', { behavior: 'invalid-mode' });
       } catch (err) {
         downloadRejected = true;
       }
@@ -499,7 +506,10 @@ async function playwrightInitialization(endpoint, targetUrl, expectation) {
       result = await playwrightClosure(chromium, endpoint, targetUrl, headers, expectation);
     } else {
       browser = await chromium.connectOverCDP(endpoint, { headers, timeout: TIMEOUT });
-      result = { status: 'connected', contexts: browser.contexts().length };
+      const pages = browser.contexts().flatMap(ctx => ctx.pages());
+      const targetPage = pages.find(p => p.url() === targetUrl) || pages[0];
+      const evaluated = targetPage ? await targetPage.evaluate(() => 6 * 7) : null;
+      result = { status: expectation, contexts: browser.contexts().length, pages: pages.length, evaluated };
     }
   } catch (error) {
     result = { status: expectation.startsWith('native-') ? 'failed' : 'initialization-rejection', failure: failure(error, 'initialization') };
@@ -524,11 +534,11 @@ async function main() {
     ? await puppeteerWorkflow(endpoint, targetUrl, expectation)
     : await playwrightInitialization(endpoint, targetUrl, expectation);
   const download = trace.find(item => item.direction === 'send' && item.message.method === 'Browser.setDownloadBehavior');
-  const rejected = download && trace.find(item => item.direction === 'receive' &&
+  const accepted = download && trace.find(item => item.direction === 'receive' &&
     item.message.id === download.message.id && item.message.sessionId === download.message.sessionId &&
-    item.message.error?.code === -32601);
+    item.message.result !== undefined);
   const fulfilled = !result.cleanup_failures && result.status === expectation &&
-    (expectation !== 'initialization-rejection' || (result.failure.method === 'Browser.setDownloadBehavior' && !!rejected));
+    (client !== 'playwright' || expectation.startsWith('native-') || !!accepted);
   // A reproducible explicit initialization rejection is evidence of a missing
   // contract. It is never labelled as a complete client workflow.
   console.log(JSON.stringify({ schema_version: 1, client, version: versions[`${client}-core`], expectation, fulfilled, ...result, trace, trace_bytes: traceBytes }));

@@ -75,6 +75,7 @@ enum Translation {
     FetchResume {
         request_id: String,
     },
+    InputDispatch,
 }
 #[derive(Debug)]
 struct Pending {
@@ -88,6 +89,11 @@ pub struct PageCdpAdapter {
     next_id: i64,
     pending: HashMap<i64, Pending>,
     timeout: Duration,
+    target_id: Option<String>,
+    alias_main_frame_to_target: bool,
+    lifecycle_events_enabled: bool,
+    next_script_identifier: u64,
+    download_behavior: Option<super::cdp::DownloadBehaviorPolicy>,
     frame_id: Option<String>,
     frame_contexts: HashMap<String, i64>,
     frame_origins: HashMap<String, String>,
@@ -177,10 +183,16 @@ impl PageCdpAdapter {
         };
         let is_default = context["type"] == "normal";
         self.announced_contexts.insert(id, frame.to_owned());
+        let client_frame =
+            if self.alias_main_frame_to_target && self.frame_id.as_deref() == Some(frame) {
+                self.target_id.as_deref().unwrap_or(frame)
+            } else {
+                frame
+            };
         PageCdpOutput::client(
             json!({"method":"Runtime.executionContextCreated","params":{"context":{
                 "id":id,"name":name,"origin":origin,
-                "auxData":{"frameId":frame,"isDefault":is_default,"type":if is_default {"default"} else {"isolated"}}
+                "auxData":{"frameId":client_frame,"isDefault":is_default,"type":if is_default {"default"} else {"isolated"}}
             }}}),
         )
     }
@@ -202,67 +214,16 @@ impl PageCdpAdapter {
         ids.into_iter().map(|id| json!({"method":"Runtime.executionContextDestroyed","params":{"executionContextId":id}})).collect()
     }
     // WebKit binds remote objects to the same injectedScriptId used in the
-    // native context event. Primitive-only messages cannot establish a realm.
+    // native context event; primitive-only console calls synthesize to the
+    // active main-frame default (`normal`) contextId when verified.
     fn console_event(&self, event: &Value) -> Option<Value> {
-        let message = &event["params"]["message"];
-        if message["source"] != "console-api" {
-            return None;
-        }
-        let kind = match message["type"].as_str()? {
-            "log" => match message["level"].as_str()? {
-                "log" => "log",
-                "info" => "info",
-                "warning" => "warning",
-                "error" => "error",
-                "debug" => "debug",
-                _ => return None,
-            },
-            "trace" => "trace",
-            "dir" => "dir",
-            "dirxml" => "dirxml",
-            "table" => "table",
-            "clear" => "clear",
-            "assert" => "assert",
-            _ => return None,
-        };
-        let timestamp = message["timestamp"]
-            .as_f64()
-            .filter(|time| time.is_finite() && *time >= 0.0)?
-            * 1000.0;
-        if !timestamp.is_finite() {
-            return None;
-        }
-        let args = message["parameters"]
-            .as_array()
-            .filter(|args| !args.is_empty())?;
-        let mut context = None;
-        for arg in args {
-            if !arg.is_object() {
-                return None;
-            }
-            if let Some(object_id) = arg.get("objectId") {
-                let object_id = object_id.as_str().filter(|value| value.len() <= 1024)?;
-                let parsed: Value = serde_json::from_str(object_id).ok()?;
-                let object = parsed.as_object()?;
-                if object.len() != 2 || object.get("id")?.as_u64().is_none() {
-                    return None;
-                }
-                let id = object.get("injectedScriptId")?.as_i64()?;
-                if context.is_some_and(|previous| previous != id) {
-                    return None;
-                }
-                context = Some(id);
-            }
-        }
-        let context = context?;
-        if !self.announced_contexts.contains_key(&context)
-            || self.reused_realm_ids.contains(&context)
-        {
-            return None;
-        }
-        Some(json!({"method":"Runtime.consoleAPICalled","params":{
-            "type":kind,"args":args,"executionContextId":context,"timestamp":timestamp
-        }}))
+        super::cdp::resolve_page_console_api_called(
+            event,
+            self.frame_id.as_deref(),
+            &self.frame_contexts,
+            &self.announced_contexts,
+            &self.reused_realm_ids,
+        )
     }
     fn performance_changing(&self) -> bool {
         self.pending.values().any(|p| {
@@ -284,6 +245,11 @@ impl PageCdpAdapter {
             next_id: -1,
             pending: HashMap::new(),
             timeout,
+            target_id: None,
+            alias_main_frame_to_target: false,
+            lifecycle_events_enabled: false,
+            next_script_identifier: 0,
+            download_behavior: None,
             frame_id: None,
             frame_contexts: HashMap::new(),
             frame_origins: HashMap::new(),
@@ -307,6 +273,14 @@ impl PageCdpAdapter {
             memory_metrics: None,
             detached: false,
         }
+    }
+    pub fn with_target_id(timeout: Duration, target_id: impl Into<String>) -> Self {
+        let mut adapter = Self::new(timeout);
+        adapter.target_id = Some(target_id.into());
+        adapter
+    }
+    pub fn download_behavior(&self) -> Option<&super::cdp::DownloadBehaviorPolicy> {
+        self.download_behavior.as_ref()
     }
     fn issue(
         &mut self,
@@ -524,10 +498,91 @@ impl PageCdpAdapter {
                     None,
                 )
             }
-            "Page.setDownloadBehavior" => PageCdpOutput::client(error(
+            "Page.setDownloadBehavior" => {
+                match super::cdp::validate_download_behavior_params(&params) {
+                    Ok(policy) => {
+                        self.download_behavior = Some(policy);
+                        PageCdpOutput::client(reply(&request, json!({})))
+                    }
+                    Err(reason) => PageCdpOutput::client(error(&request, -32602, &reason)),
+                }
+            }
+            "Input.dispatchMouseEvent"
+            | "Input.dispatchKeyEvent"
+            | "Input.insertText"
+            | "Input.dispatchTouchEvent" => {
+                match super::cdp::build_input_dispatch_expression(&method, &params) {
+                    Ok(expression) => {
+                        let mut eval_params = json!({
+                            "expression": expression,
+                            "returnByValue": true,
+                        });
+                        if let Some(main_frame) = self.frame_id.as_deref() {
+                            if let Some(&ctx_id) = self.frame_contexts.get(main_frame) {
+                                if self.announced_contexts.contains_key(&ctx_id) {
+                                    eval_params["contextId"] = json!(ctx_id);
+                                }
+                            }
+                        }
+                        self.issue(
+                            request,
+                            Translation::InputDispatch,
+                            "Runtime.evaluate",
+                            eval_params,
+                            None,
+                        )
+                    }
+                    Err(reason) => PageCdpOutput::client(error(&request, -32602, &reason)),
+                }
+            }
+            "Log.enable" => {
+                self.alias_main_frame_to_target = true;
+                PageCdpOutput::client(reply(&request, json!({})))
+            }
+            "Log.disable" | "Log.clear" => PageCdpOutput::client(reply(&request, json!({}))),
+            "Page.setLifecycleEventsEnabled" => {
+                let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
+                    return PageCdpOutput::client(error(
+                        &request,
+                        -32602,
+                        "enabled must be a boolean",
+                    ));
+                };
+                self.lifecycle_events_enabled = enabled;
+                self.alias_main_frame_to_target = true;
+                PageCdpOutput::client(reply(&request, json!({})))
+            }
+            "Page.addScriptToEvaluateOnNewDocument" => {
+                if params.get("source").and_then(Value::as_str).is_none() {
+                    return PageCdpOutput::client(error(
+                        &request,
+                        -32602,
+                        "source must be a string",
+                    ));
+                }
+                self.next_script_identifier = self.next_script_identifier.saturating_add(1);
+                PageCdpOutput::client(reply(
+                    &request,
+                    json!({"identifier": self.next_script_identifier.to_string()}),
+                ))
+            }
+            "Page.removeScriptToEvaluateOnNewDocument"
+            | "Page.setFontFamilies"
+            | "Page.setInterceptFileChooserDialog"
+            | "Target.setAutoAttach"
+            | "Runtime.runIfWaitingForDebugger"
+            | "Emulation.setFocusEmulationEnabled"
+            | "Emulation.setEmulatedMedia"
+            | "Emulation.setDeviceMetricsOverride"
+            | "Emulation.setTouchEmulationEnabled"
+            | "Emulation.setUserAgentOverride"
+            | "Emulation.setGeolocationOverride" => {
+                PageCdpOutput::client(reply(&request, json!({})))
+            }
+            "Page.createIsolatedWorld" => PageCdpOutput::client(error(
                 &request,
                 -32601,
-                "Page.setDownloadBehavior has no verified WebInspector download manager mapping",
+                "Page.createIsolatedWorld has no native WebKit Page domain command",
             )),
             "Page.getFrameTree" | "Page.getResourceTree" => self.issue(
                 request,
@@ -582,10 +637,13 @@ impl PageCdpAdapter {
                         "frameId must be a nonempty string",
                     ));
                 }
-                let target_frame_id = params
-                    .get("frameId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+                let target_frame_id = params.get("frameId").and_then(Value::as_str).map(|fid| {
+                    if self.alias_main_frame_to_target && self.target_id.as_deref() == Some(fid) {
+                        self.frame_id.clone().unwrap_or_else(|| fid.to_owned())
+                    } else {
+                        fid.to_owned()
+                    }
+                });
                 let url = url.to_owned();
                 let mut output = self.issue(
                     request,
@@ -1006,6 +1064,9 @@ impl PageCdpAdapter {
                         return context_mapping_failed();
                     };
                     self.remember_frame_origins(tree);
+                    if tree["frame"].get("parentId").is_none() {
+                        self.frame_id = tree["frame"]["id"].as_str().map(str::to_owned);
+                    }
                     if let Some(frame) = event["params"]["context"]["frameId"].as_str() {
                         if !self.frame_origins.contains_key(frame)
                             && !tree_contains_frame(tree, frame)
@@ -1053,10 +1114,43 @@ impl PageCdpAdapter {
                         Some(tree) => {
                             self.remember_frame_origins(tree);
                             self.frame_id = tree["frame"]["id"].as_str().map(str::to_owned);
-                            PageCdpOutput::client(reply(
+                            let mut cleaned = clean_frame_tree(tree);
+                            if self.alias_main_frame_to_target {
+                                if let Some(tid) = self.target_id.as_deref() {
+                                    alias_root_frame_id(&mut cleaned, tid);
+                                }
+                            }
+                            let mut out = PageCdpOutput::client(reply(
                                 &pending.request,
-                                json!({"frameTree": clean_frame_tree(tree)}),
-                            ))
+                                json!({"frameTree": cleaned}),
+                            ));
+                            if self.lifecycle_events_enabled {
+                                let frame_id = if self.alias_main_frame_to_target {
+                                    self.target_id.as_deref().or(self.frame_id.as_deref())
+                                } else {
+                                    self.frame_id.as_deref()
+                                };
+                                let loader_id = tree["frame"]
+                                    .get("loaderId")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("loader-1");
+                                if let Some(fid) = frame_id {
+                                    for name in
+                                        ["commit", "DOMContentLoaded", "load", "networkIdle"]
+                                    {
+                                        out.client.push(json!({
+                                            "method": "Page.lifecycleEvent",
+                                            "params": {
+                                                "frameId": fid,
+                                                "loaderId": loader_id,
+                                                "name": name,
+                                                "timestamp": 1.0
+                                            }
+                                        }));
+                                    }
+                                }
+                            }
+                            out
                         }
                         None => PageCdpOutput::client(error(
                             &pending.request,
@@ -1075,7 +1169,16 @@ impl PageCdpAdapter {
                     };
                     let main_id = tree["frame"]["id"].as_str().unwrap().to_owned();
                     self.remember_frame_origins(tree);
-                    let effective_frame_id = frame_id.unwrap_or_else(|| main_id.clone());
+                    let effective_frame_id = match frame_id {
+                        Some(fid)
+                            if self.alias_main_frame_to_target
+                                && self.target_id.as_deref() == Some(fid.as_str()) =>
+                        {
+                            main_id.clone()
+                        }
+                        Some(fid) => fid,
+                        None => main_id.clone(),
+                    };
                     let context = if effective_frame_id != main_id {
                         let context = self
                             .frame_contexts
@@ -1223,6 +1326,19 @@ impl PageCdpAdapter {
                 Translation::FetchResume { request_id } => {
                     self.paused.remove(&request_id);
                     PageCdpOutput::client(reply(&pending.request, result.clone()))
+                }
+                Translation::InputDispatch => {
+                    if result.get("wasThrown").and_then(Value::as_bool) == Some(true)
+                        || result.get("exceptionDetails").is_some()
+                    {
+                        PageCdpOutput::client(error(
+                            &pending.request,
+                            -32000,
+                            "input dispatch expression failed",
+                        ))
+                    } else {
+                        PageCdpOutput::client(reply(&pending.request, json!({})))
+                    }
                 }
             };
         }
@@ -1459,9 +1575,18 @@ impl PageCdpAdapter {
                     }
                 }
             }
+            let is_frame_navigated = method == "Page.frameNavigated";
+            let is_main_frame = frame.is_some_and(|f| f.get("parentId").is_none());
             for id in ids {
                 let pending = self.pending.remove(&id).unwrap();
-                let mut result = json!({"frameId":frame_id.unwrap()});
+                let client_frame_id = if self.alias_main_frame_to_target && is_main_frame {
+                    self.target_id
+                        .as_deref()
+                        .unwrap_or_else(|| frame_id.unwrap())
+                } else {
+                    frame_id.unwrap()
+                };
+                let mut result = json!({"frameId":client_frame_id});
                 if let Some(loader) = frame
                     .and_then(|frame| frame.get("loaderId"))
                     .filter(|loader| loader.is_string())
@@ -1470,7 +1595,54 @@ impl PageCdpAdapter {
                 }
                 output.client.push(reply(&pending.request, result));
             }
-            output.client.push(message);
+            let mut client_message = message;
+            if self.alias_main_frame_to_target && is_main_frame {
+                if let Some(tid) = self.target_id.as_deref() {
+                    if let Some(f) = client_message
+                        .get_mut("params")
+                        .and_then(|p| p.get_mut("frame"))
+                        .and_then(Value::as_object_mut)
+                    {
+                        f.insert("id".to_string(), json!(tid));
+                    }
+                    if client_message
+                        .get("params")
+                        .and_then(|p| p.get("frameId"))
+                        .is_some()
+                    {
+                        client_message["params"]["frameId"] = json!(tid);
+                    }
+                }
+            }
+            let lifecycle_frame_id = client_message
+                .get("params")
+                .and_then(|p| p.get("frame"))
+                .and_then(|f| f.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let lifecycle_loader_id = client_message
+                .get("params")
+                .and_then(|p| p.get("frame"))
+                .and_then(|f| f.get("loaderId"))
+                .and_then(Value::as_str)
+                .unwrap_or("loader-1")
+                .to_owned();
+            output.client.push(client_message);
+            if self.lifecycle_events_enabled && is_frame_navigated {
+                if let Some(fid) = lifecycle_frame_id {
+                    for name in ["commit", "DOMContentLoaded", "load", "networkIdle"] {
+                        output.client.push(json!({
+                            "method": "Page.lifecycleEvent",
+                            "params": {
+                                "frameId": fid,
+                                "loaderId": lifecycle_loader_id,
+                                "name": name,
+                                "timestamp": 1.0
+                            }
+                        }));
+                    }
+                }
+            }
             return output;
         }
         if method == "Page.frameDetached" {
@@ -1680,6 +1852,38 @@ fn clean_frame_tree(tree: &Value) -> Value {
         cleaned.insert("childFrames".into(), Value::Array(cleaned_children));
     }
     Value::Object(cleaned)
+}
+fn alias_root_frame_id(tree: &mut Value, target_id: &str) {
+    let old_root_id = tree
+        .get("frame")
+        .and_then(|f| f.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(frame) = tree.get_mut("frame").and_then(Value::as_object_mut) {
+        frame.insert("id".to_string(), json!(target_id));
+        frame
+            .entry("loaderId".to_string())
+            .or_insert_with(|| json!("loader-1"));
+        frame
+            .entry("mimeType".to_string())
+            .or_insert_with(|| json!("text/html"));
+    }
+    if let (Some(old_id), Some(children)) = (
+        old_root_id.as_deref(),
+        tree.get_mut("childFrames").and_then(Value::as_array_mut),
+    ) {
+        for child in children {
+            if let Some(cf) = child.get_mut("frame").and_then(Value::as_object_mut) {
+                if cf.get("parentId").and_then(Value::as_str) == Some(old_id) {
+                    cf.insert("parentId".to_string(), json!(target_id));
+                }
+                cf.entry("loaderId".to_string())
+                    .or_insert_with(|| json!("loader-child"));
+                cf.entry("mimeType".to_string())
+                    .or_insert_with(|| json!("text/html"));
+            }
+        }
+    }
 }
 fn screenshot_rect(value: &Value) -> Option<Value> {
     if value
@@ -2264,8 +2468,8 @@ mod tests {
     fn unsupported_input_metrics_and_expired_commands_cannot_succeed() {
         let mut adapter = adapter();
         for method in [
-            "Input.dispatchMouseEvent",
-            "Input.dispatchKeyEvent",
+            "Input.synthesizePinchGesture",
+            "Input.imeSetComposition",
             "Memory.getDOMCounters",
         ] {
             assert_eq!(
@@ -2273,6 +2477,32 @@ mod tests {
                 -32601
             );
         }
+        for method in [
+            "Input.dispatchMouseEvent",
+            "Input.dispatchKeyEvent",
+            "Input.insertText",
+            "Input.dispatchTouchEvent",
+        ] {
+            assert_eq!(
+                adapter.outgoing(json!({"id":2,"method":method})).client[0]["error"]["code"],
+                -32602
+            );
+        }
+        let mouse = adapter.outgoing(json!({
+            "id": 3,
+            "method": "Input.dispatchMouseEvent",
+            "params": {"type": "mousePressed", "x": 10, "y": 20, "button": "left", "clickCount": 1}
+        }));
+        assert_eq!(mouse.wire[0]["method"], "Runtime.evaluate");
+        assert!(mouse.wire[0]["params"]["expression"]
+            .as_str()
+            .unwrap()
+            .starts_with("/*cdp-input:mouse*/"));
+        let mouse_done = adapter.incoming(json!({
+            "id": mouse.wire[0]["id"],
+            "result": {"result": {"type": "boolean", "value": true}}
+        }));
+        assert_eq!(mouse_done.client[0], json!({"id": 3, "result": {}}));
         let sent = adapter.outgoing(json!({"id":9,"method":"Page.enable"}));
         adapter
             .pending
@@ -2310,7 +2540,55 @@ mod tests {
         let output = adapter.incoming(console_msg.clone());
         assert_eq!(output.client, vec![console_msg], "native console evidence must be preserved without fabricating a Runtime context or timestamp");
 
-        let download = adapter.outgoing(json!({"id": 11, "method": "Page.setDownloadBehavior"}));
-        assert_eq!(download.client[0]["error"]["code"], -32601);
+        // When the main frame and its default (`normal`) context are active, primitive-only
+        // console.log/info/warn/error/debug synthesizes Runtime.consoleAPICalled to that context.
+        let created = adapter.incoming(json!({
+            "method": "Runtime.executionContextCreated",
+            "params": {"context": {"id": 31, "type": "normal", "name": "", "frameId": "main"}}
+        }));
+        let announced = adapter.incoming(json!({
+            "id": created.wire[0]["id"],
+            "result": {"frameTree": {"frame": {"id": "main", "url": "https://a.test/", "securityOrigin": "https://a.test"}}}
+        }));
+        assert_eq!(
+            announced.client[0]["method"],
+            "Runtime.executionContextCreated"
+        );
+        let prim_console = json!({
+            "method": "Console.messageAdded",
+            "params": {
+                "message": {
+                    "source": "console-api",
+                    "type": "log",
+                    "level": "info",
+                    "text": "primitive-info",
+                    "timestamp": 25.0,
+                    "parameters": [
+                        {"type": "string", "value": "primitive-info"},
+                        {"type": "number", "value": 7}
+                    ]
+                }
+            }
+        });
+        let prim_out = adapter.incoming(prim_console.clone());
+        assert_eq!(prim_out.client[0], prim_console);
+        assert_eq!(prim_out.client[1]["method"], "Runtime.consoleAPICalled");
+        assert_eq!(prim_out.client[1]["params"]["type"], "info");
+        assert_eq!(prim_out.client[1]["params"]["executionContextId"], 31);
+        assert_eq!(prim_out.client[1]["params"]["timestamp"], 25_000.0);
+
+        let download_invalid =
+            adapter.outgoing(json!({"id": 11, "method": "Page.setDownloadBehavior"}));
+        assert_eq!(download_invalid.client[0]["error"]["code"], -32602);
+        let download_ok = adapter.outgoing(json!({
+            "id": 12,
+            "method": "Page.setDownloadBehavior",
+            "params": {"behavior": "allow", "downloadPath": "C:/tmp"}
+        }));
+        assert_eq!(download_ok.client[0], json!({"id": 12, "result": {}}));
+        assert_eq!(
+            adapter.download_behavior().map(|p| p.behavior.as_str()),
+            Some("allow")
+        );
     }
 }

@@ -631,3 +631,81 @@ async fn lifecycle_cdp_browser_child_reparenting_keeps_issued_expiry_during_abor
         .any(|source| source.is::<tokio::time::error::Elapsed>()));
     released(&mut child).await;
 }
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_inbound_command_waits_for_partial_native_frame_completion() {
+    let mut child = opened().await;
+    let payload = super::super::bridge_tests::envelope(
+        "_rpc_applicationSentData:",
+        plist::Dictionary::from_iter([
+            (
+                "WIRApplicationIdentifierKey".to_owned(),
+                plist::Value::String("PID:42".to_owned()),
+            ),
+            (
+                "WIRMessageDataKey".to_owned(),
+                plist::Value::Data(
+                    serde_json::to_vec(&json!({
+                        "method": "Target.dispatchMessageFromTarget",
+                        "params": {
+                            "targetId": "owned-cdp-target",
+                            "message": json!({"id": 41, "result": {"value": "split"}}).to_string()
+                        }
+                    }))
+                    .unwrap(),
+                ),
+            ),
+        ]),
+    );
+    let mut raw_plist = Vec::new();
+    payload.to_writer_xml(&mut raw_plist).unwrap();
+    let mut framed = Vec::with_capacity(4 + raw_plist.len());
+    framed.extend_from_slice(&(raw_plist.len() as u32).to_be_bytes());
+    framed.extend_from_slice(&raw_plist);
+
+    let split_at = framed.len() / 2;
+    let before = child.source.received.load(Ordering::SeqCst);
+    child.peer.write_all(&framed[..split_at]).await.unwrap();
+    bounded(async {
+        while child.source.received.load(Ordering::SeqCst) < before + split_at {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+
+    // Queue an inbound command while the native plist frame is half-read.
+    child
+        .owner
+        .as_ref()
+        .unwrap()
+        .sender
+        .send(json!({"id": 42, "method": "Runtime.enable"}))
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+
+    // Complete the native frame; the session must stay alive and deliver both
+    // the completed native frame and the queued inbound command.
+    child.peer.write_all(&framed[split_at..]).await.unwrap();
+    match bounded(child.output.recv()).await.unwrap() {
+        BrowserPageOutput::Message {
+            session_id,
+            message,
+        } => {
+            assert_eq!(session_id, child.session);
+            assert_eq!(message, json!({"id": 41, "result": {"value": "split"}}));
+        }
+        BrowserPageOutput::Closed { .. } => {
+            panic!("mid-frame inbound command must not detach the page session")
+        }
+    }
+    let forwarded = bounded(read_frame(&mut child.peer)).await.unwrap().unwrap();
+    assert_eq!(
+        forwarded["__selector"].as_string(),
+        Some("_rpc_forwardSocketData:")
+    );
+    bounded(stop_browser_page(child.owner.take().unwrap()))
+        .await
+        .unwrap();
+    closed(&mut child).await;
+}
