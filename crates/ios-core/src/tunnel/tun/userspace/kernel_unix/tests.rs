@@ -46,7 +46,9 @@ async fn actual_local_refusal_is_primary_before_stop_and_all_real_joins_at_close
     socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
     let addr = socket.local_addr().unwrap();
     #[cfg(target_os = "macos")]
-    drop(socket);
+    let socket = {
+        drop(socket);
+    };
     let actual = tokio::net::TcpStream::connect(addr).await.unwrap_err();
     assert_eq!(actual.kind(), io::ErrorKind::ConnectionRefused);
     let original = Arc::new(actual);

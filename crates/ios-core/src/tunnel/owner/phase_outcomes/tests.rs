@@ -41,7 +41,9 @@ async fn real_join_and_closed_bank_phase_reports_keep_first_arc_and_frozen_progr
     socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
     let addr = socket.local_addr().unwrap();
     #[cfg(target_os = "macos")]
-    drop(socket);
+    let socket = {
+        drop(socket);
+    };
     let error = tokio::net::TcpStream::connect(addr).await.unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
     let first: Cause = Arc::new(error);

@@ -32,7 +32,9 @@ async fn actual_blocking_body_captures_original_native_io_before_capture_drop_at
     socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
     let addr = socket.local_addr().unwrap();
     #[cfg(target_os = "macos")]
-    drop(socket);
+    let socket = {
+        drop(socket);
+    };
     let error = tokio::net::TcpStream::connect(addr).await.unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
     let cause: Arc<dyn std::error::Error + Send + Sync> = Arc::new(error);

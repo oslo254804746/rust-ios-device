@@ -197,7 +197,9 @@ async fn actual_prepared_policy_keeps_first_private_native_source_before_closed_
         reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let addr = reserved.local_addr().unwrap();
         #[cfg(target_os = "macos")]
-        drop(reserved);
+        let reserved = {
+            drop(reserved);
+        };
         let refusal = tokio::net::TcpStream::connect(addr).await.unwrap_err();
         assert_eq!(refusal.kind(), std::io::ErrorKind::ConnectionRefused);
         let drops = Arc::new(AtomicUsize::new(0));
