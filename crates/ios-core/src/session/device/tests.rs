@@ -1236,12 +1236,15 @@ async fn no_queue_and_two_device_owners_close_independently_on_actual_sockets() 
 async fn actual_dial_refusal_keeps_os_error_and_unpolled_job_drop_returns_permits() {
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = socket.local_addr().unwrap();
+    #[cfg(target_os = "macos")]
+    drop(socket);
     let shared = SharedAdmission::new(1).unwrap();
     let device = ExistingTrustDevice::new(
         UDID.into(),
         record(),
         SessionOwner::new(shared.clone(), 1).unwrap(),
-        UsbmuxEndpoint::tcp(socket.local_addr().unwrap()),
+        UsbmuxEndpoint::tcp(addr),
     )
     .unwrap();
     let abandoned = device
@@ -1262,6 +1265,7 @@ async fn actual_dial_refusal_keeps_os_error_and_unpolled_job_drop_returns_permit
         )
         .unwrap()
         .await;
+    #[cfg(not(target_os = "macos"))]
     drop(socket);
     device.close(TOTAL).await.unwrap();
     assert_eq!(device.active(), 0);
@@ -1474,7 +1478,7 @@ async fn actual_partially_blocked_start_session_send_is_cancelled_then_drained_a
         let first = peer.read_u8().await.unwrap();
         let _ = ready_tx.send(());
         let _ = drain.await;
-        let receive: libc::c_int = 4 * 1024 * 1024;
+        let receive: libc::c_int = 64 * 1024;
         // SAFETY: same live owned socket and correctly sized value as above.
         let restored = unsafe {
             libc::setsockopt(

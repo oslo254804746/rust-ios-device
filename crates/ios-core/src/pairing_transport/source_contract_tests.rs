@@ -282,11 +282,14 @@ fn source_adapters_preserve_native_kinds_named_xpc_and_opaque_categories() {
 async fn real_owned_rsd_refusal_and_elapsed_keep_original_objects() {
     let socket = tokio::net::TcpSocket::new_v6().unwrap();
     socket.bind((Ipv6Addr::LOCALHOST, 0).into()).unwrap();
+    let port = socket.local_addr().unwrap().port();
+    #[cfg(target_os = "macos")]
+    drop(socket);
     let native = timeout(
         // Keep the original native refusal through all three RSD attempts;
         // Winsock delivers loopback refusal after ~2s per attempt.
         Duration::from_secs(if cfg!(windows) { 10 } else { 1 }),
-        crate::xpc::rsd::handshake(Ipv6Addr::LOCALHOST, socket.local_addr().unwrap().port()),
+        crate::xpc::rsd::handshake(Ipv6Addr::LOCALHOST, port),
     )
     .await
     .unwrap()

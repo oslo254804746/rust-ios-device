@@ -108,9 +108,10 @@ fn failure(error: &TunnelError) -> &owner::TunnelShutdownFailure {
 async fn flush_failure_keeps_original_deep_native_io_and_actual_joins_without_ack_or_late_quota() {
     let reserved = tokio::net::TcpSocket::new_v4().unwrap();
     reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let io = tokio::net::TcpStream::connect(reserved.local_addr().unwrap())
-        .await
-        .unwrap_err();
+    let addr = reserved.local_addr().unwrap();
+    #[cfg(target_os = "macos")]
+    drop(reserved);
+    let io = tokio::net::TcpStream::connect(addr).await.unwrap_err();
     assert_eq!(io.kind(), std::io::ErrorKind::ConnectionRefused);
     let error_drops = Arc::new(AtomicUsize::new(0));
     let error = std::io::Error::new(

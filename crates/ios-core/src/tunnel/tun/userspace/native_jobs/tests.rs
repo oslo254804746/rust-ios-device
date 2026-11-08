@@ -30,9 +30,10 @@ async fn actual_blocking_body_captures_original_native_io_before_capture_drop_at
     use crate::tunnel::owner::phase_outcomes::{Phase, PhaseOutcomes};
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let error = tokio::net::TcpStream::connect(socket.local_addr().unwrap())
-        .await
-        .unwrap_err();
+    let addr = socket.local_addr().unwrap();
+    #[cfg(target_os = "macos")]
+    drop(socket);
+    let error = tokio::net::TcpStream::connect(addr).await.unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
     let cause: Arc<dyn std::error::Error + Send + Sync> = Arc::new(error);
     let bank = Arc::new(Semaphore::new(TOTAL));

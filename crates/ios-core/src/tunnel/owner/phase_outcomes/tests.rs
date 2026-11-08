@@ -39,9 +39,10 @@ async fn real_join_and_closed_bank_phase_reports_keep_first_arc_and_frozen_progr
     assert!(!running.joins_complete());
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let error = tokio::net::TcpStream::connect(socket.local_addr().unwrap())
-        .await
-        .unwrap_err();
+    let addr = socket.local_addr().unwrap();
+    #[cfg(target_os = "macos")]
+    drop(socket);
+    let error = tokio::net::TcpStream::connect(addr).await.unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
     let first: Cause = Arc::new(error);
     let cleanup: Cause = Arc::new(std::io::Error::from_raw_os_error(5));

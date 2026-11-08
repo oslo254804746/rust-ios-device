@@ -125,7 +125,21 @@ impl LocalDevice {
         }
     }
     pub fn create(plan: Plan) -> Result<(Self, LocalHandle), NativeError> {
+        #[cfg(not(target_os = "macos"))]
         let (sock_a, sock_b) = UnixDatagram::pair().map_err(NativeError::from)?;
+        #[cfg(target_os = "macos")]
+        let (sock_a, sock_b) = {
+            let (a, b) = std::os::unix::net::UnixStream::pair().map_err(NativeError::from)?;
+            // SAFETY: a and b are freshly created owned file descriptors; wrapping
+            // them in UnixDatagram preserves the test handle surface while using
+            // XNU's stream send-buffer backpressure (POLLOUT + EWOULDBLOCK).
+            unsafe {
+                (
+                    UnixDatagram::from_raw_fd(a.into_raw_fd()),
+                    UnixDatagram::from_raw_fd(b.into_raw_fd()),
+                )
+            }
+        };
         sock_a.set_nonblocking(true).map_err(NativeError::from)?;
         sock_b.set_nonblocking(false).map_err(NativeError::from)?;
         let fd = unsafe { OwnedFd::from_raw_fd(sock_a.into_raw_fd()) };

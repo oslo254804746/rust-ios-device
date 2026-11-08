@@ -62,6 +62,8 @@ async fn public_https_refusal_keeps_request_cause_and_private_url() {
         "https://{}/owned-private?token=owned-private",
         socket.local_addr().unwrap()
     );
+    #[cfg(target_os = "macos")]
+    drop(socket);
     let client =
         // This fixture tests refusal, independently of the timeout fixture
         // below. Winsock needs ~2s to produce the original dial failure.
@@ -71,6 +73,7 @@ async fn public_https_refusal_keeps_request_cause_and_private_url() {
         .post_drm_handshake(&plist::Dictionary::new())
         .await
         .unwrap_err();
+    #[cfg(not(target_os = "macos"))]
     drop(socket);
     let MobileActivationError::Io(outer) = &error else {
         panic!("request cause lost");

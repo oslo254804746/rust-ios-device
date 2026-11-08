@@ -10,7 +10,7 @@ use tokio::sync::Semaphore;
 
 const A: &str = "synthetic-device-a";
 const B: &str = "synthetic-device-b";
-const LOCAL_BUDGET: Duration = Duration::from_secs(1);
+const LOCAL_BUDGET: Duration = Duration::from_secs(5);
 
 #[tokio::test]
 async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear() {

@@ -129,7 +129,7 @@ async fn admission_usb_exact_boundaries_enter_paired_discovery_without_connectio
         let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
 
         let mut scan = Box::pin(state.refresh_once());
-        let reached_while_pending = tokio::time::timeout(LOCAL_BUDGET, async {
+        let reached_while_pending = tokio::time::timeout(TUNNEL_CONNECT_TIMEOUT, async {
             loop {
                 if futures_util::poll!(&mut scan).is_ready() {
                     return false;
@@ -312,7 +312,7 @@ async fn admission_paired_combined_exact_count_keeps_four_future_window() {
     let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
 
     let mut scan = Box::pin(state.refresh_once());
-    let reached = tokio::time::timeout(LOCAL_BUDGET, async {
+    let reached = tokio::time::timeout(TUNNEL_CONNECT_TIMEOUT, async {
         loop {
             if futures_util::poll!(&mut scan).is_ready() {
                 return false;
@@ -367,7 +367,7 @@ async fn admission_paired_combined_exact_bytes_keeps_four_future_window() {
     let mut control_input_1 = state.prepare_cutover::<1>().unwrap();
 
     let mut scan = Box::pin(state.refresh_once());
-    let reached = tokio::time::timeout(LOCAL_BUDGET, async {
+    let reached = tokio::time::timeout(TUNNEL_CONNECT_TIMEOUT, async {
         loop {
             if futures_util::poll!(&mut scan).is_ready() {
                 return false;

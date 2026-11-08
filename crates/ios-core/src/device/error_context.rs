@@ -127,9 +127,12 @@ mod tests {
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
         socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = socket.local_addr().unwrap();
+        #[cfg(target_os = "macos")]
+        drop(socket);
         let native = crate::psk_tls::connect_psk_tls("127.0.0.1", address.port(), &[7; 32])
             .await
             .expect_err("owned refusal");
+        #[cfg(not(target_os = "macos"))]
         drop(socket);
         let error = psk("connect owned listener", native);
         assert_eq!(error.class(), ErrorClass::Io);

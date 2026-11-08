@@ -217,11 +217,14 @@ mod tests {
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
         socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = format!("tcp://{}", socket.local_addr().unwrap());
+        #[cfg(target_os = "macos")]
+        drop(socket);
         let error = UsbmuxStream::connect(&address).await.err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
         let original = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
         assert_eq!(original.kind(), error.kind());
         assert!(original.raw_os_error().is_some());
+        #[cfg(not(target_os = "macos"))]
         drop(socket);
     }
 }

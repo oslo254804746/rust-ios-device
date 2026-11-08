@@ -227,6 +227,8 @@ mod rsd_proxy_tests {
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
         socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let port = socket.local_addr().unwrap().port();
+        #[cfg(target_os = "macos")]
+        drop(socket);
         let result = tokio::time::timeout(
             // Native Winsock refusal itself takes ~2s before RSD retries.
             Duration::from_secs(if cfg!(windows) { 10 } else { 2 }),
@@ -243,6 +245,7 @@ mod rsd_proxy_tests {
             panic!("typed proxy dial error lost at the owner")
         };
         assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+        #[cfg(not(target_os = "macos"))]
         drop(socket);
     }
 

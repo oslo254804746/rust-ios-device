@@ -518,12 +518,14 @@ impl Lifecycle {
             resets.remaining() >= 2 * stale,
             "complete prepared stale-gate batch"
         );
-        for gate in &devices.rows {
-            if !gate.intent.is_epoch(&shutdown_generation) {
-                gate.intent.reset(shutdown_generation.clone(), resets);
-                resets.keep(&gate.generation.borrow());
-                gate.generation
-                    .send_replace(resets.place(&self.metadata_bytes));
+        if stale > 0 {
+            for gate in &devices.rows {
+                if !gate.intent.is_epoch(&shutdown_generation) {
+                    gate.intent.reset(shutdown_generation.clone(), resets);
+                    resets.keep(&gate.generation.borrow());
+                    gate.generation
+                        .send_replace(resets.place(&self.metadata_bytes));
+                }
             }
         }
         let gate = match devices.get(udid).cloned() {

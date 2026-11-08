@@ -179,6 +179,8 @@ mod tests {
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
         socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = socket.local_addr().unwrap();
+        #[cfg(target_os = "macos")]
+        drop(socket);
         let error = deactivate_with_fallback(
             std::future::ready(Err(CoreError::Unsupported("owned-private".into()))),
             || async {
@@ -190,6 +192,7 @@ mod tests {
         )
         .await
         .unwrap_err();
+        #[cfg(not(target_os = "macos"))]
         drop(socket);
         assert_eq!(error.class(), ErrorClass::Io);
         let CoreError::Io(outer) = &error else {

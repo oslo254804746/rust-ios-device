@@ -445,7 +445,7 @@ async fn lifecycle_xpc_public_deadlines_state_and_exhaustive_error_contract() {
                 let (_, _, bytes) = frame(&mut peer).await;
                 assert_eq!(
                     ios_core::decode_xpc_message(bytes.into()).unwrap().msg_id,
-                    2
+                    3
                 );
             }
         )
@@ -454,7 +454,7 @@ async fn lifecycle_xpc_public_deadlines_state_and_exhaustive_error_contract() {
     .unwrap();
     assert_eq!(family(&result.unwrap_err()), "io");
     assert!(!client.is_usable());
-    peer.write_all(&response(2, 3)).await.unwrap();
+    peer.write_all(&response(3, 3)).await.unwrap();
     let error = client.recv().await.unwrap_err();
     assert_eq!(family(&error), "io");
     assert_eq!(

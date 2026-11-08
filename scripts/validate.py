@@ -47,7 +47,9 @@ def python_env(interpreter):
     env = os.environ.copy()
     env["PYO3_PYTHON"] = info["executable"]
     env["PYTHONHOME"] = info["prefix"]
-    if info["libdir"] and sys.platform != "win32":
+    if sys.platform == "win32":
+        env["PATH"] = str(info["prefix"]) + (os.pathsep + env["PATH"] if env.get("PATH") else "")
+    elif info["libdir"]:
         key = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
         env[key] = str(info["libdir"]) + (os.pathsep + env[key] if env.get(key) else "")
     return env

@@ -44,9 +44,10 @@ fn plan() -> Plan {
 async fn actual_local_refusal_is_primary_before_stop_and_all_real_joins_at_closed_zero() {
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let actual = tokio::net::TcpStream::connect(socket.local_addr().unwrap())
-        .await
-        .unwrap_err();
+    let addr = socket.local_addr().unwrap();
+    #[cfg(target_os = "macos")]
+    drop(socket);
+    let actual = tokio::net::TcpStream::connect(addr).await.unwrap_err();
     assert_eq!(actual.kind(), io::ErrorKind::ConnectionRefused);
     let original = Arc::new(actual);
     let factory_error = NativeError::Native(io::Error::other(OriginalIo(original.clone())));
@@ -537,7 +538,14 @@ async fn successful_activation_and_bidirectional_packet_transfer() {
         .await
         .expect("receive packet on local native socket timed out")
         .unwrap();
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(&recv_host[..n], &pkt_to_host);
+    #[cfg(target_os = "macos")]
+    {
+        let mut expected = (libc::AF_INET6 as u32).to_be_bytes().to_vec();
+        expected.extend_from_slice(&pkt_to_host);
+        assert_eq!(&recv_host[..n], &expected);
+    }
 
     // 2. Packet from Host to iOS device:
     let payload_to_device = b"test packet to device";
@@ -546,7 +554,14 @@ async fn successful_activation_and_bidirectional_packet_transfer() {
         "fd00::1".parse().unwrap(),
         payload_to_device,
     );
+    #[cfg(not(target_os = "macos"))]
     local_peer.send(&pkt_to_device).await.unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        let mut wire_to_device = (libc::AF_INET6 as u32).to_be_bytes().to_vec();
+        wire_to_device.extend_from_slice(&pkt_to_device);
+        local_peer.send(&wire_to_device).await.unwrap();
+    }
 
     let mut recv_device = vec![0u8; pkt_to_device.len()];
     tokio::time::timeout(OBSERVE, peer_stream.read_exact(&mut recv_device))

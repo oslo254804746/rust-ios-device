@@ -950,7 +950,10 @@ mod tests {
         // Reserve a non-listening port; no released-port race, TUN or device IO.
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
         socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-        let (device, receiver) = owned_rsd_device(None, socket.local_addr().unwrap().port());
+        let port = socket.local_addr().unwrap().port();
+        #[cfg(target_os = "macos")]
+        drop(socket);
+        let (device, receiver) = owned_rsd_device(None, port);
         // Winsock's loopback SYN refusal is delivered after ~2 seconds. This
         // public retry path makes five real attempts; observe the native refusal
         // rather than replacing it with this fixture's outer timeout.
