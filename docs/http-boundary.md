@@ -158,7 +158,7 @@ provide listener TLS: an HTTPS UI may require a protected WSS transport as
 described in [protected federation](protected-federation.md), and browser
 mixed-content/local-network policy may reject a plaintext local connection.
 
-The explicit [browser gate](validation/browser-access-2026-10-01.md) uses actual
+The explicit browser gate uses actual
 Chromium fetch/WebSocket against the Rust production manager and owned host
 fixtures. It checks access control, binary bytes and revocation, without an
 Apple service. F03 client/CDP protocol acceptance and physical-device workflows

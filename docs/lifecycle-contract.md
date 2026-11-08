@@ -40,7 +40,7 @@ Older profiles below retain their historical scope and unresolved findings.
 This table supersedes older consumer-wiring statements below. It records finite
 profiles rather than claiming every compatibility/raw API or blocking worker is
 physically cancellable. Existing H2/DTX/AFC/HTTP-upgrade owner evidence remains
-applicable; [current validation](validation/production-completion-2026-10-26.md)
+applicable; current validation
 lists actual gates and OPEN/NOT_RUN separately.
 
 Rust error migration: `HidError::Media` now contains the original `DisplayError`
@@ -91,7 +91,7 @@ empty-idle outcomes. A partial frame timeout now fails immediately with original
 Elapsed rather than returning success/None for an unusable connection. Channel
 selection, event filtering, ordering and successful serialization stay.
 
-Host fixtures and limits: [DTX lifecycle gate](validation/dtx-lifecycle-2026-10-04.md).
+Host fixtures and limits: DTX lifecycle gate.
 Compatibility: [public contract](public-contract.md); classification/effects:
 [error contract](error-contract.md).
 
@@ -109,7 +109,7 @@ remain owned and the primary drives the final category. Count/stop during a
 partial read can invalidate DTX and make cleanup fail. Whole-future cancellation
 drops transport without async stop or a detached reader. Successful stop is a
 wire write, not an ACK. Synchronous output/decoding cannot be interrupted by a
-Tokio timer. See [FPS host fixtures and migration](validation/fps-lifecycle-2026-10-04.md).
+Tokio timer. See FPS host fixtures and migration.
 
 AfcClient has a shared send/flush/reply guard at every request site. Optional
 set_request_timeout(Some(budget)) uses one absolute per-request budget; default
@@ -127,7 +127,7 @@ reader. Dual failure keeps original primary and cleanup objects; the primary
 drives classification. Drop does not await close, manually opened handles remain
 caller-owned, and borrowed raw transports must not bypass invalid state. Existing
 packet-number acceptance and frame/whole-file limits remain. See
-[AFC fixture boundaries and migration](validation/afc-lifecycle-2026-10-04.md).
+AFC fixture boundaries and migration.
 
 Caller-bounded AFC reads retain that same request/file ownership policy. A fully
 consumed byte-limit refusal plus successful close can retain reuse; an undrained
@@ -137,7 +137,7 @@ parsing, preserving acquired native errors while suppressing late success.
 Committed failure/cancellation invalidates all subsequent legacy client entries;
 explicit Complete business errors can preserve reuse. Neither method truncates
 a successful result. See
-[bounded service acceptance](validation/bounded-service-read-2026-10-08.md).
+bounded service acceptance.
 
 H2Framer guards its frame I/O entries and the borrowed finish-connect stage.
 Cancellation after reported bytes, transport errors and native EOF invalidate
@@ -155,7 +155,7 @@ nested service/bootstrap futures within the existing CLI stack test. It is
 still owned directly, without a background reader/task.
 
 Those logical XPC boundaries cannot be inferred from the H2 byte guard. See
-[H2 fixtures and limits](validation/h2-lifecycle-2026-10-04.md).
+H2 fixtures and limits.
 
 XpcClient now reports local is_usable and adds two call_with_timeout variants
 (stream 3/stream 1) and three single-read timeout variants (stream 3/1/any).
@@ -188,7 +188,7 @@ new host-reader/whole-file budget or async cancel/FIN task. Transport stays
 owned until Drop; no ACK, cleanup, rollback, safe retry or device acceptance is
 implied. Public split send/recv and other multi-service totals require their
 owner's contract. See
-[XPC fixtures and migration](validation/xpc-lifecycle-2026-10-04.md).
+XPC fixtures and migration.
 
 Borrowed RSD initialization/queued bootstrap retains ownership after its first
 complete send. Raw stream-1/stream-3 reads retain a consumed 24-byte wrapper
@@ -209,7 +209,7 @@ failure/cancellation. The single-write host handshake retains its H2 guard.
 Manual-pairing bootstrap uses the guarded initialization, while its later
 protocol exchanges still need their own ownership policy. Transport stays
 owned until Drop; borrowed raw transports must not bypass invalid state. See
-[RSD fixtures and migration](validation/rsd-lifecycle-2026-10-04.md).
+RSD fixtures and migration.
 
 LockdownClient guards complete query/value/service/activation send-reply
 transactions. Optional set_request_timeout uses an absolute per-request budget
@@ -236,7 +236,7 @@ automatic stop, async Drop or primary/cleanup aggregate; manual callers own
 both results. Generic borrowed raw/session helpers are unchanged. Device-side
 fresh sessions remain owned by their surrounding operation, without new setup/
 service totals or remote release guarantees. See
-[Lockdown fixtures and migration](validation/lockdown-lifecycle-2026-10-04.md).
+Lockdown fixtures and migration.
 
 DeviceLinkClient guards single framed sends/reads and the entire version
 exchange. Optional set_operation_timeout shares an absolute budget through
@@ -266,7 +266,7 @@ framing/cancellation responsibility to the caller. They bypass tracking and do
 not restore an unusable transport. MobileBackup2 now supplies the outer operation
 owner described below. Screenshot and other raw plist helpers remain separate
 profiles. See
-[DeviceLink fixtures and migration](validation/device-link-lifecycle-2026-10-04.md).
+DeviceLink fixtures and migration.
 
 Mobilebackup2Client guards the complete public operation across version/Hello,
 command, host work, raw upload/download and cleanup. Optional operation timeout
@@ -293,7 +293,7 @@ that drops that body. Lookup is bounded to 32 typed sources. No background task,
 async Drop, remote cleanup ACK, retry or rollback guarantee is added. Host
 spawn_blocking jobs can outlive a dropped awaiter; the controlled released-worker
 fixture does not establish stop/join for arbitrary filesystem work. See
-[MobileBackup2 fixtures and migration](validation/backup-lifecycle-2026-10-04.md).
+MobileBackup2 fixtures and migration.
 
 NotificationProxyClient owns each complete frame with accepted-byte tracking,
 including buffered reads. Optional operation budgets and explicit waits share
@@ -313,7 +313,7 @@ MAX handling; success closes reuse, including repeat shutdown. Empty blocked
 shutdown may remain usable; partial aborted shutdown requires a new transport.
 No queue/task/automatic cleanup/ACK/async Drop is added; opaque buffers stay until
 Drop. CLI overall budgets and signal ownership are supplied by the owner below. See
-[notification fixtures](validation/notification-lifecycle-2026-10-04.md).
+notification fixtures.
 
 Notification CLI now awaits the entire command body before deciding cleanup,
 including returned output/operation errors. A still usable stream attempts the
@@ -323,7 +323,7 @@ keeps both originals under a private CLI aggregate, with primary source/category
 and static Display/category-only Debug. Boxing the command body preserves stack
 bounds without a task/queue. Whole-future cancellation still drops transport
 without asynchronous cleanup. That cleanup profile leaves setup, command timers
-and signal handling unchanged. See [CLI cleanup fixtures](validation/notification-cli-cleanup-2026-10-04.md).
+and signal handling unchanged. See CLI cleanup fixtures.
 
 The subsequent notification CLI control owner validates finite zero/overflow
 timeouts before any device selection or I/O. It shares a 30-second setup budget
@@ -354,7 +354,7 @@ already running blocking workers cannot be preempted. Directly owned boxed
 futures add no reader task/queue or asynchronous Drop. Host fixtures include
 actual Linux SIGINT during an owned fake ListDevices wait; actual device signal,
 service cleanup and other platforms remain pending. See
-[CLI control fixtures and migration](validation/notification-cli-control-2026-10-04.md).
+CLI control fixtures and migration.
 
 CompanionProxyClient's additive is_usable reports shared local admission across
 the client, listener and forwarding handles. Requests keep the ten-second default
@@ -388,7 +388,7 @@ skips it, and the task checks shared state after locking. It is not an awaited
 join or remote stop guarantee. A business-failed borrowed stop can still trigger
 the pre-existing Drop attempt. That core profile adds no reader task/queue,
 protocol acknowledgement or cleanup aggregate. See
-[Companion fixtures and migration](validation/companion-lifecycle-2026-10-04.md).
+Companion fixtures and migration.
 
 The subsequent Companion CLI owner checks finite zero/overflow before explicit
 or default discovery. Setup caps at30s; a finite total starts before discovery
@@ -409,7 +409,7 @@ retains both originals with primary source/category and safe static diagnostics.
 Whole-command or close cancellation leaves no detached fallback. Legacy borrowed
 stop/Drop policies remain; shared owners retain the stream. No remote release,
 rollback, retry or guessed stop-listen command is claimed. See
-[Companion CLI fixtures and migration](validation/companion-cli-control-2026-10-05.md).
+Companion CLI fixtures and migration.
 
 WebInspectorClient adds is_usable and an optional operation budget, default None.
 Startup/timed events use the shorter explicit/configured limit. Sends include
@@ -437,7 +437,7 @@ Raw helpers, protocol strings/models/16MiB framing and six public variants remai
 That client-only profile deferred Inspector/Automation correlated ownership,
 retained cache limits and frontend/server setup/total/signal/join/output cleanup.
 No task/queue, remote cleanup/ACK/retry or measured memory claim was added.
-See [WebInspector client fixtures](validation/webinspector-client-lifecycle-2026-10-05.md).
+See WebInspector client fixtures.
 
 Inspector/Automation correlated commands and attach now own one checked total
 across send/flush and the expected response/target/page. A completed outgoing
@@ -464,7 +464,7 @@ overflow is Io InvalidInput, native expiry keeps original effective total/Elapse
 Due priority and cooperative codecs stay. No remote ACK/cleanup/retry or reader
 task is added; frontend/server setup/total/signal/join/output/primary-cleanup and
 multi-command workflow owners remain pending. See
-[WebInspector session fixtures](validation/webinspector-session-lifecycle-2026-10-05.md).
+WebInspector session fixtures.
 
 Received metadata now has LOCAL caps:1024 applications,1024 page application
 sets (including empty/orphan sets),4096 aggregate cached pages,4096 raw entries
@@ -490,7 +490,7 @@ expand before model/cache admission; decoded allocation/CPU bounds remain
 L01/Q04 work. Codecs/counting remain cooperative. No public API/error variant,
 model/selector/dependency/ACK/retry/task is added. Frontend/server whole-flow
 owners still remain. See
-[WebInspector cache fixtures](validation/webinspector-cache-lifecycle-2026-10-05.md).
+WebInspector cache fixtures.
 
 CLI application/page discovery now treats an issued timeout as ordinary idle
 only while the supplied client remains usable. Partial header/body or blocked
@@ -502,7 +502,7 @@ supplied-stream fixtures cover both workflows, including EOF/plist/resource
 sources and explicit page-key precedence. Existing helpers/deadlines/outputs
 stay; this does not certify frontend setup/whole-flow/signal/join/cleanup or
 decoder bounds. See
-[WebInspector discovery fixtures](validation/webinspector-discovery-lifecycle-2026-10-05.md).
+WebInspector discovery fixtures.
 
 Finite WebInspector opened-tabs/eval/launch now own default-device selection
 through final output under one checked absolute total and one pinned signal.
@@ -522,7 +522,7 @@ failures remain available, including two failures within automation cleanup.
 Local write/flush completion is not a remote ACK. Normal formats stay; a cleanup
 failure after output is now a returned failure. Twenty-one host tests and actual
 owned CLI probes cover this profile. See
-[WebInspector command fixtures](validation/webinspector-command-lifecycle-2026-10-05.md).
+WebInspector command fixtures.
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,
@@ -553,7 +553,7 @@ stdin and need platform-specific cancellation/shutdown work. The actual owned
 Linux child sends its ready marker from the first input poll, then receives
 SIGINT and exits after cleanup while the parent still holds the writer open.
 This is host evidence, not Apple teardown or a resource/performance baseline.
-See [WebInspector shell fixtures](validation/webinspector-shell-lifecycle-2026-10-05.md).
+See WebInspector shell fixtures.
 
 CDP/WebDriver/server totals, revocation and joined child ownership remain, along
 with other L01 and L02–L04/Q04/classes5–9. Host shell acceptance does not complete
@@ -567,7 +567,7 @@ Healthy empty idle still waits, forwards the next target message and uses the
 existing close selector on normal WebSocket shutdown. Native EOF, plist and
 legacy size errors retain their original families. Five actual WebSocket/owned
 plist fixtures verify this narrow profile; see
-[CDP page lifecycle](validation/cdp-page-idle-lifecycle-2026-10-05.md).
+CDP page lifecycle.
 
 Page/browser setup totals, finite sends/output, primary-preserving independent
 cleanup, server cancellation, stored-session revocation and joined child
@@ -592,7 +592,7 @@ primary cleanup after a fully attached/business-failed step, server signals,
 HTTP publication/output, active request totals, revocation and joined child/
 stored task ownership still need work. The existing100ms/2s cleanup policies
 stay; the successful WebDriver fixture observes context stop and zero forwarding
-teardowns. See [server setup evidence](validation/webinspector-server-setup-2026-10-05.md).
+teardowns. See server setup evidence.
 
 After a direct CDP page loop returns, its device guard, stream and page lock stay
 owned through independent 2s cleanup. The existing session owner sends the
@@ -601,7 +601,7 @@ recovery writes. A normal close retains cleanup failure, and a failed page retai
 both primary and cleanup causes through the existing private wrapper. Actual
 native flush faults, default expiry and an 80ms successful flush under a 50ms
 active idle policy are covered. Write/flush completion is not an Apple ACK.
-See [CDP page cleanup evidence](validation/cdp-page-cleanup-2026-10-05.md).
+See CDP page cleanup evidence.
 
 This returned-error path does not execute if outer principal/server cancellation
 drops the handler. Constructor primary cleanup, finite sends/output, joined
@@ -625,7 +625,7 @@ the client; explicit runtime Drop releases the stream. This is not async Drop,
 remote ACK or registry-task join proof. HTTP DELETE result swallowing, outer
 timeouts, lock admission, active Arc races, constructor primary cleanup and
 joined revocation/server ownership remain. See
-[WebDriver cleanup evidence](validation/webdriver-cleanup-2026-10-05.md).
+WebDriver cleanup evidence.
 
 Direct CDP page ownership now includes one pinned principal.revoked future across
 setup and active work. Checked setup drives source/start/discovery/attach beside
@@ -641,7 +641,7 @@ Source cancellation, observed read bytes, close identity, delayed/default-expiri
 flush, stream Drop/EOF and actual lock-key reacquisition are covered. Existing
 safe diagnostic output now runs on revocation. Local flush is not a remote ACK;
 cooperative timers cannot preempt synchronous work. See
-[CDP page lease evidence](validation/cdp-page-lease-2026-10-05.md).
+CDP page lease evidence.
 
 This supersedes the earlier direct-page principal-cancellation gap. Generic
 caller/server Drop still has no async cleanup guarantee. Constructor primary
@@ -665,7 +665,7 @@ idle resumption, shared group expiry and retained primary after abort. Two
 standalone actors within one fixture test supervisor panic/missing-result
 admission only. The existing terminal try_send can miss a full queue; release
 and join are proved independently, without claiming terminal delivery. See
-[browser task evidence](validation/cdp-browser-tasks-2026-10-05.md).
+browser task evidence.
 
 Browser outer Principal.run still drops the whole handler on revocation; Drop
 only aborts. Revocation during a removed child's cleanup also needs an owner
@@ -689,7 +689,7 @@ Eight actual admitted browser fixtures cover expiry/reload, delayed/default
 cleanup, observed partial frame, detach in progress and source cancellation
 before return. A private observer checks Cancelled plus original cleanup IO.
 Three additional child fixtures verify interrupted cleanup progress/errors.
-See [browser lease evidence](validation/cdp-browser-lease-2026-10-05.md).
+See browser lease evidence.
 
 This covers the earlier browser principal/removed-owner gap. Generic caller or
 server Drop still only aborts; no product server supervisor join is certified.
@@ -721,7 +721,7 @@ Arcs. Stored revocation tasks still lack explicit joins. Generic caller/server
 Drop, constructor primary cleanup, active request/output totals, terminal event
 retention and remaining L01/L02–L04/Q04/classes5–9 continue. No async Drop,
 Apple ACK/rollback/retry, platform or performance acceptance. See
-[DELETE lifecycle evidence](validation/webdriver-delete-2026-10-05.md).
+DELETE lifecycle evidence.
 
 ### Stored session retirement and joins (2026-10-05)
 
@@ -748,7 +748,7 @@ cleanup, real100ms callback expiry, replacement and an actually pending actor
 at store Drop with weak-store release. They are not Automation protocol/device
 fixtures. Nine accepted actual WebDriver DELETE cases and both original scope/
 Drop tests pass. Original middleware/assertions/other owners remain.
-See [session ownership evidence](validation/session-store-2026-10-05.md).
+See session ownership evidence.
 
 Legacy callback native cleanup errors/primary retention, active request Arcs,
 idle handle reclamation without API calls, caller/server shutdown, constructor
@@ -776,7 +776,7 @@ Selenium sessions, seven reload through the actual HTTP endpoint and one awaits
 actual grant expiry. Private native-result observation checks original errors,
 default expiry, unchanged IDs and owned release. Fixture Arc release and listener
 joins do not certify cancellation of all requests or product server supervision.
-See [typed revocation evidence](validation/webdriver-revocation-2026-10-05.md).
+See typed revocation evidence.
 
 This covers the earlier unit callback/outer-timer error gap. Map wait before the
 callback total, known primary before callback return if store aborts, active
@@ -787,7 +787,7 @@ retry/platform/performance/RSS/decoder peak acceptance.
 
 ## CLI tunnel manager device coordination
 
-[L02 device isolation](validation/tunnel-isolation-2026-10-06.md) accepts
+L02 device isolation accepts
 `e0f52671396e6408fc38921f78f73a256a45ce65`: actual CLI local query/stop avoids
 network lifecycle locking, same-device requests serialize, four permits bound
 simultaneous source connections. One15s manual total after ticket acquisition
@@ -811,7 +811,7 @@ all31 tasks and later classes remain active.
 
 ## Bounded automatic scan futures
 
-The [parallel scanner profile](validation/tunnel-parallel-2026-10-06.md),
+The parallel scanner profile,
 `66bf7311020763b8a29b175a117cdf1b70d4e22f`, supersedes the preceding
 sequential candidate connection condition. USB and known paired mobdev2
 candidates enter one deduplicated window, directly owned by the parent scanner,
@@ -829,7 +829,7 @@ L03–L04/Q04/classes5–9 and the full31-task goal remain.
 
 ## Observed native attachment IDs
 
-The [L02 identity gate](validation/tunnel-identity-2026-10-06.md),
+The L02 identity gate,
 `1eb45c25145f5306a5831df6a0c29d494a94ca96`, retains returned usbmux IDs/USB
 flags and prunes only original usbmux-route publications absent from the
 observed(UDID,ID) set. Another attached transport and concurrent new publication
@@ -847,7 +847,7 @@ L03–L04/Q04/classes5–9 remain. This profile does not complete L02 or the goa
 
 ## Completed device ownership during publication query
 
-[L02 publication query](validation/tunnel-publication-2026-10-06.md),
+L02 publication query,
 `86fecfe3331e9efa74dc76fbc48b47ad5c3df8f1`, owns a completed USB device
 through an additional current(UDID,ID) query before the global table lock.
 Original15s/serial/permit/watch cover it; failure/cancellation releases that
@@ -864,7 +864,7 @@ L03–L04/Q04/classes5–9 remain. The extra query is not a performance or RSS p
 
 ## Failure waits for one known connection identity
 
-The [L02 backoff profile](validation/tunnel-backoff-2026-10-06.md),
+The L02 backoff profile,
 `d0b04bed79ecec5c3f724ff003122f66b1159216`, associates each recorded failure
 with its known Route/expected native ID. Only identical attempts inherit a wait
 or increment its counter; a known ID/paired host/route change can retry and a
@@ -882,7 +882,7 @@ failure to1 or infer resource stability from this identity correction.
 
 ## Known local inactive state
 
-The [liveness profile](validation/tunnel-liveness-2026-10-06.md),
+The liveness profile,
 `7a77000cdbd0a8e6d2fbaaf6ac5bd630af47d6c5`, checks existing device.is_alive
 after record validation before query and again after publication lock/epoch/
 policy before insertion. Known false releases result/localcancellation/no
@@ -897,7 +897,7 @@ L02/classes5–9 continue. Six added production lines do not close these conditi
 
 ## One scan discovery setup deadline
 
-The [discovery setup profile](validation/tunnel-discovery-2026-10-06.md),
+The discovery setup profile,
 `a47648442d5b7707ad41beeb58a6ab1ad764ea9a`, captures a scan epoch before
 queueing and shares checked15s across scan mutex/USB snapshot/paired snapshot.
 Seen-version capture avoids spurious fresh-generation cancellation. Real
@@ -914,7 +914,7 @@ reuse-restart/manualepochs/L03-L04/Q04/otherL01/classes5–9 continue.
 
 ## Failure rows and reserved capacity
 
-The [retention profile](validation/tunnel-retention-2026-10-06.md),
+The retention profile,
 `26b89951b52dd690bcc0e994541007b5426fba93`, reconciles rows against current
 authorized candidates. Complete absence releases rows; failed paired discovery
 retains unknown mobdev2. Present expired identity keeps30/60/120/240/300s.
@@ -930,7 +930,7 @@ L01/L02/L03–L04/Q04/classes5–9 stay active;22device NOT_RUN.
 
 ## Owned tunnel scanner and returned shutdown
 
-The [server profile](validation/tunnel-server-2026-10-06.md),
+The server profile,
 `5120fa90e06a92f4734603382b98779b69f1ca38`, retains a bool shutdown state for late subscribers. The
 parent owns its scanner future and every active candidate. HTTP shutdown,
 a pinned signal outcome or server completion stops that scanner before cleanup.
@@ -948,7 +948,7 @@ generic caller-drop primary reporting, L03–L04/Q04 and classes5–9 remain.
 
 ## Terminal tunnel connection admission
 
-The [shutdown admission profile](validation/tunnel-shutdown-admission-2026-10-06.md),
+The shutdown admission profile,
 `0d025dd3404082fb76adab20758b2e278b2d9464`, distinguishes reusable clear epochs
 from terminal server shutdown. Notification closes admission before async cleanup;
 old connection tickets observe cancellation and fresh tickets/scans are rejected.
@@ -966,7 +966,7 @@ classes5–9 and all other active30-task acceptance conditions continue.
 
 ## Cancelled tunnel coordinator lock waits
 
-The [coordinator cancellation profile](validation/tunnel-coordinator-cancel-2026-10-06.md),
+The coordinator cancellation profile,
 `a4beec7fa01b605933b1966b79ef3ee738ae41fd`, replaces the uninterruptible
 coordinator mutex await with a directly owned biased clear/shutdown wait.
 Both reusable clear and terminal close return OperationCancelled while that
@@ -978,7 +978,7 @@ post-check races and the other pending L01/L02 scope remain.
 
 ## Manual tunnel connection absolute deadline
 
-The [manual deadline profile](validation/tunnel-manual-deadline-2026-10-06.md),
+The manual deadline profile,
 `d3ed1c33c14b2dcfdf83ef6c678cc1f451813176`, starts the existing 15-second total
 before coordinator admission. One checked absolute deadline drives admission
 and the existing serial/cache/permit/connect/paired fallback/attachment query/
@@ -1007,7 +1007,7 @@ original acceptance remains.
 
 ## Tunnel scan setup internal waits
 
-The [scan setup profile](validation/tunnel-scan-setup-2026-10-06.md),
+The scan setup profile,
 `57d57999fddbe0234b502686b65b8500d7d50cfd`, extends the existing checked15s
 discovery clock to initial/post-USB table locks, USB coordinator admission and the no-authorized
 failure/ready locks. These waits observe clear/shutdown while held. The biased
@@ -1034,7 +1034,7 @@ conditions remain. No maturity,ACK,async Drop,resource or performance claim.
 
 ## Userspace tunnel construction ownership
 
-The [native construction profile](validation/userspace-construction-2026-10-06.md),
+The native construction profile,
 `19315169dda049d6ab1acd68414bf4976b147b47`, binds the listener and queries its
 port before creating channels, splitting the stream or spawning workers. Initialization
 failure now releases the stream without detached handles. Native IO source,
@@ -1059,7 +1059,7 @@ or platform certification. All Rust commands primary-only and serial.
 
 ## Tunnel shutdown state changes
 
-The [shutdown state profile](validation/tunnel-shutdown-fences-2026-10-07.md),
+The shutdown state profile,
 `7dc589bf4f26ead3597d991992f251d0ec29831e`, retains ticket generation/shutdown watch guards
 through synchronous publication and failure-row mutations. Stale actions are
 skipped with native cancellation; accepted actions finish before lifecycle
@@ -1088,7 +1088,7 @@ active30 tasks/subtasks exclude Q04,UID unfixed,other acceptance unchanged.
 
 ## Packet forwarding reader cancellation
 
-The [reader ownership profile](validation/forward-reader-owner-2026-10-07.md),
+The reader ownership profile,
 `a455d6788168b61b3bae49fa0a996b3fa2b5824e`, owns its one packet reader in a local JoinSet.
 Caller future drop, parent abort or unwind requests reader abortion; active
 framing/select/queue/MTU behavior and the normal outcome remain unchanged.
@@ -1104,7 +1104,7 @@ Active30 tasks/subtasks exclude Q04;9complete21unfinished,UID unfixed.
 
 ## Packet forwarding watch cancellation
 
-The [watch cancellation profile](validation/forward-watch-shutdown-2026-10-07.md),
+The watch cancellation profile,
 `a4fc6aa6ccf455773009c3a1a38a9d0e8ca67958`, checks its one watch receiver before every
 iteration and covers the selected branch's write/flush await. Private step
 results preserve acquired native IO and execute existing reader abort_all.
@@ -1120,7 +1120,7 @@ L01-L04/classes5-9 and22device NOT_RUN remain;active30/Q04excluded/UIDunfixed.
 
 ## Core native tunnel task ownership
 
-The [native owner profile](validation/native-tunnel-owner-2026-10-07.md), `f00ff25395a8432087daf578c9dd23975b09be5a`, adds retained original
+The native owner profile, `f00ff25395a8432087daf578c9dd23975b09be5a`, adds retained original
 parent handles and child sets for library-created kernel/userspace runtimes.
 shutdown captures its checked absolute clock and synchronous stop before future
 poll; join-lock waits share it. Zero requests stop and returns native expiry;
@@ -1143,7 +1143,7 @@ NOT_RUN remain. Active30/Q04allchildren excluded/9complete21unfinished/UIDunfixe
 
 ## CLI native tunnel retention and ownership before RSD
 
-The [CLI native retirement profile](validation/cli-tunnel-native-retirement-2026-10-07.md),
+The CLI native retirement profile,
 `6debaf9b6d78c10b4be1cfd55e2fbcbb69da8756`, reserves before Source polling and retains exact original runtime
 Arcs before the initial RSD probe and all metadata/query/table waits. Each Core
 strategy target has its own reservation; an abandoned earlier target remains
@@ -1168,7 +1168,7 @@ excluding Q04/all children,9complete21unfinished,UID untouched.
 
 ## Manual tunnel deadline crossing within one poll
 
-The [manual same-poll profile](validation/tunnel-manual-poll-crossing-2026-10-07.md),
+The manual same-poll profile,
 `a963679ab0f853b1a38bfcee9ac59471d4920641`, reuses the original checked15s deadline at Source admission,
 native handoff, metadata/query and synchronous publication. A late insertion
 removes the unobserved new row and restores the exact original row while table
@@ -1183,7 +1183,7 @@ Rust13Python0FAIL2existingignored/tools73 PASS; active30 excludingQ04,
 
 ## Automatic tunnel candidate absolute deadline
 
-Implementation `c92503ded8a60515a272f4afb1dba99085b130dc`; [automatic candidate evidence](validation/tunnel-automatic-deadline-2026-10-07.md).
+Implementation `c92503ded8a60515a272f4afb1dba99085b130dc`; automatic candidate evidence.
 Each admitted automatic candidate keeps its established15s budget under one
 checked absolute clock across serial/cache/backoff/permit/Source and the shared
 native-handoff/metadata/query/publication fences. Late real insertion removes its
@@ -1198,7 +1198,7 @@ tools73 PASS. Active30/allchildren excludingQ04,9complete21unfinished,
 
 ## Paired discovery acquired IO across clear and close
 
-Implementation `1ab05e3bcefd3926a402dc645f55c72d16aad6f4`; [paired error retention evidence](validation/tunnel-paired-error-retention-2026-10-07.md).
+Implementation `1ab05e3bcefd3926a402dc645f55c72d16aad6f4`; paired error retention evidence.
 A stale paired Source success is still discarded before candidate handoff/ready.
 If clear/close completed inside the Source before its original error reply,
 the scanner now returns it unchanged. Actual loopback partial
@@ -1213,19 +1213,19 @@ The later paired epoch fence still needs error-retention regression and repair.
 
 ## Paired reply final epoch fence
 
-Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
+Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; final paired fence evidence.
 Clear/close after the first paired check no longer turns an acquired paired error into success. Nonempty clear-success is discarded before connection/ready;nonempty close can return Cancelled at ticket admission,so universal stale-success Ok is not promised.
 Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.
 
 ## Managed snapshot and candidate admission
 
-Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
+Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; snapshot admission evidence.
 Raw USB/paired and complete borrowed candidate plans now have private row/field/UTF-8 byte/count limits. USB rejects before attachment eviction;paired refuses the entire batch as incomplete while legal USB candidates proceed and unknown Mobdev2 backoff stays. Source errors remain outside Complete/Incomplete admission state;stale Source success stays quiet. Tickets/clocks/four-window/individual cancellation stay.
 Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.
 
 ## Deferred failure writes
 
-Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
+Implementation `4415be9a65921a346208f912dbe59e399e471591`; failure bookkeeping evidence.
 Scans finish candidate connection futures before queueing writers for failed outcomes. Admission-bounded intents retain original tickets/permits;one checked absolute1s flush clock covers write-lock wait and the entire batch. StopA skips only A. Late row rollback retains exact old backoff/permit;timely prefix commits stay. This does not certify immediate stop while write-lock admission is pending.
 Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.
 
@@ -1233,7 +1233,7 @@ Whole-scan total/global cancellation/durable paired or List primary across calle
 
 The manager now owns a checked 30-second scan total and the clear/close epoch across all discovery, admission, connection, reconciliation, failure-write and readiness waits. Per-device stop remains isolated after discovery. Whole-clock checks participate in candidate publication/failure rollback and global reconciliation; whole expiry adds no failed-attempt backoff or new readiness.
 
-A scan session retains the original acquired paired/List error before any subsequent wait. Caller Drop records it in one of eight fixed slots before releasing the scan lock. Empty/normal sessions release their slot; queued scans reserve none. Clear retains history and terminal closure seals admission. The server snapshots history after dropping its scanner and reports original errors independently from native joins. Details, evidence and remaining limitations are in [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).
+A scan session retains the original acquired paired/List error before any subsequent wait. Caller Drop records it in one of eight fixed slots before releasing the scan lock. Empty/normal sessions release their slot; queued scans reserve none. Clear retains history and terminal closure seals admission. The server snapshots history after dropping its scanner and reports original errors independently from native joins. Details, evidence and remaining limitations are in scan control evidence.
 
 Configured manager reconnect episodes begin at admitted Source work and share
 one checked total across later attempts, idle and metadata waits. Capacity
@@ -1244,7 +1244,7 @@ that all workers join before every retry. A local expired-total Drop records a
 budget Timeout; unexpired caller Drop stays Interrupted and acquired native
 errors retain priority. Emission releases synchronous Mutex/watch borrows while
 existing Tokio serial/scan mutex lifetimes remain. See
-[manager reconnect acceptance](validation/manager-reconnect-2026-10-08.md).
+manager reconnect acceptance.
 
 ## Existing RSD socket ownership and Syslog prefix resumption
 
@@ -1259,7 +1259,7 @@ Syslog read cancellation preserves already consumed framing bytes for the next
 call on that stream. EOF, IO failure or oversized input permanently disables it;
 later calls reject locally. Dropping the owned client/stream releases its socket;
 retaining a terminal client does not claim an automatic transport shutdown or
-reconnect. [Acceptance](validation/doctor-rsd-syslog-2026-10-09.md).
+reconnect. Acceptance.
 
 ## SDK owner admission and actual lease retirement
 
@@ -1271,7 +1271,7 @@ finish later. Last client handle Drop cancels; leases alone are not client
 handles. Native stream/future Drop precedes admission release and zero count.
 Prepared operations keep no hidden SessionOwner clone. Pools apply only to owners
 sharing that pool. Cooperative clocks cannot preempt synchronous crypto/parse/OS
-work. [Evidence and limits](validation/sdk-owned-session-2026-10-09.md).
+work. Evidence and limits.
 
 ## Explicit finite SDK device queries
 
@@ -1291,7 +1291,7 @@ existing bounded coordinator. Mutable-lock and candidate clock checks restore
 exact unobserved intent/pending/native rows on expiry; old version cleanup cannot
 erase newer outcomes. Fixed discovery cause slots preserve acquired originals
 through caller Drop. [Contract](manager-route-intent.md) and
-[host acceptance](validation/manager-route-intent-2026-10-09.md). Darwin watch,
+host acceptance. Darwin watch,
 physical workflows and all other original lifecycle requirements remain.
 
 ## Shared coordinator storage admission
@@ -1305,5 +1305,5 @@ metadata; table backing and the final original gate owner release their charges
 independently. The 4096-key namespace and original idle/persistent pruning remain.
 This scope excludes dynamic manual route/snapshot copies, watch/Arc internals,
 other collections and original error payloads. See the
-[byte ownership evidence](validation/tunnel-coordinator-bytes-2026-10-12.md);
+byte ownership evidence;
 L02's remaining global admission and freshness rules stay open.

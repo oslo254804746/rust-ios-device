@@ -49,7 +49,7 @@ retirement; timeout keeps the owner closed and counts/permits outstanding, so a
 later close can finish after the original jobs retire. Drop broadcasts cancellation
 when the last client handle disappears; it does not acknowledge remote cleanup.
 The existing owner native-error/late-result rules and cooperative CPU/OS limitations
-continue. [Acceptance](validation/sdk-device-query-2026-10-09.md).
+continue. Acceptance.
 
 This Rust subitem supplies device query inputs for the Python/C work. Bindings,
 applications, files, log streams, their examples and representative physical

@@ -7,802 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] — 2026-11-08
+
 ### Added
 
-- Stream bounded ZIP32 installs from admitted directory metadata and 64 KiB
-  decode buffers, preserving CRC checks, original deadlines and single-use IO.
-- Extend native page realms to user/internal worlds and associate console object
-  arguments only when their injected-script identity proves the active world.
-- Exercise the shared test workflow through localhost RSD/AppService/DTX peers
-  to real testcase/JUnit output, and dispatch synchronous restored OS requests to ASR.
-
-
-- Match explicit Doctor targets to local DDI identities/components with separate
-  version policy, digest, permission and unknown evidence; no signature claim.
-- Export the executable shared test workflow; bound real app setup/install calls
-  and retain staging/native cleanup after cancellation and unconfirmed launch.
-- Map native page contexts, iframe navigation, WebKit memory sampling and Fetch
-  lifecycle through the Rust CDP bridge. Trusted page input and downloads remain open.
-- Add persistent timestamped HEVC decoding via external FFmpeg, shared HTTP/RFB
-  pixels, orientation and RGBA/JPEG DIB clipboard adapters with strict media cleanup.
-- Extract the selected IPSW OS image and serve bounded ASR data-port transfers;
-  complete Update recovery remains disabled and unimplemented.
-
-
-- Admit manual paired pending/plan vector backing while borrowing original
-  desired UID, ticket and host filters. Keep incomplete-browse behavior and
-  original manual/USB publications when plan admission fails.
-
-- Admit raw and selected USB attachment-index backing while borrowing original
-  snapshot buffers. Preserve exact numeric ID membership and last-key lookup
-  without private hash-table allocations or quadratic publication scans.
-
-- Admit USB snapshot identity-index backing alongside raw storage in the shared
-  metadata bank. Validate all raw unique identities without copied keys, refund
-  the temporary index before returning the raw reservation, and preserve order.
-
-- Charge manual and suppressed scan index backing while borrowing admitted
-  desired keys, tickets and routes. Keep captured iteration order and indexed
-  lookups, original stop epochs, authority checks and failure reconciliation.
-
-- Admit initial tunnel publication snapshots with actual vector backing and
-  copied key capacity before discovery. Preserve exact publication identities
-  and release those fees when the last scan snapshot owner is dropped.
-
-- Deliver JSContext destruction from observed native page/application closure
-  before detach, including independent discovery refresh and original child joins.
-  Add bounded public nonflat CDP routing for pinned Playwright noDefaults clients;
-  default download-policy initialization remains explicitly unsupported.
-
-- Admit retry/history table backing, selector copies and original-error capsules
-  before Source poll. Keep preallocated removal owners and first/latest originals
-  through quota refusal, stale completion, rollback and final caller release.
-
-- Charge native tunnel registry bodies and actual fixed slot backing in the
-  shared metadata bank before Source work. Propagate construction failure through
-  manager and foreground owners; retain fees to final registry release.
-
-- Admit failure-write owner bodies and their returned Source receipt contexts
-  before tunnel connection work. Refund unused context reservations at completion
-  and retain materialized charges through the final shared owner.
-
-- Validate observed XCTest terminal evidence and preserve concrete failure
-  counts for CI. Publish final workflow receipts after cleanup/artifacts, and
-  reclassify the sidecar once if stdout fails under the same artifact deadline.
-
-- Reserve tunnel scan-owned failure contexts, cleanup capsules and abandoned
-  history payloads before Source work. Preserve original error objects and
-  chain depth; release materialized charges with their final caller/history owner.
-
-- Extend explicit-target doctor reports with bounded read-only personalization
-  manifest observations. Add pairing-directory metadata and stricter platform
-  USB observations; missing or malformed metadata cannot produce an OK result.
-
-- Give SpringBoard requests one configurable send/receive/parse deadline and
-  retire the original stream after committed cancellation or failure. The CLI
-  defaults to 30 seconds per request with `--request-timeout-ms`.
-
-- Admit tunnel desired-list key buffers and actual vector backing in the shared
-  metadata bank. Scan indexes borrow the admitted keys, and deferred manual
-  success retains the original key charge until its final owner releases it.
-
-- Add Windows owned watch supervision using a hidden private console and atomic
-  Job Object admission. Verify original Ctrl-C, process trees, reader joins and
-  actual CLI TLS-start cancellation without treating forced cleanup as native success.
-- Add `runwda --once` to stop after one forwarded connection. Retain the
-  original startup owner when a successful poll crosses its deadline; verify
-  WDA startup, TCP readiness, forwarding and cleanup with localhost CLI peers.
-- Add checked Python/C app, AFC and log operations on the common session owner,
-  native cancellation/close receipts and retained log prefixes; fix public
-  Python `Device.aclose`. Add a Windows-capable actual C ABI service fixture.
-- Repair Viewer device/port authorization and RFC 6143 DES authentication; add
-  shared PNG pixels, locally flushed HID and text pasteboard operations and original
-  native retirement owners. Subsequent HEVC/image/orientation implementation and host gates are recorded above; physical workflows remain unverified.
-- Replace fabricated CDP domain results with finite WebInspector Page/PNG/Fetch
-  translations and explicit unsupported trusted Input/download errors; subsequent native metrics are recorded above.
-- Add a distinct restored plist transport that actually sends StartRestore and
-  firmware responses; reject incomplete CLI Update execution before device IO.
-  Inspection records ZIP component checks and saved TSS metadata correlation,
-  explicitly without Apple ticket-signature verification.
-- Repair workflow package identity/cleanup, bounded log task joins, actual
-  Doctor observations, matrix fixture/hash/cleanup adapters, production load
-  measurement and Windows native-error/staged-file fixtures. Current scope and
-  remaining work: [repair record](docs/validation/review-fixes-2026-10-10.md).
-
-- Retain successful manager routes with their original grant revision/expiry,
-  recover through fresh Source metadata and keep DELETE stopped across scans.
-  Late intent publication restores exact original rows and fixed discovery slots
-  retain independent causes. [Contract](docs/manager-route-intent.md) and
-  [host evidence](docs/validation/manager-route-intent-2026-10-09.md).
-
-- Add explicit existing-trust device queries with fresh owned sockets, one total,
-  cumulative reply/metadata/output budgets and finite typed information. Add a
-  bounded caller-loaded pair-record parser. [Contract](docs/owned-device-query.md).
-
-- Identify the CDP bridge's default logical browser context consistently. Add
-  pinned actual-client gates through the protected Rust bridge: Puppeteer
-  JSContext Runtime workflow, Playwright's explicit download rejection and
-  owned child/native cleanup. [Scope and reproduction](docs/cdp-client-workflow.md).
-
-- Add finite existing-trust session operations with shared/local admission, one
-  absolute total, cancellation and close that waits for actual lease retirement.
-  Checked QueryType/StartSession/TLS/StartService return owned port/SSL metadata;
-  no implicit pairing or retry. Device queries and Python/C SDK remain pending.
-  [Host acceptance](docs/validation/sdk-owned-session-2026-10-09.md).
-
-- Observe explicitly selected existing RSD IPv6/proxy routes with one total,
-  checked directory metadata and exact doctor target attribution. Missing fields
-  stay unknown; advertisement does not execute a service. Legacy doctor schemas
-  remain compatible without RSD selectors. See
-  [host evidence](docs/validation/doctor-rsd-syslog-2026-10-09.md).
-- Preserve consumed Syslog prefixes across cancelled reads. EOF/IO/oversize now
-  makes framing terminal and subsequent reads reject locally; `is_usable()`
-  exposes local state. Successful wire/decode and infinite idle remain.
-
-
-- Add serve retry delay, attempt and total budgets with bounded identity/epoch
-  episodes and accurate verbose state. Default retry timing and HTTP JSON stay
-  compatible; durable stop/manual recovery have subsequent host acceptance above; Darwin watch
-  and device acceptance remain pending.
-  See [manager evidence](docs/validation/manager-reconnect-2026-10-08.md).
-
-- Add caller-bounded complete AFC reads and a checked InstallationProxy Browse
-  total with cumulative reply, frame and entry budgets. Interrupted checked
-  Browse clients reject reuse through legacy methods; existing wire and error
-  variants remain. See [host evidence and migration](docs/validation/bounded-service-read-2026-10-08.md).
-
-- Add explicitly selected device diagnostics to doctor while retaining host-only
-  schema 1 without a device selector. Fresh existing-trust sessions observe
-  Developer Mode and DDI signature metadata without pairing or setting changes;
-  missing metadata stays unknown. Report and machine-error categories agree.
-  DDI usability and platform/device acceptance remain pending. Existing-route
-  RSD observation has subsequent host acceptance above. See
-  [host evidence](docs/validation/device-doctor-manual-admission-2026-10-08.md).
-- Bound manual tunnel UDID/host selectors to 4096 UTF-8 bytes before lifecycle
-  admission, and carry private resource-limit decisions into manager errors.
-- Reject nonregular pairing files before reads, including Unix FIFOs without
-  writers; preserve regular-file symlinks, system permissions and secret wiping.
-
-- Keep successful tunnel scan cleanup from blocking later candidate reads.
-  Uncontended cleanup returns failure capacity immediately; contested cleanup
-  joins the bounded batch and cannot create a new connection failure. Private
-  row versions preserve newer failures. See
-  [successful bookkeeping evidence](docs/validation/tunnel-success-bookkeeping-2026-10-08.md).
-
-- Give each manager scan one 30-second total across discovery, connections and
-  metadata waits. Preserve acquired discovery errors through cancellation and
-  scanner Drop in an eight-slot history reported at shutdown. Whole expiry adds
-  no connection backoff or new readiness. See
-  [scan control evidence](docs/validation/tunnel-scan-control-2026-10-08.md).
-
-- Cancel tunnel coordinator lock waits on clear or server shutdown before the
-  lock is released, without creating coordinator state. Fresh admission after
-  ordinary clear stays available. See
-  [coordinator cancellation evidence](docs/validation/tunnel-coordinator-cancel-2026-10-06.md).
-- Close tunnel connection admission before server cleanup. Existing tickets
-  cancel, late manual starts/scans stay rejected, and an HTTP start body finishing
-  after table clear cannot recreate a tunnel. Ordinary clear remains reusable;
-  restarting requires a fresh manager state. See
-  [shutdown admission evidence](docs/validation/tunnel-shutdown-admission-2026-10-06.md).
-- Add explicit bounded `high-cost` validation for the existing 10M PBKDF2
-  interoperability vector, requiring an executed test and verified artifact/log
-  hashes. Ordinary `full` keeps it ignored. See
-  [PBKDF2 evidence](docs/validation/pbkdf2-2026-10-06.md).
-- Retain tunnel server shutdown for late waiters, own the scanner in the server
-  future, and handle Ctrl-C after startup. Returned shutdown shares a separate
-  2-second budget across table clear and HTTP drain; primary and cleanup errors
-  remain inspectable. See
-  [server lifecycle evidence](docs/validation/tunnel-server-2026-10-06.md).
-- Bound scanner failure records and pending failure reservations to 4096.
-  Effective snapshots release obsolete/unauthorized rows; paired discovery
-  errors preserve unknown rows and present identities retain their backoff.
-  Full capacity defers new native attempts. See
-  [retention evidence](docs/validation/tunnel-retention-2026-10-06.md).
-- Give tunnel scan discovery one15s deadline across queue, USB snapshot and
-  existing-trust paired discovery. Stop/clear cancels old waiting phases;
-  actual expiry retains native Elapsed. See
-  [scan discovery evidence](docs/validation/tunnel-discovery-2026-10-06.md).
-- Reject known inactive tunnel results before attachment query and again before
-  publication. Results losing local liveness during query or lock waits release
-  without publishing a record. See
-  [local liveness evidence](docs/validation/tunnel-liveness-2026-10-06.md).
-- Scope tunnel scan failure backoff to the observed native ID and known route
-  or paired host. A changed identity can retry immediately; repeated failures
-  of the same identity keep the original schedule. See
-  [backoff identity evidence](docs/validation/tunnel-backoff-2026-10-06.md).
-- Recheck current native attachments before publishing a USB tunnel result.
-  The extra daemon query shares the existing connection total and cancellation;
-  absent results release locally, and query IO remains available. See
-  [publication query evidence](docs/validation/tunnel-publication-2026-10-06.md).
-- Preserve native attachment IDs in tunnel scans. An observed replacement ID
-  retires the old record, and a candidate returning another generation is
-  cancelled before publication without adding connection-failure backoff.
-  See [snapshot identity evidence](docs/validation/tunnel-identity-2026-10-06.md).
-- Connect tunnel scan candidates in a shared window of four owned futures.
-  USB and existing-trust mobdev2 candidates are deduplicated together, allowing
-  a healthy device to connect while another stalls. See
-  [parallel scan evidence](docs/validation/tunnel-parallel-2026-10-06.md).
-- Isolate local tunnel-manager queries and stops from stalled connections.
-  Starts coordinate per device with four shared connection permits and one15s
-  queue/connect/fallback total. Stop cancels old pending starts and fences late
-  publication. See
-  [host evidence and migration](docs/validation/tunnel-isolation-2026-10-06.md).
-- Preserve WebDriver revocation cleanup results through the owned watcher join.
-  Runtime mutex, context close and forwarding close share the existing100ms
-  callback total; known business/native cleanup causes survive pending flush
-  expiry. See [revocation evidence](docs/validation/webdriver-revocation-2026-10-05.md).
-- Retain WebDriver session watcher handles after registry removal. Explicit
-  removal/replacement aborts and joins the watcher; cancelled waits can resume,
-  and registry calls reap completed revocations without a task joining itself.
-  See [session ownership evidence](docs/validation/session-store-2026-10-05.md).
-- Return WebDriver DELETE cleanup failures through the existing HTTP error
-  contract. Session removal, mutex wait, context close and forwarding close
-  share one 100ms total; known primary and cleanup causes remain owned.
-  See [DELETE migration](docs/validation/webdriver-delete-2026-10-05.md).
-- Keep CDP browser lease cancellation inside its resource owner. Removed pages
-  stay owned during interrupted cleanup; completed joins and issued errors
-  survive, and remaining pages share one 2s cleanup total. See
-  [browser lease migration](docs/validation/cdp-browser-lease-2026-10-05.md).
-- Retain CDP browser page errors through independent 2s cleanup, including an
-  observed primary error when the supervisor must abort. Explicit stops join
-  every child; browser exit shares one cleanup total across remaining pages.
-  Child failures use existing safe diagnostics and successful detach replies.
-  See [browser task migration](docs/validation/cdp-browser-tasks-2026-10-05.md).
-- Keep a direct CDP page's lease cancellation inside its resource owner. Policy
-  expiry/reload stops page work and awaits independent cleanup before release;
-  native cancellation/cleanup causes survive through existing safe diagnostics.
-  See [CDP page lease migration](docs/validation/cdp-page-lease-2026-10-05.md).
-- Close WebDriver's owned forwarding socket after its Automation context, with
-  one 100ms cleanup total and retained context/socket failures. Starting stop
-  disarms duplicate cleanup after success, failure or cancellation. See
-  [WebDriver cleanup evidence](docs/validation/webdriver-cleanup-2026-10-05.md).
-- Retain CDP page teardown failures after WebSocket shutdown. Cleanup uses an
-  independent 2s budget; an existing primary error and the cleanup error both
-  remain owned. See [CDP page cleanup migration](docs/validation/cdp-page-cleanup-2026-10-05.md).
-- Share one checked setup deadline across CDP discovery/attachment and WebDriver
-  runtime construction. Exact CDP targets attach when discovered; full lists
-  retain a separate 500ms quiet period inside the total. See
-  [WebInspector server setup migration](docs/validation/webinspector-server-setup-2026-10-05.md).
-- Preserve a CDP page bridge's original timeout after partial input or blocked
-  automatic listing invalidates its WebInspector connection. Healthy empty idle
-  still resumes. See [CDP page lifecycle evidence](docs/validation/cdp-page-idle-lifecycle-2026-10-05.md).
-- Own WebInspector js-shell setup, cancellable input and per-evaluation output
-  deadlines with one Ctrl+C future and independent session cleanup. Linux pipe
-  and terminal input no longer leave a blocking stdin task at shutdown.
-  Zero rejects before input acquisition/discovery; native transport failures
-  stop even with --continue-on-error. See
-  [WebInspector shell migration](docs/validation/webinspector-shell-lifecycle-2026-10-05.md).
-- Give WebInspector opened-tabs, eval and launch one total covering default
-  selection, setup, commands and output, with one Ctrl+C future and independent
-  bounded session cleanup. Zero rejects before discovery; cleanup failure can
-  now make completed output exit unsuccessfully. See
-  [WebInspector command migration](docs/validation/webinspector-command-lifecycle-2026-10-05.md).
-- Preserve the original WebInspector CLI discovery timeout after partial input
-  or blocked automatic listing. Retry idle discovery only while the client
-  permits reuse, retaining original native sources and page selection. See
-  [WebInspector discovery migration](docs/validation/webinspector-discovery-lifecycle-2026-10-05.md).
-- Bound WebInspector application/page caches and flattened page snapshots by
-  local counts and logical JSON bytes. Admit complete updates before replacing
-  caches, preserve duplicate-event order, and release removed payloads/capacity.
-  Resource rejection keeps the existing typed Io/ResourceLimit family and
-  invalidates the receiving client. See
-  [WebInspector cache migration](docs/validation/webinspector-cache-lifecycle-2026-10-05.md).
-- Share one WebInspector correlated-command/attach deadline across sends and
-  replies; invalidate abandoned committed sessions to reject late responses.
-  Bound pending/skipped events by count and logical JSON bytes, check full-range
-  identifier exhaustion, and inherit finite caps through nested wire operations.
-  Preserve matched business errors, public variants and successful wire/output.
-  See [WebInspector session migration](docs/validation/webinspector-session-lifecycle-2026-10-05.md).
-- Guard WebInspector client frames, startup and automatic event-routing writes
-  across cancellation. Add local is_usable and optional operation budgets,
-  reject invalid cached reuse, and require empty usable idle for discovery
-  quiescence. Preserve legacy/preserving startup mappings and native sources;
-  record checked zero/overflow and effective-budget migrations. See
-  [WebInspector client lifecycle migration](docs/validation/webinspector-client-lifecycle-2026-10-05.md).
-- Bound Companion default discovery/service setup at30 seconds and share one
-  finite total and pinned Ctrl+C owner through command work. Reject zero/overflow
-  before selection, retain actual timer/signal sources and await independent5s
-  forwarding cleanup while preserving primary errors. Add consuming handle
-  close APIs that disarm Drop at future creation; legacy borrowed stop/Drop
-  remain. See [Companion CLI migration](docs/validation/companion-cli-control-2026-10-05.md).
-- Guard shared Companion request/listener/forwarding state after cancelled or
-  failed I/O, reject late replies and release terminal listener reads. Add local
-  is_usable, checked budgets and a five-second forwarding cleanup cap while
-  retaining the existing best-effort Drop policy. See
-  [Companion lifecycle migration](docs/validation/companion-lifecycle-2026-10-04.md).
-- Bound notification default discovery/service setup and send stages at 30
-  seconds; share finite command totals from before subscription writes and keep
-  one Ctrl+C owner through setup/capture. Reject zero/overflow before selection,
-  retain Observe idle timing and unbounded Stream, and complete Stream total
-  expiry consistently. See [notification CLI control migration](docs/validation/notification-cli-control-2026-10-04.md).
-- Attempt bounded notification shutdown after returned command failures on a
-  usable connection. Report cleanup failure after success and retain both causes
-  on dual failure, with the primary category preserved. See
-  [notification CLI cleanup migration](docs/validation/notification-cli-cleanup-2026-10-04.md).
-
-- Guard NotificationProxy partial frames across cancellation, add optional
-  operation budgets, and include subscription writes in wait deadlines. Preserve
-  empty idle reuse and close local state after ProxyDeath or bounded Shutdown.
-  See [notification lifecycle migration](docs/validation/notification-lifecycle-2026-10-04.md).
-
-- Guard MobileBackup2 operations across negotiation, host work and raw transfer
-  cancellation. Add optional total budgets and local usable state; retain both
-  primary and cleanup failures. Preserve expected peer closure after a complete
-  terminal reply. See [backup lifecycle migration](docs/validation/backup-lifecycle-2026-10-04.md).
-
-- Guard DeviceLink message and version-exchange ownership across cancellation.
-  Add optional operation budgets, local usable state and a process call sharing
-  send/reply timing. Bound disconnect writes to five seconds and reject reuse
-  after successful close or interrupted framing. See
-  [DeviceLink migration](docs/validation/device-link-lifecycle-2026-10-04.md).
-
-- Guard Lockdown requests with optional shared send/reply budgets and local
-  usable state. Reject reuse after interrupted requests while preserving
-  complete business replies. Bound StopSession writes to five seconds, retain
-  uncertain session ownership on failure, and close the client after a successful
-  write. See [Lockdown lifecycle migration](docs/validation/lockdown-lifecycle-2026-10-04.md).
-
-- Guard borrowed RSD bootstrap and wrapper reads across cancellation after a
-  complete send or consumed header. Reject reuse of interrupted initialization,
-  including empty response waits, while preserving normal handshake completion
-  and idle framing. Keep existing wire and caller deadlines. See
-  [RSD lifecycle boundaries](docs/validation/rsd-lifecycle-2026-10-04.md).
-
-- Guard XPC message, call, stream and file ownership across cancellation.
-  Add local usable state and shared call/single-read deadline APIs; clear
-  pending replies before reuse of an interrupted connection. Preserve finite
-  Pasteboard replies and explicit CoreDevice stream completion. See
-  [XPC lifecycle migration](docs/validation/xpc-lifecycle-2026-10-04.md).
-
-- Reject H2 connection reuse after transport failure or cancellation with
-  reported wire bytes. Clear retained frame state, preserve empty idle waits
-  and stream-local shutdown behavior, and add internal operation budgets for
-  flow-control waits. See [H2 lifecycle boundaries](docs/validation/h2-lifecycle-2026-10-04.md).
-
-- Guard AFC send/reply ownership and expose optional shared request deadlines
-  and local usable state. Refuse reuse after interrupted wire operations;
-  preserve complete device Status errors. Attempt file cleanup after read/write
-  failures within a separate budget, retain primary and cleanup causes, and
-  invalidate cancelled transfers with open handles. See
-  [AFC migration](docs/validation/afc-lifecycle-2026-10-04.md).
-
-- Bound FPS capture timestamp retention and setup/cleanup budgets. Own the
-  session without a background event queue, preserve partial reads across
-  sample ticks and emit due windows before ready events. Keep primary failures
-  when stop also fails and report cleanup failure after successful sampling.
-  Add an allocation-free frame timestamp iterator while preserving the existing
-  parser/output. See [FPS migration](docs/validation/fps-lifecycle-2026-10-04.md).
-
-- Add shared DTX request/read deadlines and local connection-state inspection.
-  Interrupted operations with wire progress reject reuse and release decoding
-  state; empty idle polling remains usable. Partial initial/idle frames fail
-  explicitly in CoreProfile/accessibility. See [lifecycle migration](docs/lifecycle-contract.md).
-
-- Classify CLI-owned invalid timeout inputs and empty accessibility traversal
-  expiry, with a bounded typed CLI precondition mapping. Preserve partial
-  traversal/confirmation policies and original error-chain scan budgets.
-  See [guard acceptance](docs/validation/cli-owner-guards-2026-10-04.md).
-
-- Add preserving Lockdown value-query and service-start APIs with safe typed
-  response-code observations and bounded lookup. Backup encryption defaults and
-  debugserver fallback use exact request/code evidence; legacy APIs retain
-  their behavior. See [migration](docs/validation/lockdown-response-codes-2026-10-04.md).
-
-- Preserve original CLI service, parser, file and elapsed timeout errors through
-  typed source chains. Distinguish local input from received identifiers,
-  retain opaque input strings without inventing native sources, and use the
-  existing typed cancellation marker. Return HID signal-registration errors
-  instead of treating them as cancellation; keep successful requests and output.
-
-- Return native I/O failures from CLI status writes instead of panicking, while
-  preserving an existing primary failure if its diagnostic cannot be written.
-  Report sysmontap CPU read failures after partial output, reject non-finite
-  CPU JSON values, and retain original directory-path NUL conversion sources.
-
-- Preserve original mDNS, CDTunnel, RSD check-in, lockdown dial and userspace
-  proxy conversion/deadline causes. Distinguish local MTU input from received
-  protocol data and real elapsed deadlines, retain configured budgets with safe
-  private context, and keep discovery, wire, timeout and cleanup policies.
-
-- Retain guarded AFC/DTX/FileService/symbol conversion sources through existing
-  IO variants with a received-data Protocol role and safe fixed context.
-  Own AFC's original cast bytes on error and enable zerocopy's existing std
-  feature for MSRV; preserve guards, wire and successful borrowed decoding.
-
-- Add DProxy recorder/proxy callbacks that deliver owned decode failures before
-  fatal returns or event-write errors. Use them in CLI debug diagnostics with
-  metadata only, and return original IO errors from event/status stderr writes
-  instead of panicking; preserve capture bytes and forwarding order.
-
-- Add `dproxy::StreamDecoder::push_preserving_errors` to retain original parser
-  errors, typed local decisions and events preceding a later fatal error.
-  Expose owned/borrowed observations and explicit ignored DTX input with safe
-  Debug; keep legacy `push`, event JSON, buffering and failure policies.
-
-- Preserve native application/test PID, fixed app plist, IPA integer and GPX
-  XML/time parser sources through existing IO/XPC variants with safe context.
-  Classify local input failures without text matching; keep wire/validation and
-  route timing behavior, and document returned-variant/source migration.
-
-- Add `prefetch_tss_batch_preserving_errors` with owned observations of combined
-  request construction, signing failures and missing tickets, including failures
-  recovered by fallback. Preserve native error sources, typed phases and rider
-  indices with safe Debug; keep legacy result fields, call order and nonce rules.
-
-- Retain restore H2/XPC, IPSW ZIP/read/manifest and TSS HTTP/codec causes through
-  existing RestoreError::Io. Preserve native IO categories, distinguish local
-  package/input failures from received protocol data and HTTP timeouts, and
-  document source/variant migration with unchanged restore requests and limits.
-
-- Preserve MobileBackup2 Unback/Extract operation and disconnect timeout
-  causes, including an earlier operation failure when disconnect also expires.
-  Add bounded typed deadline evidence with operation, phase and shared budget;
-  retain native path UTF-8 and transfer-count conversion causes. Document the
-  Protocol-to-Io migration with existing requests and five-minute budget.
-
-- Preserve native DDI cache/download/ZIP/extraction-task and TSS causes through
-  existing ImageMounterError::Io, with typed input/received/HTTP/cancellation
-  categories and safe context. Keep public families, proxy/wire/budget/guard
-  and partial-file behavior; document failure-variant/source migration in the
-  [error contract](docs/error-contract.md).
-
-- Add bounded service-issued deadline getters for Cryptex, MobileActivation,
-  InstallCoordination and Pasteboard, retaining the former phase, duration or
-  whole-seconds payload with native Elapsed. Preserve owner/fallback rules and
-  reject promised pasteboard sizes that could bypass a 32-bit usize limit.
-
-- Add typed OS Trace filter compilation while retaining the legacy String
-  compiler, and preserve native CrashReport/OS Trace/parser/archive/PID causes.
-  Keep the crash watch's named parse retries and existing filter/wire budgets;
-  document typed input and returned-variant migration.
-
-- Preserve manual-pairing RSD/H2/XPC, inner crypto, authentication, JSON and
-  deadline sources through existing PairingTransportError::Io with fixed safe
-  context. Retain native kinds and opaque unknown categories, reject short
-  header fields without a panic, and document failure-variant migration with
-  unchanged pairing requests, sequence/nonces, limits, trust and success.
-
-- Retain native private-seed, HKDF, cipher and device-info encoding causes in
-  existing PairingError::Io with fixed safe context. Classify local length
-  faults as invalid input and received authentication failures as protocol;
-  keep opaque encryption unknown and enable the same-version HKDF std Error
-  implementation. Document failure-variant migration with unchanged crypto
-  parameters, successful pairing payloads and trust policy.
-
-- Retain native connection/pairing task, PSK, credential, codec and deadline
-  causes through existing error variants with fixed safe context. Distinguish
-  local invalid input from malformed remote data, preserve opaque unknown
-  categories and document returned-variant/source migration without changing
-  trust, requests, routing, retries or timeout values.
-
-- Preserve both failed deactivation attempts in a borrowed Rust observation,
-  including lockdown connection failure, and classify by the final cause.
-  Retain native activation HTTP/URL sources, classify rejected endpoint input
-  as invalid input, and hash endpoint URLs in client Debug. Document returned
-  variant and diagnostic migration with unchanged fallback and HTTPS policy.
-  Keep capability inventory paths correct for flat service entries with
-  same-name submodule directories.
-
-- Preserve remote-symbols H2/XPC, modern activation-record and pasteboard
-  snapshot-connection causes through existing error variants. Keep native
-  classes, activation deadline/observed-cancellation sources and safe CLI
-  envelopes; document returned-variant and diagnostic migration without
-  changing requests, routing, fallback conditions or successful output.
-
-- Retain original ZIP/archive-entry decoder and entry-read IO sources during
-  streaming IPA installation through the existing IO error variant. Preserve
-  local package input categories, classify native IO by kind, and document
-  returned-variant/CRC migration with fixed context and safe diagnostics.
-
-- Add fallible streaming-install progress observers, preserving native IO
-  sources and stopping before later replies on failure. CLI startup/progress
-  stderr writes and flushes are checked, with existing safe progress bytes and
-  success JSON preserved; legacy callbacks and wire flow remain available.
-
-- Add checked C runtime initialization and consuming cleanup statuses, clearing
-  accepted caller pointers before release and preserving legacy void categories.
-  Report cached native initialization errors, poisoned state and caught unwinds;
-  document consumed ownership separately from completed device cleanup.
-
-- Add checked C RSD/userspace port queries with explicit NULL/missing/success
-  statuses and caller-thread categories, retaining legacy uint16_t behavior.
-  Document cached metadata versus current reachability/support and lifecycle.
-
-- Honor JSON mode for application mutation statuses with versioned tagged
-  results and ordered pkill progress/completion records. Retain human bytes,
-  stop subsequent calls on failure, preserve DTX/deadline/routing sources, and
-  retain appservice fallback for named typed service misses.
-
-- Apply the syslog 1 MiB input limit to terminated final chunks before copying;
-  preserve exact-limit/next-message behavior and prior CLI NDJSON on rejection.
-
-- Return syslog relay read/EOF failures through the safe CLI failure path with
-  exit 1 and retained native sources, preserving prior records and successful
-  count/capture-time stops. Keep NDJSON/human bytes, check record write/flush and
-  stderr progress IO, and document partial-result migration with owned streams.
-
-- Preserve typed H2/transport sources through RSD and RemoteXPC setup, bootstrap,
-  header/body reads, message writes and cryptex transfer writes. Use the existing
-  IO error variant, retain native kinds and fixed context, and document migration
-  from TLS strings with scoped host faults and an external XpcClient consumer.
-
-- Retain the final on-demand RSD probe error after the existing retry schedule,
-  and classify missing entries in a successful directory as service missing.
-  Preserve initial snapshots/cache, successful routing and service-specific
-  screenshot fallback; retain native XPC reconnector dial sources. Returned
-  failure variants have an explicit migration in the error contract.
-
-- Add `ios_list_devices_checked` to reject unencodable received C device records
-  with `IOS_ERR_CORE`/`protocol`, cleared outputs and no partial array. Preserve
-  the original listing symbol's skip behavior and existing layout/free contract;
-  migrate listing examples and validate both entries over owned binary plists.
-
-- Return typed safe Python RuntimeError for ordinary runtime-initialization IO
-  failure, replacing the expect/panic path while retaining released-GIL work,
-  signatures and existing operation errors. Cache the original failed result
-  and keep effects unknown.
-
-- Add a borrowed initial RSD probe observation distinguishing skipped, available
-  and failed discovery, with skip reasons and retained owner errors. Preserve
-  legacy optional directories and retries; retain native userspace-proxy dial
-  failures and keep later retry observations explicitly separate.
-
-- Add versioned typed error headers to protected manager/CDP/WebDriver router
-  failures while retaining existing HTTP statuses and JSON bodies. Keep unknown
-  sources explicit and effect uncertainty unchanged; expose fixed headers only
-  to already approved browser origins and verify actual Chromium fetch.
-
-- Add a caller-thread C error-category getter with borrowed static codes.
-  Preserve the original 14 symbols, numeric statuses and layouts; classify
-  native sources before conversion and retain runtime IO failures. Verify the
-  linked header against an owned malformed ListDevices reply.
-
-- Add versioned error category/phase/effect attributes to Python native factory,
-  invalid-mode and unavailable-proxy exceptions. Preserve built-in exception
-  types, safe args and public signatures; verify installed bindings against
-  owned bounded host replies without device operations.
-
-- Add a Rust `OperationCancelled` marker for observed local cancellation and
-  retain it through WebInspector launch's Ctrl+C context. Machine failures can
-  classify cancellation while plain EINTR and failed signal registration keep
-  their IO meaning; device cleanup acknowledgement remains separate.
-
-- Add opt-in global `--error-format=json` for versioned final CLI failures on
-  stderr, with typed class, safe phase/diagnostic, original exit and explicit
-  effect uncertainty. Keep human defaults and successful result formats; add
-  actual argument, malformed-reply and closed-help regression fixtures.
-
-- Add `WebInspectorClient::start_preserving_errors` to retain startup IO and
-  typed timeouts while the existing `start` keeps its legacy `Disabled` mapping.
-  CLI/CDP/WebDriver startup uses the new method; success frames/output and
-  failure statuses stay unchanged, with more accurate safe diagnostics.
-
-- Add non-exhaustive Rust error categories from typed sources and additive RSD
-  feature-evidence queries. Preserve existing error variants/source chains and
-  permissive metadata checks; [binding/output mappings](docs/error-contract.md)
-  remain under implementation.
-
-- Add explicit shared plist-to-JSON policies for historical byte-array,
-  hexadecimal and tagged base64 output, with borrowed and owned iterative
-  traversal. Preserve per-command Date/Uid behavior and separate MDM redaction.
-
-- Separate WebInspector wire/model/client/session ownership from CLI command,
-  workflow, HTTP, CDP and WebDriver adapters while retaining public paths and
-  command contracts. Add a Rust-only service injection boundary and owned
-  synthetic tests through the actual protected HTTP/WebSocket bridge.
-
-- Separate backup wire, filtering, host filesystem and session responsibilities
-  behind the existing public facade; use owned blocking disk operations in
-  async backup callers and add actual local CLI output/failure fixtures.
-
-- Replace device text inclusion with explicit private module boundaries for
-  discovery, strategy selection, lockdown, tunnel activation, RSD and service
-  routing while preserving the public connection paths and wire behavior.
-
-- Add maintained compatibility candidate profiles, external Rust consumer
-  fixtures, actual CLI list fixtures and expanded C/Python signature checks.
-- Add a Linux host regression evidence runner with bounded raw capture, exact
-  synthetic argv checks, owned agent cleanup and artifact allowlists; keep
-  representative device/Windows fixture cases explicitly NOT_RUN.
-- Add bounded, zeroizing private-file reads and exclusive new-secret publication
-  for access-control credentials; existing shared directory permissions are
-  preserved.
-- Add `ios tunnel auth create|check` for private random credentials, explicit
-  device/port/permission scopes and expiry checks without a device. This prepares
-  policies without device access.
-- Require a scoped private policy or explicit loopback trust for the tunnel
-  manager. Authenticate HTTP/WebSocket requests, filter device lists, authorize
-  device/port operations, and revoke streams at expiry or successful policy
-  reload. Private-file CLI credentials disable proxies/redirects and bound
-  response bodies. Platform/device acceptance remains separate.
-- Restrict raw forward/WDA/dproxy/screenshot-stream listeners to loopback before
-  device access; validate WDA proxy ports before startup. Raw userspace proxy
-  and kernel routes retain their documented host trust boundary.
-- Let the host doctor read private manager credentials with `--token-file`;
-  explicit credential read failures and authentication/scope refusals now fail
-  its manager check without including remote error bodies or secrets.
-- Require private scoped credentials or explicit loopback trust for CDP/Selenium.
-  Enforce exact-device debug access before parsing/device I/O, support scoped
-  policy reload, revoke HTTP/WS and stored automation leases on expiry/reload,
-  and abort owned CDP page tasks when their parent connection ends. Physical-device
-  cleanup acceptance remains pending.
-- Enforce actual-listener Host and exact allowed Origin on manager/CDP/Selenium,
-  reject proxy authority spoofing and require explicit debug device selection
-  before global discovery. Move shutdown/start-tunnel to POST; legacy GET/HEAD
-  give a read-only notice until 2026-11-01 UTC and 410 thereafter.
-- Add scoped browser bootstrap with approved-origin CORS and bounded, 30-second,
-  single-use WebSocket tickets for the manager/CDP. Bind handshakes to Origin and
-  complete targets; reject replay/ambiguity and revoke pending tickets/streams
-  on policy replacement. Native bearer clients keep their existing contract.
-- Add private per-upstream credential/CA configuration before manager startup,
-  verified HTTPS/WSS federation and literal-loopback plaintext limits. Disable
-  HTTP proxies/redirects, isolate every next-hop credential and report failed
-  aggregate/target requests explicitly instead of a successful empty listing.
-- Added a maintained capability/evidence inventory for CLI, Rust service families
-  and binding/workflow boundaries, with CI checks for drift and unsupported
-  maturity claims.
-
-- Added a cross-platform validation entry point for minimal feature builds,
-  split Rust/Python tests, doctests, downstream examples and linked C ABI smoke.
-- Added candidate CLI/C/Python artifact validation and complete release gates,
-  including MSRV, feature checks and minimum/newer Python wheel imports.
-- Expose the CLI version with `ios --version` for installed artifact checks.
-
-- Added Darwin-notification pasteboard monitoring with fresh PULL connections,
-  baseline suppression and `(nonce, changeCount)` deduplication. `pasteboard watch`
-  now works without experimental opt-in; `--autonotify --experimental` retains the
-  low-level subscription path.
-- Added device-issued stream-token stopping and a typed `DisplayError::MediaInUse`
-  for CoreDevice camera/microphone conflicts (9022).
-
-### Fixed
-
-- Defer scan failure-record writes until candidate connections finish, with
-  a shared finite bookkeeping deadline and rollback of late metadata writes.
-  Keep acquired paired errors primary when bookkeeping also times out.
-  See [bookkeeping evidence](docs/validation/tunnel-bookkeeping-2026-10-08.md).
-
-- Bound manager discovery snapshots and combined candidate metadata before
-  selection, matching or publication. Oversized paired discovery keeps existing
-  backoff and processes legal USB candidates before returning resource_limit.
-  See [admission evidence](docs/validation/tunnel-snapshot-admission-2026-10-08.md).
-
-- Preserve an original paired discovery error at the final epoch check when
-  clear/close occurs after the first reply check.
-  See [final fence evidence](docs/validation/tunnel-paired-final-fence-2026-10-07.md).
-
-- Preserve an original paired discovery error when manager clear/close completes
-  inside the Source reply. Successful stale snapshots remain discarded.
-  See [error retention evidence](docs/validation/tunnel-paired-error-retention-2026-10-07.md).
-
-- Keep automatic tunnel candidate creation under one checked absolute deadline,
-  including native handoff,metadata/query and publication. Reject late success
-  and zero/overflow internal admission while preserving original native errors.
-  See [automatic deadline evidence](docs/validation/tunnel-automatic-deadline-2026-10-07.md).
-
-- Reject manual tunnel work that crosses its deadline during a synchronous
-  poll. Restore an unobserved displaced row, retain the late runtime for native
-  cleanup, and preserve acquired IO without contacting fallback after expiry.
-  See [deadline crossing evidence](docs/validation/tunnel-manual-poll-crossing-2026-10-07.md).
-
-- Retain CLI tunnel runtimes before RSD probing and through cancelled publication,
-  removal and shutdown. One bounded owner registry keeps original native joins;
-  server native/metadata cleanup shares a budget and preserves acquired causes.
-  Add optional Core ownership callbacks and readonly shutdown status. See
-  [CLI native retirement evidence](docs/validation/cli-tunnel-native-retirement-2026-10-07.md).
-
-- Retain library-owned kernel and userspace tunnel workers for explicit,
-  retryable shutdown with native work/join errors and one cleanup budget.
-  Stop and replacement signal shared owners; normal packet forwarding joins
-  its reader. See [native owner evidence](docs/validation/native-tunnel-owner-2026-10-07.md).
-
-- Stop packet forwarding on watch closure or cancellation events while TUN
-  writes, stream writes or flushes wait, retaining per-iteration checks and
-  acquired native IO errors. See
-  [forwarding cancellation evidence](docs/validation/forward-watch-shutdown-2026-10-07.md).
-
-- Release the packet forwarding reader when its caller is dropped, aborted or
-  unwinds during a read/write wait. See
-  [reader ownership evidence](docs/validation/forward-reader-owner-2026-10-07.md).
-
-- Prevent stale tunnel publication and failure-row updates after close, clear
-  or stop. Scan admission also rejects a close completed before subscription,
-  preserving native cancellation and ordinary clear reuse. See
-  [shutdown state evidence](docs/validation/tunnel-shutdown-fences-2026-10-07.md).
-
-- Initialize the userspace tunnel listener before spawning packet workers.
-  A native bind or port-query error releases the input stream without
-  detaching tasks. See
-  [construction failure evidence](docs/validation/userspace-construction-2026-10-06.md).
-
-- Apply the manager scan's discovery deadline and cancellation to internal
-  table locks and USB coordinator admission. Late unlocks cannot advance an
-  expired scan; native USB errors survive cancellation, with primary and
-  cleanup errors retained separately. See
-  [scan setup evidence](docs/validation/tunnel-scan-setup-2026-10-06.md).
-
-- Count coordinator acquisition in the manager's existing 15-second manual
-  connection total. Queueing, connection, trusted fallback and publication
-  share one checked deadline; zero budgets and late ready results cannot
-  start or publish work, and overflow returns invalid_input. See
-  [manual connection deadline evidence](docs/validation/tunnel-manual-deadline-2026-10-06.md).
-
-- Preserve native Pcap/FPS stream errors and XCTest/notification/CrashReport
-  timeout sources. Propagate failed OS Trace/crash/power signal waits; expose
-  typed notification closure and issued stream deadlines. Keep existing stops,
-  result data and partial effects. JSON WebInspector shell omits interactive
-  prompt/EOF presentation bytes; see the [stream migration](docs/validation/cli-stream-contract-2026-10-04.md).
-
-- Preserve typed timeout sources through WebInspector CLI connection, launch,
-  application-list and expired-budget contexts. Keep timer values, human
-  context text and existing failure exits; legacy Core startup remapping and
-  machine-output adapters remain tracked in [A02](docs/error-contract.md).
-
-- Propagate CLI stdout write/newline/flush failures through a shared fallible
-  boundary. Closed result pipes return exit 1 instead of a possible panic/101;
-  failed help/version output returns 1 instead of silent success. Successful
-  output formats remain unchanged; see [migration](docs/plist-json-contract.md).
-
-- Preserve exact filtered-file destinations after device move/copy so placeholder
-  cleanup does not append a file-invalid trailing separator. Backup output
-  failures now return exit 1 instead of a possible println panic/exit 101;
-  [migration and partial-result rules](docs/backup-contract.md) retain success formats.
-
-- Read canonical usbmux `ProductID` for listing and attach events, while
-  retaining the previously accepted `ProductId` alias and zero for missing
-  metadata. CLI JSON fields and types remain unchanged.
-- Restrict every CLI verbosity to reviewed project log targets, preventing
-  dependency handshake/frame/close logging from exposing identifiers, headers
-  or device data. Verify with a real loopback WebSocket exchange and raw control.
-- Discard unreviewed HTTP error bodies from manager/CDP/Selenium framework
-  rejections while preserving status, Allow and HEAD behavior. Hide credentials
-  in supervised-pairing/session Debug and raw payloads in owned error Debug.
-  Clipboard promise errors and remaining automatic progress messages use
-  diagnostic correlation; explicitly requested data keeps its API purpose.
-- Prevent arbitrary error/source text from reaching automatic CLI, manager,
-  WebDriver and Python diagnostics; retain phases, categories and correlation.
-  Hide credential environment values in help and addresses in Python repr.
-  CDP device protocol failures retain routing/error codes while omitting raw
-  error data. Explicit debugger results and device selectors retain their use.
-- Add bounded raw stdout/stderr checks that independently report original
-  secret detection and masked-copy results; timeout and overflow fail closed.
-
-- Redact discovery/connection Debug output and device-not-found/pair-record
-  error diagnostics, including credential paths and malformed record data.
-  Typed variants, IO categories and process-local device correlation support
-  diagnosis; explicit selection fields retain their purpose.
-- Preserve existing file-pull and backup output until staged transfers succeed;
-  clean owned temporary files on cancellation. Refuse symlink image/file
-  destinations with `--force` on every platform and prevent no-force races from
-  overwriting concurrently created files. Filesystems without hard links fail
-  explicitly for no-force publication.
-- Support full-length output filename components without staging suffixes
-  exceeding filesystem limits. OS trace collect exclusively publishes a new
-  directory and reports temporary cleanup failure.
-- Omit credential fields from pairing-record Debug output and use process-local
-  identifier correlation in manager/forward/tunnel diagnostics. Instruments
-  diagnostics no longer render device response payloads.
-
-- Make independent `fileservice` and `deviceinfo` features enable their required
-  RemoteXPC transport; gate service integration tests by their required features.
-- Correct default doctests, private transport import paths and binding examples'
-  empty-list/error/cleanup behavior.
-
-- Open a fresh RemoteXPC connection for each subsequent Display request and use
-  the `stopAll`/`identifiers` stop payload. Direct and userspace routes are retained.
-- Omit `VRAE:0` from video negotiation so the device can adapt its encoder.
-- Default CLI pasteboard reads to `promisesecondary` to avoid eagerly resolving
-  rich secondary representations; explicit `--policy resolved` remains available.
-- Disable accessibility app monitoring and inspector visuals when focus commands
-  finish, fail or receive Ctrl-C; stop display capture on Ctrl-C as well.
-- Include `LiquidGlass` in the default supervised setup skip list.
-
-## [0.1.13] — 2026-08-30
+#### iOS 26 / 27 / 27.2 Protocol Adaptations & CoreDevice Tunnel
+- Added a **20ms ICMPv6 Echo Request Nudge** in the userspace `smoltcp` tunnel
+  stack (`CDTunnel`) when active TCP sockets await device responses, eliminating
+  multi-second packet stalls during high-frequency HTTP/2 RemoteXPC and DTX
+  bursts on iOS 18–27.2.
+- Added **IPv6 UDP datagram forwarding** in the Userspace Tunnel proxy alongside
+  TCP stream proxying, enabling unprivileged `dtremotedisplayd` RTP media
+  streaming and HID touch authorization on Windows, macOS, and Linux without
+  Administrator/root privileges.
+- Added iOS 26/27 `com.apple.coredevice.feature.configuredevice` configuration
+  actions (`liquid-glass-opacity` and `increase-contrast`) under
+  `ios device-control configuration`, and included `LiquidGlass` in the default
+  supervised setup skip list.
+- Added CoreProfileSession Stackshot (`com.apple.instruments.server.services.coreprofilesessiontap`)
+  `sharedCache` UUID extraction in `ios symbols list` for iOS 17–27+ devices that
+  omit `com.apple.dt.fetchsymbols` from `DTServiceHub`.
+- Added automatic 100ms TCP FIN drain before tearing down ephemeral Userspace
+  Tunnels in `ios file --coredevice` so `dtfileserviced` cleanly releases
+  sessions across consecutive invocations.
+
+#### Screen & Media Streaming (`DisplayService` & `Viewer` — F04)
+- Added real-time **H.265 (HEVC)** video and **AAC** audio RTP access-unit
+  streaming (`ios device-control display status | video | audio`) via
+  `com.apple.coredevice.diagnosticsservice` (`dtremotedisplayd`) over both
+  Kernel TUN and unprivileged Userspace Tunnel (`UAFH` UDP framing, `CUID`,
+  `VRAT` dictionary negotiation, device-issued stream-token stopping, and
+  `DisplayError::MediaInUse` for camera/microphone conflicts).
+- Added interactive Web viewer (`ios viewer web`) and RFB 3.8 VNC server
+  (`ios viewer vnc`) with MJPEG/PNG frame streaming, persistent timestamped
+  HEVC decoding via external FFmpeg, **16-bit Display P3 PNG screenshot**
+  expansion (`png::Transformations::EXPAND | STRIP_16`) for Pro Max displays,
+  interactive touch/key/button/orientation controls, and bidirectional clipboard
+  sync (`--share-clipboard`).
+
+#### Universal HID (`ios hid`)
+- Added `ios hid` subcommands for `tap`, `swipe`, `button`, phased `touch`,
+  **5-finger `multitouch`** (`--points` with independent `TouchIdentifier`
+  finger slots), `text`, and `key`.
+- Added automatic **500ms touch authorization settle** after `dtremotedisplayd`
+  RTP session startup, **300ms virtual keyboard settle** before typing, and
+  **Shift modifier lead-in/lead-out** (25ms lead-in/hold/release) for uppercase
+  letters and shifted ASCII symbols on iOS 18–27.2.
+
+#### WebInspector, CDP & W3C WebDriver (F02)
+- Added `ios webinspector` subcommands (`opened-tabs`, `eval`, `launch`,
+  `js-shell`, `cdp`, `webdriver`) with separated wire/model/client/session
+  ownership and bounded application/page caches.
+- Added Chrome DevTools Protocol (`cdp`) bridge compatible with `puppeteer-core`
+  and `playwright-core` (`connectOverCDP`), supporting `Runtime`, `Page`
+  (navigation, lifecycle events, frame tree, screenshots), `Network`, `Fetch`
+  (interception/fulfill/continue), `Input` (`dispatchMouseEvent`,
+  `dispatchTouchEvent`, `dispatchKeyEvent`, `insertText`), `Performance`, and
+  `HeapProfiler` (`takeHeapSnapshot` via `Heap.gc` + `Heap.snapshot`). See
+  [CDP client workflow](docs/cdp-client-workflow.md).
+- Added W3C WebDriver (`webdriver`) HTTP server compatible with
+  `selenium-webdriver` (session lifecycle, navigation, script execution,
+  screenshots, element location, click, and text entry).
+
+#### File Management (`AFC` Extended Opcodes & CoreDevice `FileService`)
+- Added complete Apple File Conduit (AFC) extended opcodes to `ios-core::afc`
+  and `ios file`: `GetConnectionInfo` (`connection-info`), `GetFileHash` and
+  `GetFileHashWithRange` (`hash --offset --length`), `FileRefReadWithOffset` and
+  `FileRefTell` (`pread`), `FileRefWriteWithOffset` (`pwrite`), `TruncateFile`
+  and `FileRefSetFileSize` (`truncate [--by-fd]`), `SetFileTime` (`set-time`),
+  and `GetSizeOfPathContents` (`dir-size`).
+- Added full CoreDevice `fileservice` (`ios file --coredevice` `ls`, `mkdir`,
+  `push`, `pull`, `mv`, `rm --recursive`) across `temporary`,
+  `app-data-container`, `app-group-data-container`, `root-staging`, and
+  `system-crash-logs` domains.
+
+#### Developer Diagnostics, Pasteboard, XCTest & Restore/SDK (F03, F05, F06)
+- Added Darwin-notification pasteboard monitoring (`ios pasteboard watch`) with
+  fresh PULL connections, baseline suppression, and `(nonce, changeCount)`
+  deduplication alongside `pasteboard get` and `pasteboard set` (text, URL, and
+  binary UTI payloads).
+- Added automatic iOS 17+ RSD `com.apple.internal.dt.remote.debugproxy` fallback
+  in `ios debugserver` (`send`, `proxy`) and `ios debug` when Lockdown
+  `com.apple.debugserver` is unavailable on iOS 17–27+.
+- Added reusable `TestWorkflowEngine` (`runtest`, `runxctest`) with `.xctestrun`
+  v1/v2 parsing, bounded package installation, JUnit/JSON result sidecars, and
+  `runwda --once`.
+- Added restored plist transport, IPSW OS image inspection/extraction, and
+  bounded ASR data-port serving (`ios restore`).
+- Added finite existing-trust `DeviceSession` (`IosDeviceSession` in C FFI,
+  `ios_rs.DeviceSession` in Python) for bounded device queries (`ProductType`,
+  `ProductVersion`, `DeviceName`), application listing, AFC file reads, and
+  syslog streaming with explicit cancellation and resource budgets. See
+  [owned device query contract](docs/owned-device-query.md).
+- Added `ios tunnel auth create|check` and scoped access policies for `tunnel serve`,
+  `webinspector cdp`, and `webinspector webdriver`, plus `--error-format=json`
+  for structured machine-readable CLI failure envelopes. See
+  [error contract](docs/error-contract.md) and
+  [manager route intent](docs/manager-route-intent.md).
+- Streamed bounded ZIP32 IPA installs from admitted directory metadata and 64 KiB
+  decode buffers, preserving CRC checks and deadlines.
+- Extended explicit-target `ios doctor` reports with read-only personalization
+  manifest, DDI component, pairing-directory, and RSD route observations.
 
 ### Fixed
 
 - Made backup integration expectations compare canonical layout paths, so
   macOS's `/var` alias does not turn a successful backup into a false failure.
+- Hardened lifecycle, cancellation, and deadline boundaries across Lockdown,
+  RSD, HTTP/2 RemoteXPC, DTX, AFC, MobileBackup2, DeviceLink, NotificationProxy,
+  Companion, SpringBoard (`--request-timeout-ms`), FPS capture, and WebInspector
+  sessions. See [lifecycle contract](docs/lifecycle-contract.md).
+- Propagated CLI stdout write/newline/flush failures through a shared fallible
+  boundary so closed result pipes return exit 1 instead of panicking. See
+  [plist/JSON contract](docs/plist-json-contract.md) and
+  [backup contract](docs/backup-contract.md).
+- Preserved existing file-pull and backup output until staged transfers succeed,
+  refused symlink destinations with `--force`, and cleaned temporary files on
+  cancellation.
+- Restricted CLI logging to reviewed project targets and redacted credentials,
+  pair records, and raw device payloads from `Debug` and automatic error
+  diagnostics.
+- Opened a fresh RemoteXPC connection for each subsequent Display request,
+  omitted `VRAE:0` from video negotiation so the device can adapt its encoder,
+  and stopped display capture or accessibility visuals cleanly on Ctrl-C.
 
 ## [0.1.12] — 2026-08-30
 

@@ -12,8 +12,8 @@ describe their acceptance date. R04's accepted
 
 | A02 requirement | Current host evidence / remaining boundary |
 | --- | --- |
-| Typed categories and retained sources | ErrorClass and native-source migrations below; preserving Lockdown APIs retain response codes and replace backup/debugserver text decisions. The [thirteen identified owner guards](validation/cli-owner-guards-2026-10-04.md) have typed outcomes; source-reviewed unreachable guards and opaque legacy Unknown profiles remain explicit |
-| CLI output and partial failure | Checked stdout/stderr, final safe v1 errors, syslog/apps/install/CPU and the current [stream inventory](validation/cli-stream-contract-2026-10-04.md). Accessibility empty/partial traversal semantics and issued timeout/input guards accepted; stronger cleanup/reuse/queue contracts belong to L01 |
+| Typed categories and retained sources | ErrorClass and native-source migrations below; preserving Lockdown APIs retain response codes and replace backup/debugserver text decisions. The thirteen identified owner guards have typed outcomes; source-reviewed unreachable guards and opaque legacy Unknown profiles remain explicit |
+| CLI output and partial failure | Checked stdout/stderr, final safe v1 errors, syslog/apps/install/CPU and the current stream inventory. Accessibility empty/partial traversal semantics and issued timeout/input guards accepted; stronger cleanup/reuse/queue contracts belong to L01 |
 | Service and probe evidence | InitialRsdProbe distinguishes not_attempted/available/failed; RsdFeatureEvidence distinguishes missing service and unavailable metadata from advertised/not_advertised. NotAdvertised is not explicit unsupported |
 | Python mapped errors | Native factories/runtime and proxy/mode preconditions have stable attributes; argument extraction keeps Python's built-in typed exceptions. Metadata delivery can itself fail with a safe cause |
 | C mapped errors | Calling-thread category plus checked list/runtime/port/consuming cleanup; legacy void/zero and ALLOC ambiguity remain explicit compatibility profiles. ALLOC alone stays unknown, not inferred memory exhaustion |
@@ -79,7 +79,7 @@ after a returned event was untouched by that client-only profile; correlated
 ownership is covered by the subsequent profile below. Metadata cache limits
 and frontend primary/cleanup owners remain separate work.
 Local admission never proves device settings, cleanup or retry safety. See
-[WebInspector client error evidence](validation/webinspector-client-lifecycle-2026-10-05.md).
+WebInspector client error evidence.
 
 Correlated Inspector/Automation now preserve the primary native/JSON/Protocol
 failure while invalidating an incomplete committed client. Matched Inspector
@@ -99,7 +99,7 @@ finite deadline scopes avoid independently overflowing configured MAX, and
 scope exit restores the previous policy. Existing matching/selection/business
 rules, startup Disabled mapping and safe diagnostics stay. Local categories or
 queue release do not certify remote cleanup, retry or measured memory. See
-[WebInspector session error evidence](validation/webinspector-session-lifecycle-2026-10-05.md).
+WebInspector session error evidence.
 
 WebInspector metadata/snapshot/staging count and compact-JSON byte rejection
 also uses the existing private WebInspectorLimit typed ResourceLimit under Io
@@ -113,7 +113,7 @@ into successful idle snapshots. Later guarded IO rejects local invalid reuse.
 No application identifier/title/URL or metadata payload is included in local
 limit diagnostics. Logical count/byte admission does not certify decoder peak
 or retry/remote cleanup. See
-[WebInspector cache error evidence](validation/webinspector-cache-lifecycle-2026-10-05.md).
+WebInspector cache error evidence.
 
 CLI wait_for_application/wait_for_inspectable_page now return a terminal issued
 Timeout directly when the client was invalidated by partial receive or automatic
@@ -123,7 +123,7 @@ Empty usable idle keeps its retry policy. Native EOF, plist and ResourceLimit
 still retain their original families/sources; selection and diagnostics stay.
 This narrow adapter change does not certify other frontend whole-flow/cleanup
 owners. See
-[WebInspector discovery error evidence](validation/webinspector-discovery-lifecycle-2026-10-05.md).
+WebInspector discovery error evidence.
 
 Finite WebInspector CLI commands now reject zero as the existing source-free
 Timeout before default discovery. Existing invalid-input guards and native
@@ -140,7 +140,7 @@ Automation stop plus socket teardown also preserve the first failure when the
 second step expires. Successful output followed by cleanup failure now exits1;
 no rollback, retry or remote cleanup ACK is implied. Core error variants and
 final machine envelope stay. See
-[WebInspector command error evidence](validation/webinspector-command-lifecycle-2026-10-05.md).
+WebInspector command error evidence.
 
 Interactive js-shell now uses the same checked admission and native timer/signal
 sources. Setup cancellation is typed Cancelled and exits1. After setup, a
@@ -155,7 +155,7 @@ failure and their own cleanup failures. Cleanup failure after an otherwise
 successful stop returns failure; prior stdout records remain emitted. Native
 EOF retains its observed IO source/class rather than being relabeled from prose.
 The final machine envelope and error variants stay. See
-[WebInspector shell error evidence](validation/webinspector-shell-lifecycle-2026-10-05.md).
+WebInspector shell error evidence.
 
 Companion's shared operation guard preserves the original native/frame error
 while invalidating local client/listener/forwarding reuse. Later guarded paths
@@ -171,7 +171,7 @@ owned read and invalidates shared state. Successful cached stop/finished listene
 outcomes remain local no-ops independent of later input budgets. Existing Drop
 cleanup errors remain best-effort and unreported on the legacy handle path. The
 four variants, safe diagnostics and automatic v1 fields stay. See
-[Companion lifecycle evidence](validation/companion-lifecycle-2026-10-04.md).
+Companion lifecycle evidence.
 
 The subsequent consuming close API schedules no Drop fallback, even on an
 unpolled/cancelled future or complete business error. Companion CLI rejects
@@ -186,7 +186,7 @@ UnexpectedEof remains Io with its original object, while business failure keeps
 Protocol and issued cleanup expiry has its own native duration/Elapsed. An
 invalid session skips unsafe cleanup without inventing another error. Neither
 category nor successful local close proves remote release or safe retry. See
-[Companion CLI error evidence](validation/companion-cli-control-2026-10-05.md).
+Companion CLI error evidence.
 
 NotificationProxy actual expiry retains Elapsed through existing Io/retained
 context, including budget exhaustion between complete unrelated events: an
@@ -198,7 +198,7 @@ and disconnected category while closing state; later invalid/closed operations
 return Protocol. Successful Shutdown is a bounded write/flush without ACK.
 No core cleanup aggregate or automatic close is added. The subsequent CLI owner
 below supplies returned-error cleanup and primary retention. See
-[notification lifecycle evidence](validation/notification-lifecycle-2026-10-04.md).
+notification lifecycle evidence.
 
 Notification CLI now retains primary and cleanup in a private aggregate whose
 source/category follows the primary. Cleanup keeps native error or actual
@@ -210,7 +210,7 @@ Already invalid/ProxyDeath transport skips cleanup rather than manufacturing a
 secondary error or sending late control bytes. Drop closes owned transport;
 the subsequent setup/total/signal owner is described below; remote cleanup remains
 a separate condition. See
-[notification CLI cleanup evidence](validation/notification-cli-cleanup-2026-10-04.md).
+notification CLI cleanup evidence.
 
 Notification CLI finite zero/overflow admission is existing InvalidInput before
 device selection/I/O, without fabricated Elapsed. Setup, send and finite total
@@ -228,7 +228,7 @@ during a fake default ListDevices wait yields cancelled/notify/exit1 and owned
 peer EOF. No physical service is contacted. Injected write_line_to permission
 faults exercise actual command consumption, without claiming OS stdout failure
 or device cleanup acceptance. See
-[notification CLI control evidence](validation/notification-cli-control-2026-10-04.md).
+notification CLI control evidence.
 
 MobileBackup2's current operation owner retains both failures through
 Mobilebackup2Error::cleanup_failure() and its opaque SessionCleanupFailure.
@@ -243,7 +243,7 @@ Zero/overflow admission precedes I/O; native failure or interrupted progress
 rejects reuse. Total expiry starts no late disconnect. Expected peer closure
 after a complete terminal reply preserves the existing completion policy while
 local reuse becomes unavailable. No remote cleanup/retry claim follows. See
-[current backup lifecycle evidence](validation/backup-lifecycle-2026-10-04.md).
+current backup lifecycle evidence.
 
 DeviceLink operation expiry retains actual Elapsed in existing Io.get_ref;
 zero budget is source-free TimedOut and unrepresentable ordinary budgets are
@@ -256,7 +256,7 @@ than issuing a later cleanup timeout: invalid DeviceLink rejects disconnect
 before another write. Existing cleanup-timeout retention on valid business/
 success/pending paths was retained in that DeviceLink increment. The subsequent
 MobileBackup2 owner above supplies raw/session ownership and primary retention. See
-[DeviceLink lifecycle evidence](validation/device-link-lifecycle-2026-10-04.md).
+DeviceLink lifecycle evidence.
 
 LockdownClient request/close expiry retains actual Elapsed in existing
 LockdownError::Io.get_ref. Zero is a source-free TimedOut decision; unrepresentable
@@ -271,7 +271,7 @@ private session identifier uncertain; it does not establish that the remote
 session remains active. Manual cleanup returns its own result; retaining an
 earlier primary error alongside it remains caller-owned. No error enum, raw
 borrowed helper policy or frontend schema changes. See
-[Lockdown lifecycle evidence](validation/lockdown-lifecycle-2026-10-04.md).
+Lockdown lifecycle evidence.
 
 Borrowed RSD guards return original operation errors and leave existing stage
 expiry's native Elapsed/context intact. Later invalid-framer reuse returns the
@@ -283,7 +283,7 @@ state; there is no upper XpcConnection pending map in these bootstrap helpers.
 Empty idle and normal completion retain reuse; a complete stream-local error
 before commitment can preserve other streams. No new RSD timer/zero-budget API,
 remote cleanup or retry guarantee is added. See
-[RSD lifecycle evidence](validation/rsd-lifecycle-2026-10-04.md).
+RSD lifecycle evidence.
 
 XPC configured expiry retains original Elapsed in existing XpcError::Io.get_ref;
 zero is source-free TimedOut, unrepresentable deadlines are InvalidInput.
@@ -293,7 +293,7 @@ distinct from cancellation after a wrapper header or sent request. Complete
 service business errors parsed outside the transport guard keep their original
 objects/categories and reuse rules. Raw stream Drop/announced-file failure do
 not await remote cleanup; split send/recv remain caller-owned operations. See
-[XPC lifecycle boundaries](validation/xpc-lifecycle-2026-10-04.md).
+XPC lifecycle boundaries.
 
 H2 native transport errors keep their existing Io objects and kinds. Internal
 configured expiry retains actual Elapsed in H2Error::Io's get_ref; zero budget
@@ -302,7 +302,7 @@ H2-to-XPC adapters retain these typed causes. Rejected reuse returns the existin
 Protocol family, separately from the original operation's error. Complete
 stream-local errors do not globally invalidate H2. This profile does not yet
 clear upper XPC pending replies or guard an entire call on its own; see
-[H2 lifecycle evidence](validation/h2-lifecycle-2026-10-04.md).
+H2 lifecycle evidence.
 
 AFC request/cleanup expiry retains original Elapsed in AfcError::Io's get_ref
 payload; zero budget and oversized deadline are issued source-free Timeout/
@@ -313,7 +313,7 @@ transfer/close failure wraps both original objects in existing Io with the
 primary as source and a safe fixed Display/Debug; a primary Status may change
 outer variant on this path but keeps its precise category. Cleanup-only failure
 returns its original object. No extra public error variant or retry/rollback/
-device cleanup claim. See [AFC migration](validation/afc-lifecycle-2026-10-04.md).
+device cleanup claim. See AFC migration.
 
 FPS capture retains native setup/read/signal/output failures and actual cleanup
 Elapsed. If both capture and stop fail, a private wrapper keeps the primary in
@@ -322,7 +322,7 @@ now fails. A source-free private resource decision for the timestamp cap maps to
 resource_limit only in the CLI's existing 32-source scan, without confirmation;
 general Core classification for it remains Unknown. Deeper/opaque errors retain
 their previous fallback. Final schema v1 and effects unknown remain. See the
-[FPS lifecycle migration](validation/fps-lifecycle-2026-10-04.md); a failed or
+FPS lifecycle migration; a failed or
 completed stop write does not establish device cleanup or safe retry.
 
 DTX shared-budget expiry retains actual Elapsed in existing DtxError::Io;
@@ -332,7 +332,7 @@ connection's existing Protocol error is separate from the original operation's
 retained native failure; neither permits guessing retry/rollback/remote cleanup.
 Empty idle reads remain usable, partial frames fail immediately at affected
 service entry points. See [L01 lifecycle](lifecycle-contract.md) and the
-[DTX host gate](validation/dtx-lifecycle-2026-10-04.md).
+DTX host gate.
 
 `LockdownResponseError` observes device-issued Error strings through the additive
 `LockdownClient::get_value_preserving_errors`, `start_service_preserving_errors`
@@ -357,7 +357,7 @@ their native source. Invalid received bool shapes classify protocol. Debugserver
 keeps its two-name order, using only observed StartService/InvalidService for
 fallback, and preserves the final error after exact misses. Category/Display/
 source/correlation migrate, while success/exit/v1/effects and existing lifecycle
-policy stay. See the [response-code host evidence](validation/lockdown-response-codes-2026-10-04.md)
+policy stay. See the response-code host evidence
 for actual owned TLS/duplex versus private/default/ConnectedDevice scope.
 
 Existing Protocol strings cannot be reclassified by words such as "timeout"
@@ -415,7 +415,7 @@ CLI/CDP idle loops continue to consume only their own deadlines; other IO timeou
 still propagates. Companion listener expiry remains terminal and forwarding stop
 state still follows its existing successful response. Created zero-budget
 markers, protocol limits, wire/success, budgets and cleanup behavior stay. See
-the [discovery source migration and host evidence](validation/discovery-native-sources-2026-10-03.md)
+the discovery source migration and host evidence
 for returned-variant/Display/source access changes and partial-operation limits.
 
 CrashReport and OS Trace retain 21 native service causes, plus OS Trace CLI's
@@ -435,7 +435,7 @@ native regex type. Term count/length guards on the new method are source-free
 InvalidInput; actual regex errors keep their original cause. Filter predicates,
 budgets, output/envelope shapes and failure exits stay. A private CLI PID wrapper
 also preserves standard source traversal through IO custom payload forwarding.
-The [diagnostic source migration](validation/diagnostic-native-sources-2026-10-03.md)
+The diagnostic source migration
 records returned variants/Display, local AFC peer cleanup, archive OS faults and
 the limits of partial-read/write/device evidence.
 
@@ -459,7 +459,7 @@ policy. Public exhaustive families, production deadlines, wire and existing
 owner/fail-closed/fallback behavior stay. Created activation/InstallCoordination
 deadline markers remain source-free. One promised-size guard now compares the
 full nonnegative integer against its limit, closing a 32-bit conversion bypass;
-32-bit behavior is source-reviewed. The [service deadline evidence](validation/service-deadline-native-sources-2026-10-03.md)
+32-bit behavior is source-reviewed. The service deadline evidence
 records actual local faults, helper/device-entry scope and migration limits.
 
 ImageMounter download/cache/extraction and TSS now preserve 34 original native
@@ -473,7 +473,7 @@ use typed class/source inspection. Source-free status/ticket/size/cache/build/
 HTML/magic/missing-entry guards keep their existing outcomes. Public six-variant
 family, signatures, wire, proxy precedence/policy, budgets and partial-file/
 blocking-work behavior stay. Source retention does not add bounds, rollback or
-cleanup guarantees. The [DDI/TSS evidence](validation/image-assets-native-sources-2026-10-03.md)
+cleanup guarantees. The DDI/TSS evidence
 records native/local-injected faults, corrected baseline fixtures and limits.
 
 Historical A02 MobileBackup2 profile (superseded for lifecycle/dual-failure
@@ -501,7 +501,7 @@ stay. Affected variants/Display/immediate payloads and diagnostic correlation
 can change; explicit native sources and the earlier-error branch follow the
 redaction policy. Blocking work may outlive a dropped awaiter, partial transfers
 may remain, and client reuse or remote cleanup is not certified. See the
-[backup deadline evidence](validation/backup-deadline-native-sources-2026-10-03.md)
+backup deadline evidence
 for actual owned timers, primary-loss negative controls and public/minimum scope.
 
 Restore retains 25 original H2/XPC, IPSW and TSS error objects under existing
@@ -523,7 +523,7 @@ Protocol outcomes. The legacy TSS batch/per-updater API intentionally consumes
 errors into failed updater names; this source-retention migration alone does not
 fix that partial-result contract or certify retry, connection reuse, restore
 execution or Apple signing. See the
-[restore source evidence](validation/restore-native-sources-2026-10-03.md).
+restore source evidence.
 
 TSS callers can now select `prefetch_tss_batch_preserving_errors` to retain
 failures from `BuildCombinedRequest`, `SignCombinedRequest` and
@@ -544,7 +544,7 @@ sources may carry private input and follow the existing redaction policy.
 The new API adds no timeout, retry, cancellation, allocation cap on caller-owned
 error payloads, rollback or cleanup guarantee. Wire/bounds/fallback and legacy
 output stay; no CLI/HTTP/binding currently consumes this new result. See
-[batch observation evidence](validation/tss-batch-observations-2026-10-03.md).
+batch observation evidence.
 
 Application/test process identifiers, fixed application plist encoding, five IPA
 integer conversions and GPX XML/paired timestamp parsing now retain eleven
@@ -564,7 +564,7 @@ earlier install writes; the private header zero-write fixture does not prove
 whole-install preflight. GPX/test PID no-write observations are scoped to their
 owned local streams. No cleanup/retry/rollback or new parser/transfer limits.
 Explicit sources remain private data under the redaction policy. See
-[input source evidence](validation/service-input-native-sources-2026-10-03.md)
+input source evidence
 for private injected encoding versus public consumer and unreachable 64-bit
 conversion branches.
 
@@ -585,7 +585,7 @@ Machine schemas/exit policies and finite successful output stay, but classes,
 Display/immediate source and diagnostic correlation can change. GPX/P12/coordinate
 contexts omit raw input/path text; explicit sources/opaque Display remain private
 data. Migrate string/Unknown/cancellation assumptions to typed categories. See
-[CLI native evidence](validation/cli-native-sources-2026-10-04.md).
+CLI native evidence.
 
 CLI's sixty direct status/diagnostic eprintln sites use the checked stderr
 writer: fifty-four return native IO failures, six retain a prior primary failure
@@ -603,7 +603,7 @@ Unix directory source/destination CString errors retain native NulError and
 owned path bytes with fixed safe context, existing InvalidInput and no rename.
 Explicit source access is private data. Root/binding schemas stay; migrate
 panic/success assumptions to typed error/exit handling. See
-[CLI diagnostic evidence](validation/cli-diagnostic-sources-2026-10-04.md).
+CLI diagnostic evidence.
 
 Fifteen discovery/connection adapters retain original mDNS, integer, JSON,
 returned TunnelError and Elapsed objects through existing Io with fixed private
@@ -622,7 +622,7 @@ immediate-source/diagnostic correlation can change. Existing three TunnelError
 variants, root paths, binding schemas and success output remain; migrate text
 matches to typed class and bounded source traversal. No new deadline, retry,
 invalidation, daemon-close acknowledgement or safe-reuse rule. See
-[connection source evidence](validation/connection-native-sources-2026-10-04.md)
+connection source evidence
 for actual owned timer/duplex/loopback versus private backend-object fixtures,
 unreachable fixed encoding adapters and source-reviewed TCP dial expiry.
 
@@ -643,7 +643,7 @@ Display/immediate-source and diagnostic correlation can change; use typed
 class/source traversal. Zerocopy's existing std feature is required for its
 native StdError on MSRV, with unchanged version/lockfile. No new lifecycle,
 limit or success behavior. See
-[guarded source evidence](validation/guarded-native-sources-2026-10-03.md).
+guarded source evidence.
 
 DProxy callers can select `StreamDecoder::push_preserving_errors`. Its opaque
 `DecodeOutcome` keeps ordered events, independent `DecodeFailure` observations
@@ -669,7 +669,7 @@ DTX failure sets `input_ignored`; partial/Binary input with no events does not.
 Existing event JSON/summary/guard text, parsing limits, clear/stop behavior and
 forwarding remain. The legacy path allocates no observation storage.
 No new retry, reset, rollback or cleanup promise. See
-[decoder observation evidence](validation/dproxy-decoder-observations-2026-10-03.md).
+decoder observation evidence.
 
 `ProxyRecorder::record_chunk_with_observer` and
 `proxy_bidirectional_with_observer` now deliver owned DecodeFailure values to
@@ -698,7 +698,7 @@ primary serde/raw/newline/flush/transport variants, message text, stdout/JSON
 and failure dispatch stay. Dispatcher maps a returned operation failure to exit
 1 and best-effort final reporting; physical DProxy status placement is reviewed,
 not a device invocation. Tracing itself remains the existing logging facility.
-See [recording and stderr acceptance](validation/dproxy-recording-observations-2026-10-03.md).
+See recording and stderr acceptance.
 
 CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
 construction now use start_preserving_errors. A closed stream can yield an IO
@@ -834,7 +834,7 @@ confirmation check or authorize any device action.
 Existing safe diagnostic messages remain useful for correlation but must not
 be parsed as stable natural-language categories.
 
-The current [stream framing inventory](validation/cli-stream-contract-2026-10-04.md)
+The current stream framing inventory
 records ordinary stderr progress/callbacks and partial-operation semantics.
 Eleven invalid timeout inputs classify invalid_input; empty accessibility
 traversal expiry is a source-free timeout. A private CLI state marker maps to
@@ -842,7 +842,7 @@ precondition within the same 32-source walk as confirmation, with no force hint
 or confirmation_required flag. The general Core classifier remains Unknown for
 that CLI-only type. The current missing-crash-deadline branch is unreachable by
 construction; its mapping is an adapter fixture/source review, not a device
-fault. See [owner-guard acceptance](validation/cli-owner-guards-2026-10-04.md).
+fault. See owner-guard acceptance.
 A partial stream or an output error can follow completed operations;
 no rollback, automatic retry or device cleanup acknowledgement is promised.
 L01 retains the stronger lifecycle/deadline acceptance.
@@ -855,7 +855,7 @@ Elapsed or OS cause. Existing successful operator stops and count/capture-window
 policy remain. JSON WebInspector shell suppresses interactive prompts and its
 EOF presentation newline. Returned category/Display/source/correlation migrate;
 failure exits and v1 schema/effects stay. The
-[stream acceptance and framing inventory](validation/cli-stream-contract-2026-10-04.md)
+stream acceptance and framing inventory
 distinguishes NDJSON, successive pretty documents, aggregate summaries and
 per-record partial failure. It records source-reviewed guards separately from
 owned reader/channel/timer/signal tests; no device cleanup/retry is certified.
@@ -1191,7 +1191,7 @@ native kinds/Unknown, bounded cyclic sources and actual Join flags. Native
 classification does not authorize retry or certify running-worker cancellation,
 remote cleanup or stream reuse. Supervised OpenSSL/record-save, other codec/
 created outcome/stream/binding and L01/L03/A03 conditions remain. Evidence:
-[default lockdown source validation](validation/default-lockdown-sources-2026-10-02.md).
+default lockdown source validation.
 
 ## Supervised pairing native sources
 
@@ -1224,7 +1224,7 @@ supervised device/enrollment/Trust or remote cleanup/reuse is certified; not
 every backend or save stage is fault-injected. MCInstall's analogous P12 boundary
 has subsequent coverage below; other sources/streams/bindings and L01/L03/A03
 remain. Evidence:
-[supervised pairing source validation](validation/supervised-pairing-sources-2026-10-02.md).
+supervised pairing source validation.
 
 ## Archive and backup metadata sources
 
@@ -1256,7 +1256,7 @@ Owned public list/extract and actual SQLite backend fixtures establish host
 evidence; test-only authorizer/BLOB limits do not change production policy. Physical
 devices, existing backups, every backend/architecture stage and remote cleanup
 remain unverified. Evidence:
-[backup metadata source validation](validation/backup-metadata-sources-2026-10-02.md).
+backup metadata source validation.
 
 ## Encrypted backup and legacy index inner sources
 
@@ -1280,7 +1280,7 @@ backend cause. Bounds, sentinel/null encoding, parser/serializer order, encrypti
 parameters/Zeroizing and successful operations stay. Owned legacy and modern
 encrypted fixtures establish host rejection/source and success behavior, not
 physical backup, every cipher/allocator/architecture fault or remote cleanup.
-Evidence: [inner backup source validation](validation/backup-inner-sources-2026-10-02.md).
+Evidence: inner backup source validation.
 
 ## Backup filesystem and archive integer sources
 
@@ -1303,7 +1303,7 @@ Path/symlink/platform aliases, caps, incremental/staging/copy policy, scheduling
 decoding/depth and optional/raw fallbacks stay. Actual owned filesystem/worker/
 binary-archive/public reader fixtures establish host evidence, not every OS or
 architecture, running-worker termination, physical backup or remote cleanup.
-Evidence: [backup host source validation](validation/backup-host-sources-2026-10-02.md).
+Evidence: backup host source validation.
 
 ## OPACK and XPC native codec, identity and deadline sources
 
@@ -1335,7 +1335,7 @@ external root consumers establish host evidence. Actual Windows/macOS identity,
 production fifteen-second TCP deadlines, narrow-host conversions and physical
 devices remain unverified. Wire/limits/success/features/root exports and optional
 M6/UID/DTX/instruments compatibility fallbacks stay. Evidence:
-[XPC native source validation](validation/xpc-native-sources-2026-10-02.md).
+XPC native source validation.
 
 ## Media, HID and packet capture native sources
 
@@ -1361,7 +1361,7 @@ metadata frames and private conversion helpers establish host evidence. Controll
 gate reopening proves local state/send success, not partial-send reuse or device
 delivery. Physical media/capture, task joins and every allocator/architecture/
 platform stage remain unverified; L01/streams and other A02 work remain. Evidence:
-[media and capture source validation](validation/media-capture-sources-2026-10-03.md).
+media and capture source validation.
 
 ## usbmux native codec, connection and deadline sources
 
@@ -1384,7 +1384,7 @@ fault/success fixtures establish host evidence only; external root connect is
 type-checked without polling. They do not certify physical devices, production
 network black holes, cleanup/reuse or safe retry. Archive/integer/guard/stream/
 binding and lifecycle work remain. Evidence:
-[usbmux source validation](validation/usbmux-sources-2026-10-02.md).
+usbmux source validation.
 
 ## MCInstall native sources and explicit P12 outcomes
 
@@ -1415,7 +1415,7 @@ test-only NOVERIFY/NOINTERN does not establish chain trust. Physical supervision
 profile installation, remote cleanup/reuse, every backend/allocator/encoder stage
 and memory-lifecycle guarantees remain unverified. Existing profile metadata
 integer conversion and other codec/guard/stream/binding work remain. Evidence:
-[MCInstall source validation](validation/mcinstall-sources-2026-10-02.md).
+MCInstall source validation.
 
 ## Deactivation fallback and activation HTTP sources
 
@@ -1738,7 +1738,7 @@ the legacy oversize-frame rejection remains Protocol. This change applies to
 the private page loop after upgrade; it adds no error headers or unsafe error
 data to WebSocket frames. Setup totals, cleanup errors, browser child results
 and server cancellation remain separate work. See
-[CDP page fixtures](validation/cdp-page-idle-lifecycle-2026-10-05.md).
+CDP page fixtures.
 
 CDP discovery/page/browser-page and WebDriver runtime constructors now share
 one absolute setup deadline from before lock/source admission through their
@@ -1750,7 +1750,7 @@ one snapshot. Full-list/automation discovery keeps a separate500ms quiet window.
 Returned setup failure or caller cancellation drops the owned stream/lock,
 without guessed incomplete-attach recovery. Existing active, cleanup, HTTP
 publication and server signal error handling remain outside this profile.
-See [server setup fixtures](validation/webinspector-server-setup-2026-10-05.md).
+See server setup fixtures.
 
 Direct CDP page shutdown now returns a failed forwarding close instead of
 discarding it. Cleanup receives an independent 2s total, rather than inheriting
@@ -1761,7 +1761,7 @@ continues to use the existing safe formatter; no new error frames are sent.
 Invalid clients skip recovery writes. Five actual WebSocket/owned-stream fixtures
 cover this returned-error profile. Principal/server cancellation still drops the
 handler and is not covered by this cleanup path. See
-[CDP page cleanup fixtures](validation/cdp-page-cleanup-2026-10-05.md).
+CDP page cleanup fixtures.
 
 WebDriver runtime stop now retains context-close and forwarding-close failures
 through the existing private cleanup wrapper. Both steps share the stored100ms
@@ -1770,7 +1770,7 @@ invalid client skips socket recovery, and starting stop disarms another attempt.
 These are runtime-result fixtures: HTTP DELETE still ignores its cleanup result,
 and outer revocation timeouts retain their existing handling. Request/registry
 ownership and routed error projection remain separate work. See
-[WebDriver cleanup fixtures](validation/webdriver-cleanup-2026-10-05.md).
+WebDriver cleanup fixtures.
 
 Direct CDP page lease expiry/reload now becomes a returned typed
 OperationCancelled inside the owner, followed by independent cleanup. If cleanup
@@ -1780,7 +1780,7 @@ the handler before cleanup. Revocation now reaches the existing safe diagnostic
 formatter; it sends no new error frames or headers and exposes no credentials.
 This supersedes the earlier principal-cancellation limitation for direct pages.
 Generic caller/server cancellation and browser/stored task joins remain separate.
-See [CDP page lease fixtures](validation/cdp-page-lease-2026-10-05.md).
+See CDP page lease fixtures.
 
 CDP browser child tasks retain original send, decode, receive and cleanup
 failures instead of breaking silently. The primary is recorded before cleanup;
@@ -1796,7 +1796,7 @@ while keeping successful detach replies and healthy browser traffic. Browser
 loop exit combines its primary with group cleanup. No raw causes, new headers
 or error frames are sent. Browser lease/caller/server cancellation still uses
 Drop and needs separate ownership work. See
-[browser child errors](validation/cdp-browser-tasks-2026-10-05.md).
+browser child errors.
 
 CDP browser lease expiry/reload now returns typed OperationCancelled inside the
 owner. Existing cleanup then retains native child and waiter failures under
@@ -1812,7 +1812,7 @@ of silently discarding outer ScopeDenied. No raw causes, new error headers or
 WebSocket error frames are sent. Child detach replies and healthy traffic stay.
 This supersedes the earlier browser principal/retiring-owner limitation; generic
 caller/server Drop and stored registry remain. See
-[browser lease errors](validation/cdp-browser-lease-2026-10-05.md).
+browser lease errors.
 
 ### WebDriver DELETE cleanup errors (2026-10-05)
 
@@ -1830,7 +1830,7 @@ still return200/null without error headers. The new private Result helper
 shares the entry deadline and avoids an outer competing cleanup timer. Legacy
 revocation callback, registry join and active request Arcs remain separate.
 This pre-1.0 error/timing migration needs release review and device evidence;
-see [DELETE errors](validation/webdriver-delete-2026-10-05.md).
+see DELETE errors.
 
 ### Stored session watcher join errors (2026-10-05)
 
@@ -1846,7 +1846,7 @@ fields or raw panic payloads.
 This covers task joins only. The unchanged unit revocation callback/outer100ms
 timer still needs native protocol cleanup primary/secondary retention. Idle
 completed handles await the next registry call or Drop; generic Drop aborts
-without an async join. See [watcher errors](validation/session-store-2026-10-05.md).
+without an async join. See watcher errors.
 
 ### WebDriver revocation cleanup Result (2026-10-05)
 
@@ -1866,47 +1866,47 @@ actor result observer tests real product creation/reload/expiry with owned plist
 streams; it does not certify captured production logging or device cleanup.
 Map wait before callback budget, known errors before callback return during
 store abort and generic Drop/server supervision remain. See
-[revocation errors](validation/webdriver-revocation-2026-10-05.md).
+revocation errors.
 
 ## Tunnel manager connection generations
 
-Scan candidates and deferred writers now retain actual Ticket roots; manual indexes preserve the same desired-row root. USB/paired root refusal retains the original Coordinator error and seen rule before Source. Manual Preflight binds its authentic Lifecycle and allocates complete empty Ticket destinations before Source, then places CURRENT late proofs without new quota. Derived desired values hold a Weak physical-storage keeper, preserving original Ticket/gate/watch Drop and all writer clocks/rollback. Complete G/origin fees survive the final physical free; physical marker arena and other raw captures remain open. See [scan Ticket root evidence](validation/tunnel-scan-ticket-roots-2026-10-23.md).
+Scan candidates and deferred writers now retain actual Ticket roots; manual indexes preserve the same desired-row root. USB/paired root refusal retains the original Coordinator error and seen rule before Source. Manual Preflight binds its authentic Lifecycle and allocates complete empty Ticket destinations before Source, then places CURRENT late proofs without new quota. Derived desired values hold a Weak physical-storage keeper, preserving original Ticket/gate/watch Drop and all writer clocks/rollback. Complete G/origin fees survive the final physical free; physical marker arena and other raw captures remain open. See scan Ticket root evidence.
 
-Returned desired-listing rows now retain independent actual Ticket and Snapshot roots. Complete destination and authentic origin fees precede their allocation and remain until physical root free, even after the original row iterator backing is released. Empty selectors keep their existing private contract; a zero-byte copied key is not treated as a positive identity-holder fee. Original key-first admission, captured fences, borrowed manual-index pointers, control clocks and Source/native behavior remain. Other raw captures and the physical arena are still open. See [desired-row root evidence](validation/tunnel-desired-row-roots-2026-10-23.md).
+Returned desired-listing rows now retain independent actual Ticket and Snapshot roots. Complete destination and authentic origin fees precede their allocation and remain until physical root free, even after the original row iterator backing is released. Empty selectors keep their existing private contract; a zero-byte copied key is not treated as a positive identity-holder fee. Original key-first admission, captured fences, borrowed manual-index pointers, control clocks and Source/native behavior remain. Other raw captures and the physical arena are still open. See desired-row root evidence.
 
-Native RefreshProof observations now occupy an actual complete shared allocation rather than an inline value with a logical size fee. Original validation precedes complete destination and authentic origin admission; all original field clones follow those grants. Fees remain outside the payload until physical root free. Exact native stamps, metadata pointers, proof checks, history and swap bodies are preserved, and dropping an observation does not retire a runtime. Marker arena and other retainers remain open. See [RefreshProof root evidence](validation/tunnel-refresh-proof-root-2026-10-23.md).
+Native RefreshProof observations now occupy an actual complete shared allocation rather than an inline value with a logical size fee. Original validation precedes complete destination and authentic origin admission; all original field clones follow those grants. Fees remain outside the payload until physical root free. Exact native stamps, metadata pointers, proof checks, history and swap bodies are preserved, and dropping an observation does not retire a runtime. Marker arena and other retainers remain open. See RefreshProof root evidence.
 
-Failed rows now retain an independent actual captured-global Identity root. Complete destination and authentic foreign-origin fees precede cloning and allocation, after candidate skip checks and before failure-slot reservation or Source. The original failure commit only moves the prepared root; late writers acquire no quota. Node, Ticket and receipt destruction cannot refund this independently retained root early. Original identity equality, counters, clocks, typed errors and native ownership remain. Physical marker arena and other keepers are still open. See [failed global-root evidence](validation/tunnel-failure-global-root-2026-10-23.md).
+Failed rows now retain an independent actual captured-global Identity root. Complete destination and authentic foreign-origin fees precede cloning and allocation, after candidate skip checks and before failure-slot reservation or Source. The original failure commit only moves the prepared root; late writers acquire no quota. Node, Ticket and receipt destruction cannot refund this independently retained root early. Original identity equality, counters, clocks, typed errors and native ownership remain. Physical marker arena and other keepers are still open. See failed global-root evidence.
 
-Marker producers now receive an authentic BirthBank created with its original semaphore and immutable initial total. Identity clones and Weak upgrades retain that authority. Ticket and native proof/catalogue origin admissions consume the captured authority, preserving the original u32 overflow, resource-limit, staging and deduplication order. Held-permit refunds affect availability, not the stored initial total; rebinding future producers never relabels captured identities. This prerequisite does not implement or size the physical marker arena or prove every retainer. See [birth-bank evidence](validation/tunnel-birth-bank-authority-2026-10-23.md).
+Marker producers now receive an authentic BirthBank created with its original semaphore and immutable initial total. Identity clones and Weak upgrades retain that authority. Ticket and native proof/catalogue origin admissions consume the captured authority, preserving the original u32 overflow, resource-limit, staging and deduplication order. Held-permit refunds affect availability, not the stored initial total; rebinding future producers never relabels captured identities. This prerequisite does not implement or size the physical marker arena or prove every retainer. See birth-bank evidence.
 
-Local target lookup now prepares an independent actual connection Ticket root after the original record copy and before cloning publication Life. Complete global, published, and retained foreign-origin grants precede projection and allocation. The connection keeps its original device/global epochs while omitting the desired fence and its unused origin. The same paid root moves into the existing upgrade callback and concrete future; it does not delay row close or native joins. Lookup refusal uses the original record-copy 503 path before TCP dial. Other keepers and the physical marker arena remain open. See [LocalTarget Ticket evidence](validation/tunnel-local-target-ticket-root-2026-10-23.md).
+Local target lookup now prepares an independent actual connection Ticket root after the original record copy and before cloning publication Life. Complete global, published, and retained foreign-origin grants precede projection and allocation. The connection keeps its original device/global epochs while omitting the desired fence and its unused origin. The same paid root moves into the existing upgrade callback and concrete future; it does not delay row close or native joins. Lookup refusal uses the original record-copy 503 path before TCP dial. Other keepers and the physical marker arena remain open. See LocalTarget Ticket evidence.
 
-Managed publication rows and their displaced or retired values now retain an independent actual Ticket allocation. Its complete global, original published, and captured foreign-origin grants are admitted before Source creation and survive until the root is physically freed. Published-origin deduplication requires an actual held permit for exactly the complete root size. The original publication fences, metadata/native ownership, rollback, and deadlines are preserved. LocalTarget connection Ticket captures and the physical marker arena remain open work. See [publication Ticket evidence](validation/tunnel-publication-ticket-root-2026-10-23.md).
+Managed publication rows and their displaced or retired values now retain an independent actual Ticket allocation. Its complete global, original published, and captured foreign-origin grants are admitted before Source creation and survive until the root is physically freed. Published-origin deduplication requires an actual held permit for exactly the complete root size. The original publication fences, metadata/native ownership, rollback, and deadlines are preserved. LocalTarget connection Ticket captures and the physical marker arena remain open work. See publication Ticket evidence.
 
-Retry episodes and receipts now share an actual preadmitted Ticket allocation, with complete destination and captured-origin grants. The root contains only Ticket, so retaining an episode does not retain an old receipt or IO payload. Removed::into_inner still frees its original outer Box, while the same Ticket root and canonical key remain alive and paid until the final actual owner releases them. Same-episode retries retain their original first Ticket and clocks. This adds no logical placeholder fee and does not prove other arbitrary Ticket escapes or the physical marker arena. See [episode Ticket root evidence](validation/tunnel-episode-ticket-root-2026-10-23.md).
+Retry episodes and receipts now share an actual preadmitted Ticket allocation, with complete destination and captured-origin grants. The root contains only Ticket, so retaining an episode does not retain an old receipt or IO payload. Removed::into_inner still frees its original outer Box, while the same Ticket root and canonical key remain alive and paid until the final actual owner releases them. Same-episode retries retain their original first Ticket and clocks. This adds no logical placeholder fee and does not prove other arbitrary Ticket escapes or the physical marker arena. See episode Ticket root evidence.
 
-Failure receipts now admit their complete actual shared allocation in each foreign producer bank captured by the original Ticket global/device/optional desired identity fields. The original strong/weak allocator stores these grants outside the value, so last-strong Ticket destruction cannot refund origin credit before the final actual Weak deallocation. Same-bank and duplicate origins are not double charged; quota refusal precedes selectors/Source and rolls back all temporary grants. Original IO/history/completion and retry clocks remain. This does not cover the separate inline Episode/Removed escape lifetime or the physical marker arena. See [receipt origin evidence](validation/tunnel-receipt-marker-origin-2026-10-23.md).
+Failure receipts now admit their complete actual shared allocation in each foreign producer bank captured by the original Ticket global/device/optional desired identity fields. The original strong/weak allocator stores these grants outside the value, so last-strong Ticket destruction cannot refund origin credit before the final actual Weak deallocation. Same-bank and duplicate origins are not double charged; quota refusal precedes selectors/Source and rolls back all temporary grants. Original IO/history/completion and retry clocks remain. This does not cover the separate inline Episode/Removed escape lifetime or the physical marker arena. See receipt origin evidence.
 
-Private control identities now retain their actual producer bank from the actual Arc birth, without an existing-Arc relabelling or raw escape API. New foreign native Entry keepers admit origin credit for the whole original destination slots backing, retained through its actual final free; funded foreign adapters remain valid and existing-origin reuse/retirement acquires no late credit. Historical-origin catalogue backing is paid in the destination with staged rollback and no slot-count origin cap. Independent foreign RefreshProofs retain their own logical origin grants after stamp destruction, preserving the original registry/key/stamp/handle cleanup order. This closes those known admission edges, not the underlying Arc arena or every retainer. See [native marker origin evidence](validation/tunnel-native-marker-origin-2026-10-23.md).
+Private control identities now retain their actual producer bank from the actual Arc birth, without an existing-Arc relabelling or raw escape API. New foreign native Entry keepers admit origin credit for the whole original destination slots backing, retained through its actual final free; funded foreign adapters remain valid and existing-origin reuse/retirement acquires no late credit. Historical-origin catalogue backing is paid in the destination with staged rollback and no slot-count origin cap. Independent foreign RefreshProofs retain their own logical origin grants after stamp destruction, preserving the original registry/key/stamp/handle cleanup order. This closes those known admission edges, not the underlying Arc arena or every retainer. See native marker origin evidence.
 
-The failure-record count semaphore now has an independent complete Shared<Semaphore> root paid in the original manager byte bank. A private one-count owner retains only that root, returns the original Tokio count before releasing it, and never retains State or native resources. Original count-before-body refusal priority, exact retained-Slot reuse, capacity and cleanup order remain. Slot and Counts allocations retain separate actual-layout fees through final physical release, including when receipts or count observers outlive State. Exact fixture budgets include the new root; independent count/body test pools remain explicit. See [failure-count root evidence](validation/tunnel-failure-count-root-2026-10-23.md).
+The failure-record count semaphore now has an independent complete Shared<Semaphore> root paid in the original manager byte bank. A private one-count owner retains only that root, returns the original Tokio count before releasing it, and never retains State or native resources. Original count-before-body refusal priority, exact retained-Slot reuse, capacity and cleanup order remain. Slot and Counts allocations retain separate actual-layout fees through final physical release, including when receipts or count observers outlive State. Exact fixture budgets include the new root; independent count/body test pools remain explicit. See failure-count root evidence.
 
-A finite cross-bank census now executes the supported independent Lifecycle-A/Registry-B boundary: four retired B entries retain eight distinct old raw marker Arcs at strong count one after the closed/zero A producer is dropped and its current known-storage fees fully return. This is evidence against assuming every historical keeper pays A, not a production infinite trace or an arena capacity. Future arena integration must keep the entire actual backing paid through its final marker/weak keeper, rather than preserve the current missing-marker-fee refund. Production behavior is unchanged by this test-only item. See [cross-bank census evidence](validation/tunnel-marker-cross-bank-census-2026-10-22.md).
+A finite cross-bank census now executes the supported independent Lifecycle-A/Registry-B boundary: four retired B entries retain eight distinct old raw marker Arcs at strong count one after the closed/zero A producer is dropped and its current known-storage fees fully return. This is evidence against assuming every historical keeper pays A, not a production infinite trace or an arena capacity. Future arena integration must keep the entire actual backing paid through its final marker/weak keeper, rather than preserve the current missing-marker-fee refund. Production behavior is unchanged by this test-only item. See cross-bank census evidence.
 
-Standalone tunnel start now admits the complete concrete connection/report/signal/cleanup future in its original registry byte bank before first polling Ownership or Source. The original options/log prefix, 30-second connect-only timeout, synchronous output/flush before signal polling, lease-before-device destruction, Ownership early return, and terminal close/drain/primary-plus-cleanup handling remain. Actual SDK futures are constructor-tested only; local duplex fixtures exercise cancellation, joins, strict EOF, original error pointers and closed-bank refunds. This pays the concrete F allocation, not every heap allocation reachable from it. See [standalone frame evidence](validation/tunnel-standalone-frame-2026-10-22.md).
+Standalone tunnel start now admits the complete concrete connection/report/signal/cleanup future in its original registry byte bank before first polling Ownership or Source. The original options/log prefix, 30-second connect-only timeout, synchronous output/flush before signal polling, lease-before-device destruction, Ownership early return, and terminal close/drain/primary-plus-cleanup handling remain. Actual SDK futures are constructor-tested only; local duplex fixtures exercise cancellation, joins, strict EOF, original error pointers and closed-bank refunds. This pays the concrete F allocation, not every heap allocation reachable from it. See standalone frame evidence.
 
-Foreground scope construction now admits and prepares separate complete Inner and connection-Semaphore shared allocations in the original registry bank before constructing Inner. The original Tokio four-permit try-acquisition and release rules remain; each private owned permit retains only the independent Slots root, so a live connection cannot delay the last Scope Inner native-stop request. A refused second empty destination leaves an independently retained registry open; preadmitted destinations can be placed after bank closure. Each actual shared allocation stays paid through physical free. See [foreground Slots root evidence](validation/tunnel-foreground-slots-root-2026-10-22.md).
+Foreground scope construction now admits and prepares separate complete Inner and connection-Semaphore shared allocations in the original registry bank before constructing Inner. The original Tokio four-permit try-acquisition and release rules remain; each private owned permit retains only the independent Slots root, so a live connection cannot delay the last Scope Inner native-stop request. A refused second empty destination leaves an independently retained registry open; preadmitted destinations can be placed after bank closure. Each actual shared allocation stays paid through physical free. See foreground Slots root evidence.
 
-Foreground NativeScope shared ownership is admitted as the complete declared Shared<Inner> allocation in its original registry bank, before constructing Inner. Scope clones and retained cleanup failures keep that same fee until the actual last shared body free and original Inner destruction. Refused fresh root admission leaves an independently retained registry open and empty; connection, native retirement, cleanup and original error-source bodies are unchanged. The separate connection semaphore and other opaque/SDK/marker scopes remain open. See [foreground Scope root evidence](validation/tunnel-foreground-scope-root-2026-10-22.md).
+Foreground NativeScope shared ownership is admitted as the complete declared Shared<Inner> allocation in its original registry bank, before constructing Inner. Scope clones and retained cleanup failures keep that same fee until the actual last shared body free and original Inner destruction. Refused fresh root admission leaves an independently retained registry open and empty; connection, native retirement, cleanup and original error-source bodies are unchanged. The separate connection semaphore and other opaque/SDK/marker scopes remain open. See foreground Scope root evidence.
 
-Foreground NativeScope connections retain their original selector and four-connection admission prefix, then admit the complete concrete connect future in the original registry byte bank before creating standalone stamp/reservation ownership or invoking the SDK. Fresh refusal is typed resource_limit; an admitted call retains the original connector options, acquired error source, exact runtime lease and device-before-lease-before-permit destruction. Actual native future checks are constructor-only, while local runtime cancellation/closed-zero/strict EOF and original IO pointers are tested through the same concrete owner path. See [foreground connect frame evidence](validation/tunnel-foreground-connect-frame-2026-10-22.md).
+Foreground NativeScope connections retain their original selector and four-connection admission prefix, then admit the complete concrete connect future in the original registry byte bank before creating standalone stamp/reservation ownership or invoking the SDK. Fresh refusal is typed resource_limit; an admitted call retains the original connector options, acquired error source, exact runtime lease and device-before-lease-before-permit destruction. Actual native future checks are constructor-only, while local runtime cancellation/closed-zero/strict EOF and original IO pointers are tested through the same concrete owner path. See foreground connect frame evidence.
 
-Manager native attempts prepare the exact first Attempt Box destination in the original registry bank before Source creation, and admit each additional target inside its original Ticket fence before reserving/starting that target. Refused fresh admission remains a typed resource_limit; acquired native causes and original handle/join ownership remain intact. Core carries the original reservation Box and its independent grant in an inline TunnelReservationOwner, destroying the Box before refund. Existing public reserve callbacks retain their default behavior; manager legacy reserve retains the same paid fee root in both the scope and every original Box, so a forgotten Box keeps its grant after scope destruction. See [native Attempt Box evidence](validation/tunnel-attempt-box-owner-2026-10-22.md).
+Manager native attempts prepare the exact first Attempt Box destination in the original registry bank before Source creation, and admit each additional target inside its original Ticket fence before reserving/starting that target. Refused fresh admission remains a typed resource_limit; acquired native causes and original handle/join ownership remain intact. Core carries the original reservation Box and its independent grant in an inline TunnelReservationOwner, destroying the Box before refund. Existing public reserve callbacks retain their default behavior; manager legacy reserve retains the same paid fee root in both the scope and every original Box, so a forgotten Box keeps its grant after scope destruction. See native Attempt Box evidence.
 
-Fresh HTTP DELETE and epoch requests admit the concrete control future only after their original permission, diagnostic and success-wire preparation. A refused allocation returns 503/resource_limit before Ticket/lock/mutation work. DELETE keeps the original Principal cancellation guard and ScopeDenied response, while epoch keeps its original unguarded core clear body. Internal core stop/clear/notify and terminal Drop receive no new byte admission and retain their existing closed-zero control rules. See [HTTP control future evidence](validation/tunnel-http-control-frames-2026-10-22.md).
+Fresh HTTP DELETE and epoch requests admit the concrete control future only after their original permission, diagnostic and success-wire preparation. A refused allocation returns 503/resource_limit before Ticket/lock/mutation work. DELETE keeps the original Principal cancellation guard and ScopeDenied response, while epoch keeps its original unguarded core clear body. Internal core stop/clear/notify and terminal Drop receive no new byte admission and retain their existing closed-zero control rules. See HTTP control future evidence.
 
-The [L02 manager host profile](validation/tunnel-isolation-2026-10-06.md),
+The L02 manager host profile,
 `e0f52671396e6408fc38921f78f73a256a45ce65`, preserves native IO, Tokio Elapsed
 and OperationCancelled through the private source/actual HTTP error adapter.
 Manual creation shares one15s queue/connect/fallback total after ticket
@@ -1921,7 +1921,7 @@ in-flight detach/replug remain; L01/L02/L03–L04/Q04 and later classes continue
 
 ## Parallel scanner outcomes
 
-[L02 bounded scans](validation/tunnel-parallel-2026-10-06.md) tests
+L02 bounded scans tests
 `66bf7311020763b8a29b175a117cdf1b70d4e22f`. USB and existing-trust mobdev2
 candidates share one deduplicated four-future window. Original candidate
 connection/error/backoff code stays. A paired discovery error is retained until
@@ -1934,7 +1934,7 @@ or remote cleanup claim. L01/L02/L03–L04/Q04 and later classes continue.
 
 ## Observed attachment cancellation
 
-The [L02 identity snapshot gate](validation/tunnel-identity-2026-10-06.md),
+The L02 identity snapshot gate,
 `1eb45c25145f5306a5831df6a0c29d494a94ca96`, rejects a scanned candidate
 whose completed native ID differs from the observed expected ID. Its owned
 result drops and local OperationCancelled identifies admission cancellation;
@@ -1946,7 +1946,7 @@ safe body/public SDK stay. L02/L01/L03–L04/Q04 and later classes continue.
 
 ## Query errors before tunnel publication
 
-The [publication query gate](validation/tunnel-publication-2026-10-06.md)
+The publication query gate
 accepts `86fecfe3331e9efa74dc76fbc48b47ad5c3df8f1`. An extra current
 attachment query before USB publication retains original Connect/List IO and
 original Elapsed under the existing total; absence is local cancellation with
@@ -1957,7 +1957,7 @@ generation-specific backoff remain. L01/L02/L03–L04/Q04/classes5–9 continue.
 
 ## Known identity and failure backoff
 
-[L02 backoff identity](validation/tunnel-backoff-2026-10-06.md) accepts
+L02 backoff identity accepts
 `d0b04bed79ecec5c3f724ff003122f66b1159216`. Ordinary native failure now
 records its known route/expected ID; waiting and count increment apply only
 to that identity. Known changes can retry immediately; new identity failure
@@ -1968,7 +1968,7 @@ retention/native resources/L03/L04 and otherL01/L02/Q04/classes5–9 continue.
 
 ## Known inactive publication result
 
-[L02 local liveness](validation/tunnel-liveness-2026-10-06.md) accepts
+L02 local liveness accepts
 `7a77000cdbd0a8e6d2fbaaf6ac5bd630af47d6c5`. Existing is_alive false
 before query or after publication-lock wait cancels local admission and
 releases the owned result; no synthetic original IO/native failure is inferred.
@@ -1979,7 +1979,7 @@ L01/L02/L03–L04/Q04 and later classes remain.
 
 ## Scan setup expiry and quiet cancellation
 
-[L02 discovery setup](validation/tunnel-discovery-2026-10-06.md) accepts
+L02 discovery setup accepts
 `a47648442d5b7707ad41beeb58a6ab1ad764ea9a`. A checked15s deadline spans
 queue/USB/paired waits; native Elapsed remains. Due/zero does not poll real
 work, overflow uses invalid_input before source or mutation. Stop/clear of an
@@ -1990,7 +1990,7 @@ L02/L03–L04/Q04/classes5–9 conditions remain.
 
 ## Scanner failure record capacity
 
-[L02 retention](validation/tunnel-retention-2026-10-06.md), tested at
+L02 retention, tested at
 `26b89951b52dd690bcc0e994541007b5426fba93`, uses the existing source-free
 resource_limit decision when a fresh scanned identity cannot reserve capacity.
 It precedes native connection work and does not invent an IO cause or evict
@@ -2001,9 +2001,9 @@ L03–L04/Q04/classes5–9 and native worker/device conditions remain.
 
 ## Tunnel server outcomes and cleanup
 
-Private server startup has a synchronous fallible preparation step which admits the complete concrete generic future from the original global metadata bank before its Source work. Lifecycle Owner starts only on the returned future's first poll; failed preparation or unpolled Drop does not newly shut down retained state. Already acquired native/scan outcomes must not require a new frame grant during terminal reporting: callers retain the originally prepared future through quota exhaustion and consume that same instance. Repeated zero-quota reports preserve the same prepaid history and deep native cause; actual frame-free credit remains an independent refund. The original execution/cleanup body and started Owner Drop rules remain. See [prepared server evidence](validation/tunnel-server-frame-owner-2026-10-22.md).
+Private server startup has a synchronous fallible preparation step which admits the complete concrete generic future from the original global metadata bank before its Source work. Lifecycle Owner starts only on the returned future's first poll; failed preparation or unpolled Drop does not newly shut down retained state. Already acquired native/scan outcomes must not require a new frame grant during terminal reporting: callers retain the originally prepared future through quota exhaustion and consume that same instance. Repeated zero-quota reports preserve the same prepaid history and deep native cause; actual frame-free credit remains an independent refund. The original execution/cleanup body and started Owner Drop rules remain. See prepared server evidence.
 
-The [server gate](validation/tunnel-server-2026-10-06.md), `5120fa90e06a92f4734603382b98779b69f1ca38`,
+The server gate, `5120fa90e06a92f4734603382b98779b69f1ca38`,
 retains signal/server IO and actual cleanup Elapsed. A dual failure stores both
 outcomes with the primary as its source; BrokenPipe still classifies as
 Disconnected. Wrapper Debug and CLI diagnostic output stay safe. Raw Anyhow
@@ -2015,7 +2015,7 @@ Other L01/L02/L03–L04/Q04/classes5–9 and platform/device conditions remain.
 
 ## Native tunnel shutdown evidence
 
-The [Core native owner profile](validation/native-tunnel-owner-2026-10-07.md), `f00ff25395a8432087daf578c9dd23975b09be5a`, retains original
+The Core native owner profile, `f00ff25395a8432087daf578c9dd23975b09be5a`, retains original
 work IO and Tokio JoinError/Elapsed objects through existing TunnelError::Io
 retained context. Opaque TunnelShutdownFailure follows primary for Error::source
 and classification; cleanup exposes other retained failures/current expiry.
@@ -2035,7 +2035,7 @@ and Display; original causes remain inspectable. Existing error enums are unchan
 
 ## Native CLI cleanup causes and immutable observation
 
-The [CLI retirement profile](validation/cli-tunnel-native-retirement-2026-10-07.md),
+The CLI retirement profile,
 `6debaf9b6d78c10b4be1cfd55e2fbcbb69da8756`, adds readonly Core shutdown_status and opaque report flag
 has_retained_outcomes. Observation records no new attempt expiry and does not
 stop/join workers; incomplete accounting alone is not an acquired native fault.
@@ -2055,9 +2055,9 @@ preserve native sources; no error-enum, protocol, safe-retry or remote-ACK chang
 
 ## Late manual connection Ready and acquired IO
 
-Explicit tunnel start preserves selector bounds, the manual exact-identifier check and original ConnectionDeadline construction before admitting its concrete future from the same global metadata bank. A refused frame returns resource_limit before Ticket capture, coordinator/serial waits or Source/fallback work, including a prepared zero deadline or terminal lifecycle. An admitted frame retains the original deadline.run/Ticket ordering, acquired-error priorities, absolute clock and route/fallback guards. See [explicit-start frame evidence](validation/tunnel-ensure-frame-owner-2026-10-22.md).
+Explicit tunnel start preserves selector bounds, the manual exact-identifier check and original ConnectionDeadline construction before admitting its concrete future from the same global metadata bank. A refused frame returns resource_limit before Ticket capture, coordinator/serial waits or Source/fallback work, including a prepared zero deadline or terminal lifecycle. An admitted frame retains the original deadline.run/Ticket ordering, acquired-error priorities, absolute clock and route/fallback guards. See explicit-start frame evidence.
 
-Implementation `a963679ab0f853b1a38bfcee9ac59471d4920641`; [original error evidence](validation/tunnel-manual-poll-crossing-2026-10-07.md).
+Implementation `a963679ab0f853b1a38bfcee9ac59471d4920641`; original error evidence.
 Payload-free private deadline decisions return control to the independently
 polled Tokio timer; callers still receive actual Elapsed classified Timeout.
 Late successful Ready is rejected. An already acquired Source/metadata native
@@ -2068,7 +2068,7 @@ Automatic candidate and other timing/cleanup requirements remain.
 
 ## Automatic candidate native expiry and original IO
 
-Implementation `c92503ded8a60515a272f4afb1dba99085b130dc`; [automatic candidate evidence](validation/tunnel-automatic-deadline-2026-10-07.md).
+Implementation `c92503ded8a60515a272f4afb1dba99085b130dc`; automatic candidate evidence.
 The checked candidate clock preserves actual Tokio Elapsed with the prior scanned
 timeout context and the shared wrapper's already acquired original IO precedence.
 Zero never polls work; unrepresentable internal duration is InvalidInput before
@@ -2078,7 +2078,7 @@ Failure identity/backoff and cancellation recording policy stay. Whole-scan post
 
 ## Paired discovery native cause before epoch cancellation
 
-Implementation `1ab05e3bcefd3926a402dc645f55c72d16aad6f4`; [paired error retention evidence](validation/tunnel-paired-error-retention-2026-10-07.md).
+Implementation `1ab05e3bcefd3926a402dc645f55c72d16aad6f4`; paired error retention evidence.
 The stale paired-result branch preserves its acquired original Err and maps only
 successful stale discovery to Ok. The fixture's actual TCP partial UnexpectedEof
 remains directly downcastable and retains the established Io category;EOF is not
@@ -2092,29 +2092,29 @@ original error; this profile does not certify that second fence.
 
 ## Original paired error at both stale fences
 
-Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
+Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; final paired fence evidence.
 Both paired stale branches now map only successful replies to Ok and return their acquired original Err unchanged. The second fence handles an epoch change after the first check passed. Native EOF kind/Io classification remain;no wrapper/error-enum change.
 Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.
 
 ## Managed snapshot resource decisions
 
-Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
+Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; snapshot admission evidence.
 Oversized snapshots or combined candidate plans now return the existing CLI typed resource_limit. Both USB matching-row and manual paired matching-target paths validate the full snapshot first. Original Source Err is preserved;Source Ok admission refusal becomes private Incomplete until the current scan finishes its legal USB candidates. Stale Source success is still discarded without converting a new admission error into native primary.
 Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.
 
 ## Failure bookkeeping outcomes
 
-Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
+Implementation `4415be9a65921a346208f912dbe59e399e471591`; failure bookkeeping evidence.
 Incomplete bookkeeping now returns its original timer Elapsed and skips new readiness. An acquired paired Source Err or admission Incomplete stays primary through original.context(FailureContext);direct IO downcast/CLI resource classification remain and independent actualElapsed secondary is inspectable. CallerDrop persistence is separate.
 Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.
 
 ## Interrupted scans and abandoned discovery errors
 
-The original whole-deadline construction, terminal check and discovery-deadline overflow check precede admission of the actual scan future. The same global metadata bank must pay that concrete frame before generation capture, scan-lock waits or Source work. A refused frame returns resource_limit, including a prepared zero/expired whole deadline; no timer or Source result has been acquired. Admitted scans retain both original absolute clocks and the existing acquired-error/cancellation rules. See [scan frame evidence](validation/tunnel-scan-frame-owner-2026-10-22.md).
+The original whole-deadline construction, terminal check and discovery-deadline overflow check precede admission of the actual scan future. The same global metadata bank must pay that concrete frame before generation capture, scan-lock waits or Source work. A refused frame returns resource_limit, including a prepared zero/expired whole deadline; no timer or Source result has been acquired. Admitted scans retain both original absolute clocks and the existing acquired-error/cancellation rules. See scan frame evidence.
 
 A whole scan timeout returns native Elapsed. If discovery already failed, its original anyhow error remains primary and a private redacted context retains the secondary elapsed/cancellation; normal returns preserve direct IO downcast. Global cancellation without an acquired primary remains quiet. A whole timeout creates no device-failure backoff.
 
-Caller Drop preserves the original error in immutable bounded history, exposed through the server terminal report's error source and private original-error getter. The wrapper does not promise transparent direct IO downcast. Full eight-slot history returns the existing CLI resource_limit before Source polling. Native and server primary priorities remain. See [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).
+Caller Drop preserves the original error in immutable bounded history, exposed through the server terminal report's error source and private original-error getter. The wrapper does not promise transparent direct IO downcast. Full eight-slot history returns the existing CLI resource_limit before Source polling. Native and server primary priorities remain. See scan control evidence.
 
 Caller-bounded AFC reads and checked InstallationProxy Browse retain their
 existing public error variants. Private typed limit observations inside Io map
@@ -2123,7 +2123,7 @@ service_failure without echoing its code/description. Malformed checked
 metadata maps to protocol. Actual Browse elapsed/native errors retain original
 sources and late native errors keep priority. AFC primary/cleanup classification
 continues to follow the original primary error; callers must inspect reuse and
-cleanup separately. See [bounded service evidence](validation/bounded-service-read-2026-10-08.md).
+cleanup separately. See bounded service evidence.
 
 ## Checked existing-route RSD and Syslog terminal errors
 
@@ -2139,7 +2139,7 @@ Syslog preserves its first original EOF/native IO/limit error, then marks framin
 terminal. Later `next_message` calls return local InvalidData/Protocol without
 reading a cached tail or polling transport. Cancellation alone retains the prefix
 and permits resumption. Debug/output do not include remote content.
-[Host tests and limits](validation/doctor-rsd-syslog-2026-10-09.md).
+Host tests and limits.
 
 ## Finite SDK operation failures
 
@@ -2154,7 +2154,7 @@ The IO fence retains an actual native error across an upper Pending until a
 terminal result, another allowed native poll or explicit handled-error acknowledgement.
 Arbitrary future causality is not inferred. Failed partially consumed service
 operations drop their private stream and reject reuse. Diagnostic text excludes
-remote error codes and trust contents. [Acceptance](validation/sdk-owned-session-2026-10-09.md).
+remote error codes and trust contents. Acceptance.
 
 Finite SDK queries retain nonzero usbmux Result as public session::MuxResponseError
 and original numeric code under ServiceFailure, without guessing device meanings.

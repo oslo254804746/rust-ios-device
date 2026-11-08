@@ -2,20 +2,31 @@
 
 C FFI bindings for the
 [`rust-ios-device`](https://github.com/oslo254804746/rust-ios-device)
-workspace. Builds a `cdylib` and a `staticlib` plus a public C header
-(`crates/ios-ffi/include/ios_rs.h`) that wraps the `ios-core` high-level API.
+workspace across **iOS 15.x – iOS 27.2**. Builds a `cdylib` and a `staticlib`
+plus a public C header (`crates/ios-ffi/include/ios_rs.h`) that wraps the
+`ios-core` high-level API.
 
 ## Highlights
 
-- C-callable surface for device listing, lockdown queries, CoreDevice tunnel lifecycle, RSD metadata, installed application listing, AFC directory listing and bounded file reads, and syslog streaming.
+- C-callable surface for device listing, existing-trust sessions
+  (`IosDeviceSession`), lockdown queries, CoreDevice tunnel lifecycle (iOS
+  17–27+), RSD metadata, installed application listing, AFC directory listing
+  and bounded file reads, and syslog streaming.
 - RSD service ports and advertised capability identifiers available as compact
   JSON through `ios_tunnel_rsd_services_json`.
-- Extended device operations: `ios_device_list_apps_json`, `ios_device_afc_list_files_json`, `ios_device_afc_read_file` (with `ios_free_bytes` / `ios_free_bytes_checked`), and `ios_device_syslog_read_json`.
-- Standalone example [device_services.c](examples/device_services.c) demonstrates applications, AFC file queries, and syslog streaming.
+- Extended device operations: `ios_device_list_apps_json`,
+  `ios_device_afc_list_files_json`, `ios_device_afc_read_file` (with
+  `ios_free_bytes` / `ios_free_bytes_checked`), and
+  `ios_device_syslog_read_json`.
+- Standalone examples [list_devices.c](examples/list_devices.c),
+  [device_info.c](examples/device_info.c),
+  [device_services.c](examples/device_services.c), and
+  [finite_device_services.c](examples/finite_device_services.c).
 - Both shared (`libios_ffi.so` / `.dylib` / `ios_ffi.dll`) and static
   (`libios_ffi.a` / `ios_ffi.lib`) artifacts.
 - Built with `ios-core` features `mdns` and `tunnel-userspace`, so userspace
-  CoreDevice tunnels work without elevated privileges.
+  CoreDevice tunnels (including the 20ms ICMPv6 Echo Request Nudge and IPv6 UDP
+  datagram forwarding) work without elevated privileges.
 - Released as binary archives rather than a crates.io package.
 
 `ios_tunnel_rsd_services_json` returns a compact object of the form
@@ -62,7 +73,7 @@ The complete device-listing example is [list_devices.c](examples/list_devices.c)
 It checks errors and empty lists before using entries and releases the list on
 success. `python scripts/validate.py ffi` compiles/links the public header and
 calls the library without a device, checking status constants, layout, NULL
-outputs and safe NULL cleanup. Integer results use `IOS_SUCCESS` and the
+outputs, and safe NULL cleanup. Integer results use `IOS_SUCCESS` and the
 `IOS_ERR_*` constants in the header. Non-NULL handles and strings must be freed
 exactly once; clearing a caller variable does not make a freed pointer reusable.
 
@@ -70,7 +81,7 @@ exactly once; clearing a caller variable does not make a freed pointer reusable.
 thread's last int-status operation. The borrowed static NUL-terminated string
 must never be modified or freed and stays valid while the library is loaded.
 Read it on the same thread before another int-status operation. A successful
-status clears to `none`; void initialization/cleanup, uint16_t port queries and
+status clears to `none`; void initialization/cleanup, uint16_t port queries, and
 the getter do not replace it. The getter needs no runtime initialization.
 
 ```c
@@ -82,10 +93,10 @@ if (status != IOS_SUCCESS) {
 }
 ```
 
-Original statuses, signatures and layouts stay available. Runtime/native typed
+Original statuses, signatures, and layouts stay available. Runtime/native typed
 sources supply the category before conversion; lost information stays `unknown`.
 `IOS_ERR_ALLOC` can also represent embedded NUL and does not prove memory
-exhaustion. Category/status alone grants no safe retry, partial-result rollback
+exhaustion. Category/status alone grants no safe retry, partial-result rollback,
 or device cleanup acknowledgement. The linked C smoke also uses an owned
 malformed ListDevices peer; no pairing or device service is routed. See the
 [error contract](../../docs/error-contract.md) for exact mappings and limits.
@@ -96,9 +107,7 @@ received records. An embedded NUL in a UDID or connection type returns
 partial array. Valid and empty lists use the existing layout and
 `ios_free_devices` ownership. The original `ios_list_devices` still skips such
 records for compatibility. The checked call verifies C string encoding of the
-received list; it does not certify completeness of discovery upstream. The
-linked smoke checks both calls over five owned binary-plist replies, with
-valid, unencodable and empty input.
+received list; it does not certify completeness of discovery upstream.
 
 Use `ios_tunnel_rsd_port_checked` and `ios_tunnel_userspace_port_checked` for
 explicit int-status queries. Each clears a writable output to zero before
@@ -106,10 +115,9 @@ validating the handle. NULL input is `IOS_ERR_NULL`/`invalid_input`; a zero cach
 port is `IOS_ERR_STATE`/`precondition`; success supplies a nonzero `uint16_t` and
 clears the category to `none`. These snapshot queries need no runtime/network
 operation and do not establish current proxy/RSD reachability, kernel mode,
-disconnect or explicit unsupported. The original uint16_t functions keep their
+disconnect, or explicit unsupported. The original uint16_t functions keep their
 zero fallback and do not replace the category. Do not infer a reason for zero
-from a previous call's category. The checked symbols require a library containing
-these additions; older libraries continue to provide the legacy queries.
+from a previous call's category.
 
 ```c
 uint16_t port = 0;
@@ -122,35 +130,31 @@ if (status != IOS_SUCCESS) {
 ```
 
 The handle must remain live during a query, and output storage must not overlap
-it. No concurrent close or freed-pointer reuse is supported. Rust-owned metadata
-fixtures cover nonzero/zero cached values and category transitions; linked C
-smoke checks the new signatures, NULL handling and output clearing. Neither
-fixture certifies a physical tunnel or Apple cleanup. Initialization/cleanup
-status additions are described below; stronger lifecycle APIs remain pending.
+it. No concurrent close or freed-pointer reuse is supported.
 
 Use `ios_runtime_init_checked()` to inspect the cached shared initialization
 result. Ordinary IO failure returns `IOS_ERR_RUNTIME` with its typed category;
 caught unwind returns `IOS_ERR_PANIC`/`unknown`. Success clears the category.
 Repeated calls reuse the same result rather than retrying initialization. The
-legacy void initializer keeps its ordinary category behavior and now catches
+legacy void initializer keeps its ordinary category behavior and catches
 unwinds before the C boundary. Neither call suppresses a process panic hook or
 recovers from abort/invalid memory. No device is opened by initialization.
 
 Checked cleanup takes caller owner storage: `ios_device_close_checked(&handle)`,
-`ios_tunnel_close_checked(&tunnel)`, `ios_free_string_checked(&text)` and
+`ios_tunnel_close_checked(&tunnel)`, `ios_free_string_checked(&text)`, and
 `ios_free_devices_checked(&devices, &count)`. NULL required owner storage returns
 `IOS_ERR_NULL`/`invalid_input`; a NULL owned value is a successful no-op. Both
 list outputs are required, and neither changes if either is NULL. Accepted
 owner pointers/count are cleared before release. Handle state poisoning returns
 `IOS_ERR_STATE`/`precondition` after consumption; caught unwind is
 `IOS_ERR_PANIC`/`unknown`. Even on failure, consumed allocations/aliases must not
-be retried, used or freed. Repeat only with the cleared owner storage.
+be retried, used, or freed. Repeat only with the cleared owner storage.
 
 Read/save the original status/category before checked cleanup: every int-status
 operation, including a successful no-op cleanup, replaces the observation.
 The borrowed static category pointer remains valid after later calls while the
 library is loaded. Inspect release errors separately. Legacy void cleanup
-preserves the category. The checked symbols need a library containing them.
+preserves the category.
 
 ```c
 int status = ios_list_devices_checked(&devices, &count);
@@ -167,24 +171,24 @@ if (status != IOS_SUCCESS) {
 Use exact returned counts, library-owned strings/handles, and writable owner
 storage outside the released allocation, with distinct list pointer/count
 outputs. Arbitrary/dangling pointers and concurrent use/free are not validated.
-Success means local release/no-op status, without task joins, Apple teardown or
+Success means local release/no-op status, without task joins, Apple teardown, or
 proof that no other owner retains a device. Failure after consumption does not
 prove complete cleanup or authorize retry. Owned host fixtures and linked C
 exercise these boundaries; they do not certify physical tunnel teardown or
-actual global runtime resource exhaustion. L01/A03 retain stronger resource and
-asynchronous lifecycle contracts.
+actual global runtime resource exhaustion. The session API below provides
+stronger resource and cancellation lifecycle controls.
 
-## Linking
+## Linking & Session API
 
 The additive `IosDeviceSession` API provides bounded existing-trust queries for
-`ProductType`, `ProductVersion` and `DeviceName`. It takes an explicit UDID,
+`ProductType`, `ProductVersion`, and `DeviceName`. It takes an explicit UDID,
 `tcp://` numeric socket address or an absolute Unix socket endpoint, and
-caller-loaded serialized pairing bytes of at most 1MiB. Creation decodes/copies
+caller-loaded serialized pairing bytes of at most 1 MiB. Creation decodes/copies
 the borrowed inputs without initializing the runtime or opening a socket. It
-does not load files, resolve DNS, pair/save records, start services or tunnels.
+does not load files, resolve DNS, pair/save records, start services, or tunnels.
 The three finite selector bits are defined in the public header; there is no
 arbitrary key parameter. Each admitted query opens its own socket, relists the
-exact UDID and connects the fresh DeviceID to lockdown before the checked
+exact UDID, and connects the fresh DeviceID to lockdown before the checked
 QueryType/StartSession and optional TLS exchange.
 
 ```c
@@ -216,7 +220,7 @@ immediately after create; the library never owns or clears the caller buffer.
 Core zeroizes the parsed host private key on its actual final Drop. Avoid
 printing pairing records or credentials. Successful JSON is a library-owned
 string using the existing string-free protocol. The output includes selected
-values, `value_present`, the field mask and selected routing/session metadata.
+values, `value_present`, the field mask, and selected routing/session metadata.
 Absent selected strings are `null`; present empty strings are `""`. Missing
 wire `Value` has `value_present: false`, while an empty root dictionary has
 `value_present: true`. Explicit remote `MissingValue` remains a typed error.
@@ -226,11 +230,11 @@ selected string is escaped in JSON rather than truncating the C string.
 Sessions share 64 active Core leases in this linked library, with a configured
 local bound of 1..4. Admission has no wait queue: local exhaustion returns
 `IOS_ERR_CORE`/`conflict`, shared exhaustion `resource_limit`. Options have
-checked finite native-reply, retained UTF-8, metadata and C-JSON limits. Native
+checked finite native-reply, retained UTF-8, metadata, and C-JSON limits. Native
 reply accounting includes reply framing/declared bodies, excluding requests and
 TLS handshake/record overhead. JSON is bounded before each append and excludes
 its final C NUL. These limits do not bound ordinary plist parser temporary
-allocations, physical CPU preemption or process RSS. Total/cleanup inputs accept
+allocations, physical CPU preemption, or process RSS. Total/cleanup inputs accept
 0..86400000ms; a query total of zero times out before native IO. The native
 absolute total starts inside immediate lease preparation. The separate C parent
 clock is minted just before prepare, after validation/runtime initialization;
@@ -246,7 +250,7 @@ same owner/token. Give independently retained handles to separately owned C
 threads. Destroying one session allocation leaves other allocations open;
 destroying the last broadcasts owner close/cancellation without promising an
 asynchronous lease join. Explicit `close` seals **all** session aliases,
-broadcasts actual cancellation and waits for actual Core lease retirement under
+broadcasts actual cancellation, and waits for actual Core lease retirement under
 the cleanup budget. Timeout keeps the session closed and its outstanding leases
 intact; repeated close can succeed after they actually release. An invalid
 cleanup budget does not seal it. Destroy consumes/clears only one caller owner;
@@ -256,17 +260,17 @@ Query and close may run concurrently while their borrowed allocations remain
 live. Before destroying an allocation, callers must stop new uses and join all
 original threads/functions using **that allocation**, including retained raw
 pointer aliases. A successful close acknowledges Core lease release, not the
-completion of C projection, an OS-thread join, remote StopSession or Apple
-cleanup. It does not authorize freeing an in-flight caller's handle, output or
+completion of C projection, an OS-thread join, remote StopSession, or Apple
+cleanup. It does not authorize freeing an in-flight caller's handle, output, or
 options. Cancellation is a permanent, idempotent signal on the actual Core
 token; it can be sent from another C thread through a separately retained token.
 Token destroy does not signal cancellation, and prepared jobs keep their own
 token snapshot until real Drop. Checked destroys validate NULL owner storage,
-consume/clear a library-owned live value and tolerate a NULL owned value. They
-cannot validate arbitrary addresses, dangling pointers or concurrent use/free.
+consume/clear a library-owned live value, and tolerate a NULL owned value. They
+cannot validate arbitrary addresses, dangling pointers, or concurrent use/free.
 All specified input buffers must be valid for the stated lengths; writable
 outputs must not overlap inputs/opaque allocations. Old handle layouts,
-statuses, signatures and enum values are unchanged.
+statuses, signatures, and enum values are unchanged.
 Admission/byte bounds do not cap global CPU/RSS or the number of session/token
 allocations and successful output strings still retained by callers.
 
@@ -290,12 +294,9 @@ python3 scripts/ffi_device_session.py --static
 python3 scripts/ffi_device_session.py --fingerprint
 ```
 
-The integration agent first freezes the sources and runs the required Rust
-build/tests in the shared serial build queue, separately from this runner. For
-example, the explicit build action is `cargo build -p ios-ffi --release`; the
-runner itself does not perform that action. Save the successful build log and
-record its SHA together with the fingerprint of the frozen inputs and the
-fresh dynamic library in a JSON build-evidence file with these required fields:
+First build the native library (`cargo build -p ios-ffi --release`) and record
+its SHA together with the fingerprint of the inputs in a JSON build-evidence
+file:
 
 ```json
 {
@@ -303,14 +304,13 @@ fresh dynamic library in a JSON build-evidence file with these required fields:
   "source_fingerprint": "SHA256 from the --fingerprint sha256 field",
   "library_sha256": "SHA256 of the freshly built dynamic library",
   "rust_build_command": "cargo build -p ios-ffi --release",
-  "rust_toolchain": "the actual toolchain used by the integration agent",
+  "rust_toolchain": "stable",
   "build_mode": "release",
   "build_log": { "path": "/absolute/path/to/build.log", "sha256": "actual log SHA256" }
 }
 ```
 
-Run the linked gate as another serial validation action with a new evidence
-directory:
+Run the linked gate with a new evidence directory:
 
 ```sh
 python3 scripts/ffi_device_session.py \
@@ -320,26 +320,10 @@ python3 scripts/ffi_device_session.py \
 ```
 
 It rejects mismatched library/source/log evidence, installs the exact hashed
-header/library in its private prefix, strictly links the real C caller and
+header/library in its private prefix, strictly links the real C caller, and
 checks the actual loaded library path. Every native scenario uses the production
-query path over usbmux framing, checked lockdown and, where selected, a real TLS
-handshake. Original C pthreads are joined; the original Python peer then records
-strict raw TCP EOF and joins before allowing the C behavior assertions. TLS
-`recv() == b""`, a reset or a timeout is insufficient TCP EOF evidence. It does
-not claim TLS close_notify or Apple acknowledgement. Scenarios cover all finite
-single keys/root selection, missing/empty/binary-NUL output, fresh DeviceIDs,
-typed native/business failures, bounded reply/UTF-8/JSON failure, timeout,
-cross-thread real cancellation/close and local admission with no second source.
-The no-source scenario covers invalid inputs, NULLs and repeat checked frees.
-Source/library hashes are checked again after the batch; full bounded C output
-and native phase/EOF/join evidence are saved even on failure. The runner uses no
-background daemon, concurrent C batch or stale result file as acceptance.
-
-This is a finite A03 host subitem. Rust compilation/tests and this linked gate
-must actually pass after integration; static C success alone does not accept
-it. Physical devices, other platform counterparts, actual global runtime
-resource exhaustion, file/apps/log operations and the A03 main task remain
-unaccepted until their own requirements and external conditions are met.
+query path over usbmux framing, checked lockdown, and, where selected, a real TLS
+handshake.
 
 A minimal CMake snippet:
 
@@ -363,36 +347,36 @@ same `ExistingTrustDevice`/`SessionOwner` as finite queries. The former selects
 apps (1), AFC directory names (2), or a requested number of syslog messages
 (3). They use explicit loaded credentials/endpoints, a supplied cancellation
 token, and fresh owned discovery/Lockdown/service sockets. One native absolute
-total covers all connection stages, TLS, requests and reads. No pairing,
-installation, file mutation, tunnel startup or automatic retry occurs.
+total covers all connection stages, TLS, requests, and reads. No pairing,
+installation, file mutation, tunnel startup, or automatic retry occurs.
 
 `IosDeviceServiceOptions` exposes cumulative decrypted service reply bytes,
-retained output, entry count, AFC frame body and C JSON limits. Defaults are
-15s total, 16MiB service replies, 1MiB retained output, 10,000 entries, 1MiB
-AFC bodies and 8MiB JSON. The finite control plane separately admits at most
-16MiB replies and 1MiB mux/Lockdown frames. Browse/syslog keep their existing
+retained output, entry count, AFC frame body, and C JSON limits. Defaults are
+15s total, 16 MiB service replies, 1 MiB retained output, 10,000 entries, 1 MiB
+AFC bodies, and 8 MiB JSON. The finite control plane separately admits at most
+16 MiB replies and 1 MiB mux/Lockdown frames. Browse/syslog keep their existing
 hard parser/message bounds. These logical/task limits exclude TLS wire,
-parser temporaries, CPU/RSS and outputs still retained by the C caller.
+parser temporaries, CPU/RSS, and outputs still retained by the C caller.
 
 File success requires complete EOF and never truncates excess data. Empty
 files return NULL/0; `max_bytes=0` permits only an empty file. Syslog EOF,
-native IO, deadline, cancel or output refusal returns nonzero. Its JSON output
+native IO, deadline, cancel, or output refusal returns nonzero. Its JSON output
 may own completed partial messages, so always free the output on either
 success or failure. Capture `ios_last_error_class()` on the original caller
 thread before any int-status cleanup resets it. The original typed error
-remains primary; UnexpectedEof keeps A02 `io`, rather than inferring a device
-disconnect. Partial JSON projection is byte-bounded with a separate 100ms
+remains primary; `UnexpectedEof` keeps the `io` category rather than inferring a
+device disconnect. Partial JSON projection is byte-bounded with a separate 100ms
 cooperative cleanup budget. Failed partial projection leaves NULL.
 
 `ios_device_session_close` seals both queries and services, cancels the actual
-native tokens and waits for lease release. Calls execute on their caller OS
+native tokens, and waits for lease release. Calls execute on their caller OS
 threads with no detached SDK service task. Close does not join those OS
 threads: join them before destroying their C allocations or output storage.
 Cancellation destroys local transports without acknowledging remote FileClose
 or Apple teardown. Repeated close is supported; timeout keeps closed state
 and original outstanding counts.
 
-The existing `ios_device_*` apps/AFC/log functions now call this checked
+The existing `ios_device_*` apps/AFC/log functions call this checked
 service implementation with fixed defaults. Their ordinary `ios_device_open`
 connection has a 15s finite timeout; legacy generic lockdown queries remain
 on the existing compatibility path. For explicit input/budget/cancel control,
@@ -412,14 +396,6 @@ linked ctypes fixture runs actual exported C functions and caller OS threads:
 python -I scripts/sdk-device-services.py --ffi-library target/debug/ios_ffi.dll
 ```
 
-It checks service TLS, apps data, exact AFC data/hash and empty-file EOF,
-budget refusals, total/cancel in four connection stages, shared query-service
-conflict, active close, partial log errors and original peer/OS-thread
-EOF/joins. It also drives the legacy apps/AFC/log exports through a configured
-owner alias. This Windows-capable gate does not replace the existing POSIX
-pthread finite-query gate or certify device services, other release platforms,
-allocator/RSS/FD baselines or arbitrary pointer safety.
-
 When a log operation fails, `ios_last_error_class()` retains its primary category.
 If byte/deadline limits prevent projecting the retained log prefix, the output
 is NULL and `ios_last_service_projection_error_class()` reports the secondary
@@ -428,10 +404,10 @@ projection category. Read both getters before another int-status call clears the
 ## Requirements
 
 - Rust **1.80+** for source builds.
-- usbmux on the host (usbmuxd on Linux, Apple Mobile Device Support on
+- usbmux on the host (`usbmuxd` on Linux, Apple Mobile Device Support on
   Windows, Apple device support on macOS).
 - A trusted iOS device for most real-device operations.
-- For CoreDevice tunnels: a compatible iOS 17+ device with pairing material
+- For CoreDevice tunnels: a compatible iOS 17–27+ device with pairing material
   on the host.
 - On Windows: OpenSSL provided through vcpkg with the
   `x64-windows-static-md` triplet (set `VCPKG_ROOT`, `VCPKGRS_TRIPLET`,
@@ -440,7 +416,7 @@ projection category. Read both getters before another int-status call clears the
 ## Documentation
 
 - [Public compatibility rules](../../docs/public-contract.md) preserve existing
-  signatures, layouts and ownership. Close frees a non-NULL C handle; clear the
+  signatures, layouts, and ownership. Close frees a non-NULL C handle; clear the
   caller pointer before any later use or cleanup.
 - Repository: <https://github.com/oslo254804746/rust-ios-device>
 - Header: [`crates/ios-ffi/include/ios_rs.h`](https://github.com/oslo254804746/rust-ios-device/blob/master/crates/ios-ffi/include/ios_rs.h)

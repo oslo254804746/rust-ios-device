@@ -49,7 +49,7 @@ strings/16MiB/raw helpers and original consumer assertions stay. These pre-1.0
 source/reuse/timing migrations need release review; no bypass/deprecation alias.
 The client-only profile deferred correlated sessions/cache bounds/frontend
 owners. See
-[WebInspector client acceptance](validation/webinspector-client-lifecycle-2026-10-05.md).
+WebInspector client acceptance.
 
 The subsequent session profile keeps all Inspector/Automation public signatures
 and six error variants. Correlated command and attach send/reply stages now
@@ -74,7 +74,7 @@ wire/models/selectors/business parsers/frontends and old consumers stay. These
 pre-1.0 timing/reuse/resource migrations need release review. That profile
 deferred application/page cache bounds; multi-command workflows and frontend
 cleanup remain pending. See
-[WebInspector session acceptance](validation/webinspector-session-lifecycle-2026-10-05.md).
+WebInspector session acceptance.
 
 The cache profile keeps all public signatures/models/serde, six error variants,
 root paths and successful event/snapshot ordering. Incoming application/page
@@ -93,7 +93,7 @@ pre-1.0 admission changes need release review. They are not device limits,
 RSS/peak-decoder/recursion/object-reference/performance or retry guarantees;
 the unchanged wire bound is checked before plist decoding, whereas model/cache
 admission follows it. Frontend cleanup and further L01/Q04 remain. See
-[WebInspector cache acceptance](validation/webinspector-cache-lifecycle-2026-10-05.md).
+WebInspector cache acceptance.
 
 CLI application/page discovery preserves original terminal Timeout/native
 Elapsed when core framing/routing invalidates the client. Its former follow-up
@@ -101,7 +101,7 @@ invalid-client Protocol is no longer substituted. Empty usable idle retries,
 cached matches, page-key precedence, public grammar/output and all core APIs
 remain. This error behavior migration needs pre-1.0 release review; setup/
 whole-flow/pinned signal/join/primary cleanup remain separate work. See
-[WebInspector discovery acceptance](validation/webinspector-discovery-lifecycle-2026-10-05.md).
+WebInspector discovery acceptance.
 
 The subsequent finite CLI profile covers opened-tabs, eval and launch. Default
 selection moves inside a checked absolute total shared by connection, startup,
@@ -120,7 +120,7 @@ schemas and human rendering stay, including the full eval response envelope.
 Exactly one old root default-selection predicate assertion is migrated;
 existing task/shell assertions and core APIs stay. These timing/exit changes
 need pre-1.0 release review. Interactive shell and server owners remain separate.
-See [WebInspector command acceptance](validation/webinspector-command-lifecycle-2026-10-05.md).
+See WebInspector command acceptance.
 
 The interactive js-shell profile moves default selection into the setup owner.
 One total covers selection, connection, startup, optional Safari launch,
@@ -144,7 +144,7 @@ with their native registration error. Regular-file reads and synchronous output
 remain cooperative. macOS/Windows retain the prior Tokio stdin path; cancellable
 input/runtime shutdown there remains awaiting platform work and evidence.
 No public core/binding API or wire change is added. See
-[WebInspector shell acceptance](validation/webinspector-shell-lifecycle-2026-10-05.md).
+WebInspector shell acceptance.
 
 CompanionProxyClient adds is_usable without changing existing constructors,
 signatures or its four error variants. Shared client/listener/forwarding owners
@@ -174,7 +174,7 @@ zero-configured state and rechecks after lock; it is not awaited cleanup or a
 remote guarantee. Complete business-failed explicit stop can still receive its
 old Drop attempt. That core profile introduces no new protocol key/selector,
 task/queue, ACK, primary aggregate or CLI setup/signal owner. See
-[Companion host acceptance](validation/companion-lifecycle-2026-10-04.md).
+Companion host acceptance.
 
 The later Companion CLI profile adds consuming ForwardingHandle::close and
 close_with_timeout. Creating either future immediately disarms best-effort Drop,
@@ -194,7 +194,7 @@ instead of synthetic TimedOut. Forwarding cleanup is one independently awaited
 timer primary errors survive cleanup and whole caller Drop spawns no fallback.
 These timing/error-source/ownership migrations require release review; there is
 no bypass alias. See
-[Companion CLI acceptance](validation/companion-cli-control-2026-10-05.md).
+Companion CLI acceptance.
 
 NotificationProxyClient adds is_usable and set_operation_timeout(Option<Duration>).
 Default None retains unbounded sends/idle reads. Explicit waits use the shorter
@@ -215,7 +215,7 @@ both event enums, serde envelopes/typed decoder/incoming4MiB limit and frontend
 production remain. Outgoing length now checks u32 conversion before writing;
 that extreme allocation boundary is source-reviewed only. CLI totals/signal
 ownership remains separate; bounded cleanup is covered below. See
-[notification host acceptance and migration](validation/notification-lifecycle-2026-10-04.md).
+notification host acceptance and migration.
 
 Mobilebackup2Client adds is_usable and set_operation_timeout(Option<Duration>).
 Default None keeps ordinary operations unbounded; DeviceUnback/Extract retain
@@ -238,7 +238,7 @@ getter remains, with bounded source lookup. Successful disconnect closes local
 reuse; no asynchronous Drop, remote ACK, rollback or safe retry is implied.
 Cancelled blocking awaiters may leave workers running. Wire, parsers, transfer
 limits, frontend schemas and dependencies remain. See
-[MobileBackup2 host acceptance and migration](validation/backup-lifecycle-2026-10-04.md).
+MobileBackup2 host acceptance and migration.
 
 DeviceLinkClient adds is_usable, set_operation_timeout(Option<Duration>) and
 call_process_message. Default None keeps unbounded message/idle timing. One
@@ -254,7 +254,7 @@ MobileBackup2 now retains the original error directly and prevents a cleanup
 write on that invalid DeviceLink connection. Raw stream_mut/into_inner signatures
 stay available with caller-owned framing/cancellation; they do not repair an
 invalid transport. No wire, codec limit, error enum, frontend or dependency
-change. See [DeviceLink migration and acceptance](validation/device-link-lifecycle-2026-10-04.md).
+change. See DeviceLink migration and acceptance.
 
 LockdownClient adds is_usable and set_request_timeout(Option<Duration>). Default
 None keeps unbounded request timing; a configured budget shares send/flush/reply
@@ -269,7 +269,7 @@ Failed/abandoned stop retains uncertain session ownership rather than reporting
 an idempotent close. No remote ACK is awaited. Existing constructor, raw borrowed
 APIs, error variants, wire and frontend shapes stay; no automatic stop or new
 setup budget is installed. See
-[Lockdown migration and host acceptance](validation/lockdown-lifecycle-2026-10-04.md).
+Lockdown migration and host acceptance.
 
 Borrowed internal RSD initialization, bootstrap queuing and wrapper/handshake
 reads now reject reuse after cancellation or failure following a complete send
@@ -279,7 +279,7 @@ other streams. Existing caller budgets, owned fresh-transport fallback order,
 wire/ACK acceptance and error sources remain. There are no new root exports,
 public signatures, error variants or frontend options. Separately completed
 bootstrap/read helpers remain caller-owned stages. See
-[RSD migration and host acceptance](validation/rsd-lifecycle-2026-10-04.md).
+RSD migration and host acceptance.
 
 XpcClient adds is_usable, call_with_timeout,
 call_recv_client_server_with_timeout, recv_with_timeout,
@@ -290,7 +290,7 @@ raw stream invocation Drop and announced file cancellation now require a
 fresh transport and reject cached replies. Empty idle reads remain reusable;
 complete finite Pasteboard replies/business errors and CoreDevice
 finishStreaming preserve normal reuse. Existing error enums/wire/frontends stay.
-See [XPC migration and host acceptance](validation/xpc-lifecycle-2026-10-04.md).
+See XPC migration and host acceptance.
 
 H2 frame operations now reject reuse after transport failure or cancellation
 with reported bytes. Empty idle cancellation and fully processed stream-local
@@ -299,7 +299,7 @@ XpcClient operations when their lower-level frame operation is interrupted;
 the H2 type/configuration remains crate-internal, with no new root export,
 CLI option or default deadline. The later XPC profile above supplies message,
 sent-call and pending-reply ownership beyond this H2-only slice. See
-[H2 host acceptance and migration](validation/h2-lifecycle-2026-10-04.md).
+H2 host acceptance and migration.
 
 AfcClient adds is_usable and set_request_timeout(Option<Duration>). The optional
 budget covers each complete send/reply request; constructor default None keeps
@@ -311,7 +311,7 @@ on failed close or cancellation after open. Dual failure can return existing Io
 instead of primary Status, while retaining both originals and the primary's
 category; single failures retain their original variants. Drop cannot await
 close. Existing error enums/wire/limits/C/Python interfaces stay. See
-[AFC migration and host acceptance](validation/afc-lifecycle-2026-10-04.md).
+AFC migration and host acceptance.
 
 The additive `AfcClient::read_file_with_limit(path, max_bytes)` returns the whole
 file or an error, with an effective ceiling of min(caller limit, 256 MiB); zero
@@ -329,7 +329,7 @@ all older client entry points also reject reuse before I/O. Discard that client;
 `is_usable()` reports only local framing state. Legacy Browse timing, wire and
 error variants remain. These logical bounds do not establish peak memory or
 device workflow support. See
-[bounded service evidence and migration](validation/bounded-service-read-2026-10-08.md).
+bounded service evidence and migration.
 
 The instruments feature adds iter_frame_commit_timestamps, an allocation-free
 iterator borrowing the input chunk and copying Mach timebase values. Existing
@@ -340,7 +340,7 @@ and failed cleanup after count/stop is reported instead of ignored. Setup/stop
 budgets are 30/five seconds and the owned capture future has no background
 reader. Whole-future cancellation drops the transport; a partial DTX read may
 prevent a successful stop. Existing errors/C/Python interfaces remain. See
-[migration and host acceptance](validation/fps-lifecycle-2026-10-04.md).
+migration and host acceptance.
 
 DTX adds request_channel_with_timeout, method_call_with_timeout,
 recv_with_timeout and is_usable. Existing unbounded methods retain their timing
@@ -349,13 +349,13 @@ clear decoder state. Empty idle waits remain reusable. CoreProfile/accessibility
 partial-frame timeout now fails rather than returning an apparent success/None;
 CPU best-effort stop after EOF no longer writes on the invalid connection.
 Existing exhaustive errors/wire/success results remain. See the [L01 lifecycle profile](lifecycle-contract.md)
-and [host gate](validation/dtx-lifecycle-2026-10-04.md).
+and host gate.
 
 CLI owner-issued timeout guards use typed input/timeout decisions. A private CLI
 state marker maps to precondition only in the final machine envelope; it does
 not request confirmation, and remains Unknown to the general Core classifier.
 No public API/enum/binding/schema changed. Partial accessibility traversal and
-the original source-scan budget remain. See [owner-guard migration](validation/cli-owner-guards-2026-10-04.md).
+the original source-scan budget remain. See owner-guard migration.
 
 The preserving Lockdown query/service APIs add an opaque LockdownResponseError
 with private fields and bounded typed lookup. Existing exhaustive LockdownError
@@ -365,7 +365,7 @@ non-string GetValue Error. Backup/debugserver use typed observations for default
 and fallback, preserving native failures instead of matching error text.
 Returned source/Display/class/correlation migrate; existing wire/results and CLI
 exit/v1 shapes stay. Explicit raw code access follows the private-data boundary.
-See [response-code evidence and migration](validation/lockdown-response-codes-2026-10-04.md).
+See response-code evidence and migration.
 
 Existing public struct literals are legal downstream code. Adding a required
 field, making any current public field private, changing its type, or adding
@@ -512,7 +512,7 @@ encoding conversion becomes invalid_input. Existing public families remain
 6/4/5 exhaustive variants. Migrate affected variant/Display/immediate-payload
 matches to typed source/category inspection; the bounded getter's None can still
 accompany an IO timeout. It reports the former phase budget, not current time left
-or cleanup/retry safety. The [discovery evidence](validation/discovery-native-sources-2026-10-03.md)
+or cleanup/retry safety. The discovery evidence
 records preserved quiescence, legacy source loss and partial-operation limits.
 
 `MessageFilterOptions::compile_preserving_errors` adds typed OS Trace filter
@@ -524,7 +524,7 @@ timers/parser/encoding/archive errors move to existing Io and preserve original
 causes. Migrate affected Timeout/Protocol/text/immediate-payload matches to typed
 class/source inspection. Crash watch retains its named parse retries, and
 created guards/EOF/wire/success/budgets/staging/cleanup stay. The
-[diagnostic evidence](validation/diagnostic-native-sources-2026-10-03.md) records
+diagnostic evidence records
 legacy string source loss, IO kind migration and host/device boundaries.
 
 Cryptex/MobileActivation/InstallCoordination/Pasteboard retain 21 native causes
@@ -538,7 +538,7 @@ Native timer/HTTP/parser/cache/connect variants, Display and immediate source
 payloads can change; use typed classification/source traversal. Created deadline
 markers and existing budgets/wire/state/fallback remain. The full-width promise
 size comparison also rejects values that could bypass a 32-bit usize limit.
-The [service deadline evidence](validation/service-deadline-native-sources-2026-10-03.md)
+The service deadline evidence
 records getter scope, native class changes, exact API families and host limits.
 
 Mobilebackup2Error retains its four exhaustive variants and existing facade
@@ -554,7 +554,7 @@ protocol classification. Migrate variant/Display/immediate-payload matches to
 class/source and typed evidence. Public requests, five-minute budget, successful
 output and ordinary best-effort disconnect stay; successful content is still
 lost on disconnect timeout. No new reuse/rollback/remote cleanup promise. The
-[backup deadline evidence](validation/backup-deadline-native-sources-2026-10-03.md)
+backup deadline evidence
 distinguishes internal short-budget behavior from external interface coverage.
 
 RestoreError remains exhaustive with three unchanged variants; existing client,
@@ -567,7 +567,7 @@ class and bounded source inspection. That source-retention change adds no public
 method, enum field, dependency or feature. Wire, 30/120s TSS budgets, body/archive/firmware bounds,
 identity/nonce/fallback rules and successful output stay. Legacy batch fallback
 still discards per-attempt errors behind failed updater names. The
-[restore evidence](validation/restore-native-sources-2026-10-03.md) records native
+restore evidence records native
 versus injected OS faults, encoding/size review and physical-operation limits.
 
 The additive `restore::tss::prefetch_tss_batch_preserving_errors` returns an
@@ -588,7 +588,7 @@ signer errors before the next call. The new path holds those errors until
 consumed/dropped; their payload sizes are supplied by the caller's signer.
 Debug exposes metadata/counts only, while explicit error getters follow source
 privacy rules. No CLI/HTTP/C/Python output change or new cleanup/retry promise.
-The [batch observation evidence](validation/tss-batch-observations-2026-10-03.md)
+The batch observation evidence
 records host, minimum-feature and downstream-consumer acceptance.
 
 AppServiceError remains exhaustive with Xpc/Protocol; process-identifier and
@@ -608,7 +608,7 @@ evidence, not a new caller-controlled encoder. Request/feature/control admission
 ZIP/GPX wire, validation order, GPX route timing and
 success stay. Existing unchecked location string length casts, parser limits
 and lifecycle/retry semantics are separate work. The
-[input source evidence](validation/service-input-native-sources-2026-10-03.md)
+input source evidence
 records 9 internal/2 external tests and public zero-write versus private scalar/
 header/helper coverage.
 
@@ -622,7 +622,7 @@ failure separately. Request order, configured budgets, buffers and successful
 output stay. Returned category/Display/source/correlation may migrate; final
 exit 1 and unknown effects do not authorize retry or rollback. Source/privacy
 and exact host boundaries are in
-[CLI native acceptance](validation/cli-native-sources-2026-10-04.md).
+CLI native acceptance.
 
 CLI stream adapters also retain Pcap/FPS native errors and XCTest/notification/
 CrashReport Elapsed. Notification ProxyDeath is typed disconnected; issued
@@ -632,7 +632,7 @@ Normal operator stops retain success. JSON WebInspector shell omits interactive
 prompts/EOF presentation bytes; existing result records stay. Categories,
 Display, source traversal and safe correlation can migrate. Prior valid records
 or file/device effects can precede exit 1; no rollback/retry/cleanup certificate.
-The [stream inventory and host evidence](validation/cli-stream-contract-2026-10-04.md)
+The stream inventory and host evidence
 records compact/pretty/aggregate formats and the retained stop policies.
 
 CLI status writes retain native I/O errors instead of panicking. Ordinary
@@ -645,7 +645,7 @@ best effort, with no new cleanup/reuse guarantee. Machine error schema and
 stdout/stderr roles stay; final reporting can itself fail on closed stderr.
 Unix directory path conversions retain original NulError with existing input
 classification and fixed safe context. No public SDK shape changes. See
-[diagnostic acceptance](validation/cli-diagnostic-sources-2026-10-04.md).
+diagnostic acceptance.
 
 Discovery/connection native causes now survive fifteen adapters under existing
 CoreError/TunnelError::Io or IO. Root error families/signatures/fields/exports,
@@ -659,7 +659,7 @@ Native objects and safe private context replace text flattening, so returned
 variant, Display/immediate-source and diagnostic correlation can change. Use
 typed classes and bounded source traversal. Wire, limits, shared budgets,
 task/stream/daemon policy and success stay; no new retry/cleanup/reuse promise.
-See [connection acceptance](validation/connection-native-sources-2026-10-04.md).
+See connection acceptance.
 
 The eight guarded AFC/DTX/FileService/symbol adapters use existing Io variants
 to retain original cast/integer/slice sources, with Protocol classification
@@ -676,7 +676,7 @@ runtime evidence. Current 64-bit consumer tests preserve frame rejection and
 local duplex EOF; private native fixtures do not certify those production
 branches or remote cleanup/reuse. No new public method/type/field, deadline,
 retry or allocation policy. See the
-[guarded source acceptance](validation/guarded-native-sources-2026-10-03.md).
+guarded source acceptance.
 
 The additive `dproxy::StreamDecoder::push_preserving_errors` returns opaque
 `DecodeOutcome`. Events, independent original errors and the optional fatal
@@ -697,7 +697,7 @@ remain wall-clock values. The empty DATA missing-stream fatal behavior is
 preserved, not a new protocol guarantee. Bindings do not consume this API,
 and there is no new resource
 cleanup/retry/reuse certification. See
-[DProxy decoder acceptance](validation/dproxy-decoder-observations-2026-10-03.md)
+DProxy decoder acceptance
 for original-source versus local-guard coverage and minimum-feature consumers.
 
 The additive recorder/proxy `*_with_observer` methods accept FnMut callbacks
@@ -717,7 +717,7 @@ bytes/file layout, summary/status text and forwarding/flush/shutdown/try_join
 order remain. Core event and two CLI status writes now return native stderr
 IO instead of panic, through existing error variants/failure formatting.
 Partial capture writes and remote cleanup/reuse remain unproven. See
-[recorder/CLI acceptance](validation/dproxy-recording-observations-2026-10-03.md).
+recorder/CLI acceptance.
 
 ImageMounterError's six variants/fields and public downloader/TSS signatures stay
 exhaustive. Thirty-four native cache/download/ZIP/join/TSS failures move from
@@ -727,7 +727,7 @@ change from opaque/service_failure to typed timeout/protocol/invalid_input/
 cancelled; panic stays unknown. Existing guard outcomes and successful requests,
 proxy/budget/cache/partial-file behavior stay. Migrate variant/text/immediate
 payload matches to typed class and source traversal, respecting native source
-privacy. The [DDI/TSS evidence](validation/image-assets-native-sources-2026-10-03.md)
+privacy. The DDI/TSS evidence
 records exact callback scope and owned versus injected/device validation.
 
 The additive private-fields `OperationCancelled` marker records caller-observed
@@ -792,7 +792,7 @@ aggregate; source/category follows the primary, and automatic Display/Debug
 never formats either cause. Existing JSON fields, help, parameters, event
 selection and success bytes remain. Whole-future cancellation drops owned
 transport without asynchronous cleanup. See
-[cleanup host acceptance](validation/notification-cli-cleanup-2026-10-04.md).
+cleanup host acceptance.
 
 The notification CLI control migration rejects finite --timeout 0 and
 unrepresentable deadlines as invalid_input (exit1, phase notify) before explicit
@@ -823,7 +823,7 @@ Synchronous output/decode and running blocking workers remain cooperative;
 there is no async Drop, ACK, rollback or safe-retry promise. Actual Linux SIGINT
 at an owned synthetic discovery endpoint and injected writer errors are host
 evidence; device stdout/signal/cleanup acceptance remains pending. See
-[notification CLI control acceptance](validation/notification-cli-control-2026-10-04.md).
+notification CLI control acceptance.
 
 Keep canonical command/flag names, aliases, defaults, selection and confirmation
 behavior unless an explicit migration says otherwise. Adding an opt-in command
@@ -1004,7 +1004,7 @@ Each public change must state old/new usage or output, affected callers and
 feature/platform scope, deprecation period/aliases or versioned replacement,
 ownership/cancellation/error differences, exact tested commit and remaining
 evidence. Preserve historical release notes. The [PR template](../.github/pull_request_template.md)
-and [roadmap](engineering-roadmap-2026-09-30.md) carry these records.
+and roadmap carry these records.
 
 `tests/public_contract.rs` is an external-crate consumer using root imports,
 struct literals, exhaustive enum matching, service metadata, codec roundtrip,
@@ -1036,7 +1036,7 @@ and access policy stay. The private source/handler fixtures verify host behavior
 with no new public source selector or physical-device/browser acceptance.
 This error-behavior correction needs pre-1.0 release review; setup/request totals,
 cleanup results and joined server/browser ownership remain pending. See
-[CDP page lifecycle](validation/cdp-page-idle-lifecycle-2026-10-05.md).
+CDP page lifecycle.
 
 CDP discovery/attachment and WebDriver runtime setup now consume one configured
 total, including lock/connection, startup, discovery and attachment/context
@@ -1051,7 +1051,7 @@ corrections need pre-1.0 release review. Public grammar/output/API/access policy
 stay; private zero fixtures do not prove CLI listener admission. Server startup,
 signal, publication, active request/output, primary cleanup and joined task
 contracts remain pending. See
-[WebInspector server setup](validation/webinspector-server-setup-2026-10-05.md).
+WebInspector server setup.
 
 The direct CDP page bridge now retains teardown errors after normal WebSocket
 shutdown and after a primary failure. Cleanup has an independent 2s budget;
@@ -1062,7 +1062,7 @@ This error/timing correction needs pre-1.0 release review. Wire selectors, page
 messages and public grammar stay. Constructor cleanup, outer lease cancellation,
 server shutdown and joined browser/stored tasks remain pending; this is not an
 async Drop guarantee. See
-[CDP page cleanup migration](validation/cdp-page-cleanup-2026-10-05.md).
+CDP page cleanup migration.
 
 WebDriver runtime stop now closes its owned forwarding socket after the
 Automation browsing context, borrowing the original session without cloning
@@ -1072,7 +1072,7 @@ second attempt. The runtime preserves native and dual cleanup errors. HTTP
 DELETE grammar, response shape and its existing result-discard policy stay;
 routed failure handling remains pending. This forwarding/timing correction needs
 pre-1.0 release review and device evidence. See
-[WebDriver cleanup migration](validation/webdriver-cleanup-2026-10-05.md).
+WebDriver cleanup migration.
 
 Direct CDP page policy expiry/reload now stops page work, returns typed
 cancellation and waits for existing independent2s cleanup before release. The
@@ -1084,7 +1084,7 @@ This timing/diagnostic correction needs pre-1.0 release review. Admission,
 tickets, policy fields, successful messages and public grammar stay. The earlier
 direct-page lease gap is covered; generic caller/server Drop, browser children,
 stored-session joins and device evidence remain. See
-[CDP page lease migration](validation/cdp-page-lease-2026-10-05.md).
+CDP page lease migration.
 
 CDP browser pages now use independent2s cleanup instead of the active timeout;
 explicit removal joins the child and reports retained failures through existing
@@ -1095,7 +1095,7 @@ return ownership changes only inside the CLI; native and dual failures are not
 exported as unsafe messages. These timing/diagnostic corrections need pre-1.0
 release review and device evidence. Browser lease/server/caller Drop and stored
 registry joins remain pending. See
-[browser task migration](validation/cdp-browser-tasks-2026-10-05.md).
+browser task migration.
 
 CDP browser policy expiry/reload now stops business work and waits for common2s
 cleanup before release. A child removed during detach remains owned when lease
@@ -1106,7 +1106,7 @@ with typed cancellation, preserving cleanup failures privately. No successful
 reply, event, route, policy/admission field or public grammar changes. This
 timing/diagnostic correction needs pre-1.0 release review and device evidence.
 Generic caller/server Drop and stored-session joins remain. See
-[browser lease migration](validation/cdp-browser-lease-2026-10-05.md).
+browser lease migration.
 
 ### WebDriver DELETE failure migration (2026-10-05)
 
@@ -1119,7 +1119,7 @@ authorization middleware or response delivery. Known business error remains
 primary through cleanup expiry. Routes, parameters, successful payloads and
 public Rust/C/Python surfaces stay. Review this error/timing change for the
 pre-1.0 release; real-device evidence and in-flight request/registry ownership
-remain pending. See [DELETE migration](validation/webdriver-delete-2026-10-05.md).
+remain pending. See DELETE migration.
 
 ### Stored session watcher ownership (2026-10-05)
 
@@ -1132,7 +1132,7 @@ successful responses and public Rust/C/Python surfaces stay. WebDriver DELETE's
 existing100ms total now also includes this map-removal join wait. This timing
 correction needs pre-1.0 release review and device evidence. Generic Drop,
 legacy callback errors, in-flight request Arcs and server shutdown remain
-separate. See [watcher migration](validation/session-store-2026-10-05.md).
+separate. See watcher migration.
 
 ### WebDriver revocation cleanup timing/diagnostics (2026-10-05)
 
@@ -1145,11 +1145,11 @@ tracing. This timing/diagnostic correction needs pre-1.0 release review and
 device evidence. Constructor, DELETE, routes, successful payloads, HTTP schema,
 authorization and public Rust/C/Python surfaces stay. This total starts after
 entry retirement; preceding map wait and server shutdown remain separate. See
-[revocation migration](validation/webdriver-revocation-2026-10-05.md).
+revocation migration.
 
 ## L02 private CLI manager coordination
 
-The [manager isolation profile](validation/tunnel-isolation-2026-10-06.md)
+The manager isolation profile
 tests `e0f52671396e6408fc38921f78f73a256a45ce65`. Private device source,
 per-device generations and four shared permits change CLI manager scheduling.
 No Rust SDK/C/Python symbol, struct, enum, field, dependency or Apple protocol
@@ -1166,7 +1166,7 @@ L01/L02/L03–L04/Q04/classes5–9 conditions stay.
 
 ## L02 bounded automatic scans
 
-The [parallel scan gate](validation/tunnel-parallel-2026-10-06.md) accepts
+The parallel scan gate accepts
 `66bf7311020763b8a29b175a117cdf1b70d4e22f`. Private scanner scheduling merges
 USB/mobdev2 candidates, keeps original effective first route/host and owns four
 connection futures. Public SDK/C/Python, source adapters/options, manual start,
@@ -1179,7 +1179,7 @@ L04 and all remaining L01/L02/L03–L04/Q04/classes5–9 conditions remain.
 
 ## L02 attachment snapshot acceptance
 
-[L02 observed identity](validation/tunnel-identity-2026-10-06.md) accepts
+L02 observed identity accepts
 `1eb45c25145f5306a5831df6a0c29d494a94ca96`. Private source metadata keeps
 native IDs/USB flags already returned by MuxClient; no SDK/C/Python export,
 struct field, dependency, protocol frame or extra daemon query is added.
@@ -1193,7 +1193,7 @@ The complete31-task goal and L01/L02/L03–L04/Q04/classes5–9 remain active.
 
 ## USB publication query
 
-The [L02 publication gate](validation/tunnel-publication-2026-10-06.md),
+The L02 publication gate,
 `86fecfe3331e9efa74dc76fbc48b47ad5c3df8f1`, adds one existing daemon
 connection/list query for successful usbmux/direct-USB creation, including
 manual starts. The original budget/cancellation includes that wait; native IO/
@@ -1205,7 +1205,7 @@ not complete L02 or any remaining31-task scope.
 
 ## L02 failure identity
 
-The [backoff identity gate](validation/tunnel-backoff-2026-10-06.md),
+The backoff identity gate,
 `d0b04bed79ecec5c3f724ff003122f66b1159216`, changes private scanner failure
 matching: new known native ID/host/route can retry immediately, same identity
 retains30/60/120/240/300s and increments its counter. No public SDK/C/Python
@@ -1217,7 +1217,7 @@ remain; L01/L02/L03–L04/Q04/classes5–9 continue.
 
 ## Local liveness admission
 
-The [local liveness gate](validation/tunnel-liveness-2026-10-06.md),
+The local liveness gate,
 `7a77000cdbd0a8e6d2fbaaf6ac5bd630af47d6c5`, adds two private existing
 is_alive observations before daemon query and insertion. Known false results
 cancel locally without publication, including Wi-Fi. Admission correction
@@ -1228,7 +1228,7 @@ tasks/conditions, L01/L02/L03–L04/Q04/classes5–9 stay.
 
 ## Scan discovery setup budget
 
-[L02 scan setup](validation/tunnel-discovery-2026-10-06.md),
+L02 scan setup,
 `a47648442d5b7707ad41beeb58a6ab1ad764ea9a`, bounds previously unbounded
 queue/list/discovery by one15s deadline and drops old phase futures on stop/
 clear. It adds no public SDK/C/Python field/configuration/export, codec,
@@ -1239,7 +1239,7 @@ All31 scopes and L01/L02/L03–L04/Q04/classes5–9 remain.
 
 ## Bounded scanner failure retention
 
-The [retention gate](validation/tunnel-retention-2026-10-06.md),
+The retention gate,
 `26b89951b52dd690bcc0e994541007b5426fba93`, adds private effective-snapshot
 reconciliation and 4096 shared slots for retained rows plus pending reservations.
 Full capacity defers fresh scanned connections before native work; existing
@@ -1251,7 +1251,7 @@ worker guarantee. All31 tasks and L01/L02/L03–L04/Q04/classes5–9 remain.
 
 ## Tunnel server shutdown ownership
 
-[Server lifecycle evidence](validation/tunnel-server-2026-10-06.md),
+Server lifecycle evidence,
 `5120fa90e06a92f4734603382b98779b69f1ca38`, replaces private lossy notification with persistent shutdown,
 owns the scanner in its parent and adds one pinned Ctrl-C future after server
 startup. Returned shutdown shares an independent2s budget across table clear
@@ -1264,7 +1264,7 @@ L01/L02/L03–L04/Q04/classes5–9 stay active.
 
 ## Core tunnel shutdown API and timing migration
 
-Implementation `f00ff25395a8432087daf578c9dd23975b09be5a`; [host evidence](validation/native-tunnel-owner-2026-10-07.md).
+Implementation `f00ff25395a8432087daf578c9dd23975b09be5a`; host evidence.
 Original fields, constructors, signatures, error enums and Cargo.lock remain.
 Additive TunnelHandle::request_stop and TunnelManager::retire are available with
 the existing handle/manager surface. With tunnel-kernel or tunnel-userspace,
@@ -1290,7 +1290,7 @@ compatibility review. No CLI option/HTTP wire/FFI/Python close change is certifi
 
 ## Optional caller ownership and native status
 
-Implementation `6debaf9b6d78c10b4be1cfd55e2fbcbb69da8756`; [API and timing evidence](validation/cli-tunnel-native-retirement-2026-10-07.md).
+Implementation `6debaf9b6d78c10b4be1cfd55e2fbcbb69da8756`; API and timing evidence.
 Additive root/device TunnelOwner and TunnelReservation traits and four connect
 functions ending with_owner preserve original functions/options/fields/error enums.
 reserve runs before each strategy transport; earlier discovery/credential loading
@@ -1315,7 +1315,7 @@ other original task conditions remain, with no maturity or acknowledgement claim
 
 ## Manual tunnel same-poll deadline behavior
 
-The [manual deadline crossing profile](validation/tunnel-manual-poll-crossing-2026-10-07.md),
+The manual deadline crossing profile,
 `a963679ab0f853b1a38bfcee9ac59471d4920641`, prevents late synchronous Source/metadata success from advancing
 query/publication and restores an unobserved displaced table row if insertion
 crosses the clock. The original checked15s total and actual Tokio Elapsed stay;
@@ -1327,7 +1327,7 @@ does not certify a device transaction or safe replay.
 
 ## Automatic tunnel candidate deadline corrections
 
-Implementation `c92503ded8a60515a272f4afb1dba99085b130dc`; [automatic candidate evidence](validation/tunnel-automatic-deadline-2026-10-07.md).
+Implementation `c92503ded8a60515a272f4afb1dba99085b130dc`; automatic candidate evidence.
 The existing15s candidate total now uses checked absolute fences through native
 handoff, metadata/query and publication. Late same-poll success cannot publish;
 zero/overflow internal configuration cannot contact Source. Options, public APIs,
@@ -1338,7 +1338,7 @@ Whole-scan post-paired handoff/reconciliation/readiness and out-of-clock failure
 
 ## Acquired paired discovery error after cancellation
 
-Implementation `1ab05e3bcefd3926a402dc645f55c72d16aad6f4`; [paired error retention evidence](validation/tunnel-paired-error-retention-2026-10-07.md).
+Implementation `1ab05e3bcefd3926a402dc645f55c72d16aad6f4`; paired error retention evidence.
 Clear/close completed inside Source no longer turns its original error reply into
 success. The original IO object and category stay;successful stale snapshots do
 not connect candidates or mark ready. Public APIs/options/output/wire/enums,
@@ -1351,25 +1351,25 @@ at the later paired epoch check remains open and needs its own regression.
 
 ## Paired discovery final fence
 
-Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
+Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; final paired fence evidence.
 The second paired stale check now retains its original Source error. This follows the first-check fix and closes its recorded race. Public APIs/options/wire/Core/bindings/clock budgets stay;the corrected error outcome needs pre-1.0 review.
 Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.
 
 ## Managed discovery admission
 
-Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
+Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; snapshot admission evidence.
 New private limits reject formerly accepted oversized snapshots:16,384 raw rows per family,4096-byte UTF-8 field,16MiB raw strings per family,4096 USB unique IDs including unauthorized,4096 authorized combined candidates and16MiB candidate UDID+route-host bytes. Public structs/enums/options/wire/Core/bindings/deps/features stay;this pre-1.0 rejection behavior needs review. Ordinary selection and default manual fallback stay.
 Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.
 
 ## Scan failure bookkeeping timing
 
-Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
+Implementation `4415be9a65921a346208f912dbe59e399e471591`; failure bookkeeping evidence.
 Private bookkeeping1s begins after the four-item candidate window. Public API/options/enums/Core/bindings/wire/features stay. Backoff formula/count/identity/permit rules stay,but last_attempt records the later metadata commit,so early failed candidates may retry later. Bounded write rejection/timing require pre-1.0 review.
 Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.
 
 ## Manager scan total and abandoned-error capacity
 
-Manager scans now have a private default 30-second whole budget, including queue and metadata waits, alongside existing discovery/candidate sub-budgets. Eight abandoned discovery errors can be retained; full capacity rejects further scans with the existing CLI resource_limit. These are new pre-1.0 timing/admission behaviors requiring compatibility review. Whole expiry creates no new backoff or readiness, and already acquired original discovery errors remain inspectable. No public API, option, error enum or wire format changes. See [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).
+Manager scans now have a private default 30-second whole budget, including queue and metadata waits, alongside existing discovery/candidate sub-budgets. Eight abandoned discovery errors can be retained; full capacity rejects further scans with the existing CLI resource_limit. These are new pre-1.0 timing/admission behaviors requiring compatibility review. Whole expiry creates no new backoff or readiness, and already acquired original discovery errors remain inspectable. No public API, option, error enum or wire format changes. See scan control evidence.
 
 
 ## Explicit device doctor and checked image metadata
@@ -1401,7 +1401,7 @@ Manual tunnel selectors now reject values above 4096 UTF-8 bytes before Source
 or coordinator state. Exact limits and existing selection/empty/NUL behavior
 remain covered. The new managed resource refusal follows the existing CLI/HTTP
 ResourceLimit category; public core APIs are unchanged. These are host work
-items; see [acceptance evidence](validation/device-doctor-manual-admission-2026-10-08.md).
+items; see acceptance evidence.
 
 ## Existing-route RSD observations and resumable Syslog
 
@@ -1423,7 +1423,7 @@ future is dropped. Success clears the prefix. EOF, native IO and the existing ra
 message limit make the client terminal; additive `is_usable()` reports that local
 state, and subsequent reads fail locally before polling cached tails or transport.
 Use a fresh stream after terminal failure. Existing success framing/UTF-8/vis and
-infinite idle behavior remain. [Acceptance and migration](validation/doctor-rsd-syslog-2026-10-09.md).
+infinite idle behavior remain. Acceptance and migration.
 
 ## Owned finite existing-trust operations
 
@@ -1435,7 +1435,7 @@ port/SSL metadata. It does not enumerate, connect the advertised port or retry.
 Selectors admit before factory IO. Private borrowed factories/IO cannot escape
 through a raw public checked-session or transport handle. Existing APIs and
 error enum variants remain. StartService can have remote effects; local Drop
-does not acknowledge rollback. [Acceptance](validation/sdk-owned-session-2026-10-09.md).
+does not acknowledge rollback. Acceptance.
 
 ## CDP default context identity
 

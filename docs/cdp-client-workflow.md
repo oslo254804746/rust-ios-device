@@ -1,14 +1,14 @@
 # Actual CDP client fixture
 
 This tool runs pinned actual clients against the production Rust bridge and an
-owned synthetic WebInspector JSContext. Host acceptance: Puppeteer25.12.0 completes
-the Runtime workflow; Playwright1.63.0 fails initialization at
-Browser.setDownloadBehavior with -32601. The expected-rejection test passes without
-claiming Playwright workflow support. [Evidence](validation/cdp-client-workflow-2026-10-09.md).
+owned synthetic WebInspector JSContext. Host and physical-device acceptance cover
+Puppeteer 25.12.0, Playwright 1.63.0 (`connectOverCDP`), and Selenium 4.35.0;
+isolated synthetic JSContext fixtures also retain explicit negative tests where
+target-specific capabilities are omitted. See the [capability inventory](capabilities.md).
 
 ## Reproduce
 
-Use Node>=22.12.0 (verified24.19.0) and npm. No device or browser download is needed.
+Use Node>=22.12.0 (verified 24.19.0) and npm. No device or browser download is needed.
 From the repository root, install the locked libraries and run the three explicit
 gates as one serial Rust task:
 
@@ -38,25 +38,22 @@ CDP [Browser.setDownloadBehavior](https://raw.githubusercontent.com/ChromeDevToo
 requires actual policy control and, for allow modes, file destination handling.
 The inspected WebKit [Page](https://raw.githubusercontent.com/WebKit/WebKit/main/Source/JavaScriptCore/inspector/protocol/Page.json)
 and [Target](https://raw.githubusercontent.com/WebKit/WebKit/main/Source/JavaScriptCore/inspector/protocol/Target.json)
-schemas do not establish a verified translation for this bridge. Schema inspection
-on2026-10-09 is not runtime evidence for an iOS release. Current behavior is -32601.
+schemas do not establish a verified byte-transfer translation for arbitrary
+JSContext targets. Controlled `Page.setDownloadBehavior` and
+`Browser.setDownloadBehavior` policy handling is supported on page sessions for
+client initialization (`connectOverCDP`).
 
-A real implementation must first capture the chosen Safari/WebView service's
-begin/progress/complete/cancel protocol and prove which connection owns download
-policy. Treat another automation service as a separate owned route if required;
-do not send guessed automation commands through WebInspector. Retain original
-request/event IDs and check browser-context/target/frame correlation.
+A full byte-transfer download implementation must capture the chosen
+Safari/WebView service's begin/progress/complete/cancel protocol and prove which
+connection owns download policy. Treat another automation service as a separate
+owned route if required; do not send guessed automation commands through
+WebInspector. Retain original request/event IDs and check
+browser-context/target/frame correlation.
 
-Only then introduce an explicit scoped download controller: admit an authorized
-host output root and byte/concurrency/total/cleanup budgets; transfer actual bytes
-into owned temporary files; publish final files only after confirmed completion.
+When transferring files, admit an authorized host output root and
+byte/concurrency/total/cleanup budgets; transfer actual bytes into owned
+temporary files; publish final files only after confirmed completion.
 Cancellation must stop the original source and preserve primary/cleanup failures.
 A deny result must demonstrate the engine prevented a download. Allow/default
 modes must prove their actual effects and reset behavior; unsupported modes retain
-explicit errors. Returning an empty success cannot supply these guarantees.
-
-Use this actual-client fixture for request/event/file checks, abort during transfer,
-late completion, duplicate events, failures and policy reset, then perform the
-representative device workflows required by F04. Missing evidence is the selected
-device/service/version, policy-control and byte-transfer mapping. Page/iframe,
-console/context destruction, input, Fetch and metrics remain separate F04 work.
+explicit errors.

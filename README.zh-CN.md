@@ -3,7 +3,8 @@
 [English](README.md) | 简体中文
 
 一组用于操作真实 iOS 设备的 Rust 库、语言绑定和 `ios` 命令行工具，通过
-usbmuxd、lockdown、CoreDevice/RemoteXPC 与常见 Apple 设备服务与设备通信。
+usbmuxd、lockdown、CoreDevice/RemoteXPC 与 Apple 设备服务与设备通信，全面支持
+**iOS 15.x – iOS 27.2**。
 
 [![Crates.io — ios-core](https://img.shields.io/crates/v/ios-core.svg?label=ios-core)](https://crates.io/crates/ios-core)
 [![Crates.io — ios-cli](https://img.shields.io/crates/v/ios-cli.svg?label=ios-cli)](https://crates.io/crates/ios-cli)
@@ -11,8 +12,9 @@ usbmuxd、lockdown、CoreDevice/RemoteXPC 与常见 Apple 设备服务与设备�
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#许可证)
 [![MSRV](https://img.shields.io/badge/MSRV-1.80-orange.svg)](#环境要求)
 
-> **状态：实验性。** 项目能力面已经较宽，可用于自动化、协议研究和开发者工具，
-> 但稳定版本前公开 API 与 CLI 仍可能变化。具体服务是否可用取决于 iOS 版本、
+> **状态：实验性（`v0.1.13`）。** 项目能力面覆盖广泛，已在 **iOS 15.8.6（Legacy）**、
+> **iOS 18.6 / 18.7（Modern）** 与 **iOS 27.2（Modern）** 真实设备上完成端到端验证，
+> 但 1.0 稳定版本发布前公开 API 与 CLI 仍可能调整。具体服务是否可用取决于 iOS 版本、
 > 设备信任与配对状态、Developer Mode、监督状态以及主机的 Apple Mobile Device 组件。
 
 [能力清单](docs/capabilities.md) 分别登记各命令/服务的实现、主机测试、模拟流程和
@@ -20,19 +22,43 @@ usbmuxd、lockdown、CoreDevice/RemoteXPC 与常见 Apple 设备服务与设备�
 
 ## 亮点
 
-- **跨平台 CLI（`ios`）**——54+ 子命令，覆盖设备、文件、应用、Instruments、
-  调试、描述文件、恢复、监督和隧道。
-- **iOS 17+ 一等支持**——CoreDevice 隧道（用户态与内核 TUN）、RSD 服务发现、
-  HTTP/2 RemoteXPC、appservice、fileservice、diagnosticsservice、deviceinfo、
-  pasteboard、Instruments 与 TestManager。
-- **Lockdown 经典服务**——AFC、House Arrest、syslog、截图、配置/provisioning
-  描述文件、崩溃报告、diagnostics relay、notification proxy、SpringBoard、
-  备份等。
-- **开发者工作流**——开发者磁盘镜像挂载、DTX/Instruments、debugserver、
-  WebInspector、XCTest runner、WebDriverAgent 辅助、可访问性审计、抓包、
-  符号下载。
+- **广泛的 iOS 版本支持：iOS 15.x – iOS 27.2**——涵盖 iOS 15.8.6 Legacy（usbmuxd /
+  Lockdown / DDI `.dmg`）、iOS 18.6/18.7 Modern 以及 iOS 27.2 Modern
+  （CoreDevice / RemoteXPC / 个性化 Cryptex DDI）。
+- **跨平台 CLI（`ios`）**——60+ 子命令，覆盖设备管理、文件传输、应用生命周期、
+  Instruments 性能采样、调试、音视频流抓取、HID 自动化输入、WebInspector、描述文件、
+  恢复、监督和隧道管理。
+- **CoreDevice 隧道（iOS 17–27+）**——支持内核 TUN 与无需管理员权限的**用户态隧道**
+  （`--userspace`）、`tunnel start`、`tunnel serve`，内置 **20ms ICMPv6 Echo
+  Request Nudge** 低延迟突发防抖机制，并同时支持 TCP 流代理与 IPv6 UDP 数据报转发。
+- **屏幕与媒体流（`device-control display` 与 `viewer`）**——
+  - `ios device-control display status / video / audio`：支持 iOS 27+
+    `dtremotedisplayd` 实时 **H.265 (HEVC)** 视频与 **AAC** 音频 RTP 访问单元抓取
+    （可在无管理员权限的 Userspace Tunnel 下直接运行）。
+  - `ios viewer web` 与 `ios viewer vnc`：交互式 Web 查看器（MJPEG 流、PNG 帧、
+    触控/按键/物理按钮/屏幕旋转控制）与 RFB 3.8 VNC 服务端，支持双向剪贴板同步
+    （`--share-clipboard`）与 Pro Max 16-bit Display P3 截图色彩解码。
+- **通用 HID 输入（`ios hid`）**——支持 `tap`、`swipe`、`button`、分阶段 `touch`、
+  5 指多点触控 `multitouch`（`--points`）、`text` 与 `key`，内置 500ms 触控授权
+  稳定等待、300ms 虚拟键盘弹出等待以及大写字母/符号的 Shift 修饰键前置/后置序列。
+- **WebInspector、CDP 与 WebDriver（`ios webinspector`）**——提供 `opened-tabs`、
+  `eval`、`launch`、`js-shell`、`cdp`（兼容 `puppeteer-core` 与 `playwright-core`
+  的 `connectOverCDP`，支持 `Runtime`、`Page`、`Network`、`Fetch`、`Input`、
+  `Performance`、`HeapProfiler` 域）以及 W3C `webdriver`（兼容
+  `selenium-webdriver`）。
+- **文件管理（`ios file` 与 CoreDevice `fileservice`）**——完整的 AFC 客户端，支持
+  全部扩展操作码（`connection-info`、带范围的 `hash`、`pread`、`pwrite`、
+  `truncate`、`set-time`、`dir-size`）以及 iOS 17+ CoreDevice `fileservice`
+  （`--coredevice` 下的 `ls`、`mkdir`、`push`、`pull`、`mv`、`rm --recursive`）。
+- **开发者与诊断套件**——Cryptex DDI 自动下载挂载（`ddi auto`、`ddi cryptex`）、
+  Instruments（`ps`、`apps`、`cpu`、`sysmon-process`、`gpu`、`fps`、`kdebug`）、
+  CoreProfileSession Stackshot（`sharedCache` UUID 提取）、`accessibility-audit`
+  （`axAudit` DTX）、`debug` 与 `debugserver send`（支持 iOS 17+ RSD `debugproxy`
+  自动回退）、`symbols`、`devicestate`、`memlimitoff`、`pcap --interface`、
+  `btlogger`（`.pklg`/`.pcapng`）、`pasteboard` 以及 `device-control configuration`
+  （包含 iOS 26/27 新增的 `liquid-glass-opacity` 与 `increase-contrast`）。
 - **多语言消费者**——纯 Rust 库（`ios-core`）、PyO3 Python 模块（`ios_rs`）、
-  C FFI（`ios-ffi`）共用同一份实现。
+  C FFI（`ios-ffi`）共用同一份底层实现。
 
 ## 工作区结构
 
@@ -40,13 +66,13 @@ usbmuxd、lockdown、CoreDevice/RemoteXPC 与常见 Apple 设备服务与设备�
 | -------- | --------------------------------------------------- | ------------------------------------------------------------------- |
 | `ios-core` | crates.io                                          | 库：发现、配对、lockdown、隧道、RSD/XPC 与服务客户端                |
 | `ios-cli`  | crates.io · 预编译 `ios` 二进制                    | 终端用户 CLI 工具                                                   |
-| `ios-py`   | PyPI 包名 `rust-ios-device-tunnel`（导入名 `ios_rs`） | PyO3 Python 绑定：设备列表与隧道工作流                              |
+| `ios-py`   | PyPI 包名 `rust-ios-device-tunnel`（导入名 `ios_rs`） | PyO3 Python 绑定：设备列表、受控会话与隧道工作流                    |
 | `ios-ffi`  | 预编译 `cdylib` + `staticlib` + `ios_rs.h`         | 给非 Rust 消费者使用的 C ABI                                         |
 
 详细文档位于 [`docs/`](docs/)：[架构](docs/architecture.md)、
 [构建](docs/build.md)、[feature flags](docs/features.md)、
 [用法](docs/usage.md)、[CLI 对照](docs/cli-map.md)、
-[隧道](docs/tunnel.md)、[协议](docs/protocol.md)、
+[隧道](docs/tunnel.md)、[查看器](docs/viewer.md)、[协议](docs/protocol.md)、
 [Python 绑定](docs/python-binding.md)、[故障排查](docs/troubleshooting.md)、
 [宿主输出与取消合同](docs/output-contract.md)。
 [公共兼容规则](docs/public-contract.md) 定义 Rust/CLI/C/Python 的维护候选接口和
@@ -96,22 +122,42 @@ ios info                                       # 默认设备信息摘要
 ios -u <UDID> lockdown get --key ProductVersion
 ios syslog                                     # 实时设备日志
 ios screenshot --output screenshot.png
-ios tunnel start --userspace                   # iOS 17+ CoreDevice 隧道
+ios tunnel start --userspace                   # iOS 17–27+ CoreDevice 隧道
 ```
 
 需要选择设备且省略 `-u/--udid` 时，CLI 会使用 `ios list` 返回的第一台设备。
 传入 `-u <UDID>` 或设置 `IOS_UDID` 可锁定某台设备。大多数命令默认输出 JSON，
 便于脚本解析；传 `--no-json` 可获得人类友好的表格输出。
 
-查看每个命令组：
+### 核心功能速览
 
 ```sh
-ios --help
-ios apps --help
-ios file --help
-ios instruments --help
-ios tunnel --help
-ios prepare --help
+# 屏幕与媒体流（iOS 27+ H.265/AAC RTP 抓取 & 交互式 Web/VNC 查看器）
+ios -u <UDID> device-control display video --output capture.h265 --duration-ms 5000
+ios -u <UDID> device-control display audio --output capture.aac --duration-ms 5000
+ios -u <UDID> viewer web --listen 127.0.0.1:8090 --share-clipboard
+ios -u <UDID> viewer vnc --listen 127.0.0.1:5901 --share-clipboard
+
+# 通用 HID 输入（单指点击、滑动、5 指多点触控、带 Shift 修饰序列的文本输入）
+ios -u <UDID> hid --confirm tap 0.5 0.5
+ios -u <UDID> hid --confirm swipe 0.5 0.8 0.5 0.2 --duration-ms 300
+ios -u <UDID> hid --confirm multitouch --points "1:0.20:0.40,2:0.35:0.35,3:0.50:0.30,4:0.65:0.35,5:0.80:0.40"
+ios -u <UDID> hid --confirm text "Hello, iOS 27!"
+
+# WebInspector、CDP（Puppeteer/Playwright）与 W3C WebDriver（Selenium）
+ios -u <UDID> webinspector opened-tabs
+ios -u <UDID> webinspector cdp --host 127.0.0.1 --port 9222 --allow-loopback-without-auth
+ios -u <UDID> webinspector webdriver --host 127.0.0.1 --port 4444 --allow-loopback-without-auth
+
+# 文件管理（AFC 扩展操作码 & iOS 17+ CoreDevice fileservice）
+ios -u <UDID> file hash /Books/Purchases/sample.plist --offset 0 --length 64
+ios -u <UDID> file --coredevice --domain temporary ls /
+
+# 开发者与诊断套件
+ios -u <UDID> ddi auto
+ios -u <UDID> instruments fps --duration 5
+ios -u <UDID> debugserver send --command qSupported
+ios -u <UDID> device-control configuration set liquid-glass-opacity --mode tinted
 ```
 
 ## 能力矩阵
@@ -121,25 +167,28 @@ CLI 的命令组与 `ios-core` 的服务模块基本一一对应。下表也列�
 
 | 领域                    | `ios` 命令                                                                                  | go-ios / pymobiledevice3 对照                                              |
 | ---------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| 发现与配对              | `list`, `listen`, `discover`, `pair`, `lockdown`                                            | go-ios `list`/`listen`/`pair`；pmd3 `usbmux`/`lockdown`/`bonjour`           |
-| 设备信息与设置          | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation`, `amfi` | go-ios `info`/`mobilegestalt`；pmd3 `lockdown`/`amfi`/`activation`         |
-| 文件与容器              | `file`（AFC、应用、CoreDevice）、`crash`、`file-relay`                                       | go-ios `fsync`/`crash`；pmd3 `afc`/`crash`                                  |
-| 应用与 UI 测试          | `apps`, `runtest`, `runwda`, `wda`, `springboard`                                           | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`；pmd3 `apps`/dvt        |
-| 诊断与日志              | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`, `btlogger`                           | go-ios `syslog`/`diagnostics`/`pcap`；pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
-| 开发者服务              | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`；pmd3 `developer dvt`/`mounter`/`webinspector` |
-| iOS 17+ 传输            | `tunnel`, `rsd`, `forward`, `dproxy`                                                        | go-ios `tunnel`/`rsd`/`forward`；pmd3 RemoteXPC/tunnel                     |
-| 设备剪贴板              | `pasteboard get`、`set TEXT`、`set --url URL`、`watch`（Darwin 通知监听）                       | go-ios `pasteboard`；pmd3 CoreDevice `paste`/`copy` 和剪贴板监听          |
-| CoreDevice 配置         | `device-control configuration get|set ...`                                                      | pmd3 CoreDevice configuration actions                                     |
-| CoreDevice 旋转         | `device-control orientation [left|right]`                                                        | pmd3 CoreDevice `rotate [left|right]`                                     |
-| 管理与监督              | `profiles`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`mdm`/`erase`；pmd3 `profile`/`provision`/`restore` |
-| 备份、定位与屏幕        | `backup`, `location`, `screenshot`, `notify`                                                | go-ios / pmd3 `backup`/`location`/`screenshot`                              |
+| 发现与配对              | `list`, `listen`, `discover`, `pair`, `lockdown`, `doctor`                                  | go-ios `list`/`listen`/`pair`；pmd3 `usbmux`/`lockdown`/`bonjour`           |
+| 设备信息与设置          | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation`（state、session-info、info、activate、deactivate、itunes-activate）, `amfi` | go-ios `info`/`mobilegestalt`；pmd3 `lockdown`/`amfi`/`activation`         |
+| 文件与容器              | `file`（AFC 与扩展操作码 `connection-info`/`hash`/`pread`/`pwrite`/`truncate`/`set-time`/`dir-size`、`--app` House Arrest、`--coredevice` `fileservice`）、`crash`、`file-relay` | go-ios `fsync`/`crash`；pmd3 `afc`/`crash`/CoreDevice `fileservice`         |
+| 应用与 UI 测试          | `apps`（含 iOS 17+ `install-record`）, `runtest`, `runxctest`, `runwda`, `wda`, `springboard` | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`；pmd3 `apps`/dvt        |
+| 诊断与日志              | `syslog`, `diagnostics`（reboot/shutdown）, `os-trace`（含 archive/collect）, `notify`, `pcap`（`--interface`）, `ip`, `btlogger`（`.pklg`/`.pcapng`） | go-ios `syslog`/`diagnostics`/`pcap`；pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
+| 开发者服务              | `instruments`（`ps`、`apps`、`cpu`、`sysmon-process`、`gpu`、`fps`、`kdebug`）, `debugserver`（Lockdown 与 RSD `debugproxy` 自动回退）, `debug`, `ddi`（`auto`、`cryptex`）, `symbols`（CoreProfileSession Stackshot 与 RSD）, `accessibility-audit`, `webinspector`（`opened-tabs`、`eval`、`launch`、`js-shell`、`cdp`、`webdriver`）, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`；pmd3 `developer dvt`/`mounter`/`webinspector` |
+| iOS 17–27+ 传输         | `tunnel`, `rsd`, `forward`, `dproxy`                                                        | go-ios `tunnel`/`rsd`/`forward`；pmd3 RemoteXPC/tunnel                     |
+| 设备剪贴板              | `pasteboard get\|set\|watch`（Darwin 通知监听、独立 PULL 连接、二进制 UTI 数据）；实验性 `resolve\|export --experimental` | go-ios `pasteboard`；pmd3 CoreDevice `paste`/`copy` 和剪贴板监听          |
+| CoreDevice 配置         | `device-control configuration get\|set ...`（含 iOS 26/27 `liquid-glass-opacity` 与 `increase-contrast`） | pmd3 CoreDevice configuration actions                                     |
+| CoreDevice 旋转         | `device-control orientation [left\|right]`                                                  | pmd3 CoreDevice `rotate [left\|right]`                                    |
+| 通用 HID 输入           | `hid --confirm tap\|swipe\|button\|touch\|multitouch\|text\|key`（自动建立 Display/RTP 触控授权、5 指多点触控、Shift 修饰序列） | pmd3 CoreDevice HID button/touch/keyboard helpers                         |
+| CoreDevice 显示媒体流   | `device-control display status\|video\|audio`（iOS 27+ `dtremotedisplayd` 实时 H.265/HEVC 视频与 AAC 音频 RTP 抓取，支持用户态或内核隧道） | pmd3 CoreDevice display/screen-stream helpers                             |
+| 交互式查看器与 VNC      | `viewer web\|vnc\|clipboard`（MJPEG/PNG Web UI、RFB 3.8 VNC 服务端、16-bit Display P3 解码、原生 HID、`--share-clipboard`；详见 [viewer 文档](docs/viewer.md)） | CoreDevice screencapture/HID/pasteboard 组合工作流                         |
+| 管理与监督              | `profiles`, `wifi`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`wifi`/`prepare`/`httpproxy`/`mdm`/`erase`；pmd3 `profile`/`provision`/`restore` |
+| 备份、定位与屏幕        | `backup`, `location`, `screenshot`（PNG / MJPEG 流）, `notify`                              | go-ios / pmd3 `backup`/`location`/`screenshot`                              |
 
 按任务组织的示例见 [`docs/usage.md`](docs/usage.md)；与 go-ios / pmd3 命令族
 的并排对照见 [`docs/cli-map.md`](docs/cli-map.md)。
 
-## CoreDevice / iOS 17+ 隧道
+## CoreDevice / iOS 17–27+ 隧道
 
-iOS 17+ 工作流通过 CoreDevice 隧道与每台设备的 RSD 服务目录路由。能否使用某项
+iOS 17–27+ 工作流通过 CoreDevice 隧道与每台设备的 RSD 服务目录路由。能否使用某项
 具体功能取决于设备暴露的服务面，而不是仅看 iOS 版本。
 
 ```sh
@@ -150,12 +199,15 @@ ios tunnel start --userspace
 ios tunnel serve --userspace --host 127.0.0.1 --port 49151 --auth-config PRIVATE_POLICY_FILE
 ```
 
-用户态隧道暴露一个本地 TCP 代理：客户端连接代理后，先发送 16 字节 IPv6 地址，
-再发送 4 字节小端序端口号，然后开始转发数据。内核 TUN 模式也可用，但通常需要
-管理员/root 权限。
-管理器需要 scoped policy，客户端用 `--token-file` 私密文件认证；创建、权限与重载
-见[管理访问配置](docs/management-access.md)。用户态原生 TCP 代理和内核路由仍遵循
-本地主机信任边界，不能把 manager 的授权当成对所有本地进程的沙箱。
+- **用户态与内核模式**——用户态隧道无需管理员/root 权限即可运行，并在本地暴露代理端口：
+  客户端先发送 16 字节 IPv6 地址与 4 字节小端序端口号，即可代理 TCP 流或转发 IPv6 UDP
+  数据报（供 `dtremotedisplayd` H.265/AAC RTP 音视频流与 HID 触控授权使用）。内核 TUN
+  模式（`--kernel`）同样支持。
+- **20ms ICMPv6 Echo Request Nudge**——当活跃 TCP 流等待设备响应时，用户态 `smoltcp`
+  协议栈会以 20ms 间隔发送 ICMPv6 Echo Request Nudge，确保 iOS 18–27+ 上的高频 HTTP/2
+  RemoteXPC 与 DTX 突发流量及时刷新 `CDTunnel` 队列。
+- **受控管理器策略**——`tunnel serve` 需要 scoped policy 或显式 loopback 授权，客户端通过
+  `--token-file` 私密文件认证；创建、权限与重载见[管理访问配置](docs/management-access.md)。
 
 在判断是否为实现 bug 之前，先确认设备实际暴露了哪些服务：
 
@@ -171,7 +223,7 @@ JSON 或配合 `--no-json` 的可读文本才会加入设备公布的 `features`
 请求 feature 信息时，缺少列表会输出 `[]`，表示设备没有公布能力元数据，并不表示所有
 操作都不支持。`rsd check` 也遵循相同的显式开关规则。
 
-隧道/RSD/XPC 的 TCP 连接与初始协议建立现在有 15 秒上限；基于 TCP 的远程配对与
+隧道/RSD/XPC 的 TCP 连接与初始协议建立有 15 秒上限；基于 TCP 的远程配对与
 lockdown 建立也使用相同上限。遇到失效的隧道路由时会尽快返回超时，而不会等待主机
 操作系统漫长的 SYN 重试窗口。后续服务请求仍遵循各自的超时行为。
 
@@ -193,7 +245,7 @@ ios-core = { version = "0.1.13", features = ["afc", "syslog"] }
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
 | `developer`  | accessibility_audit, amfi, btlogger, cryptex, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, configuration, cryptex, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, orientation, iconservice, screencapture, hid, display, pasteboard, testmanager, mdns, tunnel-userspace |
+| `ios17`      | apps, configuration, cryptex, deviceinfo, diagnosticsservice, dproxy, fileservice, iconservice, installcoordination, instruments, orientation, screencapture, hid, display, pasteboard, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel + backup2-manifest |
 
 CLI 使用 `full`；库消费者通常应选择更窄的子集。
@@ -273,11 +325,11 @@ cargo build --release -p ios-ffi
 ```
 
 输出包括 `libios_ffi.{so,dylib,a}`（Windows 上是 `ios_ffi.dll` + `.lib`）以及
-`crates/ios-ffi/include/ios_rs.h`。FFI 表面覆盖设备列表、lockdown 查询、
-隧道生命周期与 RSD 元数据；各服务客户端目前通过 Rust 和 CLI 使用。
-`ios_tunnel_rsd_services_json` 返回稳定排序的紧凑
-JSON 服务映射，每个服务值包含 `port` 与 `features`。每个发布版本都为支持的 target
-附带预编译归档。
+`crates/ios-ffi/include/ios_rs.h`。FFI 表面覆盖设备列表、受控设备会话
+（`IosDeviceSession`）、lockdown 查询、隧道生命周期、RSD 元数据、已安装应用列表、
+AFC 文件操作与 syslog 读取。
+`ios_tunnel_rsd_services_json` 返回稳定排序的紧凑 JSON 服务映射，每个服务值包含
+`port` 与 `features`。每个发布版本都为支持的 target 附带预编译归档。
 
 ## 从源码构建
 
@@ -339,9 +391,9 @@ cargo run -p ios-cli --example afc_debug       -- <UDID>
   配对。
 - **旧设备隧道失败** —— 设备可能未暴露 CoreDevice tunnel/RSD；回退到 lockdown /
   usbmux 服务路径。
-- **内核隧道失败** —— 改用用户态模式，或以创建 TUN 接口所需的权限运行。
+- **内核隧道失败** —— 改用 `--userspace` 用户态模式，或以创建 TUN 接口所需的权限运行。
 - **开发者服务失败** —— 启用 Developer Mode，并按需挂载兼容的开发者磁盘镜像
-  （`ios ddi`）。
+  （`ios ddi auto`）。
 - **CoreDevice fileservice 不可用** —— 用 `ios rsd services --all` 确认
   `com.apple.coredevice.fileservice.control` 与 `.data` 是否在列。缺失是设备侧
   服务面问题，而不是客户端 bug。

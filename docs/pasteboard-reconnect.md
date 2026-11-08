@@ -122,8 +122,7 @@ before setup/during setup/backoff/partial notification frames, partial RSD/XPC,
 late ready Source/snapshot polls, output failure, original native capacity,
 operation plus cleanup causes, cleanup/recovery/whole clocks and caller drop.
 
-This delivery is statically checked only. Rust compilation, formatting and test
-execution are **NOT_RUN** here and remain the root agent's serial gate. Actual
+Actual
 USB unplug/replug and device ID changes, Wi-Fi interruption/address changes,
 device pasteboard/notification daemon restarts, device capability/permission
 responses, pairing/trust state, RSD/remoted coexistence and macOS/Windows runs

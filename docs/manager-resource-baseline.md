@@ -36,9 +36,9 @@ resource measurements remain **NOT_RUN**. This subitem cannot complete L04. It
 does not establish real-device RSD/service behavior or an operational performance
 promise.
 
-## Main-agent serial preparation
+## Serial preparation
 
-All Rust actions belong to the main agent's one-job queue. First inspect actual
+Run Rust compilation steps serially. First inspect actual
 existing build/validation processes; do not terminate another session's process.
 Use isolated worktrees for the production baseline and current implementation.
 Add only this identical new test file plus the parent registration
@@ -47,7 +47,7 @@ and source manifest. The baseline production revision did not originally contain
 this benchmark, so evidence must distinguish the production commit from its
 test-only overlay.
 
-The main agent compiles each tree serially with the same pinned toolchain,
+Compile each tree serially with the same pinned toolchain,
 features, lockfile and build profile. A suitable explicit build action is:
 
 ```bash
@@ -58,20 +58,20 @@ Select the `compiler-artifact` executable where `target.name == "ios"` and
 `profile.test == true`. Preserve that exact path/hash or copy the executable to
 an evidence directory before compiling the next tree into a shared target dir.
 Never infer the executable from the latest glob match. Retain compiler `-Vv`
-output collected by the main agent as a file; the runner requires that existing
+output collected as a file; the runner requires that existing
 evidence and does not execute the compiler. A custom profile must be declared
-`custom`, with its exact Cargo configuration archived by the main agent.
+`custom`, with its exact Cargo configuration archived alongside the run.
 
 Freeze the tested source tree for compilation/execution, including the test
 overlay and this driver. Keep the frozen manifest and the root validation
 runner's before/after verification beside the measurement results. Source
-freezing and the global Rust-job queue are external main-agent responsibilities;
+freezing and the global Rust-job queue are external caller responsibilities;
 the measurement driver does not claim to establish them.
 
 ## Execute the explicit gate
 
 Run one compiled executable at a time. The example paths below are local evidence
-paths chosen by the main agent; use the actual archived executable and fixture
+paths chosen by the caller; use the actual archived executable and fixture
 source for the tested production revision.
 
 ```bash
@@ -147,7 +147,7 @@ native runtime.
 Resource sampling uses actual
 `Handle::current().metrics().num_alive_tasks()` and Linux `/proc/self/status`
 (`VmRSS`, `VmHWM`, `Threads`) plus `/proc/self/fd` targets. A target beginning
-`socket:[` is a socket file descriptor. The open sampling directory itself is
+`socket:` is a socket file descriptor. The open sampling directory itself is
 included in the FD count. The directory scan is an observation over a changing
 process, not an atomic OS snapshot. Missing/unsupported samples are reported as
 unavailable, never zero. Other platforms need their own sampler and validation.
@@ -207,7 +207,7 @@ records both runs and p50/p95 changes with actual sample counts; it requires
 successful receipts and input/toolchain/fixture parity. Host fields report CPU
 model/count, machine/product, kernel, build declaration and memory metadata when
 available. Frequency/governor, affinity and concurrent load remain explicitly
-unobserved unless the main agent adds independent evidence.
+unobserved unless independent evidence is added.
 
 Use this results template after actual execution; fill measured numbers from the
 JSON artifacts and retain unresolved conditions:
@@ -231,7 +231,7 @@ count. The engineering roadmap's original L04 acceptance remains authoritative.
 
 ## Optional allocator diagnosis
 
-The [2026-10-09 host acceptance](validation/manager-resource-baseline-2026-10-09.md)
+The [2026-10-09 host acceptance
 records the actual before/after comparison and growth attribution. To investigate
 RSS separately, explicitly compile the Linux/glibc probe (no Rust compilation):
 

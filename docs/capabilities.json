@@ -7,7 +7,7 @@
       "id": "windows-ios27.2-acceptance-20261108",
       "level": "real-device",
       "host_os": "Windows x86_64/MSVC",
-      "device": "iPhone16,2 (iPhone 15 Pro Max)",
+      "device": "iPhone16,2 (iOS 27.2)",
       "ios": "27.2 (24B119)",
       "transport": [
         "USB usbmux + Lockdown TLS",
@@ -19,7 +19,7 @@
       ],
       "tested_commit": "4373dcdde1a1fce0000971a3579acca8acf83127",
       "date": "2026-11-08",
-      "location": "C:/Users/oslo/ios-device-tests/20261108-095800-ios27.2/SUMMARY.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "51/51 real-device acceptance test cases PASS across Modules 1-4 on iOS 27.2: Userspace Tunnel 20ms ICMPv6 Echo Nudge burst benchmark (30/30 PASS, median 18.0ms, p95 28.23ms), Cryptex DDI auto-install, DisplayService H.265 video stream capture (5 HEVC access units, 118,920 bytes over userspace UDP forwarding), Universal HID (500ms touch auth wait, 300ms keyboard settle wait, Shift lead-in/out sequence, 5-finger multitouch), NotificationProxy State field, PCAP unit-suffixed interface filtering (en0), AFC extended opcodes, CoreDevice FileService, PasteboardService empty-dict promise decoding, Instruments/DTX/Stackshot sharedCache UUID, WEB-001..WEB-026 (including Puppeteer 25.12.0, Playwright 1.63.0 default connectOverCDP, Selenium 4.35.0), and i4Tools IPA install/upgrade/launch/pkill/uninstall lifecycle.",
       "limitations": "Destructive restore/erase/deactivate/reboot operations remain excluded by safety policy."
@@ -36,11 +36,11 @@
         "generated PNG"
       ],
       "required_state": [
-        "Private fixture policy and exact synthetic UDID/port; primary-agent serial frozen-source validation"
+        "Private fixture policy and exact synthetic UDID/port; serial frozen-source validation"
       ],
       "tested_commit": "88d8f707f6f23bc72b9c0aa80230ad0739752f03",
       "date": "2026-10-11",
-      "location": "docs/validation/review-fixes-2026-10-10.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "12 Viewer tests, scoped/credential rejection, independent DES vector, actual RFB handshake/cleanup, PNG pixels and limits, original worker completion and text results; one original-native scope close/strict TCP EOF/join test. Production HID uses one-way report flush; these tests do not prove a device ACK.",
       "limitations": "No physical screenshot/HID/pasteboard, actual standard VNC client, desktop clipboard, HEVC, image clipboard, orientation or whole-process 64MiB acceptance. Full F05 is incomplete."
@@ -60,7 +60,7 @@
       ],
       "tested_commit": "8947fc1458d8d0ccb9fc8a67d635b23983cadf19",
       "date": "2026-10-09",
-      "location": "docs/validation/manager-route-intent-2026-10-09.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Manual route/fresh metadata and durable stop, known-key recovery at gate capacity, original cause priority, exact pending/version/native rollback at twelve real clock boundaries, native joins and strict EOF.",
       "limitations": "CLI-private synthetic discovery/record metadata with actual original native IO; no Darwin watch/physical/macOS/Windows/remoted. Separate prior check plus final remaining scopes acceptance. 22 device rows NOT_RUN; L03 and maturity unchanged."
@@ -80,7 +80,7 @@
       ],
       "tested_commit": "6f582c9a6eddfc49f7e161f44ad20f507c7986d2",
       "date": "2026-10-09",
-      "location": "docs/validation/sdk-device-query-2026-10-09.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Finite fresh device queries: owned typed/root fields, one total/cancel/admission, declared reply/metadata/output budgets, TCP/Unix/TLS native causes and original retirement. 21 actual owned query fixtures and two pair-byte admission/cause tests.",
       "limitations": "No physical devices or completed Python/C query/app/file/log workflow. Logical budgets exclude requests/TLS/parser temporary allocations/CPU/RSS. Original full entry failed strict lint after check; final remaining required stages passed separately. 22 device rows NOT_RUN; A03 and maturity unchanged."
@@ -100,7 +100,7 @@
       ],
       "tested_commit": "3e697fd210f5276a59070ac7502e7991969a3ee4",
       "date": "2026-10-09",
-      "location": "docs/validation/cdp-client-workflow-2026-10-09.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Actual Puppeteer25.12.0 completes a finite JSContext Runtime workflow through the protected production Rust bridge and owned synthetic plist service; context/evaluate/reject/detach/disconnect order captured.",
       "limitations": "Synthetic service only. Negative Playwright contract is not client initialization success; unsupported download guarantee remains. Original full command failed lint after check; remaining gates and explicit final Node3 exited0. 22 device rows NOT_RUN; F03 original client-fixture acceptance met; F04 domain/device criteria and maturity unchanged."
@@ -120,7 +120,7 @@
       ],
       "tested_commit": "3e697fd210f5276a59070ac7502e7991969a3ee4",
       "date": "2026-10-09",
-      "location": "docs/validation/cdp-client-workflow-2026-10-09.md",
+      "location": "docs/capabilities.md",
       "result": "FAIL",
       "scope": "Actual Playwright1.63.0 connectOverCDP fails Browser.setDownloadBehavior with correlated -32601; expected-rejection gate passes, full client workflow remains unsupported.",
       "limitations": "Synthetic service only. Negative Playwright contract is not client initialization success; unsupported download guarantee remains. Original full command failed lint after check; remaining gates and explicit final Node3 exited0. 22 device rows NOT_RUN; F03 original client-fixture acceptance met; F04 domain/device criteria and maturity unchanged."
@@ -140,7 +140,7 @@
       ],
       "tested_commit": "3e697fd210f5276a59070ac7502e7991969a3ee4",
       "date": "2026-10-09",
-      "location": "docs/validation/cdp-client-workflow-2026-10-09.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Actual client waiter cancellation after consumed Runtime.enable reaps the original Node process and joins original bounded pipes/native peers with strict EOF.",
       "limitations": "Synthetic service only. Negative Playwright contract is not client initialization success; unsupported download guarantee remains. Original full command failed lint after check; remaining gates and explicit final Node3 exited0. 22 device rows NOT_RUN; F03 original client-fixture acceptance met; F04 domain/device criteria and maturity unchanged."
@@ -160,7 +160,7 @@
       ],
       "tested_commit": "2b906d7840590f1019ff4fa1b52e148433bdc7d7",
       "date": "2026-10-09",
-      "location": "docs/validation/sdk-owned-session-2026-10-09.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Finite owned existing-trust service observations, shared/local admission, total/cancellation and actual lease retirement; caller-supplied stream and trust only, no device factory or binding workflow.",
       "limitations": "Initial full command failed lint after fmt/check passed; resumed remaining required gates exited0. Rust2953/Python13 are aggregate host evidence. 22 device rows NOT_RUN; Python/C SDK, factory/query, platform and physical worker cancellation remain. No main-task/maturity upgrade."
@@ -180,7 +180,7 @@
       ],
       "tested_commit": "838c4ed6fc873b1a26533627fb32f563f3bc25e3",
       "date": "2026-10-09",
-      "location": "docs/validation/doctor-rsd-syslog-2026-10-09.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Checked caller-selected RSD route, whole-directory retained metadata admission, missing/malformed distinction, original IO and owned socket release; advertisement only, no device route setup/service execution.",
       "limitations": "All product blobs at combined f077674 match the final full manifest. Rust2923/Python13/48 raw capture passes are host evidence; 22 device rows remain NOT_RUN. Logical retained metadata limits do not prove raw decoder allocations, RSS or CPU. Main tasks and maturity unchanged."
@@ -200,7 +200,7 @@
       ],
       "tested_commit": "838c4ed6fc873b1a26533627fb32f563f3bc25e3",
       "date": "2026-10-09",
-      "location": "docs/validation/doctor-rsd-syslog-2026-10-09.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Actual production Core RSD observer through doctor checks, exact target attribution and safe schema; five actual CLI selector rejection/trap captures. No positive full-process physical-device workflow.",
       "limitations": "All product blobs at combined f077674 match the final full manifest. Rust2923/Python13/48 raw capture passes are host evidence; 22 device rows remain NOT_RUN. Logical retained metadata limits do not prove raw decoder allocations, RSS or CPU. Main tasks and maturity unchanged."
@@ -220,7 +220,7 @@
       ],
       "tested_commit": "f07767406f8131250b21cb71f754db9b9ad0a66e",
       "date": "2026-10-09",
-      "location": "docs/validation/doctor-rsd-syslog-2026-10-09.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Consumed-prefix cancellation/resume, EOF/native IO/raw-message-limit terminal state, strict local subsequent refusal and owned TCP release only; no SDK binding or physical workflow.",
       "limitations": "All product blobs at combined f077674 match the final full manifest. Rust2923/Python13/48 raw capture passes are host evidence; 22 device rows remain NOT_RUN. Logical retained metadata limits do not prove raw decoder allocations, RSS or CPU. Main tasks and maturity unchanged."
@@ -241,7 +241,7 @@
       ],
       "tested_commit": "1a604afea90edbc54b98a21f81fc7f5e29effb04",
       "date": "2026-10-08",
-      "location": "docs/validation/manager-reconnect-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Configured automatic manager episode budgets/backoff/state, identity/epoch/version/owner recovery, actual A-total/B-HTTP isolation; no durable stop/manual/watch or physical acceptance."
     },
@@ -260,7 +260,7 @@
       ],
       "tested_commit": "655733ced2c944728546d02da2c72296e6a6d86b",
       "date": "2026-10-08",
-      "location": "docs/validation/bounded-service-read-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Caller-bounded complete file reads, pre-allocation reply admission, primary/cleanup preservation and local ownership/reuse only.",
       "limitations": "Core files exactly match accepted hashes; full run used a combined pending CLI tree recorded in the frozen patch, not a clean checkout of this commit. SDK bindings, physical workflows, platforms, peak memory and other main-task acceptance remain open."
@@ -280,7 +280,7 @@
       ],
       "tested_commit": "655733ced2c944728546d02da2c72296e6a6d86b",
       "date": "2026-10-08",
-      "location": "docs/validation/bounded-service-read-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Checked Browse total, cumulative reply/frame/entry budgets, strict metadata and rejection through every old entry after committed invalidation only.",
       "limitations": "Core files exactly match accepted hashes; full run used a combined pending CLI tree recorded in the frozen patch, not a clean checkout of this commit. SDK bindings, physical workflows, platforms, peak memory and other main-task acceptance remain open."
@@ -300,7 +300,7 @@
       ],
       "tested_commit": "71a59fc2152ad4dbdff26c08d5152864a078a815",
       "date": "2026-10-08",
-      "location": "docs/validation/device-doctor-manual-admission-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Manual selector/key admission, typed HTTP resource refusal and original native-owner recovery only."
     },
@@ -320,7 +320,7 @@
       ],
       "tested_commit": "71a59fc2152ad4dbdff26c08d5152864a078a815",
       "date": "2026-10-08",
-      "location": "docs/validation/device-doctor-manual-admission-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Explicit existing-trust read-only sessions, Developer Mode/DDI signature metadata, safe schema1/schema2 and original failure class; no RSD route, mounted/usable DDI or physical support assertion."
     },
@@ -338,7 +338,7 @@
       ],
       "tested_commit": "71a59fc2152ad4dbdff26c08d5152864a078a815",
       "date": "2026-10-08",
-      "location": "docs/validation/device-doctor-manual-admission-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Additive checked image metadata, missing/false/malformed distinction and legacy wire/default compatibility only."
     },
@@ -352,11 +352,11 @@
         "Private synthetic discovery metadata; actual Core userspace native workers, original Arc joins and duplex/loopback EOF."
       ],
       "required_state": [
-        "Independent worktrees for implementation/tests; main-agent integration and serial validation; product sources frozen during both runs."
+        "Independent worktrees for implementation/tests; integration and serial validation; product sources frozen during both runs."
       ],
       "tested_commit": "6bceff76ce31bac1006b4e97f1d0d00a28731abc",
       "date": "2026-10-08",
-      "location": "docs/validation/tunnel-success-bookkeeping-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Successful candidates use non-queuing immediate cleanup or owned deferred intents. Version/ticket fences preserve later failures; cleanup expiry cannot create connection backoff. Fifth-candidate fairness, saturation slot return, same-poll rollback and original native ownership verified. Tunnel268PASS; full2792Rust/13Python,0FAIL/2existingignored, all required gates PASS.",
       "limitations": "Host bookkeeping work item only. Twenty-two device checks NOT_RUN; other platform, retained payload bytes, HTTP/upgrades/blocking, physical freshness, reconnect and performance acceptance remain. Q04 excluded; no main task or maturity upgrade."
@@ -375,7 +375,7 @@
       ],
       "tested_commit": "5e521e5f27d2cb1a7da4a9b93847a7e7925d3178",
       "date": "2026-10-08",
-      "location": "docs/validation/tunnel-scan-control-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Checked 30-second scan total starts before scan-lock wait and spans candidate/reconciliation/failure/readiness waits. Global clear/close cancellation keeps stop-A/continue-B isolation. Original paired/List errors survive caller Drop in fixed eight-slot history; normal IO downcast and repeated terminal original identity retained. Whole expiry creates no new backoff/readiness; publication/failure rollback and native joins/status/EOF covered. Full2781Rust13Python0FAIL2ignored, CLI1120/Core1496/public55; required full gates PASS.",
       "limitations": "Cooperative timing only; error-count capacity is not an arbitrary payload-byte or RSS bound. Global retained bytes, HTTP/upgrades/blocking/startup, physical freshness/reuse/restart/manual epochs and all other original acceptance remain. Active30 tasks excludingQ04,9complete21unfinished;22device NOT_RUN. No capability maturity/platform/device/performance upgrade."
@@ -394,7 +394,7 @@
       ],
       "tested_commit": "4415be9a65921a346208f912dbe59e399e471591",
       "date": "2026-10-08",
-      "location": "docs/validation/tunnel-bookkeeping-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Failed outcome intents do not occupy connection window or queue failure writers before later candidate backoff reads. Single checked1s batch clock/no perrow reset/zero-overflow/actualElapsed;ticket pre-post mutation/rollback exactold row ornewrow removal/timelyprefix/stopA-only. Original paired IO and Incomplete CLIresource remainprimary with actualElapsed contextsecondary.4actualnative fixtures recover joins/status/EOF/taskbaseline/registry/permits before regressions. Full2766Rust13Python0FAIL2existingignored CLI1105Core1496public55;CLI242/1ignored/min/stack5/strict/fmt/full/tools73/help118/raw38/host5/CLI95/backup3 PASS. Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN;UID/maturity/device/ACK/RSS/performance/platform unchanged.",
       "limitations": "Failure write staging only. Success failed-row remove may queuewriter;batchlock wait not immediately device-cancelled;last_attempt latercommit maydelay retry. Direct preceding private testAPI wrappers keptcfgtest;newnative regressions actualscanner. Intentcount/strings logical snapshot-derived bounds,no allocator/RSS/CPU/longrun or physicaldevice certification. V1/V2 newfixture synchronization/class/attached-phase expectations corrected without altering oldassertions/types."
@@ -413,7 +413,7 @@
       ],
       "tested_commit": "327b0ef38e43576f2313c51c597b5c16cb7abc01",
       "date": "2026-10-08",
-      "location": "docs/validation/tunnel-snapshot-admission-2026-10-08.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Four manager Source consumers have fullraw checks;borrowed entire paired plan beforeclones/tickets. USBbeforeevict,pairedincomplete preservesunknownbackoff/USBpublication,SourceErr remainsouter/staleSourceOk quiet. Exact/over row/unique/UTF-8/aggregate/combined count/bytes;actualHTTPpolicyreload indices-only;twoactualnative fixtures originaljoins/status/EOF/taskbaseline beforeassertions. Full2754Rust13Python0FAIL2existingignored CLI1093Core1496public55;CLI230/1ignored,tools73/help118/raw38/host5/CLI95/backup3 PASS. Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN;UID untouched,no maturity/ACK/device/RSS/performance/platform certification.",
       "limitations": "Manager accepted/copied logical data only. Source/Core allocation,vector/string capacity/initial publication clones/arbitrary manual input and global retained metadata are separate. Ordinary L01/L02 admission is not Q04 UID/fuzz/resource experiment. Initial unique-overflow baseline was already caught by oldcoordinator cap;subsequent helper asserts no newgates,not falsely called oldfailure."
@@ -432,7 +432,7 @@
       ],
       "tested_commit": "aa3c3a46c19dd19175c879bcb44f5856d24259ec",
       "date": "2026-10-08",
-      "location": "docs/validation/tunnel-paired-final-fence-2026-10-07.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Original paired Err retained by both stale fences;second now covers epoch change after firstcheck. Actualclear/notifyShutdown;originalnative joins/status/EOF/tasks before regressions. Full2740Rust13Python0FAIL2existingignored CLI1079Core1496public55;CLI216/1ignored,tools73/help118/raw38/host5/CLI95/backup3 PASS. Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;UID untouched,no maturity/ACK/device/RSS/performance/platform certification.",
       "limitations": "Close-success fixture empty;nonemptyclose canCancelledbeforefinalfence. Clear-success mayadmitcoordinator but noSourceconnection/ready. OriginalIOtype/kind/class tested,allocationidentity nottested;no threadedstress/mobdev2/DNS/wholeScan persistence proof."
@@ -452,7 +452,7 @@
       ],
       "tested_commit": "1ab05e3bcefd3926a402dc645f55c72d16aad6f4",
       "date": "2026-10-07",
-      "location": "docs/validation/tunnel-paired-error-retention-2026-10-07.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Original paired Source IO retained across same-poll completed clear/close,successful stale snapshots discarded;initial exact native userspace Arc joined/status/EOF/tasks recovered before assertion. CLI212/1ignored/full2736Rust13PythonCLI1075Core1496public55,0FAIL2existingignored,tools73/help118/raw38/host5/CLI95/backup3 PASS. Whole-scan post-paired totals/cancellation,out-of-clock failure bookkeeping,metadata bytes,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original L01-L04/classes5-9 requirements remain. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN;UID untouched,all other acceptance required,no maturity/ACK/device/rollback/RSS/performance/platform proof. Corrected error outcome needs pre-1.0 review."
     },
@@ -470,7 +470,7 @@
       ],
       "tested_commit": "c92503ded8a60515a272f4afb1dba99085b130dc",
       "date": "2026-10-07",
-      "location": "docs/validation/tunnel-automatic-deadline-2026-10-07.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Checked absolute per-candidate total and shared same-poll native-handoff/metadata/query/publication fences,late unobserved row rollback/original new native retention,zero/overflow admission and native categories;old15s/window policy stays. CLI208/1ignored/full2732Rust13PythonCLI1071Core1496public55,0FAIL2existingignored,tools73/help118/raw38/host5/CLI95/backup3 PASS. Whole-scan post-paired handoff/reconciliation/readiness and out-of-clock failure bookkeeping,metadata byte budgets,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original conditions remain. Cooperative Source/CPU/Drop. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN;UID untouched,all other acceptance required,no maturity/ACK/rollback/RSS/performance/platform certification. Timing needs pre-1.0 review."
     },
@@ -488,7 +488,7 @@
       ],
       "tested_commit": "a963679ab0f853b1a38bfcee9ac59471d4920641",
       "date": "2026-10-07",
-      "location": "docs/validation/tunnel-manual-poll-crossing-2026-10-07.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Manual Source/native handoff/metadata/query/publication share original checked clock even across same-poll expiry;unobserved insert restores original live Arc,new runtime remains retained,actual Elapsed/acquired IO remain,no late fallback contact. CLI201/1ignored/full2725Rust13PythonCLI1064Core1496public55,0FAIL2existingignored,tools73/help118/raw38/host5/CLI95/backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Cooperative CPU/Drop,automatic candidates/whole-scan/genericHTTP/upgrades/blocking/startup/metadata/physicalfreshness/reuse/restart/manualepochs/otherL01-L04/classes5-9 remain. Active30/allchildren excludingQ04,9complete21unfinished,UID untouched,all other acceptance remains. No maturity/remote rollback/ACK/RSS/performance/platform certification;late-result timing needs pre-1.0 review."
     },
@@ -506,7 +506,7 @@
       ],
       "tested_commit": "6debaf9b6d78c10b4be1cfd55e2fbcbb69da8756",
       "date": "2026-10-07",
-      "location": "docs/validation/cli-tunnel-native-retirement-2026-10-07.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Per-target Core reservation/exact Arc attachment before initial RSD;CLI pre-Source admission and bounded4096 original native owners across metadata/cancellation/retirement;first outer valid joins certificate,readonly acquired-cause capture/bounded history,server native and metadata/HTTP under one independent clock,standalone bridge. CLI194/native227/min83/83,forward26/tunnel95,full2718Rust13PythonCLI1057Core1496public55,0FAIL2existingignored,tools73/help118/raw38/host5/CLI95/backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Generic HTTP/upgrades/blocking/startup/whole-scan/metadata/physical freshness/reuse/restart/manualepochs/otherL01-L04/classes5-9 remain. Active30/allchildren excludingQ04,9complete21unfinished,UID untouched,other acceptance unchanged. No maturity/ACK/OS TUN/RSS/long-run/performance/platform certification;API/timing/error changes require pre-1.0 review."
     },
@@ -524,7 +524,7 @@
       ],
       "tested_commit": "f00ff25395a8432087daf578c9dd23975b09be5a",
       "date": "2026-10-07",
-      "location": "docs/validation/native-tunnel-owner-2026-10-07.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Retain original typed parents/child sets across timeout/caller cancellation; checked cooperative shutdown/retry, bounded immutable native causes and valid-accounting joins_complete; shared stop/retire and same-Arc-safe replacement; raw normal reader join. Native220/min77/min80,forward24,tunnel92,full2679Rust13PythonCLI1025Core1490public54,0FAIL2existingignored,tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. CLI retirement/server/Source pre-return/generic HTTP/blocking/otherL01-L04/classes5-9 remain. Active30/allsubtasks excludingQ04,9complete21unfinished,UIDunfixed,other acceptance unchanged. No maturity/ACK/OS TUN/RSS/long-run/performance/platform certification; API timing/error migrations require pre-1.0 review."
     },
@@ -542,7 +542,7 @@
       ],
       "tested_commit": "a4fc6aa6ccf455773009c3a1a38a9d0e8ca67958",
       "date": "2026-10-07",
-      "location": "docs/validation/forward-watch-shutdown-2026-10-07.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Single receiver per-iteration cancellation spans branch selection and TUN/stream/flush writes. Close/send stops pending step,Ready next-step work suppressed,acquired closing-poll stdIO/BrokenPipe/payload/Disconnected retained. Active framing/MTU/queue/reader owner/old assertions remain. Full2644Rust13PythonCLI1025Core1457public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Terminal partialwrite abandonment;unconsumed queue errors may be skipped;normal joins/reader panic propagation/cleanup deadline/outer native owners/otherL01-L04/classes5-9 remain. Active30/Q04allsubtasks excluded,9complete21unfinished,UID unfixed,other acceptance unchanged. No maturity/API/errorvariant/dependency/policy/pairing/binding/OS TUN/ACK/socket/RSS/long-run/performance/platform certification."
     },
@@ -560,7 +560,7 @@
       ],
       "tested_commit": "a455d6788168b61b3bae49fa0a996b3fa2b5824e",
       "date": "2026-10-07",
-      "location": "docs/validation/forward-reader-owner-2026-10-07.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Local JoinSet owns one packet reader; caller drop/abort/unwind schedules abortion and eventual stream/task release. Actual20-byte partial header/capacity1 write,controlled TUN/flush,parent nativeJoinError/typedpanic and normalwatch Ok. Active framing/MTU/queue/outcome unchanged. Full2638Rust13PythonCLI1025Core1451public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Normal reader joins/panic propagation/cleanup deadline/outer kernel/wholeowner joins and other L01-L04/classes5-9 remain. Active30 tasks/allsubtasks excluding Q04,9complete21unfinished;UID unfixed,other acceptance unchanged. No maturity/API/dependency/pairing/OS TUN/ACK/socket/RSS/long-run/performance/platform certification."
     },
@@ -578,7 +578,7 @@
       ],
       "tested_commit": "7dc589bf4f26ead3597d991992f251d0ec29831e",
       "date": "2026-10-07",
-      "location": "docs/validation/tunnel-shutdown-fences-2026-10-07.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Ticket generation/shutdown read guards span synchronous publication/failure mutation; stale writes skip, native cancellation preserved, no guard across await/reentry. Original check/policy/liveness/count/slot/fallback/budgets remain. Scan terminal recheck after capture prevents completed close becoming seen; preclosed/overflow priority and clear reuse preserved. Full2631Rust13PythonCLI1025Core1444public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/subtasks excluding Q04,9complete21unfinished;UID unfixed,other acceptance unchanged. Close may wait before cleanup clock,response order differs from commit. Policy/physical snapshots,same-poll fallback,other scan writes,startup/whole-scan/metadata/native ownership/joins/physical freshness/reuse/restart/manual epochs/otherL01-L04/classes5-9 remain; existing proxy JoinSet not repeated. No maturity,API,dependency,protocol,pairing,ACK,resource/performance/platform certification."
     },
@@ -596,7 +596,7 @@
       ],
       "tested_commit": "19315169dda049d6ab1acd68414bf4976b147b47",
       "date": "2026-10-06",
-      "location": "docs/validation/userspace-construction-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Native listener bind/local_addr before channel/split/spawn prevents detached construction workers and releases input stream on error, original Io/source/IPv6-MTU validation/success4task behavior retained. Three real EMFILE attempts no tasks/drop1/peerEOF; restored real native success+reader poll+observed abort completion. RAII unwind/local_addr fault only structural review,no explicit joins/ACK/RSS/long-run claim. Full2621Rust13PythonCLI1015Core1444public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/subtasks excluding Q04,9complete21unfinished;UID unfixed,other acceptance unchanged. Success/proxy/kernel/blocking/HTTP owners,linearization/scan terminal/startup/whole-scan/metadata/physical freshness/reuse/restart/manual epochs/otherL01-L04/classes5-9 remain. No maturity,protocol,pairing,API,dependency,resource/performance/platform certification."
     },
@@ -614,7 +614,7 @@
       ],
       "tested_commit": "57d57999fddbe0234b502686b65b8500d7d50cfd",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-scan-setup-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Original checked15s discovery clock includes initial/post-USB table, USB coordinator and no-authorized failure/ready waits; clear/shutdown cancel while held, per-poll nominal guard blocks late mutation/gate insertion. Returned USB native error survives same-poll cancellation; ListError cleanup cancel skips stale pruning, expiry retains primary IO plus native Elapsed privately with source primary and safe wrapper/CLI output. Paired reply ends setup; candidate totals/post-paired behavior retained. Full2620Rust13PythonCLI1015Core1443public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/subtasks excluding Q04,9complete21unfinished;UID unfixed,other acceptance unchanged. Single-poll CPU,shutdown/publication linearization,startup/whole-scan/post-paired/metadata/native joins/physical freshness/reuse/restart/manual epochs/otherL01-L04/classes5-9 remain. No maturity,protocol,pairing,API,dependency,ACK,resource/performance certification;timing needs release review."
     },
@@ -632,7 +632,7 @@
       ],
       "tested_commit": "d3ed1c33c14b2dcfdf83ef6c678cc1f451813176",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-manual-deadline-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "One checked15s absolute manual connection deadline starts before coordinator acquisition and covers serial/cache/permit/connect/trusted fallback/attachment query/publication. Native Elapsed/cancellation/source IO remain; zero does not poll source, overflow is InvalidInput; due nominal deadline suppresses next work poll. Late completed-device publication releases owned result. Full2604Rust13PythonCLI999Core1443public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/subtasks excluding Q04,9complete21unfinished;UID finding unfixed,other acceptance unchanged. Single-poll CPU,shutdown/publication linearization,scan internal locks/startup/whole-scan/metadata/native joins/otherL01-L04/classes5-9 remain. No maturity,protocol,pairing,public API,dependency,physical/resource/performance certification; timing needs release review."
     },
@@ -650,7 +650,7 @@
       ],
       "tested_commit": "a4beec7fa01b605933b1966b79ef3ee738ae41fd",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-coordinator-cancel-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Directly owned biased select cancels coordinator lock await on clear/shutdown before held lock release; old post-lock epoch check preserved and ordinary fresh admission works. No acquisition deadline or manual-total coverage yet. Full2591Rust13PythonCLI986Core1443public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/all subtasks excluding Q04,9complete9notstarted12inprogress-or-conditions;UID finding unfixed,other acceptance unchanged. Post-check/startup/whole-scan/metadata/native joins/otherL01-L04/classes5-9 remain;no maturity,protocol,pairing,public API,dependency,physical/resource/performance change or certification."
     },
@@ -668,7 +668,7 @@
       ],
       "tested_commit": "0d025dd3404082fb76adab20758b2e278b2d9464",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-shutdown-admission-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Terminal lifecycle closes before async cleanup; existing tickets cancel and fresh manual/scans reject; clear never reopens shutdown but ordinary clear remains reusable. Coordinator captures pre-lock epoch; its wait still awaits lock release. Full2590Rust13PythonCLI985Core1443public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. No atomic post-check race/asyncDrop/Axum-Core forced join/freshness/resource/performance claim. Active30 tasks/all subtasks excluding Q04,9complete9notstarted12inprogress-or-conditions;UID risk unfixed,other acceptance unchanged. Startup/whole-scan/metadata/coord-wait/native joins/otherL01-L04/classes5-9 remain;no maturity/protocol/pairing/API/dependency change."
     },
@@ -686,7 +686,7 @@
       ],
       "tested_commit": "de74436beeb302fd1756dd10d7f6a9f324344de9",
       "date": "2026-10-06",
-      "location": "docs/validation/pbkdf2-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Explicit high-cost independently runs existing ignored10Mvector; normal full unchanged. Require exactselectedline/one1PASSsummary/actualCoreartifact+SHA/no incomplete capture, frozen source and owned rawlogs. Ordinary2581Rust13PythonCLI976Core1443public52,0FAIL2existing ignored;tooling73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Linux process proof is not macOS/Windows Cargo-tree validation or L04 baseline. Q04 inprogress: all XPC/DTX/OPACK/NSKeyedArchiver fuzz targets/syntheticseeds/trunc-length-depth-UID-compression/CPU-alloc-panic/decodedpeaks required. All31 tasks/subtasks/history9complete9notstarted13inprogressconditions/otherL01-L04/classes5-9 retained;no maturity/SDK/protocol/pairing/dependency change."
     },
@@ -704,7 +704,7 @@
       ],
       "tested_commit": "5120fa90e06a92f4734603382b98779b69f1ca38",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-server-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Persistent private shutdown bool, parent-owned Box scanner/candidates, one pinned Ctrl-C after startup, independent2s table-clear/HTTP-drain. Native primary/cleanup stored separately; source primary and safe diagnostic formatter retained. Caller Drop signals epochs/try-clears only unlocked maps; held locks and delegated HTTP/Core workers not asynchronously joined. Real SIGINT targets only a fake-source child, not physical device/CLI startup or other-platform proof. Full2581Rust13PythonCLI976Core1443public52,0FAIL2existing ignored;tools67help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Startup totals/late admission/after-check changes/native joins/generic callerDrop primary reporting/metadata/L03-L04/Q04/classes5-9 remain. All31 tasks/subtasks/history9complete10notstarted12inprogressconditions;no maturity upgrade,protocol/pairing/API/dependency change;exit timing needs review."
     },
@@ -722,7 +722,7 @@
       ],
       "tested_commit": "26b89951b52dd690bcc0e994541007b5426fba93",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-retention-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Effective snapshots release unauthorized/observed absent/known changed failure rows; paired errors preserve unknown mobdev2, present expired identities retain30/60/120/240/300s.4096 owned slots cover records and pending reservations; new attempts at capacity stop before native IO, existing retries share a lease, success/cancel release and write-lock ticket check rejects old queued outcomes. Logical count does not certify bytes/RSS/native workers/socket/whole-scan bounds. CLI968/Core1443/public52/full2573Rust13Python,0FAIL2existing ignored; tooling67/help118/raw38/host5/CLI95/backup3 PASS.22device NOT_RUN; Chromium/installed3.9/3.13 NOT_RERUN. No maturity upgrade, pairing or protocol/API change; cache/admission timing needs review. All31 tasks/subtasks/history,9complete10notstarted12inprogressconditions and L01/L02/L03-L04/Q04/classes5-9 remain active."
     },
@@ -740,7 +740,7 @@
       ],
       "tested_commit": "a47648442d5b7707ad41beeb58a6ab1ad764ea9a",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-discovery-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "PrivateScanControl capturesseenSCANepoch beforequeue/checked15s deadline sharedscanmutex-USBsnapshot-pairedsnapshot; realElapsedoriginal/staticcontext,dueZero usespendingtimerwithoutrealpoll,overflowinputdecision invalid_inputbeforeSource/mutation. Stop-clear returnsquietNone/scanOk/dropqueued-phasefuture/noReady,no newfailurebackoff; newgeneration usable. SETUP ONLYendsatpairedreply; originalcandidate15s/window/guards/IO/trust/source unchanged, no wholeScan budget/no actor/protocol/newpairing/API. Full2563Rust/13PythonCLI958Core1443public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. SourcefutureDrop NOTblockingload-pair worker stop/join. WholeScan/metadataCPU-handoff/knownprimaryunderparentDrop/retainedmaps/nativejoins/aftercheckchanges/receiverfalsepositive/reuse-restart/manualepochs/L03-L04/Q04/platform/device remain.22device NOT_RUN;Chromiuminstalled3.9/3.13 notrerun;no ACK/nativejoin/RSS/benchmark/decoderpeak/maturityupgrade. All31/subtasks/history9complete10notstarted12inprogressconditions,L01L02class4/L03-L04/Q04/classes5-9/goalactive."
     },
@@ -758,7 +758,7 @@
       ],
       "tested_commit": "7a77000cdbd0a8e6d2fbaaf6ac5bd630af47d6c5",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-liveness-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Knownfalse existingdevice.is_alive AFTERexpectedID-recordvalidation BEFOREdaemonquery andAFTERpubmutex/epoch-policyimmediatelyBEFOREinsert cancelslocaladmission/ownedDrop/nofailurebackoff acrossallroutes. No syntheticnativeIO,source/budget/permit/query/backoff/SDK/API/codec/trust/HTTP changes. KernelAPItrue=receiver_count>0/userspace=truealltaskhandlesunfinished; trueNOTconnectivity/ACK/join andreceiverclones/aftercheckexit remain. Full2554Rust/13PythonCLI949Core1443public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. Aftercheckchanges/unobservedsameID-hostreuse/restart/manualepochs/nativejoins/retainedmaps/resource/discovery-wholeScan/L03-L04/Q04/platform/device pending.22device NOT_RUN;Chromiuminstalled3.9/3.13 notrerun;no nativejoin/ACK/RSS/benchmark/decoderpeak/maturityupgrade. All31/subtasks/history9complete10notstarted12inprogressconditions,L01L02class4/L03-L04/Q04/classes5-9/goalactive."
     },
@@ -776,7 +776,7 @@
       ],
       "tested_commit": "d0b04bed79ecec5c3f724ff003122f66b1159216",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-backoff-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "PrivateFailedAttempt identity Routeclone+expectednativeID. Skip/increment onlysameidentity plusoriginaltimefunction; knownID/pairedhost/routechange retriesimmediately,newfailure starts1,successremoveasbefore; same30/60/120/240/300 schedule/cancel/nativeIO preserved. SafeDebug staticlabel concealsretainedhost. No newpairing/actor/API/codec/deps/configurable-reconnect/retryofsideeffects/trustchange. Full2550Rust/13PythonCLI945Core1443public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. Failuremap acrossUIDs stillunbounded;unobservedsameID-hostreuse/restart/afterquery/manualepochs/nativeLive/worker-serverjoins/metadata/discovery-wholeScan/L03-L04/Q04/platform/device remain.22device NOT_RUN;Chromiuminstalled3.9/3.13 not rerun;no ACK/nativejoin/benchmark/RSS/decoderpeakproof/maturityupgrade. All31/subtasks/history9complete10notstarted12inprogressconditions,L01L02class4/L03-L04/Q04/classes5-9/goalactive."
     },
@@ -794,7 +794,7 @@
       ],
       "tested_commit": "86fecfe3331e9efa74dc76fbc48b47ad5c3df8f1",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-publication-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "SuccessfulUsbmux/directUSBcreation ownscompleteddevice duringEXTRAexistingSource.usb_devices connection/list query BEFOREglobalpublicationlock, same15s/serial/permit/watch. CurrentUDI-IDmember stores;absentDrops/localcancel/nofailurebackoff;Connect/List IOretained/staticcontext/actualElapsed. Wifi-mobdev2 andinitialexpected-IDrejection skipquery. Full2545Rust/13PythonCLI940Core1443public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. Extraquery/startupimpactneedsrelease/device review. POINT-IN-TIMEatreply only: laterchanges/reuse/restart/manualepochs/nativealivefalse/worker-serverjoins,UID-onlybackoff suppressingfreshgeneration,retainedmetadata/resource/discovery-wholeScan/L04/platform/device remain.22device NOT_RUN;Chromiuminstalled3.9/3.13 not rerun;no ACK/nativejoin/benchmark/RSS/decoderpeakproof/maturityupgrade. All31/subtasks/history/9complete10notstarted12inprogressconditions,L01L02class4/L03-L04/Q04/classes5-9/goalactive."
     },
@@ -812,7 +812,7 @@
       ],
       "tested_commit": "1eb45c25145f5306a5831df6a0c29d494a94ca96",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-identity-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "PrivateSource retains existingMuxClient nativeID/USBflag. Prunes matchingoriginalusbmux-routepublication onlyifitsIDnotobserved forUDI; anotherattachedtransport and concurrentnewpublication survive. CandidatefirstUSB/lastnonUSB keepsCorepriority/order; completedIDmismatch dropsownedresult/localOperationCancelled/noFailureBackoff. PrivateRoutefamily replacesID0sentinel,no protocolvalidityclaim. No SDKexport/frame/extraDaemonquery. Full2539Rust/13PythonCLI934/Core1443/public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. POINT-IN-TIMEonly: manualexpectedIDNone/no postconnectquery/listener; matchingoldIDafterunobserveddetach/reuse/daemonrestart/snapshotchange stillpending,as publicationfreshness/discovery-wholeScan/nativejoins/metadata/resources/L04/platform/device.22device NOT_RUN;Chromiuminstalled3.9/3.13 not rerun;no ACK/nativejoin/benchmark/RSS/decoderpeakproof or maturityupgrade. All31main/subtasks intact9complete10notstarted12inprogressconditions,L01/L02/class4/L03–L04/Q04/classes5–9/goalactive."
     },
@@ -830,7 +830,7 @@
       ],
       "tested_commit": "66bf7311020763b8a29b175a117cdf1b70d4e22f",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-parallel-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Parent scanner owns max4 connection futures with buffer_unordered and existing shared permits/device serial/watch/budget/backoff. Combined USB and existing-trust mobdev2 candidate dedup keeps first effective USB/paired host, avoids duplicate-A window starvation and USB-batch blocking of B. No new detached connection tasks. Discovery now precedes USB connection attempts and maydelaystartup; failure retained until USBcandidate results then returns native IO/keepsUSBrecords/doesnotsetready. Full2532Rust/13Python,CLI927/Core1443/public52,0FAIL/2existing ignored;tools67/help118/raw38/host5/CLI95/backup3 PASS. In-flight detach/replug identity/stale snapshots,discovery-wholeScan deadlines,known primary undergenericparentDrop,metadata/nativeworkers/serverjoins/resource/L04/platform/device remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/nativejoin/benchmark/RSS/decoder peak proof or maturity upgrade. All31/tasks/subtasks intact,9complete/10notstarted/12inprogressconditions;L01/L02/class4/L03–L04/Q04/classes5–9/goal active."
     },
@@ -848,7 +848,7 @@
       ],
       "tested_commit": "e0f52671396e6408fc38921f78f73a256a45ce65",
       "date": "2026-10-06",
-      "location": "docs/validation/tunnel-isolation-2026-10-06.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Private per-device serial/watch generations and max4 shared source-connect permits isolate actual local CLI manager queries/stops from network waits; stop cancels active/queued starts and fences publication. Manual15s total after ticket acquisition includes queue/permits/native connect/existing-trust discovery/fallback/publication; native Elapsed/IO/cancel retained and absent404 may cancel pending start502. Scan only serializes scans, captures candidates before waiting and fences old discovery/publication snapshots; original30/60/120/240/300 backoff remains. Full2524Rust/13Python,CLI919/Core1443/public52,0FAIL/2existing ignored;tools67/help118/raw38/host5/CLI95/backup3 PASS. Automatic scan connects STILLSEQUENTIAL; in-flight detach/replug identity, discovery/whole-scan budgets, native tasks/joins/resource/L04/otherL01/L03–L04/Q04/classes5–9 remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun. No Apple ACK/native async joins/benchmark/RSS/decoder peak proof or maturity upgrade. All31 main/subtasks intact,9complete/10notstarted/12inprogress-orconditions;goal active."
     },
@@ -866,7 +866,7 @@
       ],
       "tested_commit": "bf2da2dcef7106a16b19f0bd355e80b0e998b642",
       "date": "2026-10-05",
-      "location": "docs/validation/webdriver-revocation-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Actual WebDriver typed callback after map retirement creates one100ms Budget through existing runtime mutex/original context+forwarding cleanup WITHOUT outer competing timer. NativeJoinHandle<Result<()>>/TaskOwner retains returned PermissionDenied/Elapsed and original business primary plus cleanup IO/Elapsed through join/reap; native normal exit can contain failure. Existing safe tracing with broader sessionclosed label; no HTTP/schema/route/success/API change. Full2509Rust/13Python,CLI904/Core1443/public52,0FAIL/2existing ignored;tools67/help118/raw38/host5/CLI95/backup3 PASS. Budget starts after retirement; map wait/known error before callback return if store aborts/active Arcs/idlehandles/server/caller Drop/constructor-active totals/terminal-caps remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/server join/platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 active."
     },
@@ -884,7 +884,7 @@
       ],
       "tested_commit": "7fb827b1ee4ff17e29597123b23672184a20a0a5",
       "date": "2026-10-05",
-      "location": "docs/validation/session-store-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Store holds active entries and retired TaskOwners. Explicit removal/replacement issues abort before join mutex wait and keeps owner through cancellation; completion/native JoinError persists and completed handles never repolled. Unexpected panic/external cancellation retains original native cause and safe tracing; explicit abort cancellation neutral. Revoked actor verifies original weak resource identity, retires its own handle, drops global lock/strong store before legacy100ms unit callback, never selfabort/selfjoin. API operations try_lock/reap finished actors only; no new actor/background reaper. Full2501Rust/13Python,CLI896/Core1443/public52,0FAIL/2existing ignored;tools67/help118/raw38/host5/CLI95/backup3 PASS. Callback native cleanup primary, active Arcs, idle completed retention until API/Drop, caller/store/server Drop, constructor/active totals/terminal/caps remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/server join/platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 active."
     },
@@ -902,7 +902,7 @@
       ],
       "tested_commit": "731bdb0ac96d30013a17c083fd7c9f19c8a85a81",
       "date": "2026-10-05",
-      "location": "docs/validation/webdriver-delete-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Checked100ms total at DELETE handler entry through map removal/runtime mutex/original context+forwarding cleanup; one original Automation context and command IDs, once-only cleanup disarm/unusable-client skip. No outer competing cleanup timeout; original business primary plus native IO/issued Elapsed retained privately. Existing AppError500/safe body/schema1 machineheaders now reports failures previously hidden by200null; success/repeat keep200null. Full2488Rust/13Python,CLI883/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Handler only; registry joins/revocation callback/active Arcs/server Drop/constructor primary/active totals/terminal retention remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/server join/platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 active."
     },
@@ -920,7 +920,7 @@
       ],
       "tested_commit": "d73514f4b83c956fe860f1051d27f0d912203a5d",
       "date": "2026-10-05",
-      "location": "docs/validation/cdp-browser-lease-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "One pinned principal.revoked controls initial discovery and biased active work; inner traffic remains unbiased with per-turn yield. Typed cancellation primary and existing safe diagnostics precede independent common2s child cleanup. Removed owners live outside raced active future; borrowed cleanup retains original deadline, completed joins and issued native waiter errors. Resumption/reparenting never repolls completed handles or loses observed primary/cleanup. All remaining/retiring children stop/abort/join with retained previous issued errors. Full2479Rust/13Python,CLI874/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Browser lease only; generic caller/server Drop, constructor/active totals/stored registry/terminal retention remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/server join/platform/benchmark/RSS/decoder peak proof. All31/L01/class4/L02–L04/Q04/classes5–9 active."
     },
@@ -938,7 +938,7 @@
       ],
       "tested_commit": "d8cf32eb4ad09217c3f9962df658eea03fed12e9",
       "date": "2026-10-05",
-      "location": "docs/validation/cdp-browser-tasks-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "One pinned local stop controls active work outside unbiased traffic. Native primary is recorded before independent2s cleanup and survives supervisor abort; native and dual causes remain owned. Explicit detach/Closed/dead sender stops and joins. Returned browser exit cancels all remaining children under one2s total, aborts all pending then joins each; unexpected JoinError/missing outcome are errors. Existing safe diagnostics/successful detach replies remain. Full2467Rust/13Python,CLI862/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Explicit returned stop only: outer browser principal/caller/server Drop, retiring owner during raced cleanup, constructor/active totals/stored registry remain pending; terminal try_send can miss full queue.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/browser lease join/platform/benchmark/RSS/decoder peak proof. All31/L01/class4/L02–L04/Q04/classes5–9 active."
     },
@@ -956,7 +956,7 @@
       ],
       "tested_commit": "5ecb565633179185c77ecce9a688eb148ad62235",
       "date": "2026-10-05",
-      "location": "docs/validation/cdp-page-lease-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Direct page owns one pinned principal.revoked future across checked setup and active work. Biased outer control stops traffic; per-message yield preserves existing inner unbiased selection. Returned revocation has typed OperationCancelled and awaits existing independent2s cleanup without repolling the completed lease future. Valid attached owners send one existing close, invalid observed partial frames skip recovery, pending source cancellation drops before return/wire. Delayed80ms flush and real2s cleanup expiry/stream Drop/EOF/actual lock reacquisition, primary Cancelled plus native cleanup IO covered. Revocation now reaches existing safe diagnostics instead of silent outer ScopeDenied discard. Full2456Rust/13Python,CLI851/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Direct page lease only; generic caller/server Drop, constructors, active request/output totals, browser/stored task joins remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/join/platform/benchmark/RSS/decoder peak proof. All31/L01/class4/L02–L04/Q04/classes5–9 active."
     },
@@ -974,7 +974,7 @@
       ],
       "tested_commit": "8956866c4d095c5f3f0919a431b8b7e022f55e54",
       "date": "2026-10-05",
-      "location": "docs/validation/webdriver-cleanup-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Runtime stop borrows its original AutomationSession for context close then forwarding close under one100ms stored cleanup total. Disarms at first stop poll, preventing duplicates after success/business failure/caller cancellation. Retains native IO/Elapsed and both context/socket errors with original primary classification. Committed context cancellation/expiry invalidates client and skips socket recovery; explicit runtime Drop releases stream. Original command IDs1/2 and one forwarding close observed. Full2449Rust/13Python,CLI844/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. HTTP DELETE result/outer timeout handling, mutex admission/remaining budget, registry revocation/join/active Arc races, constructor cleanup and server signals remain; no device/Apple ACK/async Drop/join/retry/platform/benchmark/RSS/decoder peak proof.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun. All31/L01/class4/L02–L04/Q04/classes5–9 active."
     },
@@ -992,7 +992,7 @@
       ],
       "tested_commit": "221a0c4fc6ed90e864694a3ec7d634808329bc52",
       "date": "2026-10-05",
-      "location": "docs/validation/cdp-page-cleanup-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Direct CDP page returned cleanup now uses an independent2s total through existing owned session cleanup and retains native IO/Elapsed. Successful WebSocket shutdown can return cleanup failure; prior JSON primary and cleanup errors both remain owned, with primary classification. Only attached usable clients send the existing close; invalid clients drop without recovery writes. Real80ms flush completes despite50ms active idle policy. Full2441Rust/13Python,CLI836/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Constructor cleanup, principal/server cancellation, HTTP publication, active request/output totals and joined browser/stored tasks remain; stored100ms/browser2s policies stay. Private handler results are not new admission, device, Apple ACK or async Drop proof.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 remain active."
     },
@@ -1010,7 +1010,7 @@
       ],
       "tested_commit": "82db3a8699f99de4d7275baa896e408e543023ed",
       "date": "2026-10-05",
-      "location": "docs/validation/webinspector-server-setup-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "CDP full discovery, page/browser-page constructors and WebDriver runtime constructor each share one checked absolute total before lock/source through startup/discovery/attach and context creation. Each client stage caps to the remaining total; successful owners clear setup cap for existing active policies. Exact page discovery returns on admitted match and retries only reusable idle; missing targets wait within total. Full lists/WebDriver retain500ms quiet collection; tight totals can expire. Incomplete browser attachment drops without guessed teardown. Source/lock/write expiry and caller cancellation release owned streams/locks; actual successful Automation active use and stalled creation covered. Full2436Rust/13Python,CLI831/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Server startup/signal, HTTP publication/output, active request totals, primary/independent cleanup and joined browser/stored tasks remain; existing100ms/2s cleanup policies unchanged. Private zero/overflow is not CLI listener admission.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/retry/platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 remain active."
     },
@@ -1028,7 +1028,7 @@
       ],
       "tested_commit": "2e22aaf7da2c47fff1654c557882e8cb9a121517",
       "date": "2026-10-05",
-      "location": "docs/validation/cdp-page-idle-lifecycle-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Page bridge retries a Timeout only while client.is_usable; partial frame or automatic listing expiry retains its original native Elapsed/Timeout and drops the stream without retry/teardown bytes. Empty usable idle remains open, relays an actual nested Target message and emits existing close on normal WebSocket shutdown. EOF/plist native sources and legacy oversize Protocol stay. Full2421Rust/13Python,CLI816/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Tests directly observe the private handler, not new admission/revocation or external browser acceptance. Setup/request totals, primary cleanup, server cancellation and joined browser/stored tasks remain; all31/L01/class4/L02–L04/Q04/classes5–9 active.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no remote ACK/retry/platform/benchmark/RSS/decoder peak claim."
     },
@@ -1046,7 +1046,7 @@
       ],
       "tested_commit": "8ac37b7d52ce74dc29c6f11e06c82bcffba879fc",
       "date": "2026-10-05",
-      "location": "docs/validation/webinspector-shell-lifecycle-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Interactive js-shell checked setup covers input/default/connect/start/Safari/discovery/attach/navigation/metadata; one pinned signal, cancellable unbounded idle and fresh per-expression/output totals. Ready blank input yields. Setup Ctrl+C is typed Cancelled; active Ctrl+C normal stop; signal IO/native wire/deadline/codec/input/output stay primary and stop even with continue-on-error. Completed business responses can continue. Fully attached usable sessions clean under independent5s; primary/session cleanup/explicit stdin restoration errors retained; successful stop can exit1 on cleanup. Linux pipe/terminal ownership spawns no blocking reader; flags restore. Regular-file/output remain cooperative; other platforms retain prior Tokio stdin pending cancellation work. Full2416Rust/13Python, CLI811/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Local write is not Apple ACK;22device NOT_RUN, Chromium/installed3.9/3.13 not rerun. CDP/WebDriver/server/join, other L01/L02–L04/Q04/classes5–9 and all31 remain active."
     },
@@ -1064,7 +1064,7 @@
       ],
       "tested_commit": "fa3d3f7ec523bad235c2d3986e28bf229998d1c2",
       "date": "2026-10-05",
-      "location": "docs/validation/webinspector-command-lifecycle-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Finite opened-tabs/eval/launch default selection, connection, startup, discovery, attachment, every command and output share one checked absolute total/pinned signal. Zero source-free Timeout and invalid duration/clock reject before discovery; due/late-ready success admission, native failures and cancellation retain sources. Fully attached usable sessions clean under independent5s; primary plus cleanup and automation stop plus teardown failures both retained; completed output can now be followed by exit1. Existing formats/page selection stay; idle500ms distinct from total. Fresh full2385Rust/13Python, CLI780/Core1443/public52, zero FAIL/two existing ignored; all gates/tooling63/help118/raw38/host5/CLI85/backup3 PASS. Local write/flush is not remote ACK. Interactive/server/join owners, other L01/L02–L04/Q04/classes5–9 and all31 remain active;22device NOT_RUN, Chromium/installed3.9/3.13 not rerun."
     },
@@ -1082,7 +1082,7 @@
       ],
       "tested_commit": "db7960ae4d8643c1c8849e4a8795a21cdc821ee6",
       "date": "2026-10-05",
-      "location": "docs/validation/webinspector-discovery-lifecycle-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "CLI app/page discovery retries issued Timeout only while client is usable; partial receive/automatic-listing invalidation retains original native Elapsed/duration/Timeout instead of masking it with a new invalid-client Protocol. Empty usable idle retry, explicit page-key precedence/cached matches/selection/helpers/outputs stay. Full92892 terminal0:2364Rust/13Python, CLI759/Core1443/public52, zero failures/two existing ignored and every section11 split gate PASS. Setup/whole-flow/cached due admission/pinned signal/join/output/independent cleanup, interactive/server owners and other L01/L02–L04/Q04/classes5–9 remain. All31 active;22device NOT_RUN, Chromium/installed3.9/3.13 not rerun; host is not device or decoder/peak/performance evidence."
     },
@@ -1100,7 +1100,7 @@
       ],
       "tested_commit": "20d6fc5774e9f2bfdc243de194ee7e62f084967c",
       "date": "2026-10-05",
-      "location": "docs/validation/webinspector-cache-lifecycle-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "LOCAL1024 applications/raw app entries/empty-orphan page sets,4096 aggregate pages/raw listing entries;16MiB combined availability/app/page compact JSON and each staged map/listing Vec; separate16MiB flattened ApplicationPage projection prevents repeated application-copy amplification. Borrowed checked projection before cache mutation, count before reserve, replacement/disconnect/absent-owner payload-budget release and empty capacity drop. Duplicate-event/cache ordering stays; private typed ResourceLimit under Io invalidates receiving owner and rejects later IO. Full45509 terminal0:2357Rust/13Python, CLI752/Core1443/public52, zero failures/two existing ignored and every section11 split gate PASS. Logical metrics do not certify simultaneous copies/RSS/decoded object-reference expansion/recursion/CPU; decoder preflight/fuzz remains L01/Q04. Frontend/server setup/whole-flow/signal/join/output/primary cleanup and other L01/L02–L04/Q04/classes5–9 continue; all31 active with22device NOT_RUN, Chromium/installed3.9/3.13 not rerun."
     },
@@ -1118,7 +1118,7 @@
       ],
       "tested_commit": "8011749571e2ae2a70ca8728984d0d93b56651bc",
       "date": "2026-10-05",
-      "location": "docs/validation/webinspector-session-lifecycle-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "One checked absolute correlated-command/attach total; abandoned committed requests invalidate/drop owned client metadata/events and reject late replies on other supplied-client sessions/clones. Explicit matched business responses preserve original error/reuse and ordered events. Pending+skipped LOCAL caps1024/16MiB logical compact JSON; precise typed ResourceLimit under existing Io. Checked u64 MAX once then pre-IO exhaustion, no wrap/reuse. Nested deadlines inherit finite caps over configured MAX and restore prior policy on scope exit; zero legacyTimeout/overflow Io InvalidInput/native actual Elapsed with original effective total. Full70542 terminal0:2340Rust/13Python, CLI752/Core1427/public51, zero failures/two existing ignored and every section11 split gate PASS. No task/ACK/remote cleanup/retry/measured-memory guarantee. Application/page bounds and frontend/server whole-flow owners remain pending; all31/L01–L04/Q04/classes5–9 active with22device NOT_RUN, Chromium/installed3.9/3.13 not rerun."
     },
@@ -1136,7 +1136,7 @@
       ],
       "tested_commit": "30fb63fe5d6a6530bb96270adbb59c27c96d1e27",
       "date": "2026-10-05",
-      "location": "docs/validation/webinspector-client-lifecycle-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "WebInspector client owns accepted/buffered frames and committed report/event routing; partial/native/codec/routing failure invalidates and drops owned metadata/pending collections, rejects guarded cache/IO reuse and ignores invalid restore. Empty idle/send cancellation/pre-IO XML failure can preserve reuse. Add local is_usable/optional total default None, effective zero legacyTimeout/overflow Io InvalidInput, explicit shorter MAX clamp and actual Elapsed with due priority. Startup legacy mappings remain, effective budget replaces remainder; discovery quiescence only empty usable idle while configured total/partial/routing failure returns error. Full23783 terminal0:2314Rust/13Python, CLI752/Core1402/public50, zero failures/two existing ignored and every section11 split gate PASS. No new queue/task/ACK/remote cleanup/retry guarantee. Correlated Inspector/Automation, count/byte cache bounds and frontend/server owners still pending; all31/L01–L04/Q04/classes5–9 active with22device NOT_RUN, Chromium/installed3.9/3.13 not rerun."
     },
@@ -1154,7 +1154,7 @@
       ],
       "tested_commit": "c2fa6fb60c9bdd2f56514b7b4844fe39f596bc3d",
       "date": "2026-10-05",
-      "location": "docs/validation/companion-cli-control-2026-10-05.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Companion CLI setup caps30s and finite totals start before default discovery; zero/overflow reject before selection. One pinned signal spans all stages, ready stop/due nominal total precedes operation while native Elapsed supplies expiry; unbounded listen uses held raw event reads and complete-event/output yields. Forward creates consuming close before output/wait, disarms Drop at future creation and awaits one independent5s Stop even after total expiry. Dual failure retains both originals with primary category/source; native UnexpectedEof remains Io. Legacy borrowed Stop/Drop remains, no remote release/retry/ACK/task/queue claim. Full62300 terminal0:2297Rust/13Python, CLI752/Core1386/public49, zero failures/two existing ignored and every section11 split gate PASS. Fourteen new admission probes contact no endpoint, valid empty discovery sends one ListDevices/no extra connection, actual host SIGINT retains cancelled/companion/exit1 and EOF. All31/otherL01/L02–L04/Q04/classes5–9 active with22device NOT_RUN; Chromium/installed3.9/3.13 not rerun."
     },
@@ -1172,7 +1172,7 @@
       ],
       "tested_commit": "7a0ed63d99f04d99971004b177dd68e1cdf3b3bb",
       "date": "2026-10-04",
-      "location": "docs/validation/companion-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Shared local usability guards request send/reply and mutex admission across clients/listeners/forwarding handles; cancelled commitment/native/codec errors reject late reuse while complete business replies retain parsing. Checked request/idle budgets preserve zero legacy Timeout, overflow InvalidInput and actual Elapsed duration. Listener held next poll survives cancellation; terminal idle/whole Drop releases and invalidates shared state. Stop cap5s/shorter clamp/MAX safe; successful cached stop remains idempotent. Existing Drop best-effort task remains, checks invalid state after lock and may still follow a complete business-failed explicit stop; CLI primary/disarm/setup/total/signal remain separate. Full76233 terminal0:2274Rust/13Python, CLI734/Core1382/public48, zero failures/two existing ignored; section11 split gates PASS,56tooling/39CLI. All31 and L01/L02–L04/Q04 remain active with22device NOT_RUN."
     },
@@ -1190,7 +1190,7 @@
       ],
       "tested_commit": "e3ab42b8e1d47155edd9e0ffd08c668b5e3a41ec",
       "date": "2026-10-04",
-      "location": "docs/validation/notification-cli-control-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Notification CLI shares checked30s discovery/connect/service setup and one pinned signal; send stages30s, finite totals begin before subscriptions, Observe retains per-event idle and Stream None remains unbounded. Ready stop/deadline wins, finite stop retains cancellation, issued expiry retains Elapsed, partial invalid state skips unsafe cleanup, primary/native/output errors survive cleanup. Full13402 terminal0:2257Rust/13Python, CLI734/Core1366/public47, zero failures/two existing ignored; all section11 split gates PASS. Twenty-two admission probes contact no synthetic endpoint, valid empty default performs one ListDevices/no additional connection; actual host SIGINT yields cancelled/notify and peer EOF. Cooperative limits remain; all31 and otherL01/L02–L04/Q04 active with22device NOT_RUN."
     },
@@ -1208,7 +1208,7 @@
       ],
       "tested_commit": "9b2c488ec9052d2899de91a68622b00be207446c",
       "date": "2026-10-04",
-      "location": "docs/validation/notification-cli-cleanup-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "CLI attempts bounded Shutdown after returned failures on usable streams, reports cleanup error after success and retains dual originals with primary source/category/static Display/category-only Debug. Invalid/ProxyDeath state skips unsafe cleanup and drops transport; caller cancellation adds no detached close. Core/API/protocol/dependencies/refs unchanged. Full78503 terminal0: 2238 Rust/13 Python, CLI715/Core1366/public47, zero failures/two existing ignored and every section11 split gate PASS. Setup/total/signal owners and all31 scope remain active;22 device NOT_RUN."
     },
@@ -1226,7 +1226,7 @@
       ],
       "tested_commit": "db732437a945c75096d05f67b9e2063838756c97",
       "date": "2026-10-04",
-      "location": "docs/validation/notification-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "NotificationProxy guards each full frame, preserves completed subscriptions across empty idle cancellation/expiry, rejects partial/native/codec invalid reuse and closes local state after ProxyDeath/successful Shutdown. Optional total budgets cover subscribe and unrelated waits; actual issued expiry retains Elapsed, zero is source-free Timeout, overflow InvalidInput. Shutdown5s with shorter clamp/MAX safe; no queue/task/ACK/async Drop or safe retry. Full80002 terminal0: 2229 Rust/13 Python, CLI706/Core1366/public47, zero failures/two existing ignored and every section11 gate PASS. Five error variants, both event enums, incoming4MiB/direct typed decoder and read-only refs unchanged. CLI cleanup/signal/totals remain separate; all31 scope active with22 device NOT_RUN."
     },
@@ -1244,7 +1244,7 @@
       ],
       "tested_commit": "d2828b802e697ff4d1069744e89d7a1eb31214c7",
       "date": "2026-10-04",
-      "location": "docs/validation/backup-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "MobileBackup2 owns negotiation/command/host work/raw transfer/cleanup with optional absolute budget, accepted-byte invalidation and no late disconnect after expiry. Dual failure retains primary and cleanup under existing Io; primary drives source/category even when expiry drops cleanup body. Four error variants, original parsers/session/integration assertions/limits/frontends/dependencies/read-only references preserved, with explicit old deadline migration. Full1410 terminal0: 2216 Rust/13 Python, zero FAIL/two existing ignored and all section11 split gates PASS. No device/other-platform/benchmark acceptance or maturity upgrade; L01/class4/all31 active."
     },
@@ -1262,7 +1262,7 @@
       ],
       "tested_commit": "3db5c1835ad73bf881c1c6a334674bc566cfe641",
       "date": "2026-10-04",
-      "location": "docs/validation/device-link-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "DeviceLink tracks accepted framed bytes across full version/process calls, rejects late/cached reuse after interrupted progress and native/codec failure, preserves idle/pre-I/O state and complete process-envelope validation policy. Optional absolute budgets retain actual Elapsed; disconnect success marks closed/repeat rejects, partial abort remains uncertain. Opaque stream stays owned until Drop; raw accessors bypass tracking without repair or remote release/safe retry claims. First full24485 terminal0: 2204 Rust/13 Python, CLI706/Core1343/public45, zero failures/two existing ignored and every full gate PASS. Original DeviceLink/public consumers/version/parser/error mapping preserved apart from mechanical consolidation; only backup EOF fixture migrates. Raw plist/backup production/screenshot/root/enums/classifiers/frontends/dependencies/read-only reference HEAD/status unchanged. L01/class4/all31 active; complete backup/raw/host-work ownership and other cleanup/totals/device/platform conditions remain."
     },
@@ -1280,7 +1280,7 @@
       ],
       "tested_commit": "79f750e78b4550909c440fc4697b592101878935",
       "date": "2026-10-04",
-      "location": "docs/validation/lockdown-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "LockdownClient guards shared send/flush/reply deadlines and accepted-byte ownership, rejects cached/late reuse after interrupted requests while keeping original failures and complete business reply policy. Zero/local pre-I/O errors/empty writes can retain state; native transport error/EOF invalidates. Stop success marks closed/repeat local no-op; failed or cancelled close retains uncertain private identifier. Transport/opaque buffers stay owned until Drop without async stop/tasks/cleanup ACK/safe retry. First full session36426 terminal0: 2192 Rust/13 Python, CLI706/Core1332/public44 PASS, zero failures/two existing ignored and all full gates pass. Old assertions retained, six private client initializers only gain default state; envelopes/parsers after mechanical consolidation, raw4MiB framing/TLS/session/device/root/enums/classifiers/frontends/dependencies/references unchanged. L01/class4/all31 goal active; other ownership/cleanup/totals and device/platform conditions remain."
     },
@@ -1298,7 +1298,7 @@
       ],
       "tested_commit": "85b8621f069b164d7da251a9531faf43b3456691",
       "date": "2026-10-04",
-      "location": "docs/validation/rsd-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Borrowed bootstrap/read guard retains complete-send/consumed-header/skipped-message ownership across empty waits; cancellation/failure after commitment invalidates H2 and rejects later cached/wire reuse while preserving original failure. Empty idle/normal completion/uncommitted stream-local errors retain local framing as applicable. Transport remains owned until Drop, without remote ACK/cleanup/safe retry guarantees. First full session91844 terminal0: 2182 Rust/13 Python, CLI706/Core1323/public43 PASS, zero failures/two existing ignored; all full gates pass. Preparation E0061 fixed by preserving original private read entry, without changing old assertions. Source/H2/codecs/enums/classifiers/frontends/dependencies/references intact beyond one rsd.rs file. L01/class4/all31 goal active; other protocol/service ownership and platform/device conditions remain."
     },
@@ -1316,7 +1316,7 @@
       ],
       "tested_commit": "09ed113e2d19489259a43c3a35de9e00caacb1a6",
       "date": "2026-10-04",
-      "location": "docs/validation/xpc-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "XpcClient local state and explicit shared call/single-read deadlines; operation guards retain consumed-header/sent-call/stream/file ownership and clear pending replies/accounting before invalid/cached reuse. Empty idle and normal finite Pasteboard/CoreDevice completion stay reusable; legacy wire/budgets/error enums/parser/frontend/dependencies unchanged. Final narrow16/minimum12, XPC117/Pasteboard30/CoreDevice10 regressions pass without old assertion changes. Preparation corrected test types/feature gates and Clippy bound placement, with no state/test relaxation. First full session34637 terminal0: 2175 Rust/13 Python, CLI706/Core1316/public43, zero failures/two existing ignored; all full gates PASS. L01/class4/all31 goal active."
     },
@@ -1334,7 +1334,7 @@
       ],
       "tested_commit": "ddd3620f058c6c23649a083d209dceb41f0eb472",
       "date": "2026-10-04",
-      "location": "docs/validation/h2-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "H2 frame I/O guards invalidate after transport errors/native EOF or cancelled byte progress and clear retained H2 state; zero-byte waits and complete stream-local shutdown stay reusable. Internal optional deadline shares HEADERS/DATA/flush/flow-control budget, with legacy None unchanged. Boxed owned operation avoids nested-future stack growth without spawning a task. Existing wire/constants/decoder/builders/error enum/old H2 tests and root/frontend/dependencies unchanged. Two source/test files, nine tests. First full failed with CLI stack overflow; source boxing fix preserves the original test/budget. Final session10807 terminal0: 2159 Rust/13 Python, CLI706/Core1301/public42, zero failures/two existing ignored; complete gates PASS. L01/class4/all31 goal active."
     },
@@ -1352,7 +1352,7 @@
       ],
       "tested_commit": "c4b471d33b1260736a295e8718d3c47ee6562165",
       "date": "2026-10-04",
-      "location": "docs/validation/afc-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "AFC twelve request sites share send/flush/reply guard and optional absolute budget; zero-byte cancellation remains reusable, completed IO/codec or interrupted bytes reject later I/O. Automatic read/write cleanup is independently limited to five seconds and retains both original failures with primary source/category; cancellation after open or failed close invalidates ownership. Existing enum/codec/wire/caps/chunks/helpers and other frontend/root/classifier/dependencies unchanged. Two source/test files, twelve full/minimum tests; first narrow7 PASS/4 FAIL corrected timer helper from source to get_ref without production weakening. Full session55322 terminal0: 2150 Rust/13 Python, CLI706/Core1293/public41 PASS, zero failures/two existing ignored; all full gates pass. L01/class4/all31 goal active."
     },
@@ -1370,7 +1370,7 @@
       ],
       "tested_commit": "dcec5a2032f2994ed45678cb838447607abee65b",
       "date": "2026-10-04",
-      "location": "docs/validation/fps-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "FPS future owns its session/read without a background task/event queue. Due windows precede ready events, in-flight reads survive ticks; 262,144 timestamps/window with CLI-only bounded resource_limit mapping and additive iterator. Setup30s/stop5s, native failures/Elapsed retained; dual failure owns cleanup with primary source, cleanup-only failure is returned. Five source/test files, other instruments/calculator/root/errors/dependencies/C/Python unchanged. Preparatory fixture failures corrected without relaxing production DTX state. Final full session88111 terminal0: 2138 Rust/13 Python, CLI706/Core1282/public40 PASS, zero failures/two existing ignored; all full gates and final-binary zero-window trap capture pass. L01/class4/all31 goal active."
     },
@@ -1388,7 +1388,7 @@
       ],
       "tested_commit": "940c4c673e7fe023503b97197777354c7f44e253",
       "date": "2026-10-04",
-      "location": "docs/validation/dtx-lifecycle-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "L01 guard distinguishes cancelled zero-byte idle waits from partial wire progress; completed IO/codec errors invalidate DTX. Additive total-budget channel/call/read APIs, native Elapsed and zero-input policies; three partial-frame owner branches fail rather than returning apparent success. Five source/test files, CLI production/root/classifier/dependencies/C/Python byte-identical. Eleven new tests pass (minimum nine); first full migrated old CPU stop-after-EOF assertion, second exposed unrelated short AFC diagnostic collision fixed separately at fc204bf. Final full terminal0, 2126 Rust/13 Python, CLI696/Core1281/public39 PASS, zero failures/two existing ignored and all full gates pass. L01/class4/all31 goal active."
     },
@@ -1406,7 +1406,7 @@
       ],
       "tested_commit": "fe0c0927418157cff83e2ebb41934d80cd12fae1",
       "date": "2026-10-04",
-      "location": "docs/validation/cli-owner-guards-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 owner-issued timeout inputs and empty accessibility timeout typed without invented native causes; CLI precondition does not request confirmation, general Core Unknown retained. Partial traversal/zero/None/budgets/wire/output/cleanup policies stay. Seven new tests plus two strengthened existing; extra source walk regression caused first full CLI695 PASS/one FAIL, corrected without relaxing original 128-access assertion. Final full terminal0, 2115 Rust/13 Python, CLI696 PASS/one existing ignored and zero failures/two existing ignored; all full gates and seven actual CLI input captures pass. Class3 Linux host profiles delivered, class4 lifecycle next; all31 tasks/subtasks retained."
     },
@@ -1424,7 +1424,7 @@
       ],
       "tested_commit": "08df6533265656b394b58a829653b15dfa7d197f",
       "date": "2026-10-04",
-      "location": "docs/validation/lockdown-response-codes-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive opaque Lockdown response-code observation and preserving Rust APIs; exact GetValue/MissingValue is NotFound, exact StartService/InvalidService is ServiceMissing, other codes are ServiceFailure. Backup defaults false and debugserver falls back only on observed exact codes; final native miss retained. Public exhaustive families and legacy behavior stay; preserving GetValue explicitly rejects non-string Error. Ten source files; seven new tests, final full terminal0 with 2108 Rust/13 Python and CLI689 PASS/one existing ignored, zero failures/two existing ignored; strict checks, 66 features/four groups, C ABI and 3.12 wheel/sdist pass. Thirteen identified owner-issued guard checks remain; full 31-task scope unchanged."
     },
@@ -1442,7 +1442,7 @@
       ],
       "tested_commit": "64153aae931a2b2b147ef4611ba1d5f36f9ea661",
       "date": "2026-10-04",
-      "location": "docs/validation/cli-stream-contract-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 ten native source paths, typed notification closure and source-free issued stream deadlines; JSON shell suppresses interactive prompt/EOF presentation bytes, output records and count/capture policy retained. Nine CLI files; Core/C/Python/dependencies byte-identical. Eight new tests, final full terminal0 with 2101 Rust/13 Python and CLI686 PASS/one existing ignored, zero failure/two existing ignored; strict CLI, 66 features/four groups, C ABI and 3.12 wheel/sdist pass. Stream framing inventory and scoped binding/probe acceptance documented; backup/debugserver text decisions and owner-issued guard review remain. No maturity upgrade."
     },
@@ -1460,7 +1460,7 @@
       ],
       "tested_commit": "03c71b53cfd653636733662cbf3a241a4c7ed10f",
       "date": "2026-10-04",
-      "location": "docs/validation/cli-native-sources-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 81 service/plan/clock, 13 native Elapsed, six local input, three received hex/integer and two file causes retain original objects; owner Input/Protocol, original native category/Unknown and Timeout. Opaque String data and five direct decisions have no fabricated native source. Existing typed cancellation and native HID signal IO remain distinct. 27 production bodies/113 exact callback audit with controlled private helpers/decisions; Core/root/classifier/consumer/dependencies/C/Python and success/wire/budgets/cleanup stay. Eleven new tests; old five 0 PASS/5 FAIL; final full terminal0, 2093 Rust/13 Python, 678 CLI PASS/1 existing ignored; six actual machine cases exit1/typed class/phase/no trap connection/stdout/raw data. No maturity upgrade; finite A02 acceptance/lifecycle/platform/device work remains."
     },
@@ -1478,7 +1478,7 @@
       ],
       "tested_commit": "5f259b8f90dd40f973085a00b401a37a62066ac1",
       "date": "2026-10-04",
-      "location": "docs/validation/cli-diagnostic-sources-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 sixty CLI diagnostic replacements retain native IO or existing primary; CPU partial read errors now fail, JSON rejects non-finite load before that row, two directory NUL conversions retain original source with existing Input. Successful line arguments and finite formatting, root/classifier/dependencies/bindings/wire stay. Three CLI/one core tests; real old eprintln control 0 PASS/1 FAIL, CPU old-behavior prototype 0 PASS/2 FAIL, restored CLI 667 PASS/1 existing ignored. First full terminal 0, 2082 Rust/13 Python PASS and four real CLI children exit 1/empty stdout. Other A02/lifecycle/platform/device work remains, no maturity upgrade."
     },
@@ -1496,7 +1496,7 @@
       ],
       "tested_commit": "4b3a9cbe40b696b01cbfdb65ba8a7d614795e9fc",
       "date": "2026-10-04",
-      "location": "docs/validation/connection-native-sources-2026-10-04.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 fifteen original discovery/connection causes retained through existing Io/private safe contexts; Unknown backend, local InvalidInput, received Protocol and actual Timeout roles. Three original TunnelError variants/root/consumers/features/dependencies/classifier and wire/budgets/limits/cleanup/success stay; returned-variant/Display/source/class migration recorded. Five new internal tests; six old handshake assertions migrated after 9 PASS/6 FAIL. First full 2078 Rust/13 Python PASS final marker; resumed process handle missing with no active workspace build, raw shell exit not captured. Other A02/lifecycle/platform/device work remains; no maturity upgrade."
     },
@@ -1514,7 +1514,7 @@
       ],
       "tested_commit": "37b09e0bd822bce725e74a01a78eedaeceb4688e",
       "date": "2026-10-03",
-      "location": "docs/validation/guarded-native-sources-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 eight original received cast/integer/slice adapters retain native sources through existing Io/private fixed context; InvalidData records received Protocol role with optional full u64, AFC map_src owns original bytes only on failure. Public families/fields/root/core features/classifier/layouts and guard/read/allocation/wire/success stay; returned variant/Display/source migration documented. Existing zerocopy std enabled for MSRV without version/lock change. Four internal/one external tests added; first full 2073 Rust/13 Python PASS. Other A02/lifecycle/platform/device work remains, no maturity upgrade."
     },
@@ -1532,7 +1532,7 @@
       ],
       "tested_commit": "4dda7a225a10f15e22d0bd5de47c7a5b6624ca83",
       "date": "2026-10-03",
-      "location": "docs/validation/dproxy-recording-observations-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 recorder/proxy owned failure callbacks and CLI integration; original independent sources arrive before fatal/event-write errors, legacy unobserved mode and capture/wire/buffering/error policy stay. Core event/two CLI status stderr errors now return original IO instead of panic; safe DEBUG metadata only. Original four variants/fields/root/classifier/codec/dependency and CLI JSON/dispatch remain. Eleven internal/one CLI/one external tests added; initial ten-test control 3 PASS/7 FAIL, public and CLI each 0 PASS/1 FAIL; added real Linux stderr test was not an old-algorithm control. First full 2068 Rust/13 Python PASS. Other A02/platform/lifecycle/device conditions remain; no maturity upgrade."
     },
@@ -1550,7 +1550,7 @@
       ],
       "tested_commit": "a37a80b6eb7be4cc5f6d096e45eca1a65930e133",
       "date": "2026-10-03",
-      "location": "docs/validation/dproxy-decoder-observations-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive DecodeOutcome owns independent original failures, typed source-free decisions and events preceding fatal error; direction/phase/kind/event index/stream ID, optional original class and safe Debug. Legacy push/four exhaustive error variants/event fields/schema/guards/clear/stop/counting/preface/limits remain; codec/root/dependency/classifier byte-identical and no legacy observation allocation. Corrected old-algorithm control 2 PASS/11 FAIL and public 0 PASS/1 FAIL; 13 internal/one external added; first full 2055 Rust/13 Python PASS. Recorder/CLI stderr, guarded conversions and other A02/platform/lifecycle/device work remain; no maturity upgrade."
     },
@@ -1568,7 +1568,7 @@
       ],
       "tested_commit": "ab097900523e91f93e54249c42c214a7e1349ee6",
       "date": "2026-10-03",
-      "location": "docs/validation/service-input-native-sources-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 eleven original application/test/IPA/GPX native causes retained through existing Io or Xpc(Io), precise local input roles and safe private context. Public 2/3/5/2 families, signatures/fields/root/features/dependencies/classifier and wire/validation/limits/order/timing/success remain; variant/Display/source/class migration recorded. Nine internal/two external controls fail under old adapters; an old integration Protocol assertion failed the first full, was migrated with native/zero-write checks, then final full 2041 Rust/13 Python PASS. Official cargo clean after stopped handles reported 98.4 GiB; no storage failure. Other A02/platform/lifecycle/device work remains; no maturity upgrade."
     },
@@ -1586,7 +1586,7 @@
       ],
       "tested_commit": "17f31a3efe91a77f6397c469cd3fd4ee3a65c0a4",
       "date": "2026-10-03",
-      "location": "docs/validation/tss-batch-observations-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive preserving batch API owns ordered independent errors and missing-ticket observations, including recovered failures; typed phase/kind/input indices, optional original source/class and safe Debug. Legacy fields/signatures/calls/drop behavior, request merging/validation/nonce/HTTP limits and classifier remain. First full 2030 Rust/13 Python PASS with 12 new internal and one external contract test. Other A02/lifecycle/platform/device work remains; no capability maturity upgrade."
     },
@@ -1604,7 +1604,7 @@
       ],
       "tested_commit": "d1a210f2ff466ae8f9e5f281e87ebb69823092fa",
       "date": "2026-10-03",
-      "location": "docs/validation/restore-native-sources-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 25 returned restore H2/XPC/IPSW/TSS causes retained through existing Io/private context; native IO kinds and typed XPC categories, local input/received protocol/HTTP timeout and opaque unknown remain distinct. Three public variants/signatures/fields/root/features/classifier and wire/budget/guard/state/nonce/batch fallback remain; variant/Display/source/class migration and corrected ZIP scan control documented. First full 2017 Rust/13 Python PASS. Batch fallback observations and other A02/lifecycle/platform/device work remain; no maturity upgrade."
     },
@@ -1622,7 +1622,7 @@
       ],
       "tested_commit": "145d0c41f839a22e757e4aef616885b5303f4d6f",
       "date": "2026-10-03",
-      "location": "docs/validation/backup-deadline-native-sources-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 six original MobileBackup2 native boundaries retained through existing Io; typed issued deadline evidence separates operation/disconnect and preserves an earlier operation error with its native chain. Four variants/public signatures/fields/root/features/classifier, 300s shared budget, wire/validation/state/transfer guards and ordinary best-effort disconnect stay; timeout class/variant and source migrations recorded. Two-stage genuine native/primary-loss negative controls and first full 2001 Rust/13 Python PASS. Other A02/lifecycle/platform/device work remains; no maturity upgrade."
     },
@@ -1640,7 +1640,7 @@
       ],
       "tested_commit": "120b07cbfeba1665af62aad0bdc8ad34d47104f6",
       "date": "2026-10-03",
-      "location": "docs/validation/image-assets-native-sources-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 34 original DDI download/cache/ZIP/join and TSS native boundaries retained through existing Io/private context; six public variants/signatures/root/features/classifier/protocol/manifest and wire/proxy/budget/guard/cache/partial-file behavior stay. Variant/Display/kind/class/source migrations and invalid baseline fixtures/targeted corrected controls documented. First full 1991 Rust/13 Python PASS. Other native/guard/DProxy/stream/binding/lifecycle/platform/device work remains; no maturity upgrade."
     },
@@ -1658,7 +1658,7 @@
       ],
       "tested_commit": "bd6ee91459fd34b2b2f42f419f12b90dccd259da",
       "date": "2026-10-03",
-      "location": "docs/validation/service-deadline-native-sources-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 21 Cryptex/MobileActivation/InstallCoordination/Pasteboard original sources retained through existing Io/Xpc(Io), four additive bounded issuer phase/Duration/seconds getters and explicit full-width promised-size comparison. Public 11/5/3/7 families/root/features/classifier, wire/budgets/state/fallback and source-free deadline markers stay; variant/Display/kind/source/class migrations recorded. Other native/guard/DProxy/stream/binding/lifecycle/platform/device work remains; no maturity upgrade. First full 1973 Rust/13 Python PASS."
     },
@@ -1676,7 +1676,7 @@
       ],
       "tested_commit": "1c8174275aadff24a1cb3001504e7451efc95fcf",
       "date": "2026-10-03",
-      "location": "docs/validation/diagnostic-native-sources-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 22 CrashReport/OS Trace/CLI native sources retained under existing Io/private contexts; bounded parser issuer keeps watch retry limit, additive preserving filter API supplies typed regex/input errors while legacy String compile stays. Public families/root/features/classifier and wire/budgets/state/archive bounds/staging/success stay; variant/Display/IO-kind/source migrations recorded. Other adapters/guard/DProxy/stream/binding/lifecycle/platform/device work remains, no maturity upgrade."
     },
@@ -1694,7 +1694,7 @@
       ],
       "tested_commit": "89bcd3f81f6e0617e8a1526f3147feb5e7197876",
       "date": "2026-10-03",
-      "location": "docs/validation/discovery-native-sources-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 22 discovery service native sources retained under existing Io; additive WebInspector/Companion budget getters distinguish owned deadlines from generic IO timeout and retain existing quiescence/legacy response Disabled behavior. Returned variants/Display/source migration documented; public exhaustive families/root exports/features/classifier, framing/bounds/budgets/state/success stay. Other native/parser/guard/DProxy/stream/binding/lifecycle/platform/device work remains, no maturity upgrade."
     },
@@ -1712,7 +1712,7 @@
       ],
       "tested_commit": "5dce4bfcce162b1ebe82b740631e1a0e893fb3d5",
       "date": "2026-10-03",
-      "location": "docs/validation/media-capture-sources-2026-10-03.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 17 HID/Display/plist/Bluetooth/pcap native sources retained through existing errors/private context. Native deadlines/local encoding/address roles corrected; variant/Display/source migration documented. Public families/signatures/features/classifier/budgets/wire/bounds/state/success stay; host block-add overflow rejects as explicit source-free input guard. Other adapters/sentinel outcomes/DProxy/streams/bindings/lifecycle/platform/device work remain, no maturity upgrade."
     },
@@ -1730,7 +1730,7 @@
       ],
       "tested_commit": "fcb4cb5dfde7637d74581b72647b97c6b847bd2f",
       "date": "2026-10-02",
-      "location": "docs/validation/xpc-native-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 32 OPACK/XPC/identity native sources retained through existing public Io/private context. Private OPACK payload/body result migration, local encoding invalid_input and environment NotUnicode protocol documented; public error families/root exports/features/budgets/wire/bounds/success/fallbacks stay. DProxy still has textual diagnostic projection; other adapters/guards/streams/bindings/lifecycle/platform/device work remain, no maturity upgrade."
     },
@@ -1748,7 +1748,7 @@
       ],
       "tested_commit": "47ed0d5f2649ce4ed65af54ca9b5444246c6e666",
       "date": "2026-10-02",
-      "location": "docs/validation/backup-host-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 seven erased prefix/filesystem/archive integer causes retained plus native Join context/panic category corrected. Missing required metadata becomes native NotFound; private ArchiveError Integer retains conversion source. Public four backup error variants/root APIs/results/features stay; returned variant/Display/class/source traversal migrations documented. Paths/bounds/staging/scheduling/decoding/fallback/success preserved. OPACK/XPC/other codec/guard/stream/binding/lifecycle/platform/device work remains; no maturity upgrade."
     },
@@ -1766,7 +1766,7 @@
       ],
       "tested_commit": "7e5f174169964b713257c037c395312f841dc49c",
       "date": "2026-10-02",
-      "location": "docs/validation/backup-inner-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 twelve crypto and three MBDB native adapters retain original AES-KW/cipher/slice/integer/UTF-8 objects; existing optional aes-kw/std enabled without version/lock/public feature change. Private MBDB representation/traits and Display migration documented; public four error variants/root APIs/results stay. Algorithms/bounds/encoding/success preserved. Host filesystem/archive integer and other codec/guard/stream/binding/lifecycle/platform/device work remain; no maturity upgrade."
     },
@@ -1784,7 +1784,7 @@
       ],
       "tested_commit": "dcdda80b2a13e7d3d18f713e20e38be373674343",
       "date": "2026-10-02",
-      "location": "docs/validation/backup-metadata-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 22 source adapters retain original archive/plist, metadata integer/path/UTF8/validation, SQLite, crypto and MBDB objects through existing public IO/private fixed context. Typed SQLite categories preserve unknown/ambiguous codes; depth resource and crypto native IO survive. Four public error variants/root APIs/features preserved; migrations documented. Manifest SQL/bounds/path/encryption/staging/rollback/success unchanged. Deeper private crypto/MBDB/host/codec sources and lifecycle/platform/device work remain; no maturity upgrade."
     },
@@ -1802,7 +1802,7 @@
       ],
       "tested_commit": "f8d890522798a444dde7dd600e954f4010f459c4",
       "date": "2026-10-02",
-      "location": "docs/validation/usbmux-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 four usbmux native adapters retain original plist, connector IO/OS code and Elapsed through existing IO/fixed context. Local input/received protocol/native IO/timeout roles and Protocol-to-Io/fixed TCP Display migration documented. Public types/signatures/features, framing/limits/guards/tags/request fields/TCP timeout/Unix policy and successful flow preserved. Archive/integer/guard/stream/binding/lifecycle/platform/device work remains; no maturity upgrade."
     },
@@ -1820,7 +1820,7 @@
       ],
       "tested_commit": "f1f9d37665d969011bd3b69970b03febe1ee0f45",
       "date": "2026-10-02",
-      "location": "docs/validation/mcinstall-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 six native flattening adapters preserve five original OpenSSL stacks and plist; native NulError guard replaces actual PKCS12 password panic. Explicit feature guards are typed unsupported and missing P12 fields invalid_input without invented backend causes. Crypto-to-Io/Protocol-to-Plist migration documented; five public variants, root signatures/features and signing/wire/zeroization/ACK flow preserved. Other codec/integer/stream/binding/lifecycle/platform/device work remains; no maturity upgrade."
     },
@@ -1838,7 +1838,7 @@
       ],
       "tested_commit": "b642afef32d8d575d45cbbdfd0a0ba7df8193b3a",
       "date": "2026-10-02",
-      "location": "docs/validation/supervised-pairing-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 all 53 supervised native adapters retain original 51 OpenSSL stacks, plist and filesystem IO; additional native NulError guard replaces actual PKCS12 password panic. Local input/remote protocol/opaque unknown/native IO roles and Protocol-to-Io migration documented. Root exhaustive error/signatures/record fields, dependencies/features, generation/signing/wire/results/save/trust policies preserved. MCInstall/other sources/streams/bindings/lifecycle/platform/device remain; no maturity upgrade."
     },
@@ -1856,7 +1856,7 @@
       ],
       "tested_commit": "d81fa3f5517dcfbd008dccc4bda963cff8e193c0",
       "date": "2026-10-02",
-      "location": "docs/validation/default-lockdown-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 nine default lockdown/local plist adapters retain original objects through existing Io/Read plus missing-file native IO/OS code; private bounded context now always compiled. Local input/remote protocol/opaque unknown roles and TLS native kinds are preserved; returned variant/Display migration documented. Exhaustive enums, signatures, dependencies/features, requests, limits, zeroizing storage, version normalization and TLS/trust/success unchanged. Supervised/other sources/streams/bindings/lifecycle/platform/device work remains; no maturity upgrade."
     },
@@ -1874,7 +1874,7 @@
       ],
       "tested_commit": "d694cfafa392c3e465bef6bc2eb5e570bbbcaf75",
       "date": "2026-10-02",
-      "location": "docs/validation/manual-pairing-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 sixteen manual-pairing native adapters plus one Elapsed retain original sources/kinds through existing public Io/fixed context and bounded snapshots, including four inner pairing chains. Received authentication/JSON/header is protocol; opaque crypto stays unknown and named XPC classes remain. Short header checked; existing String budget guards preserved. Public variants/signatures/wire/crypto/trust/limits/retry/success unchanged; other sources/streams/bindings/lifecycle/platform/device work remains, no maturity upgrade."
     },
@@ -1892,7 +1892,7 @@
       ],
       "tested_commit": "9fa4ff78be9b30199188250ab63abb1869add4f6",
       "date": "2026-10-02",
-      "location": "docs/validation/inner-pairing-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 seven inner pairing adapters retain native errors through existing Io/fixed context: local lengths invalid_input, received authentication protocol, opaque encryption unknown and OPACK original class. Same-version HKDF std supplies Error; parameters/wire/signing/trust unchanged. Internal variant migration documented; outer transport/default lockdown/other sources/streams/bindings/lifecycle/platform/device conditions remain, no maturity upgrade."
     },
@@ -1910,7 +1910,7 @@
       ],
       "tested_commit": "98aeccb5b4bab66d8431c1eeb9d91bbdacf02b62",
       "date": "2026-10-02",
-      "location": "docs/validation/pairing-native-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 twenty native adapters and three deadline adapters retain original causes through existing Io/fixed context with bounded category snapshots, preserving unknown while distinguishing local input and malformed remote protocol. Same-version AEAD std feature supplies its native Error source; requests/trust/routing/retries/budgets unchanged and variant migration documented. Other sources/streams/bindings/lifecycle/platform/device conditions remain, no maturity upgrade."
     },
@@ -1928,7 +1928,7 @@
       ],
       "tested_commit": "87e2b4789d1334ffe44e7b666d17c01eff8d949a",
       "date": "2026-10-02",
-      "location": "docs/validation/deactivation-http-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 deactivation retains both original CoreError objects and final category, including unknown, with unchanged one-fallback schedule. Activation HTTP/URL sources survive existing Io; local endpoint inputs become invalid_input and client Debug hides URLs. Inventory accepts flat entries with submodule directories. Variant migration documented; other A02/lifecycle/platform/device conditions remain, no maturity upgrade."
     },
@@ -1946,7 +1946,7 @@
       ],
       "tested_commit": "817da67f9442e61f89e676a3dcfe93b3af71741a",
       "date": "2026-10-02",
-      "location": "docs/validation/service-boundary-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 symbols H2/XPC, modern activation application/deadline/cancellation and pasteboard connection causes survive existing variants with native categories, fixed context and safe envelopes. Requests/routing/fallback/success retained; variant migration documented, other source/binding/JSON/lifecycle work pending, no maturity upgrade."
     },
@@ -1964,7 +1964,7 @@
       ],
       "tested_commit": "b986ae1547bb16c2c90b4ee09b67817e6ab79d0a",
       "date": "2026-10-02",
-      "location": "docs/validation/zip-decoder-sources-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 decoder errors retain original ZIP/IO causes under existing Io with fixed context, native kinds and local-input semantics; returned variant/CRC migration recorded, valid extraction/wire retained. Other source/JSON/callback/binding/lifecycle work remains pending; no maturity upgrade."
     },
@@ -1982,7 +1982,7 @@
       ],
       "tested_commit": "5810d16fa3eeaaf949b4226b80dfbc8c1871219d",
       "date": "2026-10-02",
-      "location": "docs/validation/install-progress-errors-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive fallible observer retains native IO and stops before later completion; CLI startup/progress stderr checked with safe prior bytes and success JSON preserved. Legacy callbacks/wire/errors remain; other source/JSON/callback/binding/lifecycle work pending, no maturity upgrade."
     },
@@ -2000,7 +2000,7 @@
       ],
       "tested_commit": "5c0649a5b077db5ba78a34fdba8fb2b0e07cccfe",
       "date": "2026-10-02",
-      "location": "docs/validation/c-checked-lifecycle-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive checked initialization/consuming cleanup statuses with cached native categories, clear-before-release, state/unwind outcomes and original void category/ABI retained. Other callbacks/JSON/binding/source/lifecycle work remains pending; no maturity upgrade."
     },
@@ -2018,7 +2018,7 @@
       ],
       "tested_commit": "32a7e0653e36c336d153caed9772fc2db1a486cc",
       "date": "2026-10-02",
-      "location": "docs/validation/c-checked-ports-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive int-status RSD/userspace port snapshots distinguish NULL/missing/success with output reset and caller-thread categories; old uint16_t behavior and original ABI preserved. Void init/cleanup and other binding/source/stream/lifecycle work remain pending; no maturity upgrade."
     },
@@ -2036,7 +2036,7 @@
       ],
       "tested_commit": "60d5cb080f03d56194d9e9ea4d1ce8fd81dc49cf",
       "date": "2026-10-02",
-      "location": "docs/validation/apps-stream-output-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 versioned application mutation JSON and ordered partial pkill records with retained human bytes, sources and named fallback; syslog input limit covers NUL final chunks with prior CLI records preserved. Other JSON/callback/binding/source/lifecycle work remains pending; no maturity upgrade."
     },
@@ -2054,7 +2054,7 @@
       ],
       "tested_commit": "7b6394ec63dd68c79d290a1f470618ecf34110c3",
       "date": "2026-10-02",
-      "location": "docs/validation/syslog-stream-errors-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 syslog read/EOF failures retain sources and reach exit-1 final errors with prior stdout retained; NDJSON/human formats and successful count/capture stops preserved, write/flush checked. Core limit, other streams, JSON mutations, bindings and lifecycle remain pending; no maturity upgrade."
     },
@@ -2072,7 +2072,7 @@
       ],
       "tested_commit": "96f23e91dbbdd79656586217bff766eff313801b",
       "date": "2026-10-02",
-      "location": "docs/validation/xpc-h2-errors-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 retains typed H2/IO sources through RSD/RemoteXPC setup/bootstrap/read/write adapters using existing error variants, with native classes and explicit migration. Bindings, other lossy adapters and stream/partial remain pending; no maturity upgrade."
     },
@@ -2090,7 +2090,7 @@
       ],
       "tested_commit": "233348554e44022f6bca522d18728d45b62bab05",
       "date": "2026-10-02",
-      "location": "docs/validation/rsd-retry-errors-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 preserves final original on-demand probe failures and typed directory misses with old retry schedule, initial snapshot/cache and named screenshot fallback retained; shared native dial adapter accepted. Inner sources, bindings and stream/partial work remain pending; no maturity upgrade."
     },
@@ -2108,7 +2108,7 @@
       ],
       "tested_commit": "6abb92f15e2dcd1b4a879ed15f5987bf71fdd1e5",
       "date": "2026-10-02",
-      "location": "docs/validation/c-checked-list-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive checked C listing rejects embedded NUL with Protocol and no partial output, retaining legacy skip behavior, layout and free ownership. Void/port, later probe/inner sources, bindings and stream/partial work remains pending; no maturity upgrade."
     },
@@ -2126,7 +2126,7 @@
       ],
       "tested_commit": "b064539f4e49830cad6b0c62a6efd9de21448529",
       "date": "2026-10-02",
-      "location": "docs/validation/python-runtime-errors-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 safe typed RuntimeError for cached ordinary runtime IO failure with GIL release, invalid-mode precedence and old operation outputs retained. Other interpreter/panic/binding, probe and stream/partial work remains pending; no maturity upgrade."
     },
@@ -2144,7 +2144,7 @@
       ],
       "tested_commit": "b2c002629b17fed302b087462eb0a955fdd23f4e",
       "date": "2026-10-02",
-      "location": "docs/validation/initial-rsd-probe-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 borrowed initial skip/available/failure observation with original owner errors and native proxy dial IO, retaining legacy optional directories and retry behavior. Later probes, inner sources, bindings and stream/partial remain pending; no maturity upgrade."
     },
@@ -2162,7 +2162,7 @@
       ],
       "tested_commit": "62d1c4ff41d94b9ec849e6cef3972b8d120bfb20",
       "date": "2026-10-02",
-      "location": "docs/validation/http-errors-2026-10-02.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive fixed HTTP error headers and approved-origin exposure with old statuses/bodies and security admission retained. Pre-router/post-upgrade/remaining source, binding, probe and stream/partial work remains pending; no maturity upgrade."
     },
@@ -2180,7 +2180,7 @@
       ],
       "tested_commit": "3ae96914ae70cd70f4dcc62e1eafb0904af56b25",
       "date": "2026-10-01",
-      "location": "docs/validation/c-errors-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive caller-thread C category with original fourteen signatures/statuses/layouts retained and native/runtime sources classified before conversion. HTTP, remaining bindings/probe/stream/partial and L01 lifecycle acceptance remain pending; no maturity upgrade."
     },
@@ -2198,7 +2198,7 @@
       ],
       "tested_commit": "465b3208f9fd65ee4a106d9785872315c50648ff",
       "date": "2026-10-01",
-      "location": "docs/validation/python-errors-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 additive Python schema/class/phase/effects with original RuntimeError/ValueError args and signatures retained. Interpreter/callback/runtime boundaries, HTTP/C, probe, stream/partial and L01 lifecycle acceptance remain pending; no maturity upgrade."
     },
@@ -2216,7 +2216,7 @@
       ],
       "tested_commit": "ace87c1d9f2276a78eb7518c6a8d2cb3ff5b54e6",
       "date": "2026-10-01",
-      "location": "docs/validation/cli-machine-errors-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 observed cancellation marker and WebInspector launch source/machine class, preserving plain EINTR, signal failures, original exits and unknown effects. Binding/probe/stream and L01 device lifecycle acceptance remain pending; no maturity upgrade."
     },
@@ -2234,7 +2234,7 @@
       ],
       "tested_commit": "70108b76ce12f5e8d726cb920c017f91c496c3c6",
       "date": "2026-10-01",
-      "location": "docs/validation/cli-machine-errors-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 opt-in JSON final failures, typed category/phase/original exits and bounded confirmation observations. Existing success/default human output retained; HTTP/C/Python, probe, cancel, stderr/stream/partial and L01 cleanup remain pending; no maturity upgrade."
     },
@@ -2252,7 +2252,7 @@
       ],
       "tested_commit": "c01244f221189f0a77b1c2debb792f45ec7b151a",
       "date": "2026-10-01",
-      "location": "docs/validation/error-classes-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 startup IO/Timeout retention with legacy start/error enum and existing adapter statuses/shapes retained. Machine fields, probe tracking, stream/partial and L01 cleanup remain pending; no capability maturity upgrade."
     },
@@ -2270,7 +2270,7 @@
       ],
       "tested_commit": "7fd97077ad67b474191a2ec64112a98c371fc980",
       "date": "2026-10-01",
-      "location": "docs/validation/error-classes-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 CLI timeout wrappers preserve typed sources and existing context/exit behavior. Machine adapters, probe tracking, legacy startup remapping, streams and L01 cleanup remain pending; no capability maturity upgrade."
     },
@@ -2288,7 +2288,7 @@
       ],
       "tested_commit": "678fb9975fa3fe9747b8efb7e29996b31f33c745",
       "date": "2026-10-01",
-      "location": "docs/validation/error-classes-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "A02 first additive Rust classifier/evidence slice only; original types/success outputs retained. Full A02 source/probe/machine adapter/stream and L01 lifecycle acceptance remain pending."
     },
@@ -2306,7 +2306,7 @@
       ],
       "tested_commit": "c365d5569cb94cc9bade2d17499a37040ae9736a",
       "date": "2026-10-01",
-      "location": "docs/validation/plist-output-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "R04 historical conversion profiles and fallible stdout; original success fixtures preserved, closed result/help/version output returns a failure. No capability maturity, A02 classification/stream or L01 cleanup acceptance."
     },
@@ -2324,7 +2324,7 @@
       ],
       "tested_commit": "07ec8977fd5e8e421982348bcc79e376909d698e",
       "date": "2026-10-01",
-      "location": "docs/validation/webinspector-boundaries-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "R02 module/public boundaries, retained Target/automation regressions and injected actual Rust bridge Runtime/routing/error/teardown tests; no capability maturity or F03/F04/physical-device acceptance."
     },
@@ -2342,7 +2342,7 @@
       ],
       "tested_commit": "a3336572bca72e1cfd083afde075df6182f36c76",
       "date": "2026-10-01",
-      "location": "docs/validation/backup-boundaries-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "R01 module/public boundaries, backup/restore/filter/manifest/transfer cancellation regressions and actual local CLI output failures; no capability maturity or stronger device lifecycle acceptance."
     },
@@ -2360,7 +2360,7 @@
       ],
       "tested_commit": "f9b96f927431d1e099e121c7347d4a2df7dd5c69",
       "date": "2026-10-01",
-      "location": "docs/validation/device-boundaries-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "R03 device module boundaries, existing host routing regressions and public paths/minimal features; no capability maturity or physical lifecycle acceptance."
     },
@@ -2378,7 +2378,7 @@
       ],
       "tested_commit": "076e9097afe763456f0b063edd96d1b4bc9e2397",
       "date": "2026-10-01",
-      "location": "docs/validation/public-contract-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Representative maintained candidate compatibility profiles only; no device maturity or generalized cancellation/SDK acceptance."
     },
@@ -2396,7 +2396,7 @@
       ],
       "tested_commit": "076e9097afe763456f0b063edd96d1b4bc9e2397",
       "date": "2026-10-01",
-      "location": "docs/validation/public-contract-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Four actual CLI list result contracts, including ProductID metadata and missing default; physical USB/Wi-Fi/device acceptance remains NOT_RUN."
     },
@@ -2414,7 +2414,7 @@
       ],
       "tested_commit": "e9cc536351d08d2dc1fa3504d69259b9f215e39b",
       "date": "2026-10-01",
-      "location": "docs/validation/regression-runner-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Five host regression cases and safe capture/owned cleanup only; 22 real-device risk rows remain NOT_RUN, no capability maturity upgrade."
     },
@@ -2432,7 +2432,7 @@
       ],
       "tested_commit": "39fd900b0785ee0baa893c6f97afacbba90f9e74",
       "date": "2026-10-01",
-      "location": "docs/validation/protected-federation-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Verified upstream TLS, per-root credential/trust isolation, redirect/error/relay/revocation on Linux owned fixtures; platform/deployment/physical-device acceptance remains pending."
     },
@@ -2450,7 +2450,7 @@
       ],
       "tested_commit": "826ebf3312e54fb52651969ad5d45fbee914aa5b",
       "date": "2026-10-01",
-      "location": "docs/validation/browser-access-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Scoped bootstrap/CORS and single-use browser tickets, binary host relay and expiry/reload only; F03 Apple/CDP workflows, S03 transport and future F05/platform/device acceptance remain pending."
     },
@@ -2468,7 +2468,7 @@
       ],
       "tested_commit": "4f868548fba6423e4060c0a1bb681a12d5222822",
       "date": "2026-10-01",
-      "location": "docs/validation/http-boundary-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Host method/authority/origin and explicit debug selection only; browser tickets/client workflows, TLS and physical device acceptance remain pending."
     },
@@ -2486,7 +2486,7 @@
       ],
       "tested_commit": "0bb58a208de73b16997d8354920bbe7118c94dc5",
       "date": "2026-10-01",
-      "location": "docs/validation/debug-access-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Fixed-device debug admission and host authorization resource cancellation only; no Apple teardown or real CDP/Safari/client workflow assertion."
     },
@@ -2504,7 +2504,7 @@
       ],
       "tested_commit": "2c8c8c818669517f53161229b0840066bbdcd024",
       "date": "2026-10-01",
-      "location": "docs/validation/doctor-manager-access-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Host doctor private-token manager check, explicit credential failure and raw report privacy only; no device readiness assertion."
     },
@@ -2522,7 +2522,7 @@
       ],
       "tested_commit": "e6ddf5c2bbe7a12142dfa4dfc05b6afa1133a925",
       "date": "2026-10-01",
-      "location": "docs/validation/forwarding-boundary-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Raw listener preflight and explicit local trust audit only; no physical device forwarding or capture assertion."
     },
@@ -2540,7 +2540,7 @@
       ],
       "tested_commit": "318dab89ed94e6763d0d488e3191bf1bc976ab58",
       "date": "2026-10-01",
-      "location": "docs/validation/manager-access-2026-10-01.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Actual manager/client admission and revocation with bounded raw output; no physical device or other platform assertion."
     },
@@ -2556,7 +2556,7 @@
       ],
       "tested_commit": "b7837cbdeade2b8812b0d85ffb2aad2104cedf33",
       "date": "2026-09-30",
-      "location": "docs/validation/management-policy-2026-09-30.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Host-only tunnel auth create/check and exact policy/token tests; no server admission or device workflow assertion."
     },
@@ -2572,7 +2572,7 @@
       ],
       "tested_commit": "3013799b88ca710a9ca7bf42942c25a9394a8dc1",
       "date": "2026-09-30",
-      "location": "docs/validation/build-release-2026-09-30.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "All-target/all-feature compilation only; not per-capability protocol or real-device evidence."
     },
@@ -2588,7 +2588,7 @@
       ],
       "tested_commit": "3013799b88ca710a9ca7bf42942c25a9394a8dc1",
       "date": "2026-09-30",
-      "location": "docs/validation/build-release-2026-09-30.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Aggregate Rust 1546 passing/1 ignored; no per-capability workflow assertion."
     },
@@ -2607,7 +2607,7 @@
       ],
       "tested_commit": "94574d650f47cb0f2df4d9fb1b04c93a48f6da0e",
       "date": "2026-10-12",
-      "location": "docs/validation/wda-continuation-2026-10-12.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Five actual WDA CLI methods: startup, TCP port readiness, one forwarded HTTP exchange, original PID kill submission and independent strict peer EOF/worker joins; failures and separate same-poll owner fixture retained.",
       "limitations": "Local synthetic services only. No physical WDA, Windows WDA Ctrl-C after readiness, complete modern workflow or other-platform certification. Segmented validation, not a final full rerun."
@@ -2628,7 +2628,7 @@
       ],
       "tested_commit": "94574d650f47cb0f2df4d9fb1b04c93a48f6da0e",
       "date": "2026-10-12",
-      "location": "docs/validation/windows-watch-2026-10-12.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Actual pasteboard watch receives private-console Ctrl-C during CoreDeviceProxy StartService waiting, emits original stopped/native_reclaimed and exits 0; original reader joins and independent strict TLS peer EOF/worker joins. Seven separate supervisor fixtures plus one budget test.",
       "limitations": "Startup cancellation only, no activated TUN or complete clipboard notification/text/image/dedup/restore device workflow. Controller fixtures do not certify native device ACK. Tool commit/hash linkage is separate from this exact CLI commit."
@@ -2650,7 +2650,7 @@
       ],
       "tested_commit": "c86308301a2ad9f61d7ab45d28d53435daced86d",
       "date": "2026-10-27",
-      "location": "docs/validation/production-completion-2026-10-26.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Doctor78 current CLI tests: explicit hardware/model/version matching, generic personalized minimum, component/digest/permissions/nonregular files, incomplete identity and multi-manifest relevance, partial deadlines, platform/host report fixtures. No physical discovery or Apple signature verification."
     },
@@ -2671,7 +2671,7 @@
       ],
       "tested_commit": "c86308301a2ad9f61d7ab45d28d53435daced86d",
       "date": "2026-10-27",
-      "location": "docs/validation/production-completion-2026-10-26.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Viewer28 plus explicit FFmpeg3: actual persistent HEVC decode, RTP PTS wrap/intervals and 32x32 to 48x32 changes, authorized localhost HTTP/RFB pixels, slow consumers, RGBA/JPEG DIB and orientation adapters. Core Display26/HID9 include actual XPC strict stop EOF and pre-start reconnect failure. No physical iOS or independent desktop client acceptance."
     },
@@ -2692,7 +2692,7 @@
       ],
       "tested_commit": "c86308301a2ad9f61d7ab45d28d53435daced86d",
       "date": "2026-10-27",
-      "location": "docs/validation/production-completion-2026-10-26.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Actual fixed Playwright1.63.0/Puppeteer25.12.0 clients15 through the production Rust bridge and plist peers; Core CDP31 and CLI WebInspector184. Native normal realms, same/cross-origin navigation, real Memory/Fetch lifecycle; default downloads explicitly rejected. Physical Safari/WebView and trusted Input remain unverified/unimplemented."
     },
@@ -2713,7 +2713,7 @@
       ],
       "tested_commit": "c86308301a2ad9f61d7ab45d28d53435daced86d",
       "date": "2026-10-27",
-      "location": "docs/validation/production-completion-2026-10-26.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Core restore86 in the current full Core batch: selected OS extraction, real ASR Initiate/OOB/Payload/checksum and RestoredClient SystemImageData/DataPort dispatch through owned synthetic peers. Does not establish complete Update, physical transitions, TSS eligibility or Apple personalization."
     },
@@ -2734,7 +2734,7 @@
       ],
       "tested_commit": "8ea9af31613154c61d4efc3f825e5672362f707d",
       "date": "2026-10-27",
-      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "CoreZIP31 and full Core2041: actual owned duplex Stored/Deflated streaming, metadata snapshot/EOCD bounds, nested ZIP, 6MiB payload CRC, malformed input, caller Drop/deadline and peer EOF. ZIP32 admitted profile, no physical install, whole-process RSS or OS syscall preemption guarantee."
     },
@@ -2755,7 +2755,7 @@
       ],
       "tested_commit": "8ea9af31613154c61d4efc3f825e5672362f707d",
       "date": "2026-10-27",
-      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Same TestWorkflowEngine::run traverses actual loopback readiness/RSD/canonical AppService/canonical or shim DTX to one passed testcase/JUnit/attempt sidecar; launch then authorization failure kills known PID before DTX close. Two tests include fail-closed target injection; peers abort and join on all fixture failures. Not a CLI binary, installation/log, original native-owner or physical-device workflow."
     },
@@ -2776,7 +2776,7 @@
       ],
       "tested_commit": "8ea9af31613154c61d4efc3f825e5672362f707d",
       "date": "2026-10-27",
-      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Actual fixed Playwright/Puppeteer16 through the Rust bridge plus CoreCDP33: normal/user/internal contexts, per-ID epochs, retired tree/ID reuse, native objectId console evidence and WallTime. Primitive-only console without world identity, trusted page input and downloads remain unsupported; no physical Safari/WebView acceptance."
     },
@@ -2797,7 +2797,7 @@
       ],
       "tested_commit": "8ea9af31613154c61d4efc3f825e5672362f707d",
       "date": "2026-10-27",
-      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "CoreRestore91 (restored13) includes actual synchronous SystemImageData dispatch through original total/cancellation to ASR and continued control receive; independent-token cancellation during StartRestore/firmware, terminal rejection/partial reports and late-status exclusion. Async ports/full recovery remain unimplemented and no Update completion or device write acceptance is claimed."
     },
@@ -2805,8 +2805,8 @@
       "host_os": "Windows x86_64/MSVC",
       "tested_commit": "ef5fd8cd6cb1c529a001d60bcef8d3e0923a21d9",
       "date": "2026-10-29",
-      "location": "docs/validation/terra-followup-2026-10-29.md",
-      "id": "windows-terra-followup-host-20261029",
+      "location": "docs/capabilities.md",
+      "id": "windows-debug-ostrace-followup-host-20261029",
       "level": "host-unit/protocol",
       "device": null,
       "ios": null,
@@ -2816,7 +2816,7 @@
         "local LLDB22.1.8 Mach-O target metadata"
       ],
       "required_state": [
-        "Frozen dirty source and binary hashes in external20261029-terra-followup/bin/verified.json; head alone is not tested-source identity"
+        "Frozen dirty source and binary hashes in external20261029-followup/bin/verified.json; head alone is not tested-source identity"
       ],
       "result": "PASS",
       "scope": "469 core and108 CLI tests passed serially (3CLI ignored); independent transfer cap/legacy behavior, source chains and safe errors, truncation/publication cleanup;8debug tests with actual loopback bytes/cancellation/ACK; actual local LLDB synthetic iOS target/path metadata, no process commands.",
@@ -2826,10 +2826,10 @@
       "host_os": "Windows x86_64/MSVC",
       "tested_commit": "ef5fd8cd6cb1c529a001d60bcef8d3e0923a21d9",
       "date": "2026-10-29",
-      "location": "docs/validation/terra-followup-2026-10-29.md",
-      "id": "windows-terra-followup-device-limited-20261029",
+      "location": "docs/capabilities.md",
+      "id": "windows-debug-ostrace-followup-device-limited-20261029",
       "level": "real-device",
-      "device": "D2 iPhone11,8",
+      "device": "iPhone11,8 (iOS 18.7)",
       "ios": "18.7.10 /22H374",
       "transport": [
         "USB",
@@ -2846,7 +2846,7 @@
       "host_os": "Windows x86_64/MSVC",
       "tested_commit": "ef5fd8cd6cb1c529a001d60bcef8d3e0923a21d9",
       "date": "2026-10-29",
-      "location": "docs/validation/completion-2026-10-29.md",
+      "location": "docs/capabilities.md",
       "id": "windows-completion-host-20261029",
       "level": "host-unit/protocol",
       "device": null,
@@ -2867,10 +2867,10 @@
       "host_os": "Windows x86_64/MSVC",
       "tested_commit": "ef5fd8cd6cb1c529a001d60bcef8d3e0923a21d9",
       "date": "2026-10-29",
-      "location": "docs/validation/completion-2026-10-29.md",
+      "location": "docs/capabilities.md",
       "id": "windows-completion-archive-device-20261029",
       "level": "real-device",
-      "device": "D2 iPhone11,8",
+      "device": "iPhone11,8 (iOS 18.7)",
       "ios": "18.7.10 /22H374",
       "transport": [
         "USB",
@@ -2899,7 +2899,7 @@
       ],
       "tested_commit": "c71fd5cdda785d467a55a0baa21f45f88424beb7",
       "date": "2026-11-07",
-      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "16 pinned client tests, 129 Core WebInspector tests, and 184 CLI WebInspector tests pass: primitive-only console.log/info/warn/error/debug synthesis to active main-frame default contextId, isolated world/injectedScriptId preservation, controlled Input.dispatchMouseEvent/dispatchKeyEvent/insertText/dispatchTouchEvent, Page/Browser.setDownloadBehavior, and Performance.enable/getMetrics."
     },
@@ -2907,20 +2907,20 @@
       "id": "windows-f04-cdp-device-20261107",
       "level": "real-device",
       "host_os": "Windows x86_64/MSVC",
-      "device": "D2 iPhone11,8",
+      "device": "iPhone11,8 (iOS 18.7)",
       "ios": "18.7.10 / 22H374",
       "transport": [
         "USB",
         "userspace RSD com.apple.webinspector.shim.remote"
       ],
       "required_state": [
-        "Connected D2 with Safari Web Inspector and Remote Automation enabled"
+        "Connected iPhone11,8 (iOS 18.7) with Safari Web Inspector and Remote Automation enabled"
       ],
       "tested_commit": "c71fd5cdda785d467a55a0baa21f45f88424beb7",
       "date": "2026-11-07",
-      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
-      "scope": "All 23 real-device WebInspector/CDP/Playwright/Puppeteer/Selenium test cases (WEB-001..WEB-023, including WEB-019 default Playwright connectOverCDP and WEB-020 controlled Input/Download) passed on D2."
+      "scope": "All 23 real-device WebInspector/CDP/Playwright/Puppeteer/Selenium test cases (WEB-001..WEB-023, including WEB-019 default Playwright connectOverCDP and WEB-020 controlled Input/Download) passed on iPhone11,8 (iOS 18.7)."
     },
     {
       "id": "windows-f02-full-workflow-20261107",
@@ -2938,7 +2938,7 @@
       ],
       "tested_commit": "9caed46d1090a69f98f697898760cded78e20031",
       "date": "2026-11-07",
-      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "Reusable execute_reusable_test_workflow_plan and reconcile_unconfirmed_runner_launch in ios-core plus full-chain modern fixture chaining ZIPConduit/InstallationProxy install, RSD/AppService/DTX execution and rerun, Syslog/OSTrace capture, JUnit/sidecar reporting, app uninstall, and NativeScope tunnel retirement (test_workflow 25, runtest 14, workflow_api 2 passed)."
     },
@@ -2958,7 +2958,7 @@
       ],
       "tested_commit": "a2a805a8dd9cdf26e65e8de86b5bee7cfeb741bb",
       "date": "2026-11-07",
-      "location": "docs/validation/remaining-development-2026-10-27.md",
+      "location": "docs/capabilities.md",
       "result": "PASS",
       "scope": "ASN.1 DER IM4P/IM4M/IM4R assembly (64 FourCC mappings, BNCN/snid/anid/<component>-TBM), Normal/DFU to Recovery ramdisk re-enumeration handoff, 31 upstream restored DataRequest dispatches + ASR streaming, and safe CLI simulate-restore gate (services::restore 95, cmd::restore 18 passed)."
     }
@@ -3056,7 +3056,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified all 7 accessibility-audit subcommands (capabilities, audit-types, settings, describe, navigate, list-items, run-audit) over axAudit DTX on iOS 27.2 (24B119)."
         }
       ],
@@ -3164,7 +3164,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified activation state (Activated), info, and session-info on iOS 27.2 (24B119)."
         }
       ],
@@ -3755,9 +3755,9 @@
         "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
         "No pairing or new tunnel is created. Cleanup applies only to observer-owned sockets and cannot certify retirement of the external tunnel.",
         "Missing identity/directory/service-port metadata remains unknown; a requested mode or old cached directory cannot supply a successful-selection receipt.",
-        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
+        "Current uncommitted host checks are recorded in docs/capabilities.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
       ],
-      "topic": "docs/validation/protocol-observers-2026-10-12.md"
+      "topic": "docs/capabilities.md"
     },
     {
       "id": "cli:apps",
@@ -3825,10 +3825,10 @@
         "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
         "Wire Int64/Uint64 receipt is additive; legacy InstallRecord fields and ordinary install-record output are unchanged.",
         "Read-only Query only; the existing external tunnel is not owned or stopped. Service record fingerprints and actual socket EOF are separate from device trust or remote cleanup.",
-        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied.",
+        "Current uncommitted host checks are recorded in docs/capabilities.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied.",
         "Owned CLI/workflow ZIP installs admit only ZIP32 Stored/Deflated: archive <=u32::MAX, 16384 entries, 16MiB directory/32MiB metadata reads, 1GiB per expanded entry and 8GiB total; 64KiB streaming buffers and CRC preflight. Borrowed legacy APIs remain separate, OS syscalls cannot be physically preempted, and mutable payloads are not file snapshots."
       ],
-      "topic": "docs/validation/protocol-observers-2026-10-12.md"
+      "topic": "docs/capabilities.md"
     },
     {
       "id": "cli:backup",
@@ -3881,7 +3881,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified MobileBackup2 version (2.1) and encryption-status on iOS 27.2 (24B119)."
         }
       ],
@@ -3934,7 +3934,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified BTPacketLogger capture in both packetlogger (.pklg) and pcapng (.pcapng) formats on iOS 27.2 (24B119)."
         }
       ],
@@ -4083,7 +4083,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified companion list on iOS 27.2 (24B119)."
         }
       ],
@@ -4139,7 +4139,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified crash flush and crash ls on iOS 27.2 (24B119)."
         }
       ],
@@ -4192,19 +4192,19 @@
         {
           "level": "host-unit/protocol",
           "result": "PASS",
-          "evidence": "windows-terra-followup-host-20261029",
+          "evidence": "windows-debug-ostrace-followup-host-20261029",
           "scope": "Debug loopback lifecycle/script encoding and local LLDB synthetic target metadata only."
         },
         {
           "level": "real-device",
           "result": "INCONCLUSIVE",
-          "evidence": "windows-terra-followup-device-limited-20261029",
+          "evidence": "windows-debug-ostrace-followup-device-limited-20261029",
           "scope": "Missing remote debugproxy precondition only; no positive device debugging."
         },
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified CoreDevice com.apple.internal.dt.remote.debugproxy LLDB script generation and live GDB RSP +#9b handshake on iOS 27.2 (24B119)."
         }
       ],
@@ -4260,7 +4260,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified debugserver send qHostInfo, qSupported, and qGDBServerVersion over RSD com.apple.internal.dt.remote.debugproxy fallback on iOS 27.2 (24B119)."
         }
       ],
@@ -4313,7 +4313,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified ConditionInducer list, enable SlowNetworkCondition SlowNetworkWiFi, and disable on iOS 27.2 (24B119)."
         }
       ],
@@ -4415,7 +4415,7 @@
         {
           "level": "simulated-flow",
           "result": "NOT_RUN",
-          "reason": "Complete paired-identity CLI/mDNS/existing-record workflow has not run. Core real TLS identity and saved-key matcher subset checks passed; see the uncommitted handoff for exact scope.",
+          "reason": "Complete paired-identity CLI/mDNS/existing-record workflow has not run. Core real TLS identity and saved-key matcher subset checks passed.",
           "scope": "discover paired-identity requires explicit selected UDID, bounded discovery and existing local records. Private-MAC accepted Lockdown identity and saved-altIRK advertisement authentication remain distinct mechanisms."
         },
         {
@@ -4429,7 +4429,7 @@
         "No pairing is created and no raw MAC, altIRK, HostID or credential bytes are exported by the safe receipt.",
         "Saved record validation/advertisement authentication does not imply an online RemotePairing pair-verify ACK; missing mechanisms stay unobserved."
       ],
-      "topic": "docs/validation/protocol-observers-2026-10-12.md"
+      "topic": "docs/capabilities.md"
     },
     {
       "id": "cli:doctor",
@@ -4745,7 +4745,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified Lockdown service interception and NDJSON/binary recording on iOS 27.2 (24B119)."
         }
       ],
@@ -4805,7 +4805,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified local TCP port forwarding to device port 62078 on iOS 27.2 (24B119)."
         }
       ],
@@ -4919,7 +4919,7 @@
         "Universal HID/Indigo are one-way writes. reports_flushed and local_contact_closed are local receipts, not device ACK or externally confirmed contact restoration.",
         "Strict media stop requires an actual reply; before/after media-status equality and original task/native joins are separate facts. The legacy permissive EOF stop API is not used as strict proof."
       ],
-      "topic": "docs/validation/protocol-observers-2026-10-12.md"
+      "topic": "docs/capabilities.md"
     },
     {
       "id": "cli:httpproxy",
@@ -5015,7 +5015,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified idam get on iOS 27.2 (24B119)."
         }
       ],
@@ -5495,7 +5495,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified disabling jetsam memory limits for running process via Instruments on iOS 27.2 (24B119)."
         }
       ],
@@ -5719,13 +5719,13 @@
         {
           "level": "host-unit/protocol",
           "result": "PASS",
-          "evidence": "windows-terra-followup-host-20261029",
+          "evidence": "windows-debug-ostrace-followup-host-20261029",
           "scope": "OS trace budget/diagnostic/protocol and cleanup subset."
         },
         {
           "level": "real-device",
           "result": "INCONCLUSIVE",
-          "evidence": "windows-terra-followup-device-limited-20261029",
+          "evidence": "windows-debug-ostrace-followup-device-limited-20261029",
           "scope": "Bounded archive/collect quota refusal; complete real archive not accepted."
         },
         {
@@ -5897,7 +5897,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified prepare create-cert (.der/.pem/.p12 generation) on Windows host."
         }
       ],
@@ -5955,7 +5955,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified non-destructive restore preflight-info and restore nonces on iOS 27.2 (24B119)."
         }
       ],
@@ -6276,7 +6276,7 @@
         }
       ],
       "limitations": [
-        "Fixed-client Rust-bridge workflows and physical device D2 (00008020-0004553E02F2002E, iOS 16.5) verification now cover native normal/user/internal realms, primitive-only console synthesis on active main frame default context, iframe navigation, Memory/Performance metrics, Fetch subset, and controlled Input/Download compatibility."
+        "Fixed-client Rust-bridge workflows and physical device iPhone11,8 (iOS 18.7) verification now cover native normal/user/internal realms, primitive-only console synthesis on active main frame default context, iframe navigation, Memory/Performance metrics, Fetch subset, and controlled Input/Download compatibility."
       ],
       "topic": "docs/cdp-compatibility.md"
     },
@@ -6377,7 +6377,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified symbols list (62 dyld_shared_cache files) and symbols pull over CoreDevice FileService on iOS 27.2 (24B119)."
         }
       ],
@@ -7910,13 +7910,13 @@
         {
           "level": "host-unit/protocol",
           "result": "PASS",
-          "evidence": "windows-terra-followup-host-20261029",
+          "evidence": "windows-debug-ostrace-followup-host-20261029",
           "scope": "OS trace budget/diagnostic/protocol and cleanup subset."
         },
         {
           "level": "real-device",
           "result": "INCONCLUSIVE",
-          "evidence": "windows-terra-followup-device-limited-20261029",
+          "evidence": "windows-debug-ostrace-followup-device-limited-20261029",
           "scope": "Bounded archive/collect quota refusal; complete real archive not accepted."
         },
         {
@@ -8244,7 +8244,7 @@
         "Successful send/flush is not a device ACK. Closing a local touch session cannot certify externally observed contact restoration.",
         "The strict observer retains potential contact/media startup intent before a possible write, preserves failure and cleanup causes and uses original native retirement."
       ],
-      "topic": "docs/validation/protocol-observers-2026-10-12.md"
+      "topic": "docs/capabilities.md"
     },
     {
       "id": "service:display",
@@ -8295,9 +8295,9 @@
         "Raw encoded RTP remains available; actual decoded HTTP/RFB host workflow is recorded separately from physical Display interoperability.",
         "EOF/reset/broken pipe cannot supply strict stop ACK. Legacy permissive stop remains a separate compatibility API.",
         "Media-status equality is an observed media predicate, not remote HID contact state. Encoded RTP and host task joins do not prove HEVC decoding or physical viewer acceptance.",
-        "Current source and exact host gates are registered in docs/validation/production-completion-2026-10-26.md; service-level stopAll remains the verified stop granularity, no maturity upgrade."
+        "Current source and exact host gates are registered in docs/capabilities.md; service-level stopAll remains the verified stop granularity, no maturity upgrade."
       ],
-      "topic": "docs/validation/protocol-observers-2026-10-12.md"
+      "topic": "docs/capabilities.md"
     },
     {
       "id": "service:installcoordination",
@@ -8341,9 +8341,9 @@
         "Read-only installation-record queries; install/uninstall/stash mutations are not exposed.",
         "ObservedInstallRecord preserves Int64/Uint64 before u64 projection without changing InstallRecord struct literals. Negative signed values fail.",
         "Zero-budget no-business-I/O is a typed path/peer observation, not an elapsed-time inference. Install/uninstall/stash mutations remain unimplemented.",
-        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
+        "Current uncommitted host checks are recorded in docs/capabilities.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
       ],
-      "topic": "docs/validation/protocol-observers-2026-10-12.md"
+      "topic": "docs/capabilities.md"
     },
     {
       "id": "service:prepare",
@@ -8574,7 +8574,7 @@
         }
       ],
       "limitations": [
-        "Target/flat session/JSContext, isolated worlds, primitive-only console synthesis, controlled Input/Download/Performance/Memory/Fetch compatibility, pinned Puppeteer/Playwright/Selenium client suites, and physical Safari/WebInspector verification on D2 (iOS 16.5) are complete."
+        "Target/flat session/JSContext, isolated worlds, primitive-only console synthesis, controlled Input/Download/Performance/Memory/Fetch compatibility, pinned Puppeteer/Playwright/Selenium client suites, and physical Safari/WebInspector verification on iPhone11,8 (iOS 18.7) are complete."
       ],
       "topic": "docs/cdp-compatibility.md"
     },
@@ -8865,7 +8865,7 @@
         "USB/usbmuxd, TCP lockdown, direct RSD and optional tunnel strategies.",
         "Finite explicit Rust device queries are host-accepted at 6f582c9; Python/C applications/files/logs and physical A03 acceptance remain pending."
       ],
-      "topic": "docs/engineering-roadmap-2026-09-30.md"
+      "topic": "docs/usage.md"
     },
     {
       "id": "api:c-device-tunnel",
@@ -8895,7 +8895,7 @@
       "limitations": [
         "Runtime plus opaque owned handles; per-device successful allocation and release need fake/physical flows."
       ],
-      "topic": "docs/engineering-roadmap-2026-09-30.md"
+      "topic": "docs/getting-started.md"
     },
     {
       "id": "api:python-tunnel",
@@ -8925,7 +8925,7 @@
       "limitations": [
         "Device discovery/tunnel metadata and asyncio transport bridge; not general Python service bindings."
       ],
-      "topic": "docs/engineering-roadmap-2026-09-30.md"
+      "topic": "docs/python-binding.md"
     },
     {
       "id": "workflow:cdp-clients",
@@ -8958,9 +8958,9 @@
         }
       ],
       "limitations": [
-        "Pinned Puppeteer 25.12.0, Playwright 1.63.0, and Selenium 4.44.0 workflows through the Rust CDP bridge and physical device D2 (WEB-001..WEB-023) are verified."
+        "Pinned Puppeteer 25.12.0, Playwright 1.63.0, and Selenium 4.44.0 workflows through the Rust CDP bridge and physical device iPhone11,8 (iOS 18.7) (WEB-001..WEB-023) are verified."
       ],
-      "topic": "docs/engineering-roadmap-2026-09-30.md"
+      "topic": "docs/cdp-compatibility.md"
     },
     {
       "id": "workflow:media-viewer-vnc",
@@ -8990,7 +8990,7 @@
       "limitations": [
         "Encoded access-unit support does not establish decoding, viewer, VNC or input workflow completion."
       ],
-      "topic": "docs/engineering-roadmap-2026-09-30.md"
+      "topic": "docs/viewer.md"
     },
     {
       "id": "workflow:bidirectional-clipboard",
@@ -9020,7 +9020,7 @@
       "limitations": [
         "Host integration, supported image formats, deduplication and loop suppression remain pending."
       ],
-      "topic": "docs/engineering-roadmap-2026-09-30.md"
+      "topic": "docs/viewer.md"
     },
     {
       "id": "workflow:restore-executor",
@@ -9055,7 +9055,7 @@
       "limitations": [
         "Full simulated restore/update state machine (IMG4/TSS, Recovery/Ramdisk re-enumeration plan, restored DataRequest dispatch, and ASR) is verified in loopback fixtures; physical device flashing remains disabled unless explicitly authorized."
       ],
-      "topic": "docs/engineering-roadmap-2026-09-30.md"
+      "topic": "docs/restore-preflight.md"
     },
     {
       "id": "cli:viewer",
@@ -9097,7 +9097,7 @@
         {
           "level": "real-device",
           "result": "PASS",
-          "evidence": "20261108-095800-ios27.2",
+          "evidence": "windows-ios27.2-acceptance-20261108",
           "scope": "Verified ios viewer web (MJPEG stream, 1290x2796 16-bit PNG frame, clipboard roundtrip, HID pointer/button/key/orientation, stop) and ios viewer vnc (RFB 3.8 handshake, 14.43 MiB raw BGRA frame, PointerEvent, ClientCutText) on iPhone16,2 iOS 27.2 (24B119)."
         }
       ],

@@ -32,6 +32,9 @@ ios apps --help
 ios backup --help
 ios tunnel --help
 ios instruments --help
+ios hid --help
+ios device-control --help
+ios viewer --help
 ```
 
 ## Device discovery and pairing
@@ -115,7 +118,8 @@ higher-level commands when you want a narrower, typed view of common data.
 
 ## Files, app containers, and crash reports
 
-The `file` command uses AFC by default:
+The `file` command uses AFC by default and supports both standard filesystem
+operations and extended AFC opcodes:
 
 ```sh
 ios -u <UDID> file ls /
@@ -123,8 +127,29 @@ ios -u <UDID> file tree /
 ios -u <UDID> file pull /DCIM ./dcim
 ios -u <UDID> file push local.txt /Downloads/local.txt
 ios -u <UDID> file stat /Downloads/local.txt
-ios -u <UDID> file rm /Downloads/local.txt
+ios -u <UDID> file mkdir /Downloads/subdir
+ios -u <UDID> file mv /Downloads/local.txt /Downloads/renamed.txt
+ios -u <UDID> file device-info
+ios -u <UDID> file connection-info
+ios -u <UDID> file hash /Downloads/renamed.txt
+ios -u <UDID> file hash /Downloads/renamed.txt --offset 0 --length 64
+ios -u <UDID> file pread /Downloads/renamed.txt --offset 0 --length 16
+ios -u <UDID> file pwrite /Downloads/renamed.txt --offset 4 --data "test"
+ios -u <UDID> file truncate /Downloads/renamed.txt --size 32
+ios -u <UDID> file truncate /Downloads/renamed.txt --size 16 --by-fd
+ios -u <UDID> file set-time /Downloads/renamed.txt --mtime-ns 1700000000000000000
+ios -u <UDID> file dir-size /Downloads
+ios -u <UDID> file rm /Downloads/renamed.txt
+ios -u <UDID> file rm /Downloads/subdir --recursive
 ```
+
+Extended AFC subcommands map directly to the device's AFC protocol opcodes:
+- `connection-info`: queries AFC connection attributes (`GetConnectionInfo`).
+- `hash [--offset <N>] [--length <N>]`: computes a SHA-1 digest of the full file (`GetFileHash`) or a byte range (`GetFileHashWithRange`) on the device.
+- `pread --offset <N> --length <N>` and `pwrite --offset <N> --data <STRING>`: perform positional handle reads/writes (`FileRefReadWithOffset` / `FileRefWriteWithOffset`) and report the resulting cursor position (`FileRefTell`).
+- `truncate --size <N> [--by-fd]`: truncates or extends a file by path (`TruncateFile`) or through an open file handle (`FileRefSetFileSize` when `--by-fd` is passed).
+- `set-time --mtime-ns <N>`: updates the file modification timestamp in nanoseconds since the Unix epoch (`SetFileTime`).
+- `dir-size <PATH>`: computes recursive total bytes and block count of directory contents (`GetSizeOfPathContents`).
 
 Use House Arrest for an app container:
 
@@ -159,26 +184,28 @@ implement sysdiagnose collection. `ios diagnostics sysdiagnose` is a separate
 iOS 17+ CoreDevice metadata probe in this release (dry-run only); it does not
 download the archive.
 
-CoreDevice fileservice (iOS 17+ devices that expose the service):
+CoreDevice FileService (`ios file --coredevice`, also referred to as `ios fileservice` workflows on iOS 17+ devices that expose `com.apple.coredevice.fileservice.control` and `.data`):
 
 ```sh
 ios -u <UDID> file --coredevice --domain temporary ls /
 ios -u <UDID> file --coredevice --domain app-data-container --identifier com.example.app ls /
-ios -u <UDID> file --coredevice --domain temporary push local.txt remote.txt
-ios -u <UDID> file --coredevice --domain temporary pull remote.txt local.txt
 ios -u <UDID> file --coredevice --domain temporary mkdir new-dir
-ios -u <UDID> file --coredevice --domain temporary mv old.txt new.txt
-ios -u <UDID> file --coredevice --domain temporary rm old.txt
+ios -u <UDID> file --coredevice --domain temporary push local.txt new-dir/remote.txt
+ios -u <UDID> file --coredevice --domain temporary pull new-dir/remote.txt ./downloaded.txt
+ios -u <UDID> file --coredevice --domain temporary mv new-dir/remote.txt new-dir/renamed.txt
+ios -u <UDID> file --coredevice --domain temporary rm new-dir --recursive
 ```
 
 Not all devices expose `com.apple.coredevice.fileservice.control` / `.data` in
 their RSD directory. Use `ios rsd check com.apple.coredevice.fileservice.control`
-to verify availability before using `--coredevice`.
+(and ensure Developer Mode and DDI are active) to verify availability before
+using `--coredevice`.
 
 Comparable upstream workflows:
 
 - go-ios: `ios fsync ...`, `ios crash ls`, `ios crash cp`.
 - pymobiledevice3: `pymobiledevice3 afc ...`,
+  `pymobiledevice3 developer core-device file-service ...`,
   `pymobiledevice3 crash pull ...`.
 
 ## Applications and test automation
@@ -193,6 +220,7 @@ ios -u <UDID> apps uninstall com.example.app
 ios -u <UDID> apps launch com.example.app
 ios -u <UDID> apps processes
 ios -u <UDID> apps kill <PID>
+ios -u <UDID> apps pkill Example
 ios -u <UDID> apps roots
 ios -u <UDID> apps spawn /usr/bin/log -- stream --style json
 ios -u <UDID> apps icons com.example.app --output-dir ./icons
@@ -219,7 +247,7 @@ zero-count summary. The [error/partial-result contract](error-contract.md)
 documents the fields and output/cleanup limits.
 
 Streaming install progress remains safe stderr text. Startup/progress write or
-flush failures now return exit 1 without a success stdout result, preserving
+flush failures return exit 1 without a success stdout result, preserving
 earlier progress where written. Progress failure can happen after IPA transfer;
 absence of a result does not prove that installation had no device effects.
 See the [error contract](error-contract.md) before retrying or reusing a service.
@@ -248,9 +276,9 @@ process when the runner is already listening on the device.
 device port probe. Readiness establishes that the device TCP port accepts a
 connection. `--once` stops after one forwarded connection ends, submits cleanup
 for the original runner PID, closes its services and waits for owned tasks.
-Without `--once`, forwarding continues until Ctrl-C. Physical WDA operation
-remains unverified; localhost acceptance is recorded in the
-[WDA repair evidence](validation/wda-continuation-2026-10-12.md).
+Without `--once`, forwarding continues until Ctrl-C. See the
+[capability inventory](capabilities.md) for host and physical-device test
+workflow records.
 
 `--junit-output` requires `--wait` and writes the complete result event summary
 as standard JUnit XML using an atomic same-directory temporary file and rename.
@@ -371,8 +399,15 @@ ios -u <UDID> device-control configuration get style
 ios -u <UDID> device-control configuration set style dark
 ios -u <UDID> device-control configuration get color-filter
 ios -u <UDID> device-control configuration set color-filter true --filter-type Protanopia --intensity 0.5
+ios -u <UDID> device-control configuration get text-size
+ios -u <UDID> device-control configuration get reduce-motion
 ios -u <UDID> device-control configuration set reduce-motion false
+ios -u <UDID> device-control configuration get show-borders
+ios -u <UDID> device-control configuration get reduce-transparency
+ios -u <UDID> device-control configuration set increase-contrast false
+ios -u <UDID> device-control configuration set liquid-glass-opacity default
 ios -u <UDID> device-control orientation left
+ios -u <UDID> device-control orientation right
 ```
 
 JSON is the default output (`--no-json` selects stable human-readable lines).
@@ -380,31 +415,48 @@ The color-filter JSON value uses a flat `filterType` string even though the
 CoreDevice wire dictionary is `filterType: {"name": "..."}`. Unknown style,
 filter, text-size, and orientation strings from a newer device are preserved
 in JSON; setters still reject unknown values until their semantics are known.
-The daemon does not expose getters for `increase-contrast` or
-`liquid-glass-opacity`; attempting `configuration get` for either returns a
-clear local error. Devices that only expose a legacy or `.shim.remote` route
-are rejected before the XPC request because these operations require the
-modern CoreDevice envelope.
+The daemon exposes write-only setters for `increase-contrast` (`true`/`false`)
+and `liquid-glass-opacity` (`default`, `less-transparent`, `more-opaque`, etc.),
+but does not expose getters for either; attempting `configuration get` for
+`increase-contrast` or `liquid-glass-opacity` returns a clear local error.
+Devices that only expose a legacy or `.shim.remote` route are rejected before
+the XPC request because these operations require the modern CoreDevice envelope.
 
-Display media and Universal HID authorization
----------------------------------------------
+## Display media and Universal HID authorization
 
 ```sh
 ios -u <UDID> device-control display status
 ios -u <UDID> device-control display video --max-units 10 --timeout 10 --output screen.hevc
 ios -u <UDID> device-control display audio --max-units 10 --timeout 10 --output audio.aac
+ios -u <UDID> hid --confirm button --usage-page 12 --usage-code 64 --state down
+ios -u <UDID> hid --confirm button --usage-page 12 --usage-code 64 --state up
 ios -u <UDID> hid --confirm tap --x 0.5 --y 0.5
+ios -u <UDID> hid --confirm swipe --from-x 0.5 --from-y 0.75 --to-x 0.5 --to-y 0.25 --steps 12
+ios -u <UDID> hid --confirm touch down --contact-id 0 --x 0.5 --y 0.5
+ios -u <UDID> hid --confirm touch up --contact-id 0 --x 0.5 --y 0.5
+ios -u <UDID> hid --confirm multitouch --points 0:0.2:0.5,1:0.3:0.5,2:0.4:0.5 --hold-ms 60
 ios -u <UDID> hid --confirm text 'hello'
+ios -u <UDID> hid --confirm key 4 --shift
 ```
 
-`video` and `audio` return bounded metadata JSON lines (or a human summary)
-and optionally save concatenated encoded access units through an atomic 0600
-staging file. The output is raw encoded Annex-B HEVC or AAC-ELD payload data,
-not decoded pixels/PCM; a VNC/viewer pipeline is not included. Capture and
-Universal HID use the kernel tunnel so device-initiated RTP can reach the host
-UDP socket. If kernel TUN support or a concrete CDTunnel client address is not
-available, the command fails with a diagnostic instead of advertising `::1` or
-claiming that input/capture succeeded.
+`device-control display video` and `audio` return bounded metadata JSON lines
+(or a human summary) and optionally save concatenated encoded access units
+through an atomic 0600 staging file. The output is raw encoded Annex-B HEVC or
+AAC-ELD payload data, not decoded pixels/PCM; for decoded Web/VNC viewing and
+clipboard integration, use `ios viewer` (see [viewer.md](viewer.md)).
+
+Both `device-control display video|audio` and Universal HID (`tap`, `swipe`,
+`touch`, `multitouch`, `text`, `key`) try the kernel TUN path first and
+**automatically fall back to the Userspace Tunnel** on iOS 17–27.2, using
+userspace IPv6 UDP datagram forwarding to receive the device's RTP media stream
+without requiring elevated kernel TUN privileges. Universal HID opens an
+authenticated Display/RTP media stream before sending reports, waits **500ms**
+(`TOUCH_SURFACE_AUTH_SETTLE`) for `backboardd` to authenticate the touch
+surfaces, and waits **300ms** (`KEYBOARD_ATTACH_SETTLE`) after registering a
+virtual keyboard (with a Shift lead-in/lead-out report sequence when typing
+uppercase characters or passing `--shift`). `multitouch --points <id:x:y,...>
+[--hold-ms <MS>]` sends up to 5 simultaneous normalized contacts (`0.0..=1.0`)
+in a single `mainTouchscreen` report.
 
 ## Logs, diagnostics, and packet capture
 
@@ -420,9 +472,19 @@ ios -u <UDID> os-trace live --pid 42 --subsystem com.example --match timeout
 ios -u <UDID> os-trace archive ./diagnostics.tar --size-limit 1073741824
 ios -u <UDID> os-trace collect ./diagnostics.logarchive --age-limit 7
 ios -u <UDID> pcap --output device.pcap
+ios -u <UDID> pcap --interface en0 --count 10 --duration 10 --output wifi.pcap --json
+ios -u <UDID> pcap -i pdp_ip0 --duration 10 --output cellular.pcap
 ios -u <UDID> ip --json
 ios -u <UDID> notify wait com.apple.mobile.lockdown.host_attached
 ```
+
+`ios pcap` supports `--interface` / `-i <INTERFACE>` filtering in addition to
+`--pid` and `--process`. On iOS 27.2, `pcapd` frame headers store the bare
+interface family prefix (`en`, `pdp_ip`, `lo`, `awdl`, `utun`) alongside a
+separate numeric `unit` field in the binary frame header; `ios pcap`
+reconstructs the canonical unit-suffixed BSD interface name (`en0`, `pdp_ip0`,
+`lo0`) and matches both exact unit-suffixed names (`-i en0`) and prefix
+families (`-i en`).
 
 `ios ip` reads `WiFiAddress` only as the packet-source selector, then
 discovers IPv4 and IPv6 addresses from matching `pcapd` Ethernet frames. It
@@ -462,7 +524,7 @@ JSON syslog output is one compact object per matching message followed by a
 newline. Use `--no-json` for raw logs or add `--parse` for formatted text.
 `--count N` stops at the matching-record cap; `--timeout SECONDS` is a chosen
 capture window after connection/service setup, and expiry is successful. A relay
-read error or EOF now exits 1 while retaining earlier stdout records. Output or
+read error or EOF exits 1 while retaining earlier stdout records. Output or
 flush failure also exits 1 and may leave an incomplete final JSON record.
 `--error-format=json` places the safe final failure on stderr; the streaming
 progress line is still stderr text. See the [error/partial-result
@@ -590,16 +652,19 @@ returns a failure and does not delete arbitrary host files.
 
 ```sh
 ios -u <UDID> ddi status
+ios -u <UDID> ddi auto
 ios -u <UDID> ddi mount --path /path/to/DDI-directory
 ios -u <UDID> instruments ps
 ios -u <UDID> instruments cpu
 ios -u <UDID> instruments sysmon-process <PID>
 ios -u <UDID> instruments launch com.example.app
 ios -u <UDID> instruments kill <PID>
-ios -u <UDID> debugserver --help
-ios -u <UDID> debug --help
+ios -u <UDID> debugserver send qSupported
+ios -u <UDID> debug com.example.app --local-app /path/to/local/application.app
 ios -u <UDID> symbols list
 ios -u <UDID> accessibility-audit capabilities
+ios -u <UDID> viewer web --port 8080 --local-unauthenticated --share-clipboard
+ios -u <UDID> viewer vnc --port 5900 --local-unauthenticated --share-clipboard
 ios -u <UDID> webinspector opened-tabs
 ios -u <UDID> webinspector launch https://example.com
 ios -u <UDID> webinspector launch https://example.com --bundle-id com.example.app
@@ -616,7 +681,15 @@ an absent or unreadable file fails without downloading an alternative. Apple
 TSS is still required. If an image is already mounted, the command returns
 without loading the supplied path. For older iOS versions, the directory
 contains `DeveloperDiskImage.dmg` and its `.signature`; iOS 27+ uses the
-[Cryptex Restore directory](cryptex-ddi.md).
+[Cryptex Restore directory](cryptex-ddi.md) (where `ios -u <UDID> ddi auto`
+automatically downloads and installs Cryptex DDI `v27.1.5228.8`).
+
+`ios debug <bundle_id> [--local-app <PATH>]` connects to the iOS 17–27.2
+CoreDevice RSD `com.apple.internal.dt.remote.debugproxy` over the userspace
+tunnel and prints the LLDB attach/launch script. `ios debugserver send <packet>`
+tries the classic Lockdown debugserver service first and automatically falls
+back to CoreDevice RSD `com.apple.internal.dt.remote.debugproxy` on iOS 17–27.2
+when Lockdown returns `ServiceMissing`. See [debug.md](debug.md) for details.
 
 Many developer services require Developer Mode, a mounted Developer Disk Image,
 or the CoreDevice tunnel path on newer iOS versions.
@@ -670,12 +743,9 @@ otherwise idle interactive shell. Ctrl+C or EOF exits the shell.
 the browser WebSocket advertised by `/json/version`. The browser endpoint
 implements Target discovery, attachment, detachment, and flat `sessionId`
 routing to inspectable WebKit pages and JavaScript contexts. Unsupported
-browser methods return a CDP error. This is a protocol bridge with partial
-domain coverage; Playwright/Puppeteer compatibility still requires client
-workflow validation for each relevant domain.
-The current per-domain status, explicit errors for unverified methods, and a
-reproducible Playwright/Puppeteer startup probe are in
-[CDP compatibility](cdp-compatibility.md).
+browser methods return a CDP error.
+The per-domain status, supported Playwright/Puppeteer/Selenium workflows, and
+startup probes are documented in [CDP compatibility](cdp-compatibility.md).
 
 Both debug servers require a private policy with `debug` for the exact selected
 device, or explicit loopback `--local-unauthenticated`. Native clients supply the
@@ -691,8 +761,7 @@ and POST management migration. Controlled CDP browser clients use scoped
 single-use handshake tickets; Selenium browser HTTP uses the bearer header.
 Manager federation uses independently configured credentials and verified
 HTTPS/WSS, or a separately protected literal-loopback host forward; see
-[protected federation](protected-federation.md). Client/device workflow acceptance
-remains separate from host access-control tests.
+[protected federation](protected-federation.md).
 
 Comparable upstream workflows:
 
@@ -711,7 +780,8 @@ ios -u <UDID> rsd services --all --features
 ios -u <UDID> forward 1234 62078 --once
 ```
 
-Userspace tunnels expose a local TCP proxy. Kernel TUN mode may require
+Userspace tunnels expose a local TCP proxy plus userspace IPv6 UDP datagram
+forwarding and a 20ms ICMPv6 Echo Request Nudge. Kernel TUN mode may require
 administrator or root privileges. Manager admission is scoped and authenticated;
 plain HTTP requires loopback. See [management-access.md](management-access.md)
 for policy creation, explicit local trust and reload, and [tunnel.md](tunnel.md)
@@ -775,9 +845,9 @@ from a caller-selected IPSW build identity and firmware reader. Open a fresh
 `get_device_side_preflight_info` method. `restore::tss` extracts the resulting
 device-generated requests and batches peripheral tickets, falling back to
 individual signing when needed. Use `PrefetchedTicket::for_nonce` against the
-live runtime nonce before using a cached ticket. The CLI does not yet select
-IPSW build identities or run a full restore loop; the host protocol tests use
-fake restore and TSS services and do not contact Apple's TSS.
+live runtime nonce before using a cached ticket. The CLI does not select live
+IPSW build identities for physical flashing; `restore simulate-restore` runs
+only against explicit offline IPSW/TSS simulation fixtures.
 
 ## Rust API
 
@@ -816,4 +886,6 @@ prefer the constructor and accessors over struct literals.
   pymobiledevice3 command families.
 - [features.md](features.md) explains feature flags for library users.
 - [tunnel.md](tunnel.md) covers CoreDevice tunnel setup in more detail.
+- [viewer.md](viewer.md) covers the Web/VNC viewer and clipboard synchronization.
+- [debug.md](debug.md) covers LLDB and debugserver workflows.
 - [troubleshooting.md](troubleshooting.md) covers common host and device issues.

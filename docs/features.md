@@ -30,7 +30,9 @@ ios-core = { version = "0.1.13", features = ["classic", "developer"] }
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `crashreport`, `apps`, `syslog`, `screenshot`, `iconservice`, `screencapture`, `installcoordination` (the iOS 17+ InstallCoordinationProxy query), `mcinstall` (profiles, deterministic Wi-Fi profiles, and supervised MDM passcode/security), `mobileactivation` (state, session handshake, online/offline activation, deactivation, and the iTunes lockdown marker), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap` (capture and packet-derived IP discovery), `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice` (including reboot/shutdown), `configuration`, `orientation`, `ostrace` (process listing, structured live log stream, and raw PAX archive/collect), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
+Most service modules are available as one feature per module, including `afc`, `crashreport`, `apps`, `syslog`, `screenshot`, `iconservice`, `screencapture`, `installcoordination` (the iOS 17+ InstallCoordinationProxy query), `mcinstall` (profiles, deterministic Wi-Fi profiles, and supervised MDM passcode/security), `mobileactivation` (state, session handshake, online/offline activation, deactivation, and the iTunes lockdown marker), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap` (capture with `--interface` / `-i` filtering, iOS 27.2 unit-suffixed interface resolution such as `en0` and `pdp_ip0`, and packet-derived IP discovery), `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice` (including reboot/shutdown), `configuration`, `orientation`, `ostrace` (process listing, structured live log stream, and raw PAX archive/collect), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
+
+`afc` supports standard directory/file operations (`ls`, `pull`, `push`, `stat`, `mkdir`, `mv`, `rm --recursive`, `tree`, `device-info`) as well as extended AFC opcodes exposed on `ios file`: `connection-info` (`GetConnectionInfo`), `hash [--offset] [--length]` (`GetFileHash` / `GetFileHashWithRange`), `pread` (`FileRefReadWithOffset`), `pwrite` (`FileRefWriteWithOffset`), `truncate [--by-fd]` (`TruncateFile` / `FileRefSetFileSize`), `set-time` (`SetFileTime`), and `dir-size` (`GetSizeOfPathContents`). `fileservice` implements the iOS 17+ CoreDevice `com.apple.coredevice.fileservice.control` and `.data` XPC services (`ls`, `mkdir`, `push`, `pull`, `mv`, `rm --recursive`), exposed in the CLI via `ios file --coredevice` (also referred to as `ios fileservice` workflows).
 
 The `crashreport` feature selects the classic go-ios mover `ping` handshake or
 the iOS 17+ RSD crash-report shims with their `ping\0` handshake. It provides
@@ -71,8 +73,10 @@ Features not included in any group except `full`: `ostrace`, `supervised-pair`, 
 `configuration`, `orientation`, and `hid` are iOS 17+ CoreDevice services. They use
 the modern RemoteXPC/RSD tunnel and return an explicit unsupported error when
 the resolved endpoint is a legacy or `.shim.remote` service. Configuration
-setters change device-wide appearance/accessibility state; orientation rotates
-the active UI, so callers should treat both as mutating operations.
+supports `get` and `set` for `style`, `color-filter`, `text-size`, `reduce-motion`,
+`show-borders`, and `reduce-transparency`, plus write-only setters for
+`increase-contrast` and `liquid-glass-opacity`. Orientation rotates the active
+UI (`left` or `right`), so callers should treat both as mutating operations.
 
 Pasteboard PULL/SET supports multi-item UTI data and CoreDevice data policies.
 `PasteboardMonitor` observes `com.apple.pasteboard.notify.changed` through the
@@ -87,25 +91,30 @@ Rust `get` helpers retain their `AllResolved` policy for compatibility.
 RESOLVE/DATA and the low-level AUTONOTIFY/PUSH APIs remain experimental. Use
 `resolve|export --experimental` or `watch --autonotify --experimental` for them.
 AUTONOTIFY may eagerly resolve secondary representations despite its policy;
-the Darwin monitor avoids that subscription. Protocol tests cover the monitor;
-real-device validation and a bidirectional host clipboard bridge remain separate.
+the Darwin monitor avoids that subscription.
 
 `hid` exposes pmd3-compatible Indigo button and Universal HID report services.
 The `ios hid` command requires `--confirm`, bounds input, and never prints
-keyboard text in JSON or human output. Touch reports use normalized coordinates
-and the single-contact report format supported by CoreDevice. Indigo button
-events are available directly; Universal touch/keyboard commands first open an
-authenticated Display/RTP media stream and keep it alive until HID release.
-They use the kernel tunnel because the current userspace tunnel has no UDP
-bridge; a missing kernel-TUN capability or tunnel endpoint is reported as an
-error rather than claiming that input was delivered.
+keyboard text in JSON or human output. Subcommands include `button`, `tap`,
+`swipe`, `touch`, `multitouch --points <id:x:y,...> [--hold-ms]` (up to 5
+simultaneous contacts), `text`, and `key [--shift]`. Touch reports use
+normalized coordinates (`0.0..=1.0`). Indigo button events are available
+directly; Universal touch/keyboard commands first open an authenticated
+Display/RTP media stream, wait 500ms (`TOUCH_SURFACE_AUTH_SETTLE`) for
+`backboardd` to authenticate the HID surfaces, and wait 300ms
+(`KEYBOARD_ATTACH_SETTLE`) after registering a virtual keyboard (with a Shift
+lead-in/lead-out sequence for uppercase/shifted keys). Universal HID tries the
+kernel tunnel first and automatically falls back to the Userspace Tunnel using
+userspace IPv6 UDP datagram forwarding.
 
 `display` provides `device-control display status` and bounded `video`/`audio`
 capture of encoded RTP access units. Capture binds the CDTunnel client address,
 uses the negotiated `streamConfig` RTCP port/SSRC values, and writes optional
-output atomically with owner-only permissions. It does not decode HEVC/AAC or
-provide a VNC/pixel viewer; consumers must decode the raw Annex-B HEVC or
-AAC-ELD payloads separately.
+output atomically with owner-only permissions. It works over both Kernel TUN and
+the Userspace Tunnel (via userspace IPv6 UDP datagram forwarding on iOS 17–27.2).
+`device-control display` outputs raw Annex-B HEVC or AAC-ELD access units;
+for decoded Web/VNC viewing and clipboard integration, see `ios viewer` in
+[viewer.md](viewer.md).
 
 Display connections issue at most one reply-bearing request. Later calls open
 a fresh connection over the original direct or userspace route; custom streams
@@ -114,7 +123,7 @@ must supply `XpcClient::with_reconnector`. Stop uses CoreDevice's
 all streams for compatibility; callers needing selective teardown can pass
 device-issued UInt32 tokens to `stop_media_streams(false, identifiers)`. A client
 session UUID is not a stream token. Camera/microphone conflicts surface as
-`DisplayError::MediaInUse` (9022). Raw capture still requires kernel UDP routing.
+`DisplayError::MediaInUse` (9022).
 
 MobileBackup2's DeviceLink client is part of the core service surface and
 includes the device-side `Unback` and `Extract` operations. The optional
@@ -130,11 +139,11 @@ Some features add heavier optional dependencies only when enabled:
 | --- | --- |
 | `apps` | IPA/Zip parsing and CRC support. |
 | `imagemounter` | HTTP downloads plus Zip handling for Developer Disk Images. |
-| `cryptex` | iOS 27+ Cryptex DDI installation; implies `imagemounter` and `tunnel`, and is included in `developer` / `ios17`. See [Cryptex DDI](cryptex-ddi.md). |
+| `cryptex` | iOS 27+ Cryptex DDI installation (`v27.1.5228.8` / `27A5228h`); implies `imagemounter` and `tunnel`, and is included in `developer` / `ios17`. See [Cryptex DDI](cryptex-ddi.md). |
 | `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `dproxy` | DTX codec support. |
 | `mdns` | Bonjour/mDNS discovery via `mdns-sd`, HMAC host tags and SipHash device tags. Required for iOS 17+ network discovery and remote pairing target discovery. See [Wi-Fi discovery](wifi-discovery.md). |
 | `tunnel` | CoreDevice tunnel infrastructure and TLS-PSK support via `openssl` and `tokio-openssl`. |
-| `tunnel-userspace` | Userspace tunnel backend via `smoltcp`; implies `tunnel`. |
+| `tunnel-userspace` | Userspace tunnel backend via `smoltcp` (including 20ms ICMPv6 Echo Request Nudge and IPv6 UDP datagram forwarding); implies `tunnel`. |
 | `tunnel-kernel` | Kernel TUN backend via `tun-rs`; implies `tunnel`. |
 | `supervised-pair` | Supervised pairing/P12 signing helpers via `openssl`; implied by `prepare`. |
 | `backup2-manifest` | Host-side Backup2 Manifest.db/Manifest.mbdb filtering and local extraction, including modern and legacy BackupKeyBag/AES encrypted payloads; modern manifests use bundled SQLite. |
@@ -147,19 +156,13 @@ The `ios-cli` crate enables `ios-core/full` because the binary exposes many comm
 implementation, `TunnelShutdownFailure` and `TunnelHandle::shutdown` require
 either `tunnel-kernel` or `tunnel-userspace`; bare `tunnel` keeps its raw forwarding
 helper without backend ownership. `request_stop` and manager `retire` retain the
-existing handle/manager feature surface. Backend-minimum behavior/checks and
-full strict Clippy pass in the [native owner profile](validation/native-tunnel-owner-2026-10-07.md). Extra strict native
-integration checks use `coredevice-base` and `tunnel-kernel,mdns`; bare-backend
-unused-code Clippy diagnostics were reproduced on the previous clean baseline.
-No production dependency, group membership or Cargo.lock change was made.
+existing handle/manager feature surface. Extra strict native integration checks
+use `coredevice-base` and `tunnel-kernel,mdns`.
 
 ## Caller-owned tunnel activation
 
-The additive TunnelOwner/TunnelReservation traits and four owner-aware connection
+The additive `TunnelOwner`/`TunnelReservation` traits and four owner-aware connection
 entry points follow the ordinary device API feature surface. Callback attachment
-is used only when an enabled backend activates a runtime. shutdown_status and
-TunnelShutdownFailure::has_retained_outcomes require tunnel-kernel or
-tunnel-userspace. The root UserspaceTunDevice export requires tunnel-userspace.
-Bare/default all-targets and all66 feature checks pass in the
-[CLI native retirement profile](validation/cli-tunnel-native-retirement-2026-10-07.md).
-Original production dependencies/features/groups/Cargo.lock are unchanged.
+is used only when an enabled backend activates a runtime. `shutdown_status` and
+`TunnelShutdownFailure::has_retained_outcomes` require `tunnel-kernel` or
+`tunnel-userspace`. The root `UserspaceTunDevice` export requires `tunnel-userspace`.

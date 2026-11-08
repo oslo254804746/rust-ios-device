@@ -37,11 +37,11 @@ complete proven Update path is implemented. A distinct `restore::restored::Resto
 now implements bounded already-connected restored plist negotiation/ECID checks,
 StartRestore and real synchronous firmware responses; its peer fixtures do not
 substitute for recovery USB/ramdisk, FDR, ticket personalization or re-enumeration.
-See [repair scope and verification](validation/review-fixes-2026-10-10.md).
+See repair scope and verification.
 
-The [2026-10-26 review](validation/remaining-six-review-2026-10-26.md) removed an unproven normal-mode/empty-firmware CLI execution path. Saved TSS metadata correlation never sets signature verification or execution support to true. Current-device and IPSW version strings are observations, not a validated compatibility policy. Unsupported restored data ports/types and malformed terminal statuses fail explicitly; no unserved request is counted as completed.
+The 2026-10-26 review removed an unproven normal-mode/empty-firmware CLI execution path. Saved TSS metadata correlation never sets signature verification or execution support to true. Current-device and IPSW version strings are observations, not a validated compatibility policy. Unsupported restored data ports/types and malformed terminal statuses fail explicitly; no unserved request is counted as completed.
 
-The [follow-up review](validation/six-followup-review-2026-10-26.md) also rejects execution with a saved `--tss` file, before device discovery. The removed branch treated a preflight dictionary as firmware bytes and substituted literal bytes on failure; it could not implement a restore. Product-version ordering now rejects malformed versions and obvious Update downgrades. It does not prove same-version build compatibility, signed eligibility, nonce stability across recovery or Apple signature validity. The reference profile describes iPhone14,2/d63ap (13 Pro), not iPhone14,3 (13 Pro Max), and is fixture metadata rather than an enabled execution profile.
+The follow-up review also rejects execution with a saved `--tss` file, before device discovery. The removed branch treated a preflight dictionary as firmware bytes and substituted literal bytes on failure; it could not implement a restore. Product-version ordering now rejects malformed versions and obvious Update downgrades. It does not prove same-version build compatibility, signed eligibility, nonce stability across recovery or Apple signature validity. The reference profile describes iPhone14,2/d63ap (13 Pro), not iPhone14,3 (13 Pro Max), and is fixture metadata rather than an enabled execution profile.
 
 ## Selected OS extraction and ASR transfer
 
@@ -66,7 +66,7 @@ discovery. iPhone14,2/d63ap, board 0x0c/chip 0x8110, iOS17.5.1/21F90 is referenc
 fixture metadata only. No offline IPSW is currently available for that profile;
 actual TSS, device transitions and recovery remain NOT_RUN. The missing executor
 is a development gap independent of that file. See the
-[current report](validation/production-completion-2026-10-26.md).
+current report.
 
 
 The experimental `run_restored_update_loop_with_system_image` now dispatches a
@@ -75,4 +75,4 @@ loop after transfer. AsyncDataRequest still needs an independent transport/task
 owner and is explicitly rejected. This incomplete executor rejects Status=0 as
 complete Update evidence; the older firmware-only helper retains its historical
 protocol-loop result and does not certify recovery. See the
-[development increment](validation/remaining-development-2026-10-27.md).
+development increment.

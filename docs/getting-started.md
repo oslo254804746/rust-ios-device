@@ -100,18 +100,35 @@ ios lockdown save-pair-record pair-record.plist
 Pair records are sensitive credentials that authorize device access. Do not
 commit them to source control or include them in shared logs.
 
-## A first iOS 17+ tunnel
+## A first iOS 17–27.2 tunnel and Developer Disk Image
 
-For CoreDevice/RemoteXPC features, start a userspace tunnel:
+For CoreDevice/RemoteXPC features on iOS 17–27.2, start a userspace tunnel or
+let commands establish one on demand:
 
 ```sh
 ios tunnel start --userspace
 ios -u <UDID> rsd services --all
 ```
 
+The userspace tunnel includes a 20ms ICMPv6 Echo Request Nudge (preventing USB
+NCM buffer aggregation stalls) and IPv6 UDP datagram forwarding, so RemoteXPC,
+DTX, Display/RTP video/audio capture, and Universal HID work without requiring
+administrator/root kernel TUN privileges.
+
+For developer services (Instruments, XCTest, `debug`, `debugserver`,
+`accessibility-audit`), enable Developer Mode and mount the Developer Disk Image
+(on iOS 27+, `ddi auto` automatically downloads, personalizes via Apple TSS, and
+installs Cryptex DDI `com.apple.MobileAsset.DDI` `v27.1.5228.8`):
+
+```sh
+ios -u <UDID> ddi status
+ios -u <UDID> ddi auto
+```
+
 If a specific CoreDevice feature looks unavailable, verify with
 `ios rsd check <service-name>` first — the device may simply not expose that
-service. See [tunnel.md](tunnel.md) for the full lifecycle.
+service until Developer Mode or DDI is active. See [tunnel.md](tunnel.md) and
+[cryptex-ddi.md](cryptex-ddi.md) for the full lifecycle.
 
 ## Next steps
 

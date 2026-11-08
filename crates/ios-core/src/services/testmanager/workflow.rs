@@ -898,7 +898,7 @@ pub async fn launch_coredevice_runner_observed(
 
 /// Error returned when reconciling an unconfirmed runner launch fails.
 #[cfg(all(feature = "apps", feature = "tunnel"))]
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum UnconfirmedLaunchReconcileError {
     /// No baseline or non-unique candidate PID could be matched.
     #[error("{0}")]
@@ -907,6 +907,9 @@ pub enum UnconfirmedLaunchReconcileError {
     #[error("{0}")]
     AppService(#[from] crate::services::apps::appservice::AppServiceError),
 }
+
+#[cfg(all(feature = "apps", feature = "tunnel"))]
+crate::redaction::error_debug!(UnconfirmedLaunchReconcileError);
 
 /// Reconcile and terminate a runner process when a launch request was submitted
 /// to `AppService` (or interrupted on the wire) before its PID was confirmed.

@@ -3,8 +3,8 @@
 English | [简体中文](README.zh-CN.md)
 
 Rust libraries, language bindings, and the `ios` command-line tool for talking
-to real iOS devices over usbmuxd, lockdown, CoreDevice/RemoteXPC, and the
-common Apple device services.
+to real iOS devices over usbmuxd, lockdown, CoreDevice/RemoteXPC, and Apple
+device services across **iOS 15.x – iOS 27.2**.
 
 [![Crates.io — ios-core](https://img.shields.io/crates/v/ios-core.svg?label=ios-core)](https://crates.io/crates/ios-core)
 [![Crates.io — ios-cli](https://img.shields.io/crates/v/ios-cli.svg?label=ios-cli)](https://crates.io/crates/ios-cli)
@@ -12,32 +12,60 @@ common Apple device services.
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![MSRV](https://img.shields.io/badge/MSRV-1.80-orange.svg)](#requirements)
 
-> **Status: experimental.** The project covers a wide capability surface and is
-> useful for automation, protocol work, and developer tooling, but the public
-> API and CLI may still change before a 1.0 release. Service availability
-> depends on iOS version, pairing/trust state, Developer Mode, supervision,
-> and the host's Apple Mobile Device components.
+> **Status: experimental (`v0.1.13`).** The project covers a wide capability
+> surface and is verified across **iOS 15.8.6 (Legacy)**, **iOS 18.6 / 18.7
+> (Modern)**, and **iOS 27.2 (Modern)** physical devices, but the public API
+> and CLI may still change before a 1.0 release. Service availability depends on
+> iOS version, pairing/trust state, Developer Mode, supervision, and the host's
+> Apple Mobile Device components.
 
 The maintained [capability inventory](docs/capabilities.md) separates each
-command/service's implementation from host, simulated and real-device evidence.
+command/service's implementation from host, simulated, and real-device evidence.
 
 ## Highlights
 
-- **Cross-platform CLI (`ios`)** with 54+ subcommands covering devices, files,
-  apps, instruments, debugging, profiles, restore, supervision, and tunnels.
-- **iOS 17+ first-class support** — CoreDevice tunnel (userspace and kernel
-  TUN), RSD service discovery, RemoteXPC over HTTP/2, appservice, fileservice,
-  diagnosticsservice, deviceinfo, pasteboard, CoreDevice configuration/orientation,
-  Instruments, and TestManager.
-- **Lockdown-era services** — AFC, House Arrest, syslog, screenshots,
-  configuration/provisioning profiles, crash reports, diagnostics relay,
-  notification proxy, springboard, backup, and more.
-- **Developer workflows** — Developer Disk Image mounting, DTX/Instruments,
-  debugserver, WebInspector, XCTest runner, WebDriverAgent helpers,
-  accessibility audit, pcap, and symbol fetching.
-- **Multi-language consumers** — pure Rust library (`ios-core`),
-  PyO3 Python module (`ios_rs`), and C FFI (`ios-ffi`) sharing one
-  implementation.
+- **Supported iOS versions: iOS 15.x – iOS 27.2** — tested across iOS 15.8.6
+  Legacy (usbmuxd / Lockdown / DDI `.dmg`), iOS 18.6/18.7 Modern, and iOS 27.2
+  Modern (CoreDevice / RemoteXPC / Personalized Cryptex DDI).
+- **Cross-platform CLI (`ios`)** with 60+ subcommands covering devices, files,
+  apps, instruments, debugging, media streaming, HID automation, WebInspector,
+  profiles, restore, supervision, and tunnels.
+- **CoreDevice Tunnel (iOS 17–27+)** — Kernel TUN and unprivileged **Userspace
+  Tunnel** (`--userspace`), `tunnel start`, `tunnel serve`, a **20ms ICMPv6 Echo
+  Request Nudge** for low-latency burst stability over `CDTunnel`, and IPv6 UDP
+  datagram forwarding alongside TCP stream proxying.
+- **Screen & Media Streaming (`device-control display` & `viewer`)** —
+  - `ios device-control display status / video / audio`: iOS 27+
+    `dtremotedisplayd` real-time **H.265 (HEVC)** and **AAC** RTP access-unit
+    capture over Userspace Tunnel without Administrator privileges.
+  - `ios viewer web` & `ios viewer vnc`: Interactive Web viewer (MJPEG stream,
+    PNG frames, touch/key/button/orientation controls) and RFB 3.8 VNC server
+    with bidirectional clipboard sync (`--share-clipboard`), supporting Pro Max
+    16-bit Display P3 screenshots.
+- **Universal HID (`ios hid`)** — `tap`, `swipe`, `button`, phased `touch`,
+  5-finger `multitouch` (`--points`), `text`, and `key` with automatic 500ms
+  touch authorization settle, 300ms virtual keyboard settle, and Shift modifier
+  lead-in/lead-out for uppercase and shifted symbols.
+- **WebInspector, CDP & WebDriver (`ios webinspector`)** — `opened-tabs`,
+  `eval`, `launch`, `js-shell`, `cdp` (compatible with `puppeteer-core` and
+  `playwright-core` `connectOverCDP`, supporting `Runtime`, `Page`, `Network`,
+  `Fetch`, `Input`, `Performance`, and `HeapProfiler`), and W3C `webdriver`
+  (compatible with `selenium-webdriver`).
+- **File Management (`ios file` & CoreDevice `fileservice`)** — Full AFC client
+  including extended opcodes (`connection-info`, `hash` with range, `pread`,
+  `pwrite`, `truncate`, `set-time`, `dir-size`) and iOS 17+ CoreDevice
+  `fileservice` (`--coredevice` `ls`, `mkdir`, `push`, `pull`, `mv`,
+  `rm --recursive`).
+- **Developer & Diagnostic Suite** — Cryptex DDI auto-install (`ddi auto`,
+  `ddi cryptex`), Instruments (`ps`, `apps`, `cpu`, `sysmon-process`, `gpu`,
+  `fps`, `kdebug`), CoreProfileSession Stackshot (`sharedCache` UUID
+  extraction), `accessibility-audit` (`axAudit` DTX), `debug` &
+  `debugserver send` (with automatic iOS 17+ RSD `debugproxy` fallback),
+  `symbols`, `devicestate`, `memlimitoff`, `pcap --interface`, `btlogger`
+  (`.pklg`/`.pcapng`), `pasteboard`, and `device-control configuration`
+  (including iOS 26/27 `liquid-glass-opacity` and `increase-contrast`).
+- **Multi-language consumers** — pure Rust library (`ios-core`), PyO3 Python
+  module (`ios_rs`), and C FFI (`ios-ffi`) sharing one implementation.
 
 ## Workspace
 
@@ -45,13 +73,13 @@ command/service's implementation from host, simulated and real-device evidence.
 | -------- | --------------------------------------------------- | ----------------------------------------------------------------------- |
 | `ios-core` | crates.io                                          | Library: discovery, pairing, lockdown, tunnel, RSD/XPC, service clients |
 | `ios-cli`  | crates.io · prebuilt `ios` binary                  | End-user command-line tool                                              |
-| `ios-py`   | PyPI as `rust-ios-device-tunnel` (import `ios_rs`) | Python bindings (PyO3) for device listing and tunnel workflows          |
+| `ios-py`   | PyPI as `rust-ios-device-tunnel` (import `ios_rs`) | Python bindings (PyO3) for device listing, sessions, and tunnels        |
 | `ios-ffi`  | prebuilt `cdylib` + `staticlib` + `ios_rs.h`       | C ABI for non-Rust consumers                                            |
 
 Detailed docs live in [`docs/`](docs/): [architecture](docs/architecture.md),
 [build](docs/build.md), [features](docs/features.md),
 [usage](docs/usage.md), [CLI map](docs/cli-map.md),
-[tunnel](docs/tunnel.md), [protocol](docs/protocol.md),
+[tunnel](docs/tunnel.md), [viewer](docs/viewer.md), [protocol](docs/protocol.md),
 [python binding](docs/python-binding.md),
 [troubleshooting](docs/troubleshooting.md), and
 [host output/cancellation contracts](docs/output-contract.md).
@@ -104,7 +132,7 @@ ios info                                       # default device summary
 ios -u <UDID> lockdown get --key ProductVersion
 ios syslog                                     # stream device logs
 ios screenshot --output screenshot.png
-ios tunnel start --userspace                   # iOS 17+ CoreDevice tunnel
+ios tunnel start --userspace                   # iOS 17–27+ CoreDevice tunnel
 ```
 
 When a command targets a device and `-u/--udid` is omitted, the CLI uses the
@@ -112,15 +140,35 @@ first device returned by `ios list`. Override with `-u <UDID>` or set
 `IOS_UDID` to pin a specific device. Most commands emit JSON by default; pass
 `--no-json` for human-readable tables.
 
-Explore each command group:
+### Feature workflows at a glance
 
 ```sh
-ios --help
-ios apps --help
-ios file --help
-ios instruments --help
-ios tunnel --help
-ios prepare --help
+# Screen & Media Streaming (iOS 27+ H.265/AAC RTP & Interactive Web/VNC Viewer)
+ios -u <UDID> device-control display video --output capture.h265 --duration-ms 5000
+ios -u <UDID> device-control display audio --output capture.aac --duration-ms 5000
+ios -u <UDID> viewer web --listen 127.0.0.1:8090 --share-clipboard
+ios -u <UDID> viewer vnc --listen 127.0.0.1:5901 --share-clipboard
+
+# Universal HID (tap, swipe, 5-finger multitouch, text with Shift lead-in/out)
+ios -u <UDID> hid --confirm tap 0.5 0.5
+ios -u <UDID> hid --confirm swipe 0.5 0.8 0.5 0.2 --duration-ms 300
+ios -u <UDID> hid --confirm multitouch --points "1:0.20:0.40,2:0.35:0.35,3:0.50:0.30,4:0.65:0.35,5:0.80:0.40"
+ios -u <UDID> hid --confirm text "Hello, iOS 27!"
+
+# WebInspector, CDP (Puppeteer/Playwright) & W3C WebDriver (Selenium)
+ios -u <UDID> webinspector opened-tabs
+ios -u <UDID> webinspector cdp --host 127.0.0.1 --port 9222 --allow-loopback-without-auth
+ios -u <UDID> webinspector webdriver --host 127.0.0.1 --port 4444 --allow-loopback-without-auth
+
+# File Management (AFC extended opcodes & iOS 17+ CoreDevice fileservice)
+ios -u <UDID> file hash /Books/Purchases/sample.plist --offset 0 --length 64
+ios -u <UDID> file --coredevice --domain temporary ls /
+
+# Developer & Diagnostic Suite
+ios -u <UDID> ddi auto
+ios -u <UDID> instruments fps --duration 5
+ios -u <UDID> debugserver send --command qSupported
+ios -u <UDID> device-control configuration set liquid-glass-opacity --mode tinted
 ```
 
 ## Capability matrix
@@ -131,21 +179,21 @@ orientation.
 
 | Area                        | `ios` commands                                                                                  | Comparable go-ios / pymobiledevice3                                       |
 | --------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Discovery & pairing         | `list`, `listen`, `discover`, `pair`, `lockdown`                                                | go-ios `list`/`listen`/`pair`; pmd3 `usbmux`/`lockdown`/`bonjour`         |
+| Discovery & pairing         | `list`, `listen`, `discover`, `pair`, `lockdown`, `doctor`                                      | go-ios `list`/`listen`/`pair`; pmd3 `usbmux`/`lockdown`/`bonjour`         |
 | Device info & settings      | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation` (state, session-info, info, activate, deactivate, itunes-activate), `amfi` | go-ios `info`/`mobilegestalt`; pmd3 `lockdown`/`amfi`/`activation`        |
-| Files & containers          | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                            | go-ios `fsync`/`crash`; pmd3 `afc`/`crash`                                |
+| Files & containers          | `file` (AFC + extended opcodes `connection-info`/`hash`/`pread`/`pwrite`/`truncate`/`set-time`/`dir-size`, `--app` House Arrest, `--coredevice` `fileservice`), `crash`, `file-relay` | go-ios `fsync`/`crash`; pmd3 `afc`/`crash`/CoreDevice `fileservice`       |
 | Apps & UI tests             | `apps` (including iOS 17+ `install-record`), `runtest`, `runxctest`, `runwda`, `wda`, `springboard` | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`; pmd3 `apps`/dvt      |
-| Diagnostics & logs          | `syslog`, `diagnostics` (reboot/shutdown), `os-trace` (including raw archive/collect), `notify`, `pcap`, `ip`, `btlogger` | go-ios `syslog`/`diagnostics`/`pcap`; pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
-| Developer services          | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`; pmd3 `developer dvt`/`mounter`/`webinspector` |
-| iOS 17+ transport           | `tunnel`, `rsd`, `forward`, `dproxy`                                                            | go-ios `tunnel`/`rsd`/`forward`; pmd3 RemoteXPC/tunnel                    |
-| Device pasteboard           | `pasteboard get|set|watch` (Darwin notifications, fresh PULLs and binary UTI data); experimental `resolve|export --experimental` | go-ios `pasteboard`; pmd3 CoreDevice `paste`/`copy` and pasteboard monitoring |
-| CoreDevice configuration    | `device-control configuration get|set ...`                                                      | pmd3 CoreDevice configuration actions                                     |
-| CoreDevice orientation      | `device-control orientation [left|right]`                                                        | pmd3 CoreDevice `rotate [left|right]`                                     |
-| CoreDevice HID input        | `hid --confirm button ...` (Universal touch/keyboard opens authenticated Display/RTP authorization) | pmd3 CoreDevice HID button/touch/keyboard helpers                          |
-| CoreDevice display media    | `device-control display status|video|audio` (bounded encoded RTP capture; no decoder/VNC) | pmd3 CoreDevice display/screen-stream helpers |
-| Experimental screenshot viewer | `viewer web|vnc|clipboard` (PNG pixels, scoped RFB/HTTP, native HID and text; [limits](docs/viewer.md)) | CoreDevice screencapture/HID/pasteboard workflows; HEVC and image clipboard remain incomplete |
+| Diagnostics & logs          | `syslog`, `diagnostics` (reboot/shutdown), `os-trace` (including raw archive/collect), `notify`, `pcap` (`--interface`), `ip`, `btlogger` (`.pklg`/`.pcapng`) | go-ios `syslog`/`diagnostics`/`pcap`; pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
+| Developer services          | `instruments` (`ps`, `apps`, `cpu`, `sysmon-process`, `gpu`, `fps`, `kdebug`), `debugserver` (Lockdown + RSD `debugproxy` fallback), `debug`, `ddi` (`auto`, `cryptex`), `symbols` (CoreProfileSession Stackshot + RSD), `accessibility-audit`, `webinspector` (`opened-tabs`, `eval`, `launch`, `js-shell`, `cdp`, `webdriver`), `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`; pmd3 `developer dvt`/`mounter`/`webinspector` |
+| iOS 17–27+ transport        | `tunnel`, `rsd`, `forward`, `dproxy`                                                            | go-ios `tunnel`/`rsd`/`forward`; pmd3 RemoteXPC/tunnel                    |
+| Device pasteboard           | `pasteboard get\|set\|watch` (Darwin notifications, fresh PULLs, and binary UTI data); experimental `resolve\|export --experimental` | go-ios `pasteboard`; pmd3 CoreDevice `paste`/`copy` and pasteboard monitoring |
+| CoreDevice configuration    | `device-control configuration get\|set ...` (including iOS 26/27 `liquid-glass-opacity` and `increase-contrast`) | pmd3 CoreDevice configuration actions                                     |
+| CoreDevice orientation      | `device-control orientation [left\|right]`                                                      | pmd3 CoreDevice `rotate [left\|right]`                                    |
+| Universal HID input         | `hid --confirm tap\|swipe\|button\|touch\|multitouch\|text\|key` (authenticated Display/RTP touch authorization, 5-finger multitouch, Shift modifier sequences) | pmd3 CoreDevice HID button/touch/keyboard helpers                         |
+| CoreDevice display media    | `device-control display status\|video\|audio` (iOS 27+ `dtremotedisplayd` real-time H.265/HEVC and AAC RTP access-unit capture over Userspace or Kernel tunnel) | pmd3 CoreDevice display/screen-stream helpers                             |
+| Interactive viewer & VNC    | `viewer web\|vnc\|clipboard` (MJPEG/PNG Web UI, RFB 3.8 VNC server, 16-bit Display P3 decoding, native HID, `--share-clipboard`; see [viewer docs](docs/viewer.md)) | CoreDevice screencapture/HID/pasteboard workflows                         |
 | Management & supervision    | `profiles`, `wifi`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`wifi`/`prepare`/`httpproxy`/`mdm`/`erase`; pmd3 `profile`/`provision`/`restore` |
-| Backup, location, screen    | `backup`, `location`, `screenshot`, `notify`                                                    | go-ios/pmd3 `backup`/`location`/`screenshot`                              |
+| Backup, location, screen    | `backup`, `location`, `screenshot` (PNG / MJPEG stream), `notify`                               | go-ios/pmd3 `backup`/`location`/`screenshot`                              |
 
 Task-focused walkthroughs: [`docs/usage.md`](docs/usage.md). Side-by-side
 command map: [`docs/cli-map.md`](docs/cli-map.md).
@@ -159,9 +207,9 @@ nonce/session; `activation activate --now` skips that wait and performs one
 session probe, so it should only be used when the daemon session is known to be
 fresh. Destructive `activation deactivate` requires `--force`.
 
-## CoreDevice / iOS 17+ tunnel
+## CoreDevice / iOS 17–27+ tunnel
 
-iOS 17+ workflows route through a CoreDevice tunnel and a per-device RSD
+iOS 17–27+ workflows route through a CoreDevice tunnel and a per-device RSD
 service directory. Whether a specific feature is reachable depends on the
 service surface that the device exposes — not on the iOS version alone.
 
@@ -173,12 +221,20 @@ ios tunnel start --userspace
 ios tunnel serve --userspace --host 127.0.0.1 --port 49151 --auth-config PRIVATE_POLICY_FILE
 ```
 
-Userspace tunnels publish a local TCP proxy. Clients send a 16-byte IPv6
-address followed by a 4-byte little-endian port, then proxy traffic. Kernel
-TUN mode is also available but typically requires admin/root.
-The manager requires a scoped policy; create/check private credentials and use
-`--token-file` for clients as described in [management access](docs/management-access.md).
-Raw userspace TCP proxies and kernel routes retain the host access boundary.
+- **Userspace & Kernel modes** — Userspace tunnels work without Administrator /
+  root privileges and publish a local proxy. Clients send a 16-byte IPv6 address
+  followed by a 4-byte little-endian port, then proxy TCP streams or IPv6 UDP
+  datagrams (used by `dtremotedisplayd` RTP video/audio streaming and HID touch
+  authorization). Kernel TUN mode (`--kernel`) is also available when a system
+  network interface is needed.
+- **20ms ICMPv6 Echo Request Nudge** — The userspace `smoltcp` stack runs a 20ms
+  ICMPv6 Echo Request Nudge when active TCP streams are awaiting device replies,
+  ensuring timely `CDTunnel` packet flushing during high-frequency HTTP/2
+  RemoteXPC and DTX bursts on iOS 18–27+.
+- **Scoped manager policy** — `tunnel serve` requires a scoped policy or
+  explicit loopback opt-in; create/check private credentials and use
+  `--token-file` for clients as described in
+  [management access](docs/management-access.md).
 
 Inspect what the device actually exposes before assuming an implementation
 issue:
@@ -222,7 +278,7 @@ ios-core = { version = "0.1.13", features = ["afc", "syslog"] }
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
 | `developer`  | accessibility_audit, amfi, btlogger, cryptex, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, configuration, cryptex, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, orientation, iconservice, screencapture, hid, display, pasteboard, testmanager, mdns, tunnel-userspace |
+| `ios17`      | apps, configuration, cryptex, deviceinfo, diagnosticsservice, dproxy, fileservice, iconservice, installcoordination, instruments, orientation, screencapture, hid, display, pasteboard, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel + backup2-manifest |
 
 The CLI builds with `full`; libraries should usually pick a smaller subset.
@@ -307,8 +363,8 @@ cargo build --release -p ios-ffi
 
 Outputs include `libios_ffi.{so,dylib,a}` (or `ios_ffi.dll` + `.lib` on
 Windows) and `crates/ios-ffi/include/ios_rs.h`. The FFI surface covers device
-listing, lockdown queries, tunnel lifecycle, and RSD metadata. Individual
-service clients are available through Rust and the CLI.
+listing, existing-trust sessions (`IosDeviceSession`), lockdown queries, tunnel
+lifecycle, RSD metadata, installed apps, AFC file operations, and syslog reads.
 `ios_tunnel_rsd_services_json` returns the discovered RSD service map as
 deterministic compact JSON; each service value contains `port` and `features`.
 Pre-built archives for the supported targets are attached to each release.
@@ -376,10 +432,10 @@ or run with `--help` first.
   the impact, then re-pair from an unlocked device.
 - **Tunnel failures on older devices** — the device may not expose CoreDevice
   tunnel/RSD; fall back to lockdown/usbmux service paths.
-- **Kernel tunnel fails** — retry with userspace mode or run with the
+- **Kernel tunnel fails** — retry with `--userspace` mode or run with the
   privileges required to create a TUN interface.
 - **Developer services fail** — enable Developer Mode and mount a compatible
-  Developer Disk Image where the service requires it (`ios ddi`).
+  Developer Disk Image where the service requires it (`ios ddi auto`).
 - **CoreDevice fileservice unavailable** — verify `com.apple.coredevice.fileservice.control`
   and `.data` are listed in `ios rsd services --all`. Absence is a device-side
   service-surface issue, not a client bug.

@@ -114,4 +114,4 @@ name refusal before backend HTTP, redirects, per-root header isolation and two
 production managers with distinct hop credentials/bytes/revocation. These are
 owned host fixtures, not physical-device or deployed SSH/reverse-proxy evidence.
 Platform file/ACL, actual deployment certificates/host keys and device workflows
-remain acceptance conditions in the [roadmap](engineering-roadmap-2026-09-30.md).
+remain acceptance conditions in the roadmap.

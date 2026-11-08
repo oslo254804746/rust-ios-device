@@ -1,7 +1,8 @@
 # ios-cli
 
 Cross-platform command-line tool for iOS device management, tunneling, and
-service interaction. The published binary name is `ios`.
+service interaction across **iOS 15.x – iOS 27.2**. The published binary name
+is `ios`.
 
 This is the binary crate in the
 [`rust-ios-device`](https://github.com/oslo254804746/rust-ios-device)
@@ -9,26 +10,47 @@ workspace.
 
 ## Highlights
 
-- 54+ subcommands covering device discovery, pairing, files, apps,
-  diagnostics, instruments, debugging, profiles, restore, supervision, and
-  CoreDevice tunneling.
-- Default JSON output for scripting; pass `--no-json` for human-readable
+- **60+ subcommands** covering device discovery, pairing, files, apps,
+  diagnostics, instruments, debugging, screen/media streaming, HID automation,
+  WebInspector (CDP & WebDriver), profiles, restore, supervision, and CoreDevice
+  tunneling.
+- **Default JSON output** for scripting; pass `--no-json` for human-readable
   tables where supported.
-- CoreDevice pasteboard `get` and `set` support verified bounded data policies
-  and binary UTI representations. `watch`, `resolve`, and `export` are
-  experimental and require `--experimental`; output is redacted to size/hash
-  by default, with `--show-data` for intentional byte output.
-- iOS 17+ CoreDevice tunnel manager (`ios tunnel serve`) with go-ios-compatible
-  fields (`tunnel-address`, `tunnel-port`, `userspace-port`).
-- `apps install-record` queries the iOS 17+ RSD InstallCoordinationProxy;
-  install/uninstall/stash mutations are intentionally not exposed because the
-  pinned upstream client does not implement their file-transfer protocol.
+- **CoreDevice Tunnel (iOS 17–27+)** — Kernel TUN and unprivileged Userspace
+  Tunnel (`--userspace`), `ios tunnel serve` with go-ios-compatible fields
+  (`tunnel-address`, `tunnel-port`, `userspace-port`), 20ms ICMPv6 Echo Request
+  Nudge for low-latency burst stability, and IPv6 UDP datagram forwarding.
+- **Screen & Media Streaming (`device-control display` & `viewer`)** —
+  `ios device-control display status|video|audio` captures real-time H.265
+  (HEVC) and AAC RTP access units over Userspace Tunnel without Administrator
+  privileges; `ios viewer web` and `ios viewer vnc` provide an interactive
+  browser UI and RFB 3.8 VNC server with `--share-clipboard` and 16-bit Display
+  P3 PNG screenshot decoding.
+- **Universal HID (`ios hid`)** — `tap`, `swipe`, `button`, phased `touch`,
+  5-finger `multitouch` (`--points`), `text`, and `key` with automatic 500ms
+  touch authorization settle, 300ms virtual keyboard settle, and Shift modifier
+  lead-in/lead-out.
+- **WebInspector, CDP & WebDriver (`ios webinspector`)** — `opened-tabs`,
+  `eval`, `launch`, `js-shell`, `cdp` (compatible with `puppeteer-core` and
+  `playwright-core` `connectOverCDP`), and W3C `webdriver` (compatible with
+  `selenium-webdriver`).
+- **File Management (`ios file`)** — Full AFC client including extended opcodes
+  (`connection-info`, `hash`, `pread`, `pwrite`, `truncate`, `set-time`,
+  `dir-size`) and iOS 17+ CoreDevice `fileservice` (`--coredevice`).
+- **CoreDevice Pasteboard (`ios pasteboard`)** — `get`, `set`, and `watch`
+  (Darwin notification monitoring with fresh PULL connections and
+  `(nonce, changeCount)` deduplication); `resolve` and `export` require
+  `--experimental`.
+- **Apps & Debug** — `apps install-record` queries the iOS 17+ RSD
+  `InstallCoordinationProxy`; `debugserver` (`send`, `proxy`) and `debug`
+  automatically fall back to iOS 17+ RSD `debugproxy` when Lockdown
+  `com.apple.debugserver` is absent.
 - Built on `ios-core` with the `full` feature set.
 
 SpringBoard requests use a 30-second total send/receive/parse budget. Set
 `ios springboard orientation --request-timeout-ms 5000` to change that request
 budget. A cancelled or failed request after wire progress retires the original
-connection; reconnect before another command. The request clock starts at the service request. CLI service setup independently
+connection; reconnect before another command. CLI service setup independently
 uses a shared 30-second budget covering discovery/lockdown/StartService/port/TLS.
 Long listeners keep cancellable idle waits rather than inheriting this setup clock.
 
@@ -38,18 +60,15 @@ the same complete check set used by CI; see [build notes](../../docs/build.md).
 
 ## Reusable test workflow
 
-The crate also exports `TestWorkflowEngine`, `TestWorkflowArgs` and
-`TestWorkflowRunOptions`. `TestWorkflowEngine::run` executes the same existing
-owner used by `runtest` and `runxctest`: explicit target/readiness, optional
-package installation, startup, bounded result/log collection, JUnit/sidecar and
-cleanup. It accepts a launch-plan resolver; it is not a separate orchestration
-engine. See the [external Rust API test](tests/workflow_api.rs) and
-[current validation](../../docs/validation/production-completion-2026-10-26.md).
-Package installation is explicit, is never automatically replayed after unknown
-effects, and retains original cleanup failures. A same-engine localhost fixture now traverses real RSD/AppService/canonical and
-shim DTX to a testcase/JUnit/sidecar and failure cleanup. Binary-process, original
-native-owner, installation/log integration and representative physical workflows
-remain unverified. See the [development increment](../../docs/validation/remaining-development-2026-10-27.md).
+The crate also exports `TestWorkflowEngine`, `TestWorkflowArgs`, and
+`TestWorkflowRunOptions`. `TestWorkflowEngine::run` executes the same
+orchestrator used by `runtest` and `runxctest`: explicit target/readiness,
+optional package installation, startup, bounded result/log collection,
+JUnit/sidecar output, and cleanup. It accepts a launch-plan resolver rather
+than maintaining a separate orchestration engine. See the
+[external Rust API test](tests/workflow_api.rs). Package installation is
+explicit, is never automatically replayed after unknown effects, and retains
+original cleanup failures.
 
 ## Install
 
@@ -75,14 +94,14 @@ ios info                                         # default device summary
 ios -u <UDID> lockdown get --key ProductVersion
 ios syslog                                       # stream device logs
 ios screenshot --output screenshot.png
-ios tunnel start --userspace                     # iOS 17+ CoreDevice tunnel
+ios tunnel start --userspace                     # iOS 17–27+ CoreDevice tunnel
 ```
 
 Use `ios --error-format=json <command>` for a versioned final failure on stderr;
 default human diagnostics and normal stdout stay unchanged. Select the format
 before invalid arguments. Typed categories and original exits support scripts;
-operation effects remain unknown, and progress/stream stderr is separate pending
-work. See the [error contract](../../docs/error-contract.md).
+operation effects remain unknown. See the
+[error contract](../../docs/error-contract.md).
 
 ## Device selection
 
@@ -98,14 +117,15 @@ Commands that target a device default to the first device returned by
 
 | Area                     | Examples                                                                                  |
 | ------------------------ | ----------------------------------------------------------------------------------------- |
-| Discovery & pairing      | `list`, `listen`, `discover`, `pair`, `lockdown`                                          |
-| Device info & settings   | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `activation` (state, session-info, info, activate, deactivate, itunes-activate), `amfi` |
-| Files & containers       | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                      |
+| Discovery & pairing      | `list`, `listen`, `discover`, `pair`, `lockdown`, `doctor`, `heartbeat`                   |
+| Device info & settings   | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation` (state, session-info, info, activate, deactivate, itunes-activate), `amfi` |
+| Files & containers       | `file` (AFC + extended opcodes, `--app` House Arrest, `--coredevice` `fileservice`), `crash`, `file-relay` |
 | Apps & UI tests          | `apps` (including `install-record`), `runtest`, `runxctest`, `runwda`, `wda`, `springboard` |
-| Diagnostics & logs       | `syslog`, `diagnostics`, `os-trace` (including archive/collect), `notify`, `pcap`          |
-| Developer services       | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` |
-| iOS 17+ transport        | `tunnel`, `rsd`, `forward`, `dproxy`                                                      |
-| Management & supervision | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` |
+| Diagnostics & logs       | `syslog`, `diagnostics`, `os-trace` (including archive/collect), `notify`, `pcap` (`--interface`), `ip`, `btlogger` |
+| Developer services       | `instruments`, `debugserver` (Lockdown + RSD `debugproxy` fallback), `debug`, `ddi` (`auto`, `cryptex`), `symbols` (CoreProfileSession Stackshot + RSD), `accessibility-audit`, `webinspector` (`opened-tabs`, `eval`, `launch`, `js-shell`, `cdp`, `webdriver`), `devicestate`, `memlimitoff` |
+| iOS 17–27+ transport     | `tunnel`, `rsd`, `forward`, `dproxy`                                                      |
+| CoreDevice & media       | `device-control` (`configuration`, `orientation`, `display status\|video\|audio`), `hid` (`tap`, `swipe`, `button`, `touch`, `multitouch`, `text`, `key`), `viewer` (`web`, `vnc`, `clipboard`), `pasteboard` (`get`, `set`, `watch`) |
+| Management & supervision | `profiles`, `wifi`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` |
 | Backup, location, screen | `backup`, `location`, `screenshot`                                                        |
 
 Companion proxy commands select the classic lockdown service on older devices
@@ -128,11 +148,11 @@ File pulls and screenshots stage output before replacing the destination.
 filesystem hard-link support and cannot overwrite a concurrently created file.
 Cancellation before commit preserves the old file; an already-started commit
 can finish. See the [host output contract](../../docs/output-contract.md) for
-per-file backup semantics, cleanup failures and platform acceptance conditions.
+per-file backup semantics, cleanup failures, and platform acceptance conditions.
 
 - Repository: <https://github.com/oslo254804746/rust-ios-device>
 - [Public compatibility rules](../../docs/public-contract.md) govern arguments,
-  result shapes, exits and explicit migrations.
+  result shapes, exits, and explicit migrations.
 - [Encoding and stdout failure contracts](../../docs/plist-json-contract.md)
   preserve historical result bytes and document the exit 101/0 to 1 migration
   for failed result/help/version output.
@@ -140,6 +160,7 @@ per-file backup semantics, cleanup failures and platform acceptance conditions.
 - Usage guide: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/usage.md>
 - CLI map: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/cli-map.md>
 - CoreDevice tunnel: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/tunnel.md>
+- Interactive viewer: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/viewer.md>
 - Scoped manager access (`tunnel auth create|check`, `serve --auth-config`, clients `--token-file`): <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/management-access.md>
 - Troubleshooting: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/troubleshooting.md>
 

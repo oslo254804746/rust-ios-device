@@ -1,23 +1,5 @@
 # Regression evidence and cleanup
 
-The [completion check on 2026-10-29](validation/completion-2026-10-29.md)
-records complete physical archive/collect results, the cancellation-test
-contract correction and removal of an unnecessary numeric restriction.
-
-The [Terra follow-up on 2026-10-29](validation/terra-followup-2026-10-29.md)
-records independent OS trace budgets, debug foreground-session fixes, parent
-review, and the remaining device prerequisites.
-
-The [2026-10-29 CLI diagnosis](validation/cli-diagnostics-2026-10-29.md)
-records fixes, bounded device results, remaining external prerequisites and
-the final binary/source hashes for the 16 supplement candidates.
-
-For the complete Windows two-device physical test handoff (iOS <17 and >=17),
-see [the 2026-10-28 test plan](testing/real-device-2026-10-28/README.md).
-It includes the detailed case catalog, editable result sheet, Gemini handoff,
-and local go-ios/pymobiledevice3 comparison policy. The matrix below remains a
-representative runner; it does not replace that full device test plan.
-
 The [capability catalog](capabilities.md) describes implementation/maturity.
 [regression-matrix.json](regression-matrix.json) selects representative risks and
 their independent preconditions. A host result cannot satisfy a real-device row.
@@ -79,7 +61,7 @@ unconfirmed process cleanup cannot pass. CLI invalid-input cases must fail at
 the expected parser stage, before device access; exit code alone is insufficient.
 Completion first observed after the absolute capture deadline is rejected even
 when the original leader and readers already finished before the first control
-check. [Deadline evidence](validation/capture-deadline-2026-10-12.md) preserves
+check. Deadline evidence preserves
 the original bytes, exit and host cleanup facts separately from the timeout flag.
 Tests inject synthetic secrets into stdout, stderr, contract exceptions and agent
 SIGTERM cleanup, and exercise timeout/overflow and failed artifact audit paths.
@@ -103,7 +85,7 @@ leader success also triggers cleanup of surviving descendants, even with closed
 pipes. Original exit codes are preserved (forced Windows termination uses 1).
 An empty Job, original process completion and both original reader joins are
 required for host cleanup. This is not a graceful native or device ACK.
-[Capture verification](validation/windows-capture-2026-10-12.md) covers the
+Capture verification covers the
 generic Session agent, byte/secret contracts and original handle closure.
 
 `regression_watch_capture.OwnedWatch` now has a separate Windows 10+ watch
@@ -112,7 +94,7 @@ stdout/stderr handle inheritance. Its Ctrl-C stays within the verified private
 console; Job termination is failure cleanup. Successful native cleanup also
 requires the product's stopped receipt, original process completion, an empty
 job and joined output readers. It shares Job/launch primitives with direct
-capture. [Implementation and actual CLI evidence](validation/windows-watch-2026-10-12.md)
+capture. Implementation and actual CLI evidence
 distinguish supervisor fixtures from a pending TLS service-start cancellation;
 the complete device clipboard watch remains NOT_RUN.
 
@@ -142,8 +124,6 @@ an owner-placed small ordinary-AFC synthetic file, known size/SHA-256 and exact
 read scope. NUL cannot cross CLI argv and retains host-only coverage. Display/
 HID, clipboard, application, XCTest and Cryptex workflows require their own
 explicit scopes; this runner does not infer those from general roadmap consent.
-The current [FUP review](real-device-followup-tasks-2026-08-30.md) records what
-already exists and what is missing.
 
 ## Repair boundary, 2026-10-10
 

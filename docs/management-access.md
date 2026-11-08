@@ -9,7 +9,7 @@ to loopback. Native debug admission shares the policy mechanism; controlled
 browser clients use the [HTTP/CORS/ticket contract](http-boundary.md).
 Per-upstream credentials and verified HTTPS/WSS use the
 [protected federation contract](protected-federation.md).
-Track acceptance in the [roadmap](engineering-roadmap-2026-09-30.md).
+Track acceptance in the roadmap.
 
 For Unix shells, choose two new paths in a trusted private directory:
 

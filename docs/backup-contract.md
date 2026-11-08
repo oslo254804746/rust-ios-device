@@ -16,7 +16,7 @@ both primary and unexpected cleanup failures through cleanup_failure(). Expected
 peer closure after a complete terminal reply retains the prior completion policy.
 Drop cannot await disconnect or stop an already running blocking worker. These
 are host-tested ownership rules, with device backup/restore acceptance pending.
-See [lifecycle evidence and migration](validation/backup-lifecycle-2026-10-04.md).
+See lifecycle evidence and migration.
 
 `ios backup list-local <BACKUP_DIRECTORY> --source <IDENTIFIER>` defaults to a
 pretty JSON array with `file_id`, `domain`, `relative_path`, integer `mode`,
@@ -58,4 +58,4 @@ requires zero connection attempts. It reports counts/booleans, removes
 only unchanged owned files/directories, and preserves unexpected/replaced data
 with a failing result. No raw device archive, pairing, restore, DDI or TSS is used.
 CI/full validation include this scope. Mainline results and exact commits are
-recorded in the [roadmap](engineering-roadmap-2026-09-30.md).
+recorded in the roadmap.

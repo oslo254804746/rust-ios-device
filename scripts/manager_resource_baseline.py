@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Measure an existing CLI test executable or compare recorded L04 host runs.
 
-This program never invokes Cargo, rustc, maturin, or a build script. The main
-agent owns source freezing, compilation and the serial validation queue.
+This program never invokes Cargo, rustc, maturin, or a build script. The caller
+owns source freezing, compilation and the serial validation queue.
 """
 
 import argparse
@@ -325,7 +325,7 @@ def run_command(args):
         "rust_version_evidence": compiler.strip(), "rust_version_evidence_sha256": digest(args.rust_version_file),
         "declared_build_mode": args.build_mode, "host": host_metadata(),
         "command": command,
-        "source_freeze": "external main-agent validation runner required; this driver does not establish a freeze",
+        "source_freeze": "external validation runner required; this driver does not establish a freeze",
         "compilation": "NOT_STARTED: existing compiled native test executable only",
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }

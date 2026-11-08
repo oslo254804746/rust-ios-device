@@ -1,12 +1,14 @@
 # rust-ios-device-tunnel
 
-Python bindings for device discovery, finite existing-trust device queries,
-CoreDevice tunnel management, and asyncio transport bridging.
+Python bindings for device discovery, finite existing-trust device queries and
+checked services, CoreDevice tunnel management (iOS 17–27+), and asyncio
+transport bridging across **iOS 15.x – iOS 27.2**.
 
 Built on top of [rust-ios-device](https://github.com/oslo254804746/rust-ios-device).
-This package exposes device discovery, three finite Lockdown information fields,
-CoreDevice tunnel metadata, and a local userspace bridge. Device queries return
-owned values and metadata; service clients are not exposed as direct Python APIs.
+This package exposes device discovery, `Device` and `DeviceSession` handles for
+Lockdown queries, application listing, AFC file reads, and syslog streaming,
+plus CoreDevice tunnel metadata and a local userspace proxy bridge (including
+the 20ms ICMPv6 Echo Request Nudge and IPv6 UDP datagram forwarding).
 
 ## Install
 
@@ -37,7 +39,7 @@ for d in devices:
 
 ## Tunnel usage
 
-Start a CoreDevice tunnel to a trusted iOS device:
+Start a CoreDevice tunnel to a trusted iOS 17–27+ device:
 
 ```python
 import ios_rs
@@ -47,10 +49,9 @@ if not devices:
     raise SystemExit("no device found")
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
 try:
-
     print(tunnel.server_address)   # device tunnel IPv6 address
     print(tunnel.rsd_port)         # Remote Service Discovery port
-    print(tunnel.userspace_port)   # local TCP proxy port
+    print(tunnel.userspace_port)   # local TCP/UDP proxy port
     print(tunnel.services)         # discovered RSD service names
     print(tunnel.service_ports)    # service name -> device TCP port
     print(tunnel.service_features) # service name -> advertised identifiers (possibly [])
@@ -66,11 +67,14 @@ The `services` list and both mapping attributes use stable service-name order.
 capability metadata. Missing metadata is not an explicit deny-all result.
 Tunnel setup and initial RSD/XPC connection setup are limited to 15 seconds.
 
-Kernel TUN mode (`mode="kernel"`) requires root/administrator privileges. Userspace mode works without elevated permissions and is the default.
+Kernel TUN mode (`mode="kernel"`) requires root/administrator privileges.
+Userspace mode works without elevated permissions and is the default.
 
 ## asyncio integration
 
-The userspace tunnel includes a context manager that patches `asyncio.open_connection` so asyncio-based libraries can connect to the device tunnel transparently:
+The userspace tunnel includes a context manager that patches
+`asyncio.open_connection` so asyncio-based libraries can connect to the device
+tunnel transparently:
 
 ```python
 import asyncio
@@ -81,7 +85,6 @@ if not devices:
     raise SystemExit("no device found")
 tunnel = ios_rs.start_tunnel(devices[0]["udid"])
 try:
-
     with tunnel.asyncio_proxy():
         # Connections to the tunnel IPv6 address are routed
         # through the local userspace proxy automatically.
@@ -130,7 +133,7 @@ not capture a full sysdiagnose.
 | `Device.close()` / `await Device.aclose()` | Close device handle and release underlying session. |
 | `Tunnel.server_address` | Device tunnel IPv6 address. |
 | `Tunnel.rsd_port` | Remote Service Discovery port. |
-| `Tunnel.userspace_port` | Local TCP proxy port (userspace mode only). |
+| `Tunnel.userspace_port` | Local proxy port (userspace mode only). |
 | `Tunnel.services` | List of discovered RSD service names. |
 | `Tunnel.service_ports` | Dict mapping RSD service names to device TCP ports. |
 | `Tunnel.service_features` | Dict mapping every RSD service to advertised capability identifiers; an empty list means metadata was not advertised. |
@@ -146,9 +149,11 @@ Device-list/tunnel operation failures keep `RuntimeError` and their safe message
 Invalid tunnel mode keeps `ValueError`. Requesting `asyncio_proxy()` without a
 userspace proxy keeps `RuntimeError`. These exceptions also expose
 `ios_error_schema_version` (integer `1`), `ios_error_class` (stable category),
-`ios_error_phase` (fixed operation name) and `ios_error_effects`.
+`ios_error_phase` (fixed operation name), and `ios_error_effects`.
 
 ```python
+import ios_rs
+
 try:
     devices = ios_rs.list_devices()
 except RuntimeError as error:
@@ -170,14 +175,13 @@ original safe exception as its cause. See the full
 ## Requirements
 
 - A trusted iOS device connected via USB.
-- usbmuxd (Linux), Apple Mobile Device Support (Windows), or macOS device support components.
-- For CoreDevice tunnels: a compatible iOS version (17+) with pairing material on the host.
+- `usbmuxd` (Linux), Apple Mobile Device Support (Windows), or macOS device support components.
+- For CoreDevice tunnels: a compatible iOS version (17–27+) with pairing material on the host.
 
 ## Links
 
 - [Public compatibility rules](../../docs/public-contract.md) govern factory
-  signatures, attributes, exceptions and patch ownership; SDK/device workflow
-  coverage remains separately tracked.
+  signatures, attributes, exceptions, and patch ownership.
 - Source: <https://github.com/oslo254804746/rust-ios-device>
 - Rust crate: <https://crates.io/crates/ios-core>
 - Issues: <https://github.com/oslo254804746/rust-ios-device/issues>
@@ -196,10 +200,11 @@ pair, save credentials, start services, or create a tunnel for these queries.
 ```python
 import ios_rs
 
-# The caller supplies these inputs; no implicit device/credential selection.
-with ios_rs.DeviceSession(udid, pair_record_bytes, "unix:///var/run/usbmuxd") as device:
-    result = device.query("ProductVersion", timeout=15.0)
-    print(result["value"])
+def query_version(udid: str, pair_record_bytes: bytes) -> None:
+    # The caller supplies these inputs; no implicit device/credential selection.
+    with ios_rs.DeviceSession(udid, pair_record_bytes, "unix:///var/run/usbmuxd") as device:
+        result = device.query("ProductVersion", timeout=15.0)
+        print(result["value"])
 ```
 
 `DeviceSession(udid, pair_record_bytes, endpoint, *, concurrency=4,
@@ -251,9 +256,12 @@ an `asyncio.Future` subclass. Await it directly or use `asyncio.ensure_future`.
 Task is needed.
 
 ```python
-async with ios_rs.DeviceSession(udid, pair_record_bytes, endpoint) as device:
-    future = device.query_async("ProductType")
-    result = await future
+import ios_rs
+
+async def query_product_type(udid: str, pair_record_bytes: bytes, endpoint: str):
+    async with ios_rs.DeviceSession(udid, pair_record_bytes, endpoint) as device:
+        future = device.query_async("ProductType")
+        return await future
 ```
 
 `future.cancel(msg=None)` immediately signals the real native operation token.
@@ -271,17 +279,18 @@ is `True`. If cancellation cleanup exceeds its budget, the Future instead raises
 bounded supervision. `future.receipt` is always its owned `DeviceQueryReceipt`:
 
 ```python
-receipt = future.receipt
-receipt.cancel()                          # Real cancellation, idempotent.
-receipt.done                             # Original native task actually joined.
-receipt.result(cleanup_timeout=5.0)       # Blocking wait releases the GIL.
-await receipt.wait_async(cleanup_timeout=5.0)
+async def cancel_and_wait(future):
+    receipt = future.receipt
+    receipt.cancel()                          # Real cancellation, idempotent.
+    _ = receipt.done                          # Original native task actually joined.
+    await receipt.wait_async(cleanup_timeout=5.0)
 ```
 
-Both receipt wait methods have their own bounded cleanup deadline; cancellation
-of an existing receipt wait does not restart that deadline. An async receipt
-wait timeout requests real cancellation and returns TimeoutError with its owned
-receipt while supervision continues.
+Both receipt wait methods (`receipt.result(cleanup_timeout=5.0)` and
+`await receipt.wait_async(cleanup_timeout=5.0)`) have their own bounded cleanup
+deadline; cancellation of an existing receipt wait does not restart that
+deadline. An async receipt wait timeout requests real cancellation and returns
+`TimeoutError` with its owned receipt while supervision continues.
 
 A receipt preserves the original owned result/error after session close,
 registry reaping, or cancellation cleanup timeout. A receipt wait can raise the
@@ -339,51 +348,53 @@ python -I scripts/python-device-query.py
 ```
 
 The validator requires the actual installed native extension and the existing
-synthetic TLS assets. It exercises real usbmux → Lockdown → plaintext/TLS wire,
+synthetic TLS assets. It exercises real usbmux -> Lockdown -> plaintext/TLS wire,
 strict native TCP EOF, and original peer/thread joins before behavioral checks.
-It never substitutes Python results, builds Rust, or certifies physical device,
-application, file, or log functionality. Keep the existing installed API/error
-smoke and host runtime/tunnel tests alongside this finite-query validator.
 
 ## Checked application, AFC and log services
 
 `DeviceSession.service(operation, ...)` and `service_async(operation, ...)`
 share the finite-query owner, admission pool, cancellation token, original-task
-receipts and close path. Operations are `apps`, `files`, `read_file`, and `logs`.
+receipts, and close path. Operations are `apps`, `files`, `read_file`, and `logs`.
 The SDK opens fresh owned usbmux/Lockdown/service sockets for each admitted job;
-discovery, StartSession, optional TLS, StartService, service Connect, requests
+discovery, StartSession, optional TLS, StartService, service Connect, requests,
 and replies all use the same native absolute total. No pairing, installation,
-file write, tunnel creation, mutation replay or automatic reconnect occurs.
+file write, tunnel creation, mutation replay, or automatic reconnect occurs.
 
 ```python
-async with ios_rs.DeviceSession(udid, pair_bytes, endpoint, concurrency=1) as dev:
-    apps = await dev.service_async("apps", timeout=5.0)
-    names = await dev.service_async("files", path="/", timeout=5.0)
-    content = await dev.service_async("read_file", path="/owned-file",
-                                      max_bytes=65536, output_bytes=65536)
+import ios_rs
+
+async def inspect_services(udid: str, pair_bytes: bytes, endpoint: str):
+    async with ios_rs.DeviceSession(udid, pair_bytes, endpoint, concurrency=1) as dev:
+        apps = await dev.service_async("apps", timeout=5.0)
+        names = await dev.service_async("files", path="/", timeout=5.0)
+        content = await dev.service_async(
+            "read_file", path="/owned-file", max_bytes=65536, output_bytes=65536
+        )
+        return apps, names, content
 ```
 
-Defaults: 15s total, 16MiB cumulative decrypted service reply bytes, 1MiB
-retained text/data, 10,000 entries and 1MiB AFC frame bodies. The finite
-control-plane reply budget is separately 16MiB, with 1MiB mux/Lockdown frames
-and bounded discovery metadata. Native validation caps service bytes at 64MiB,
-retained output at 16MiB, entries at 100,000 and AFC bodies at 4MiB. Each AFC
-body is admitted before allocation. Browse retains its existing four-MiB
-plist and 1,000-frame hard bounds. Syslog retains its one-MiB raw-message
+Defaults: 15s total, 16 MiB cumulative decrypted service reply bytes, 1 MiB
+retained text/data, 10,000 entries, and 1 MiB AFC frame bodies. The finite
+control-plane reply budget is separately 16 MiB, with 1 MiB mux/Lockdown frames
+and bounded discovery metadata. Native validation caps service bytes at 64 MiB,
+retained output at 16 MiB, entries at 100,000, and AFC bodies at 4 MiB. Each AFC
+body is admitted before allocation. Browse retains its existing 4 MiB
+plist and 1,000-frame hard bounds. Syslog retains its 1 MiB raw-message
 ceiling. These are logical byte/task limits, not parser temporary-allocation,
-TLS wire, CPU or RSS bounds.
+TLS wire, CPU, or RSS bounds.
 
 File reads require complete EOF evidence and never return truncated success.
 `max_bytes=0` permits only an empty file. Logs require the requested message
-count; EOF, native IO, deadline, cancellation and output refusal are errors.
+count; EOF, native IO, deadline, cancellation, and output refusal are errors.
 The exception's `ios_partial_result` owns already completed/admitted messages,
 including when an async Future is cancelled. The primary typed native error
-and original source remain in the job receipt. A raw UnexpectedEof retains
-the A02 `io` category; it is not guessed to be a device disconnect.
+and original source remain in the job receipt. A raw `UnexpectedEof` retains
+the `io` category; it is not guessed to be a device disconnect.
 
 `Future.cancel()` cancels the actual Core token and waits for the original
 native JoinHandle through the same receipt adapter as queries. Close seals
-query/service admission, cancels active jobs and waits for their original
+query/service admission, cancels active jobs, and waits for their original
 joins. A cleanup timeout retains the closed owner and outstanding receipts for
 a subsequent close. Destroying local sockets does not acknowledge remote
 FileClose or Apple teardown.
@@ -392,7 +403,7 @@ The convenience `open_device` handle uses the same checked implementation;
 apps/files have a 15s total and fixed default limits, file reads use their
 caller ceiling, and `read_syslog(timeout_ms=...)` includes connection setup.
 Local pairing-file loading precedes the checked operation, is bounded to a
-regular file of at most 1MiB, and cannot physically cancel stalled filesystem
+regular file of at most 1 MiB, and cannot physically cancel stalled filesystem
 IO. Use explicit `DeviceSession` bytes/endpoints to keep file loading outside
 the operation. `Device.aclose()` uses the real close receipt and supports
 repeated close. Tunnel forwarding shares one checked service owner;
@@ -405,12 +416,3 @@ the configured interface. With a newly installed wheel, run:
 ```sh
 python -I scripts/sdk-device-services.py
 ```
-
-The gate drives the actual installed extension through owned protocol peers:
-service TLS, apps data, exact AFC data/hash/empty EOF, budget refusals,
-totals/cancellation in four stages, shared query-service conflict, active
-close, partial-log errors and original peer/thread EOF/joins. It adds native
-async cancellation/admission checks and a Windows isolated-trust public
-`Device.aclose()` case. Other platforms' local-trust case stays NOT_RUN;
-configured peers are portable. These host fixtures do not certify physical
-apps/AFC/syslog or other release platforms.

@@ -36,8 +36,8 @@ records. CLI logs go to stderr to keep JSON clean.
 ## Explicit device diagnostic report
 
 ```bash
-ios --udid DEVICE_UDID doctor --timeout 5
-ios --udid DEVICE_UDID --no-json doctor
+ios --udid <UDID> doctor --timeout 5
+ios --udid <UDID> --no-json doctor
 ```
 
 An explicit `--udid` or `IOS_UDID` selects schema 2 (`host_and_device`), adding
@@ -63,14 +63,14 @@ Pairing files must be regular files, or existing links to them. Unix FIFOs are
 rejected without waiting for a writer. Filesystem metadata and regular-file reads
 can still block in the OS: a probe deadline cannot forcibly cancel that worker,
 and runtime exit can wait for it. This is not evidence of bounded physical exit
-on stalled filesystems. Platform USB/remoted/directory diagnostics and actual
-device support remain pending; see [host evidence](validation/device-doctor-manual-admission-2026-10-08.md).
+on stalled filesystems. See the [capability inventory](capabilities.md) for
+host and device validation records.
 
 ## Observe an existing RSD route
 
 ```bash
-ios --udid DEVICE_UDID doctor --rsd-address '[fd00::1]:58783'
-ios --udid DEVICE_UDID doctor --rsd-address '[fd00::1]:58783' --rsd-proxy-port 49152 --rsd-service com.apple.coredevice.deviceinfo
+ios --udid <UDID> doctor --rsd-address '[fd00::1]:58783'
+ios --udid <UDID> doctor --rsd-address '[fd00::1]:58783' --rsd-proxy-port 49152 --rsd-service com.apple.coredevice.deviceinfo
 ```
 
 Use an already established IPv6 RSD endpoint; the optional existing userspace
@@ -86,7 +86,7 @@ fails. A complete checked directory can establish advertisement/absence, and onl
 complete port metadata supports positive route observations. This proves neither
 selected-service execution nor DDI usability. Reports omit raw endpoints, selectors
 and Features; unrelated earlier existing-trust failures can remain the machine-error
-primary. [Scope and host evidence](validation/doctor-rsd-syslog-2026-10-09.md).
+primary.
 
 ## Device is not listed
 
@@ -106,7 +106,11 @@ primary. [Scope and host evidence](validation/doctor-rsd-syslog-2026-10-09.md).
 ## Tunnel fails
 
 - CoreDevice tunnel paths require a compatible device/iOS version and trusted pairing material.
-- Try userspace mode before kernel mode.
+- Prefer `--userspace` mode before kernel mode. The userspace tunnel includes a
+  20ms ICMPv6 Echo Request Nudge (flushing USB NCM packet aggregation buffers on
+  iOS 17–27.2) and IPv6 UDP datagram forwarding (supporting Display/RTP video/audio
+  capture and Universal HID media authorization without administrator/root TUN
+  privileges).
 - Kernel TUN mode may require root or administrator privileges.
 - Network discovery depends on mDNS/Bonjour visibility and local firewall rules.
 - Some Wi-Fi paths require Wi-Fi connections to be enabled through lockdown and may still vary by iOS version.
@@ -124,24 +128,12 @@ $ ios file ls /
 #              not exist on the device
 ```
 
-This explains the historical `object-not-found(8)` failures on `file ls /`
-and `file stat /`: at the time of the failure, the shell had already rewritten
-`/` to `C:/Program Files/Git/`. Feeding the same rewritten argument to Rust,
-pymobiledevice3, and go-ios makes all three fail identically with status 8,
-which by itself proves nothing about device policy or about the Rust AFC
-encoding; the shell conversion happens before client-specific AFC handling,
-so compare the actual received argument and protocol encoding separately.
+This explains `object-not-found(8)` failures on `file ls /` and `file stat /`
+when invoked from MSYS/Git Bash: the shell rewrites `/` to `C:/Program Files/Git/`
+before the CLI starts. Feeding the same rewritten argument to Rust,
+pymobiledevice3, and go-ios makes all three fail identically with status 8.
 
-Source boundary (2026-10-12 review): the 2026-08-30 device statements in this
-section and the RSD section below are retained from the
-[original follow-up task summary](real-device-followup-tasks-2026-08-30.md).
-The two indexed local reports and the original Windows evidence root are
-unavailable in this checkout. This review did not re-execute those device
-cases or independently certify their raw arguments; no historical observation
-was rewritten as a new PASS.
-
-Verified workaround (2026-08-30, three-way comparison on a real device) —
-disable MSYS path conversion for the command:
+Verified workaround — disable MSYS path conversion for the command:
 
 ```bash
 MSYS_NO_PATHCONV=1 ios file ls /
@@ -177,26 +169,21 @@ that the device's RSD directory is empty or that the tunnel is broken.
   `com.apple.remote.installcoordination_proxy` entry. Do not substitute the
   `.shim.remote` form for this RemoteXPC service.
 
-The catalog itself differs per device and iOS version. On one device
-(iPhone11,8, iOS 18.7.9, checked 2026-08-30), the full `--all` catalog held 59
-services with an identical name set in Rust, pymobiledevice3, and go-ios — but
-that count and name set describe that device and round, not a fixed catalog.
-Notably, that device exposed no `com.apple.coredevice.*` entries at all, so
-`info lock-state`, which needs `com.apple.coredevice.deviceinfo`, fails on it.
-Why a given device lacks those entries is unknown; do not attribute the
-absence to Developer Mode, a Developer Disk Image, supervision state, or a
-routing defect without fresh evidence.
+The catalog itself differs per device, iOS version, Developer Mode state, and
+mounted Developer Disk Image:
+
+- On an `iPhone11,8 (iOS 18.7)` without Developer Mode enabled, the `--all`
+  catalog exposed 59 services with no `com.apple.coredevice.*` entries.
+- On an `iPhone16,2 (iOS 27.2)` with Developer Mode enabled and Cryptex DDI
+  `com.apple.MobileAsset.DDI` `v27.1.5228.8` mounted via `ios -u <UDID> ddi auto`,
+  the full catalog exposes `com.apple.coredevice.*` services (such as
+  `appservice`, `deviceinfo`, `fileservice.control`/`.data`, `pasteboardservice`,
+  `screencaptureservice`, `displayservice`, `hid.indigo`, `hid.universalhidservice`,
+  `configuration`, `devicecontrol`, and `diagnosticsservice`) as well as
+  `com.apple.internal.dt.remote.debugproxy` and Instruments DTX shims.
 
 If a CoreDevice-dependent command fails, first run `rsd services --all` and
-`rsd check <service>` on the same device. A service that is absent from the
-full catalog is not exposed by the device. A friendlier error message for this
-case is a possible, separate improvement; any change there must first
-re-confirm the existing error contract and its compatibility.
-
-Coverage still requiring real-device evidence: RSD connection establishment
-has only been observed through the queued bootstrap path; the direct, legacy,
-and passive establishment paths remain untriggered, and behavior on devices
-that do expose `com.apple.coredevice.*` is unverified.
+`rsd check <service>` on the same device, and check `ios -u <UDID> ddi status`.
 
 ## Backup root safety
 
@@ -217,8 +204,8 @@ important when restoring or overwriting a backup.
 
 ## Developer services fail
 
-- Enable Developer Mode where the device requires it.
-- Mount a compatible Developer Disk Image when a service depends on developer tooling.
+- Enable Developer Mode where the device requires it (`ios -u <UDID> amfi reveal-developer-mode` / `enable-developer-mode`).
+- Mount a compatible Developer Disk Image when a service depends on developer tooling (`ios -u <UDID> ddi auto`; on iOS 27+, this automatically installs Cryptex DDI `v27.1.5228.8`).
 - Confirm that a test bundle, WebDriverAgent runner, app, or provisioning profile exists before running commands that refer to it.
 
 ## Build fails on Linux

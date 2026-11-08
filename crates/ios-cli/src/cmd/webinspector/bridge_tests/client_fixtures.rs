@@ -1048,13 +1048,6 @@ fn resolve_node_binary() -> std::ffi::OsString {
     if let Some(node) = std::env::var_os("IOS_CDP_CLIENT_NODE") {
         return node;
     }
-    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-        let candidate = PathBuf::from(home)
-            .join(".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe");
-        if candidate.is_file() {
-            return candidate.into_os_string();
-        }
-    }
     "node".into()
 }
 

@@ -66,7 +66,7 @@ with only `backup2-manifest`. The exact vector must execute once; its actual
 artifact and raw bounded output have hashes. Original logs live in newly owned
 ignored directories. Zero selection, partial capture, timeout, overflow or
 incomplete process cleanup fails. No device is contacted and ordinary `full`
-remains unchanged. Linux [evidence](validation/pbkdf2-2026-10-06.md) does not
+remains unchanged. Linux evidence does not
 certify macOS or generic Windows Cargo process-tree supervision. All protocol
 fuzz entrypoints and the complete synthetic seed corpus remain separate Q04 work.
 

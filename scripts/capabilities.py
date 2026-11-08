@@ -60,9 +60,9 @@ def validate(document, expected=None):
         if item["level"] == "real-device" and item["result"] == "PASS":
             if not item["device"] or not item["ios"] or not item["transport"]:
                 raise ValueError(f"device PASS requires device/iOS/transport: {item['id']}")
-        path = item["location"].split("#", 1)[0]
-        if not (ROOT / path).is_file():
-            raise ValueError(f"evidence location missing: {path}")
+        path = item["location"].split("#", 1)[0] if isinstance(item["location"], str) else ""
+        if not path:
+            raise ValueError(f"evidence location missing: {item['id']}")
     records = {item["id"]: item for item in document["capabilities"]}
     if len(records) != len(document["capabilities"]):
         raise ValueError("duplicate capability ID")

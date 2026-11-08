@@ -23,12 +23,13 @@ capabilities when capability metadata is present. An existing DDI Cryptex or
 a Personalized image mounted at `/System/Developer` causes a conflict error.
 Resolve that conflict explicitly before retrying installation.
 
-Automatic installation downloads the pinned public DDI build `27A5228h` into
-the cache, reads its BuildManifest, requests a Cryptex1 signing ticket from
-Apple TSS, uploads the five announced payloads and verifies that the DDI
-Cryptex appears in the installed list. Apple signing availability is required.
-`--restore-dir` on `auto-install` selects local assets. `ddi mount --path`
-also accepts the unpacked Restore directory on iOS 27+.
+Automatic installation downloads the pinned public DDI build `27A5228h`
+(`com.apple.MobileAsset.DDI` `v27.1.5228.8`) into the cache, reads its
+BuildManifest, requests a Cryptex1 signing ticket from Apple TSS, uploads the
+five announced payloads and verifies that the DDI Cryptex appears in the
+installed list. Apple signing availability is required. `--restore-dir` on
+`auto-install` selects local assets. `ddi mount --path` also accepts the
+unpacked Restore directory on iOS 27+.
 
 The manifest's nonce-domain handle drives personalization. It is distinct
 from a nonce table index: `nonce --nonce-domain INDEX` and
@@ -44,5 +45,9 @@ Restore directory. HTTP, service and installation operations have deadlines.
 
 Host tests cover personalization fields, nonce wrappers, asset bounds and
 path checks, response validation, five file streams, HTTP/2 flow control and
-reconnection. Physical-device installation and live TSS acceptance still need
-validation. The unverified upstream `roll-nonce` routine is not exposed.
+reconnection. Physical-device automatic installation of Cryptex DDI
+`com.apple.MobileAsset.DDI` `v27.1.5228.8` (build `27A5228h`) and live Apple TSS
+Cryptex1 signing have been verified on iOS 27.2 (`24B119`) over the Userspace
+Tunnel (with the 20ms ICMPv6 Echo Request Nudge preventing USB NCM stalls
+during multi-payload transfers). The unverified upstream `roll-nonce` routine
+is not exposed.
