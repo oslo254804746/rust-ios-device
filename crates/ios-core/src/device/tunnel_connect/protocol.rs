@@ -8,8 +8,11 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chacha20poly1305::{aead::Aead, KeyInit};
 use indexmap::IndexMap;
 
-use super::{CoreError, DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE, DIRECT_CONTROL_CHANNEL_ORIGIN};
 use super::pairing::RemotePairingControlChannel;
+use crate::error::CoreError;
+
+const DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE: &str = "RemotePairing.ControlChannelMessageEnvelope";
+const DIRECT_CONTROL_CHANNEL_ORIGIN: &str = "host";
 use crate::lockdown::pairing::VerifyPairSession;
 use crate::xpc::message::XpcValue;
 use crate::xpc::XpcClient;
@@ -146,7 +149,9 @@ pub(super) async fn create_direct_tcp_listener(
     let client_cipher = chacha20poly1305::ChaCha20Poly1305::new((&session.client_key).into());
     let encrypted = client_cipher
         .encrypt((&nonce).into(), request.to_string().as_bytes())
-        .map_err(|e| CoreError::Other(format!("createListener encrypt failed: {e}")))?;
+        .map_err(|error| {
+            super::super::error_context::retain("encrypt direct listener request", error)
+        })?;
 
     client
         .send(build_direct_control_envelope(
@@ -168,7 +173,13 @@ pub(super) async fn create_direct_tcp_listener(
     let server_cipher = chacha20poly1305::ChaCha20Poly1305::new((&session.server_key).into());
     let plaintext = server_cipher
         .decrypt((&nonce).into(), encrypted_response.as_ref())
-        .map_err(|e| CoreError::Other(format!("createListener decrypt failed: {e}")))?;
+        .map_err(|error| {
+            super::super::error_context::with_kind(
+                std::io::ErrorKind::InvalidData,
+                "decrypt direct listener response",
+                error,
+            )
+        })?;
     let response: serde_json::Value = serde_json::from_slice(&plaintext)?;
     let response_body = response
         .get("response")
@@ -216,8 +227,8 @@ pub(super) async fn create_remote_pairing_tcp_listener(
     let client_cipher = chacha20poly1305::ChaCha20Poly1305::new((&session.client_key).into());
     let encrypted = client_cipher
         .encrypt((&nonce).into(), request.to_string().as_bytes())
-        .map_err(|e| {
-            CoreError::Other(format!("remote pairing createListener encrypt failed: {e}"))
+        .map_err(|error| {
+            super::super::error_context::retain("encrypt remote listener request", error)
         })?;
 
     control
@@ -237,8 +248,12 @@ pub(super) async fn create_remote_pairing_tcp_listener(
     let server_cipher = chacha20poly1305::ChaCha20Poly1305::new((&session.server_key).into());
     let plaintext = server_cipher
         .decrypt((&nonce).into(), encrypted_response.as_ref())
-        .map_err(|e| {
-            CoreError::Other(format!("remote pairing createListener decrypt failed: {e}"))
+        .map_err(|error| {
+            super::super::error_context::with_kind(
+                std::io::ErrorKind::InvalidData,
+                "decrypt remote listener response",
+                error,
+            )
         })?;
     let response: serde_json::Value = serde_json::from_slice(&plaintext)?;
     let response_body = response
@@ -368,7 +383,9 @@ pub(super) fn build_remote_pairing_pairing_event(
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn build_remote_pairing_pair_verify_failed_event(sequence_number: u64) -> serde_json::Value {
+pub(super) fn build_remote_pairing_pair_verify_failed_event(
+    sequence_number: u64,
+) -> serde_json::Value {
     serde_json::json!({
         "message": {
             "plain": {
@@ -444,9 +461,13 @@ pub(super) fn extract_remote_pairing_tlv(body: &serde_json::Value) -> Result<Vec
         .ok_or_else(|| {
             CoreError::Protocol("remote pairing response missing pairingData._0.data".into())
         })?;
-    BASE64_STANDARD
-        .decode(data)
-        .map_err(|e| CoreError::Other(format!("invalid remote pairing TLV base64: {e}")))
+    BASE64_STANDARD.decode(data).map_err(|error| {
+        super::super::error_context::with_kind(
+            std::io::ErrorKind::InvalidData,
+            "decode remote pairing TLV",
+            error,
+        )
+    })
 }
 
 #[cfg(feature = "tunnel")]
@@ -467,7 +488,9 @@ pub(super) fn extract_direct_stream_encrypted(body: &XpcValue) -> Result<Vec<u8>
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn extract_remote_pairing_stream_encrypted(body: &serde_json::Value) -> Result<Vec<u8>, CoreError> {
+pub(super) fn extract_remote_pairing_stream_encrypted(
+    body: &serde_json::Value,
+) -> Result<Vec<u8>, CoreError> {
     let encoded = body
         .get("message")
         .and_then(|value| value.get("streamEncrypted"))
@@ -478,15 +501,19 @@ pub(super) fn extract_remote_pairing_stream_encrypted(body: &serde_json::Value) 
                 "remote pairing encrypted response missing message.streamEncrypted._0".into(),
             )
         })?;
-    BASE64_STANDARD.decode(encoded).map_err(|e| {
-        CoreError::Other(format!(
-            "invalid remote pairing encrypted payload base64: {e}"
-        ))
+    BASE64_STANDARD.decode(encoded).map_err(|error| {
+        super::super::error_context::with_kind(
+            std::io::ErrorKind::InvalidData,
+            "decode remote encrypted response",
+            error,
+        )
     })
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn direct_control_value(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, CoreError> {
+pub(super) fn direct_control_value(
+    body: &XpcValue,
+) -> Result<&IndexMap<String, XpcValue>, CoreError> {
     let envelope = body.as_dict().ok_or_else(|| {
         CoreError::Protocol("direct control message body must be a dictionary".into())
     })?;
@@ -508,7 +535,9 @@ pub(super) fn direct_control_value(body: &XpcValue) -> Result<&IndexMap<String, 
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn direct_plain_message(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, CoreError> {
+pub(super) fn direct_plain_message(
+    body: &XpcValue,
+) -> Result<&IndexMap<String, XpcValue>, CoreError> {
     direct_control_value(body)?
         .get("message")
         .and_then(XpcValue::as_dict)
@@ -535,7 +564,9 @@ pub(super) fn extract_direct_rejection_message(value: &XpcValue) -> Option<Strin
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn extract_remote_pairing_rejection_message(value: &serde_json::Value) -> Option<String> {
+pub(super) fn extract_remote_pairing_rejection_message(
+    value: &serde_json::Value,
+) -> Option<String> {
     value
         .get("wrappedError")
         .and_then(|wrapped| wrapped.get("userInfo"))
@@ -560,4 +591,205 @@ pub(super) fn make_direct_encrypted_nonce(sequence_number: u64) -> [u8; 12] {
     let mut nonce = [0u8; 12];
     nonce[..8].copy_from_slice(&sequence_number.to_le_bytes());
     nonce
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn direct_handshake_request_carries_attempt_pair_verify() {
+        let request = build_direct_handshake_request(7);
+        let envelope = request.as_dict().expect("envelope dict");
+        assert_eq!(
+            envelope.get("mangledTypeName").and_then(XpcValue::as_str),
+            Some(DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE)
+        );
+
+        let handshake = envelope
+            .get("value")
+            .and_then(XpcValue::as_dict)
+            .and_then(|value| value.get("message"))
+            .and_then(XpcValue::as_dict)
+            .and_then(|message| message.get("plain"))
+            .and_then(XpcValue::as_dict)
+            .and_then(|plain| plain.get("_0"))
+            .and_then(XpcValue::as_dict)
+            .and_then(|plain| plain.get("request"))
+            .and_then(XpcValue::as_dict)
+            .and_then(|request| request.get("_0"))
+            .and_then(XpcValue::as_dict)
+            .and_then(|request| request.get("handshake"))
+            .and_then(XpcValue::as_dict)
+            .and_then(|handshake| handshake.get("_0"))
+            .and_then(XpcValue::as_dict)
+            .expect("handshake dict");
+
+        assert_eq!(
+            handshake
+                .get("hostOptions")
+                .and_then(XpcValue::as_dict)
+                .and_then(|options| options.get("attemptPairVerify")),
+            Some(&XpcValue::Bool(true))
+        );
+        assert_eq!(
+            handshake.get("wireProtocolVersion"),
+            Some(&XpcValue::Int64(19))
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn remote_pairing_handshake_request_starts_at_plain_message_root() {
+        let request = build_remote_pairing_handshake_request(0);
+        assert_eq!(request["originatedBy"], "host");
+        assert_eq!(request["sequenceNumber"], 0);
+        assert_eq!(
+            request["message"]["plain"]["_0"]["request"]["_0"]["handshake"]["_0"]["hostOptions"]
+                ["attemptPairVerify"],
+            true
+        );
+        assert_eq!(
+            request["message"]["plain"]["_0"]["request"]["_0"]["handshake"]["_0"]
+                ["wireProtocolVersion"],
+            19
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn extract_direct_remote_identifier_reads_peer_device_info() {
+        let body = build_direct_control_envelope(
+            xpc_dict(&[(
+                "plain",
+                xpc_dict(&[(
+                    "_0",
+                    xpc_dict(&[(
+                        "response",
+                        xpc_dict(&[(
+                            "_1",
+                            xpc_dict(&[(
+                                "handshake",
+                                xpc_dict(&[(
+                                    "_0",
+                                    xpc_dict(&[(
+                                        "peerDeviceInfo",
+                                        xpc_dict(&[(
+                                            "identifier",
+                                            XpcValue::String("test-remote".into()),
+                                        )]),
+                                    )]),
+                                )]),
+                            )]),
+                        )]),
+                    )]),
+                )]),
+            )]),
+            1,
+        );
+
+        let identifier = extract_direct_remote_identifier(&body).expect("identifier should parse");
+        assert_eq!(identifier, "test-remote");
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn extract_direct_pairing_tlv_surfaces_rejection_message() {
+        let body = build_direct_control_envelope(
+            xpc_dict(&[(
+                "plain",
+                xpc_dict(&[(
+                    "_0",
+                    xpc_dict(&[(
+                        "event",
+                        xpc_dict(&[(
+                            "_0",
+                            xpc_dict(&[(
+                                "pairingRejectedWithError",
+                                xpc_dict(&[(
+                                    "wrappedError",
+                                    xpc_dict(&[(
+                                        "userInfo",
+                                        xpc_dict(&[(
+                                            "NSLocalizedDescription",
+                                            XpcValue::String("Trust denied".into()),
+                                        )]),
+                                    )]),
+                                )]),
+                            )]),
+                        )]),
+                    )]),
+                )]),
+            )]),
+            2,
+        );
+
+        let err = extract_direct_pairing_tlv(&body).expect_err("rejection should error");
+        assert!(err.to_string().contains("Trust denied"));
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn extract_remote_pairing_tlv_decodes_base64_payload() {
+        let body = serde_json::json!({
+            "message": {
+                "plain": {
+                    "_0": {
+                        "event": {
+                            "_0": {
+                                "pairingData": {
+                                    "_0": {
+                                        "data": BASE64_STANDARD.encode([0x01, 0x02, 0x03]),
+                                        "kind": "verifyManualPairing",
+                                        "startNewSession": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let tlv = extract_remote_pairing_tlv(&body).expect("payload should decode");
+        assert_eq!(tlv, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn extract_remote_pairing_tlv_surfaces_rejection_message() {
+        let body = serde_json::json!({
+            "message": {
+                "plain": {
+                    "_0": {
+                        "event": {
+                            "_0": {
+                                "pairingRejectedWithError": {
+                                    "wrappedError": {
+                                        "userInfo": {
+                                            "NSLocalizedDescription": "Pair denied"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let err = extract_remote_pairing_tlv(&body).expect_err("rejection should error");
+        assert!(err.to_string().contains("Pair denied"));
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn make_direct_encrypted_nonce_uses_little_endian_sequence() {
+        let nonce = make_direct_encrypted_nonce(0x0102_0304_0506_0708);
+        assert_eq!(
+            nonce,
+            [0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0, 0, 0, 0]
+        );
+    }
 }

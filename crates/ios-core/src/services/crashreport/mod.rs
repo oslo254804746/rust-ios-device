@@ -1,3 +1,5 @@
+crate::redaction::error_debug!(CrashReportError);
+
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -27,7 +29,7 @@ pub struct CrashReportEntry {
     pub modified: Option<String>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum CrashReportError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -39,6 +41,46 @@ pub enum CrashReportError {
     Timeout,
     #[error("invalid pattern '{pattern}': {message}")]
     InvalidPattern { pattern: String, message: String },
+}
+
+#[derive(thiserror::Error)]
+#[error("native crash report parse failure")]
+struct NativeReportParseFailure(#[source] Box<dyn std::error::Error + Send + Sync>);
+
+crate::redaction::error_debug!(NativeReportParseFailure);
+
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> CrashReportError {
+    CrashReportError::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
+fn report_parse_error(
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> CrashReportError {
+    native_error(
+        std::io::ErrorKind::InvalidData,
+        phase,
+        NativeReportParseFailure(Box::new(source)),
+    )
+}
+
+fn is_report_parse_failure(error: &CrashReportError) -> bool {
+    if matches!(error, CrashReportError::Protocol(_)) {
+        return true;
+    }
+    let mut next: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    for _ in 0..32 {
+        let Some(error) = next else { break };
+        if error.is::<NativeReportParseFailure>() {
+            return true;
+        }
+        next = error.source();
+    }
+    false
 }
 
 /// The small, stable subset of an Apple crash report that is useful to
@@ -260,7 +302,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CrashReportClient<S> {
             let initial = if let Some(deadline) = deadline {
                 tokio::time::timeout_at(deadline, self.list_reports(pattern))
                     .await
-                    .map_err(|_| CrashReportError::Timeout)??
+                    .map_err(|error| {
+                        native_error(std::io::ErrorKind::TimedOut, "list initial crash reports", error)
+                    })??
             } else {
                 self.list_reports(pattern).await?
             };
@@ -279,13 +323,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CrashReportClient<S> {
                     .map(|remaining| options.poll_interval.min(remaining))
                     .unwrap_or(options.poll_interval);
                 tokio::time::sleep(sleep_for).await;
+                if let Some(timeout) = options.timeout {
+                    if started.elapsed() >= timeout {
+                        break;
+                    }
+                }
+                if let Some(deadline) = deadline {
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                }
                 let reports = if let Some(deadline) = deadline {
                     tokio::time::timeout_at(
                         deadline,
                         self.list_reports(Some(compiled.0.as_str())),
                     )
                     .await
-                    .map_err(|_| CrashReportError::Timeout)??
+                    .map_err(|error| {
+                        native_error(std::io::ErrorKind::TimedOut, "poll crash reports", error)
+                    })??
                 } else {
                     self.list_reports(Some(compiled.0.as_str())).await?
                 };
@@ -320,14 +376,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CrashReportClient<S> {
                     let data = if let Some(deadline) = deadline {
                         tokio::time::timeout_at(deadline, self.afc.read_file(&report.path))
                             .await
-                            .map_err(|_| CrashReportError::Timeout)??
+                            .map_err(|error| {
+                                native_error(std::io::ErrorKind::TimedOut, "read watched crash report", error)
+                            })??
                             .to_vec()
                     } else {
                         self.afc.read_file(&report.path).await?.to_vec()
                     };
                     let parsed = match parse_report_bytes(&report.path, &data) {
                         Ok(parsed) => parsed,
-                        Err(error @ CrashReportError::Protocol(_)) => {
+                        Err(error) if is_report_parse_failure(&error) => {
                             let Some((_, retries)) = pending.get_mut(&report.path) else {
                                 continue;
                             };
@@ -435,7 +493,9 @@ where
 {
     tokio::time::timeout_at(deadline, prepare_reports(stream))
         .await
-        .map_err(|_| CrashReportError::Timeout)??;
+        .map_err(|error| {
+            native_error(std::io::ErrorKind::TimedOut, "flush crash reports", error)
+        })??;
     Ok(())
 }
 
@@ -449,7 +509,13 @@ where
 {
     tokio::time::timeout_at(deadline, prepare_reports_rsd(stream))
         .await
-        .map_err(|_| CrashReportError::Timeout)??;
+        .map_err(|error| {
+            native_error(
+                std::io::ErrorKind::TimedOut,
+                "flush RSD crash reports",
+                error,
+            )
+        })??;
     Ok(())
 }
 
@@ -474,14 +540,54 @@ pub fn parse_report_bytes(path: &str, data: &[u8]) -> Result<ParsedCrashReport, 
 
 fn parse_ips(path: &str, data: &[u8]) -> Result<ParsedCrashReport, CrashReportError> {
     let text = std::str::from_utf8(data)
-        .map_err(|_| CrashReportError::Protocol("crash report is not UTF-8 JSON".into()))?;
+        .map_err(|error| report_parse_error("decode crash report UTF-8", error))?;
     let (header_text, body_text) = text
         .split_once('\n')
         .ok_or_else(|| CrashReportError::Protocol(".ips report is missing its JSON body".into()))?;
     let header: serde_json::Value = serde_json::from_str(header_text.trim())
-        .map_err(|e| CrashReportError::Protocol(format!("invalid .ips header JSON: {e}")))?;
+        .map_err(|error| report_parse_error("decode crash report header JSON", error))?;
+    // Low-battery reports can wrap a second, short JSON header and a text
+    // report in the outer .ips header. The two incident IDs may differ.
+    if header.get("bug_type").and_then(|value| value.as_str()) == Some("120") {
+        if let Some((inner_text, report_text)) = body_text.split_once('\n') {
+            if let Ok(inner) = serde_json::from_str::<serde_json::Value>(inner_text.trim()) {
+                let is_observed_header = inner.as_object().is_some_and(|object| {
+                    object.len() == 2
+                        && inner.get("bug_type") == header.get("bug_type")
+                        && inner.get("os_version").is_some()
+                        && inner.get("os_version") == header.get("os_version")
+                });
+                if is_observed_header
+                    && report_text.trim_start().starts_with("Incident Identifier:")
+                {
+                    let mut parsed = parse_legacy_crash(path, report_text.as_bytes())?;
+                    parsed.format = "ips-legacy".into();
+                    for line in report_text.lines() {
+                        if let Some(value) = line.strip_prefix("Incident Identifier:") {
+                            parsed.incident_id = nonempty(value.trim());
+                        } else if let Some(value) = line.strip_prefix("Date:") {
+                            parsed.timestamp = nonempty(value.trim());
+                        }
+                    }
+                    parsed.raw = serde_json::json!({"header": header, "inner_header": inner, "text": report_text});
+                    return Ok(parsed);
+                }
+            }
+        }
+    }
+    // Older devices also emit .ips reports with a JSON header and a legacy
+    // text body. Recognize the observed text headers before JSON decoding.
+    let legacy = body_text.trim_start();
+    if header.is_object()
+        && (legacy.starts_with("Incident Identifier:") || legacy.starts_with("Date/Time:"))
+    {
+        let mut parsed = parse_legacy_crash(path, body_text.as_bytes())?;
+        parsed.format = "ips-legacy".into();
+        parsed.raw = serde_json::json!({"header": header, "text": body_text});
+        return Ok(parsed);
+    }
     let body: serde_json::Value = serde_json::from_str(body_text.trim())
-        .map_err(|e| CrashReportError::Protocol(format!("invalid .ips body JSON: {e}")))?;
+        .map_err(|error| report_parse_error("decode crash report body JSON", error))?;
     if !header.is_object() || !body.is_object() {
         return Err(CrashReportError::Protocol(
             ".ips header and body must be JSON objects".into(),
@@ -518,7 +624,7 @@ fn parse_ips(path: &str, data: &[u8]) -> Result<ParsedCrashReport, CrashReportEr
 
 fn parse_legacy_crash(path: &str, data: &[u8]) -> Result<ParsedCrashReport, CrashReportError> {
     let text = std::str::from_utf8(data)
-        .map_err(|_| CrashReportError::Protocol("legacy crash report is not UTF-8".into()))?;
+        .map_err(|error| report_parse_error("decode legacy crash report UTF-8", error))?;
     let mut report = ParsedCrashReport {
         path: path.to_string(),
         format: "crash".into(),
@@ -1016,6 +1122,241 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn native_diagnostic_crash_parser_scope_is_typed_bounded_and_does_not_format() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let source = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let unissued = native_error(
+            std::io::ErrorKind::InvalidData,
+            "owned other parser",
+            source,
+        );
+        assert_eq!(
+            crate::classify_error(&unissued),
+            crate::ErrorClass::Protocol
+        );
+        assert!(!is_report_parse_failure(&unissued));
+        let source = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert!(is_report_parse_failure(&report_parse_error(
+            "owned parser",
+            source
+        )));
+        let shape = parse_report_bytes("owned.ips", b"{}\n[]").unwrap_err();
+        assert!(matches!(shape, CrashReportError::Protocol(_)));
+        assert!(is_report_parse_failure(&shape));
+        assert!(!crate::test_native::has_source::<serde_json::Error>(&shape));
+        assert!(!is_report_parse_failure(&CrashReportError::Timeout));
+        #[derive(Debug)]
+        struct Cycle(Arc<AtomicUsize>);
+        impl std::fmt::Display for Cycle {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("private source must never be formatted")
+            }
+        }
+        impl std::error::Error for Cycle {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Some(self)
+            }
+        }
+        let reads = Arc::new(AtomicUsize::new(0));
+        let cycle = CrashReportError::Io(std::io::Error::other(Cycle(Arc::clone(&reads))));
+        assert!(!is_report_parse_failure(&cycle));
+        assert!(reads.load(Ordering::SeqCst) > 0 && reads.load(Ordering::SeqCst) <= 32);
+    }
+
+    #[tokio::test]
+    async fn native_diagnostic_crash_flush_deadlines_keep_elapsed() {
+        for rsd in [false, true] {
+            let (mut stream, _peer) = duplex(16);
+            let duration = Duration::from_millis(5);
+            let error = if rsd {
+                flush_reports_rsd(&mut stream, duration).await
+            } else {
+                flush_reports(&mut stream, duration).await
+            }
+            .unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+            assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        }
+        if tokio::time::Instant::now()
+            .checked_add(Duration::MAX)
+            .is_none()
+        {
+            let (mut stream, _peer) = duplex(16);
+            let error = flush_reports(&mut stream, Duration::MAX).await.unwrap_err();
+            assert!(matches!(error, CrashReportError::Timeout));
+            assert!(!crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        }
+    }
+
+    #[test]
+    fn native_diagnostic_crash_parsers_keep_utf8_and_json_sources() {
+        for path in ["owned-private.ips", "owned-private.crash"] {
+            let error = parse_report_bytes(path, &[0xff]).unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            assert!(crate::test_native::has_source::<std::str::Utf8Error>(
+                &error
+            ));
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+        for data in [b"{\n{}".as_slice(), b"{}\n{".as_slice()] {
+            let error = parse_report_bytes("owned-private.ips", data).unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            assert!(crate::test_native::has_source::<serde_json::Error>(&error));
+        }
+        assert_eq!(
+            parse_report_bytes("owned.ips", b"{}\n{\"name\":\"owned\"}")
+                .unwrap()
+                .process
+                .as_deref(),
+            Some("owned")
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum NativeWatchPeer {
+        StallInitial,
+        StallPoll,
+        StallFile,
+        MalformedJson,
+    }
+
+    async fn native_watch_peer(
+        mut peer: tokio::io::DuplexStream,
+        plan: NativeWatchPeer,
+    ) -> (usize, usize) {
+        let mut directories = 0;
+        let mut opens = 0;
+        let mut sent_data = false;
+        loop {
+            let mut bytes = [0; AfcHeader::SIZE];
+            if peer.read_exact(&mut bytes).await.is_err() {
+                return (directories, opens);
+            }
+            let header = AfcHeader::ref_from_bytes(&bytes).unwrap();
+            let packet = header.packet_num.get();
+            let operation = header.operation.get();
+            let body_len = header.entire_len.get() as usize - AfcHeader::SIZE;
+            assert!(body_len <= 4096);
+            let mut body = vec![0; body_len];
+            peer.read_exact(&mut body).await.unwrap();
+            let (opcode, header_payload, payload) = match operation {
+                value if value == AfcOpcode::ReadDir as u64 => {
+                    directories += 1;
+                    if matches!(plan, NativeWatchPeer::StallInitial)
+                        || (matches!(plan, NativeWatchPeer::StallPoll) && directories == 2)
+                    {
+                        continue;
+                    }
+                    let names = if directories == 1 {
+                        Vec::new()
+                    } else {
+                        b"Owned.ips\0".to_vec()
+                    };
+                    (AfcOpcode::Data, Vec::new(), names)
+                }
+                value if value == AfcOpcode::GetFileInfo as u64 => (
+                    AfcOpcode::Data,
+                    Vec::new(),
+                    b"st_ifmt\0S_IFREG\0st_size\x0032\0".to_vec(),
+                ),
+                value if value == AfcOpcode::FileRefOpen as u64 => {
+                    opens += 1;
+                    sent_data = false;
+                    (
+                        AfcOpcode::FileRefOpenResult,
+                        1u64.to_le_bytes().to_vec(),
+                        Vec::new(),
+                    )
+                }
+                value if value == AfcOpcode::FileRefRead as u64 => {
+                    if matches!(plan, NativeWatchPeer::StallFile) {
+                        continue;
+                    }
+                    let payload = if sent_data {
+                        Vec::new()
+                    } else {
+                        sent_data = true;
+                        b"{}\n{".to_vec()
+                    };
+                    (AfcOpcode::Data, Vec::new(), payload)
+                }
+                value if value == AfcOpcode::FileRefClose as u64 => {
+                    (AfcOpcode::Status, 0u64.to_le_bytes().to_vec(), Vec::new())
+                }
+                other => panic!("unexpected owned AFC request {other}"),
+            };
+            let response = AfcHeader::new(packet, opcode, header_payload.len(), payload.len());
+            peer.write_all(response.as_bytes()).await.unwrap();
+            peer.write_all(&header_payload).await.unwrap();
+            peer.write_all(&payload).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn native_diagnostic_crash_watch_deadlines_keep_elapsed_at_all_three_stages() {
+        use tokio_stream::StreamExt;
+        for (plan, expected) in [
+            (NativeWatchPeer::StallInitial, (1, 0)),
+            (NativeWatchPeer::StallPoll, (2, 0)),
+            (NativeWatchPeer::StallFile, (3, 1)),
+        ] {
+            let (stream, peer) = duplex(4096);
+            let server = tokio::spawn(native_watch_peer(peer, plan));
+            let mut client = CrashReportClient::new(stream);
+            let options = CrashWatchOptions {
+                timeout: Some(Duration::from_millis(100)),
+                poll_interval: Duration::from_millis(1),
+                max_reports: 1,
+            };
+            let mut reports = Box::pin(client.watch_reports(Some("*.ips"), options));
+            let error = reports.next().await.unwrap().unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+            assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+            assert!(reports.next().await.is_none());
+            drop(reports);
+            drop(client);
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), server)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_diagnostic_crash_watch_parser_retry_limit_keeps_original_json() {
+        use tokio_stream::StreamExt;
+        let (stream, peer) = duplex(4096);
+        let server = tokio::spawn(native_watch_peer(peer, NativeWatchPeer::MalformedJson));
+        let mut client = CrashReportClient::new(stream);
+        let mut reports = Box::pin(client.watch_reports(
+            Some("*.ips"),
+            CrashWatchOptions {
+                timeout: Some(Duration::from_secs(2)),
+                poll_interval: Duration::from_millis(1),
+                max_reports: 1,
+            },
+        ));
+        let error = reports.next().await.unwrap().unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(crate::test_native::has_source::<serde_json::Error>(&error));
+        assert!(reports.next().await.is_none());
+        drop(reports);
+        drop(client);
+        let (_, opens) = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(opens, MAX_WATCH_PARSE_RETRIES as usize + 1);
+    }
+
     #[tokio::test]
     async fn prepare_reports_accepts_ping() {
         let (mut client, mut server) = duplex(16);
@@ -1084,7 +1425,8 @@ mod tests {
         let err = flush_reports(&mut client, Duration::from_millis(1))
             .await
             .unwrap_err();
-        assert!(matches!(err, CrashReportError::Timeout));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&err));
     }
 
     #[tokio::test]
@@ -1093,7 +1435,8 @@ mod tests {
         let err = flush_reports_rsd(&mut client, Duration::from_millis(1))
             .await
             .unwrap_err();
-        assert!(matches!(err, CrashReportError::Timeout));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&err));
     }
 
     #[tokio::test]
@@ -1101,14 +1444,16 @@ mod tests {
         let (mut client, _server) = duplex(8);
         let deadline = tokio::time::Instant::now();
         let err = flush_reports_at(&mut client, deadline).await.unwrap_err();
-        assert!(matches!(err, CrashReportError::Timeout));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&err));
 
         let (mut client, _server) = duplex(8);
         let deadline = tokio::time::Instant::now();
         let err = flush_reports_rsd_at(&mut client, deadline)
             .await
             .unwrap_err();
-        assert!(matches!(err, CrashReportError::Timeout));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&err));
     }
 
     #[test]
@@ -1188,9 +1533,58 @@ mod tests {
     }
 
     #[test]
+    fn parse_ips_with_legacy_text_body_preserves_header_and_fields() {
+        for first in ["Date/Time: 2020-01-01", "Incident Identifier: example"] {
+            let input = format!(
+                "{{\"bug_type\":\"109\"}}\n{first}\nProcess: Demo\nException Type: EXC_CRASH\n"
+            );
+            let report = parse_report_bytes("Demo.ips", input.as_bytes()).unwrap();
+            assert_eq!(report.format, "ips-legacy");
+            assert_eq!(report.process.as_deref(), Some("Demo"));
+            assert_eq!(report.exception.as_deref(), Some("EXC_CRASH"));
+            assert_eq!(report.raw["header"]["bug_type"], "109");
+            assert!(report.raw["text"].as_str().unwrap().contains(first));
+        }
+    }
+
+    #[test]
+    fn parse_low_battery_report_keeps_both_headers_and_text_identity() {
+        let text = "Incident Identifier: inner-event\nDate: 2026-01-02 03:04:05 +0000\nScreen Brightness: 0.5\n";
+        let input = format!(
+            "{{\"bug_type\":\"120\",\"os_version\":\"Example OS\",\"incident_id\":\"outer-event\",\"timestamp\":\"2026-01-02 03:04:06 +0000\"}}\n{{\"bug_type\":\"120\",\"os_version\":\"Example OS\"}}\n{text}"
+        );
+        let report = parse_report_bytes("Demo.ips", input.as_bytes()).unwrap();
+        assert_eq!(report.format, "ips-legacy");
+        assert_eq!(report.incident_id.as_deref(), Some("inner-event"));
+        assert_eq!(
+            report.timestamp.as_deref(),
+            Some("2026-01-02 03:04:05 +0000")
+        );
+        assert_eq!(report.raw["header"]["incident_id"], "outer-event");
+        assert_eq!(report.raw["inner_header"]["bug_type"], "120");
+        assert_eq!(report.raw["text"], text);
+    }
+
+    #[test]
+    fn parse_low_battery_report_rejects_unrecognized_or_damaged_segments() {
+        let outer = "{\"bug_type\":\"120\",\"os_version\":\"Example OS\"}";
+        for rest in [
+            "{\"bug_type\":\"120\"\nIncident Identifier: inner-event\n",
+            "{\"bug_type\":\"121\",\"os_version\":\"Example OS\"}\nIncident Identifier: inner-event\n",
+            "{\"bug_type\":\"120\",\"os_version\":\"Different OS\"}\nIncident Identifier: inner-event\n",
+            "{\"bug_type\":\"120\",\"os_version\":\"Example OS\"}\nnot a recognized report\n",
+            "{\"bug_type\":\"120\",\"os_version\":\"Example OS\"}\n{\"truncated\":",
+        ] {
+            let input = format!("{outer}\n{rest}");
+            assert!(parse_report_bytes("bad.ips", input.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
     fn parse_legacy_crash_rejects_invalid_utf8() {
         let err = parse_report_bytes("Demo.crash", b"Process: Demo\n\x80").unwrap_err();
-        assert!(err.to_string().contains("not UTF-8"));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        assert!(crate::test_native::has_source::<std::str::Utf8Error>(&err));
     }
 
     #[test]
@@ -1203,7 +1597,8 @@ mod tests {
     #[test]
     fn parse_ips_rejects_invalid_body_and_budget() {
         let err = parse_report_bytes("bad.ips", b"{}\nnot-json").unwrap_err();
-        assert!(err.to_string().contains("body JSON"));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        assert!(crate::test_native::has_source::<serde_json::Error>(&err));
         let oversized = vec![b'x'; MAX_CRASH_REPORT_BYTES + 1];
         let err = parse_report_bytes("bad.ips", &oversized).unwrap_err();
         assert!(err.to_string().contains("byte limit"));

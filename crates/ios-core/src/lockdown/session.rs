@@ -86,14 +86,20 @@ where
     ))
 }
 
-fn build_rustls_config(pair_record: &PairRecord) -> Result<Arc<ClientConfig>, LockdownError> {
+pub(crate) fn build_rustls_config(
+    pair_record: &PairRecord,
+) -> Result<Arc<ClientConfig>, LockdownError> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let mut cert_reader = Cursor::new(&pair_record.host_certificate);
     let cert_chain: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| {
-            LockdownError::Protocol(format!("failed to parse host certificate PEM: {e}"))
+        .map_err(|error| {
+            super::error_context::native(
+                std::io::ErrorKind::InvalidInput,
+                "parse host certificate PEM",
+                error,
+            )
         })?;
     if cert_chain.is_empty() {
         return Err(LockdownError::Protocol(
@@ -103,14 +109,26 @@ fn build_rustls_config(pair_record: &PairRecord) -> Result<Arc<ClientConfig>, Lo
 
     let mut key_reader = Cursor::new(&pair_record.host_private_key);
     let private_key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|e| LockdownError::Protocol(format!("failed to parse host private key PEM: {e}")))?
+        .map_err(|error| {
+            super::error_context::native(
+                std::io::ErrorKind::InvalidInput,
+                "parse host private key PEM",
+                error,
+            )
+        })?
         .ok_or_else(|| LockdownError::Protocol("pair record host private key is missing".into()))?;
 
     let config = ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(InsecureSkipVerify))
         .with_client_auth_cert(cert_chain, private_key)
-        .map_err(|e| LockdownError::Protocol(format!("rustls client auth config: {e}")))?;
+        .map_err(|error| {
+            super::error_context::native(
+                std::io::ErrorKind::Other,
+                "configure rustls client authentication",
+                error,
+            )
+        })?;
 
     Ok(Arc::new(config))
 }
@@ -127,14 +145,20 @@ where
     let connector = tokio_rustls::TlsConnector::from(config);
 
     // Hostname is ignored by our verifier, but rustls still requires a syntactically valid name.
-    let server_name = ServerName::try_from(server_name).map_err(|e| {
-        LockdownError::Protocol(format!("invalid rustls server name '{server_name}': {e}"))
+    let server_name = ServerName::try_from(server_name).map_err(|error| {
+        super::error_context::native(
+            std::io::ErrorKind::InvalidInput,
+            "parse rustls server name",
+            error,
+        )
     })?;
 
     connector
         .connect(server_name, stream)
         .await
-        .map_err(|e| LockdownError::Protocol(format!("TLS handshake: {e}")))
+        .map_err(|error| {
+            super::error_context::native(error.kind(), "handshake lockdown service TLS", error)
+        })
 }
 
 /// Send StartService over an established TLS session.
@@ -147,22 +171,108 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    send_lockdown(
+    start_service_with_policy(
+        reader,
         writer,
-        &StartServiceRequest {
-            label: "ios-rs",
-            request: "StartService",
-            service: service_name.to_string(),
-        },
+        service_name,
+        None,
+        super::response_error::ResponseErrorPolicy::Legacy,
     )
-    .await?;
+    .await
+}
+
+/// Start a service while retaining its device Error field as LockdownResponseError.
+/// The request, port/SSL result and native transport errors keep their behavior.
+pub async fn start_service_preserving_errors<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    service_name: &str,
+) -> Result<(u16, bool), LockdownError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    start_service_with_policy(
+        reader,
+        writer,
+        service_name,
+        None,
+        super::response_error::ResponseErrorPolicy::Preserve,
+    )
+    .await
+}
+
+/// Start a service with the pair record's escrow bag and retain device errors.
+pub(crate) async fn start_service_with_escrow_bag<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    service_name: &str,
+    escrow_bag: &[u8],
+) -> Result<(u16, bool), LockdownError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    start_service_with_policy(
+        reader,
+        writer,
+        service_name,
+        Some(escrow_bag),
+        super::response_error::ResponseErrorPolicy::Preserve,
+    )
+    .await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct StartServiceEscrowRequest<'a> {
+    label: &'static str,
+    request: &'static str,
+    service: &'a str,
+    #[serde(with = "serde_bytes")]
+    escrow_bag: &'a [u8],
+}
+
+async fn start_service_with_policy<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    service_name: &str,
+    escrow_bag: Option<&[u8]>,
+    policy: super::response_error::ResponseErrorPolicy,
+) -> Result<(u16, bool), LockdownError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    if let Some(escrow_bag) = escrow_bag {
+        send_lockdown(
+            writer,
+            &StartServiceEscrowRequest {
+                label: "ios-rs",
+                request: "StartService",
+                service: service_name,
+                escrow_bag,
+            },
+        )
+        .await?;
+    } else {
+        send_lockdown(
+            writer,
+            &StartServiceRequest {
+                label: "ios-rs",
+                request: "StartService",
+                service: service_name.to_string(),
+            },
+        )
+        .await?;
+    }
     let resp: StartServiceResponse = recv_lockdown(reader).await?;
 
     // Check if device returned an error instead of a port
     if let Some(err) = resp.error {
-        return Err(LockdownError::Protocol(format!(
-            "StartService '{service_name}' failed: {err}"
-        )));
+        return Err(policy.remote_error("StartService", err, |err| {
+            format!("StartService '{service_name}' failed: {err}")
+        }));
     }
 
     let port = resp.port.ok_or_else(|| {
@@ -172,7 +282,7 @@ where
     })?;
 
     let ssl = resp.enable_service_ssl.unwrap_or(false);
-    tracing::debug!("StartService '{service_name}': port={port} enable_ssl={ssl}");
+    tracing::debug!(service = %crate::redaction::diagnostic_id(service_name), port, enable_ssl = ssl, "StartService");
     Ok((port, ssl))
 }
 
@@ -231,10 +341,78 @@ where
 }
 
 #[cfg(test)]
+mod source_contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn dummy_pair_record(cert: &[u8], key: &[u8]) -> PairRecord {
+    #[tokio::test]
+    async fn start_service_escrow_is_explicit_and_preserves_device_errors() {
+        for escrow in [false, true] {
+            let (client, mut peer) = tokio::io::duplex(8192);
+            let peer_task = tokio::spawn(async move {
+                let request: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+                let request = request.as_dictionary().unwrap();
+                assert_eq!(
+                    request.get("Service").and_then(plist::Value::as_string),
+                    Some("com.apple.mobilebackup2")
+                );
+                if escrow {
+                    assert_eq!(
+                        request.get("EscrowBag").and_then(plist::Value::as_data),
+                        Some(b"synthetic-escrow".as_slice())
+                    );
+                } else {
+                    assert!(!request.contains_key("EscrowBag"));
+                }
+                let response = plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("Port".to_string(), plist::Value::Integer(1234u64.into())),
+                    ("EnableServiceSSL".to_string(), plist::Value::Boolean(true)),
+                ]));
+                send_lockdown(&mut peer, &response).await.unwrap();
+            });
+            let (mut reader, mut writer) = tokio::io::split(client);
+            let response = if escrow {
+                start_service_with_escrow_bag(
+                    &mut reader,
+                    &mut writer,
+                    "com.apple.mobilebackup2",
+                    b"synthetic-escrow",
+                )
+                .await
+            } else {
+                start_service(&mut reader, &mut writer, "com.apple.mobilebackup2").await
+            };
+            assert_eq!(response.unwrap(), (1234, true));
+            peer_task.await.unwrap();
+        }
+
+        let (client, mut peer) = tokio::io::duplex(8192);
+        let peer_task = tokio::spawn(async move {
+            let _: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+            let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Error".to_string(),
+                plist::Value::String("PasswordProtected".into()),
+            )]));
+            send_lockdown(&mut peer, &response).await.unwrap();
+        });
+        let (mut reader, mut writer) = tokio::io::split(client);
+        let error = start_service_with_escrow_bag(
+            &mut reader,
+            &mut writer,
+            "com.apple.mobilebackup2",
+            b"synthetic-escrow",
+        )
+        .await
+        .unwrap_err();
+        let remote = crate::lockdown::LockdownResponseError::in_error_chain(&error).unwrap();
+        assert_eq!(remote.operation(), "StartService");
+        assert_eq!(remote.code(), "PasswordProtected");
+        peer_task.await.unwrap();
+    }
+
+    pub(super) fn dummy_pair_record(cert: &[u8], key: &[u8]) -> PairRecord {
         PairRecord {
             device_certificate: b"ignored".to_vec(),
             host_certificate: cert.to_vec(),
@@ -247,7 +425,7 @@ mod tests {
     }
 
     // A self-signed RSA 2048 cert+key for testing (generated offline, no secrets)
-    const TEST_CERT_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----
+    pub(super) const TEST_CERT_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----
 MIIC/zCCAeegAwIBAgIUIcm1BZEI6nF3fXhXJuEND4sUAfcwDQYJKoZIhvcNAQEL
 BQAwDzENMAsGA1UEAwwEdGVzdDAeFw0yNjA0MzAwNDM5MzBaFw0yNzA0MzAwNDM5
 MzBaMA8xDTALBgNVBAMMBHRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
@@ -267,7 +445,7 @@ BMGvz0c6Jfe9c3vifv+9GmvYETZyPxbNxwA33vTOLKtq0Wcb8zPvOq05rgeXOoVU
 f/68
 -----END CERTIFICATE-----";
 
-    const TEST_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
+    pub(super) const TEST_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC79dsRr759iA4c
 borijwjiNsZzHQvL9J5PGJlShqIC2aL9UMKCU1EPtYTR5F4SDz6HDS3IeXPoEErn
 03hNkHopg463XbVgiFXOZwzPZbahNrKksGp+Klvc0cNbnClv/gmKro1Q9vp3IieR

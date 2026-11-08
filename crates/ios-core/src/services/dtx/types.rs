@@ -23,6 +23,8 @@ pub enum DtxPayload {
     },
     /// Response to a method invocation.
     Response(NSObject),
+    /// A peer error (wire message type 4), distinct from a normal object reply.
+    Error(NSObject),
     /// Notification event.
     Notification { name: String, object: NSObject },
     /// Raw bytes (unparsed or binary payload).

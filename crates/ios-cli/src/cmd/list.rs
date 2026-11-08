@@ -8,9 +8,9 @@ impl ListCmd {
         let devices = ios_core::list_devices().await?;
         if devices.is_empty() {
             if json {
-                println!("[]");
+                crate::output::outln!("[]");
             } else {
-                println!("No devices connected.");
+                crate::output::outln!("No devices connected.");
             }
             return Ok(());
         }
@@ -26,10 +26,10 @@ impl ListCmd {
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&list)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
         } else {
             for d in &devices {
-                println!("{:<45} {} (id={})", d.udid, d.connection_type, d.device_id);
+                crate::output::outln!("{:<45} {} (id={})", d.udid, d.connection_type, d.device_id);
             }
         }
         Ok(())

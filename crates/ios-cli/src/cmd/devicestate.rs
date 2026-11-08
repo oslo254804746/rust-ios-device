@@ -29,13 +29,13 @@ impl DeviceStateCmd {
         let (_device, stream) = super::instruments::connect_instruments(&udid).await?;
         let mut client = ios_core::instruments::DeviceStateClient::connect(stream)
             .await
-            .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+            .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
         match self.sub {
             DeviceStateSub::List { json } => {
-                let profiles = client.list().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let profiles = client.list().await.map_err(anyhow::Error::new)?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&profiles)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&profiles)?);
                 } else {
                     let mut table = Table::new();
                     table.set_header([
@@ -58,7 +58,7 @@ impl DeviceStateCmd {
                             ]);
                         }
                     }
-                    println!("{table}");
+                    crate::output::outln!("{table}");
                 }
             }
             DeviceStateSub::Enable {
@@ -68,17 +68,17 @@ impl DeviceStateCmd {
                 let enabled = client
                     .enable(&profile_type_id, &profile_id)
                     .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .map_err(anyhow::Error::new)?;
                 if !enabled {
                     anyhow::bail!(
                         "device reported failure enabling profile {profile_id} for {profile_type_id}"
                     );
                 }
-                println!("Enabled {profile_type_id}:{profile_id}");
+                crate::output::outln!("Enabled {profile_type_id}:{profile_id}");
             }
             DeviceStateSub::Disable => {
-                client.disable().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-                println!("Disabled active condition");
+                client.disable().await.map_err(anyhow::Error::new)?;
+                crate::output::outln!("Disabled active condition");
             }
         }
         Ok(())

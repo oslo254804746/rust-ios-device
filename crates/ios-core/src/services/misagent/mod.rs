@@ -3,7 +3,17 @@
 //! Service: `com.apple.misagent`
 //! Protocol: plist-framed (same 4-byte BE length prefix as lockdown).
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
+
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
+    time::Instant,
+};
 
 pub const SERVICE_NAME: &str = "com.apple.misagent";
 
@@ -23,42 +33,91 @@ pub struct Profile {
     pub raw_data: Vec<u8>,
 }
 
-/// MiSAgent client.
+/// MiSAgent client with explicit operation deadline and connection state.
 pub struct MisagentClient<S> {
-    stream: S,
+    pub(crate) stream: Option<S>,
+    usable: bool,
+    operation_timeout: Option<Duration>,
+}
+
+impl<S> MisagentClient<S> {
+    pub fn new(stream: S) -> Self {
+        Self {
+            stream: Some(stream),
+            usable: true,
+            operation_timeout: None,
+        }
+    }
+
+    pub fn is_usable(&self) -> bool {
+        self.usable && self.stream.is_some()
+    }
+
+    pub fn set_operation_timeout(&mut self, timeout: Option<Duration>) {
+        self.operation_timeout = timeout;
+    }
+
+    pub fn with_operation_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.set_operation_timeout(timeout);
+        self
+    }
+
+    fn ensure_usable(&self) -> Result<(), MisagentError> {
+        if self.is_usable() {
+            Ok(())
+        } else {
+            Err(MisagentError::Protocol(
+                "misagent connection is unusable; reconnect before another request".into(),
+            ))
+        }
+    }
+
+    fn deadline(&self) -> Result<Option<Instant>, MisagentError> {
+        self.ensure_usable()?;
+        match self.operation_timeout {
+            Some(budget) if budget.is_zero() => Err(elapsed_budget()),
+            Some(budget) => Instant::now().checked_add(budget).map(Some).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "misagent operation deadline is too large",
+                )
+                .into()
+            }),
+            None => Ok(None),
+        }
+    }
+
+    fn begin_request(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> Result<MisagentRequest<'_, S>, MisagentError> {
+        self.ensure_usable()?;
+        let stream = self.stream.take();
+        Ok(MisagentRequest {
+            client: self,
+            stream,
+            deadline,
+            progressed: false,
+            failed: false,
+        })
+    }
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
-    pub fn new(stream: S) -> Self {
-        Self { stream }
-    }
-
     /// Copy (retrieve) all installed provisioning profiles.
     pub async fn copy_all(&mut self) -> Result<Vec<Vec<u8>>, MisagentError> {
-        self.send_value(plist::Value::Dictionary(plist::Dictionary::from_iter([
-            (
-                "MessageType".to_string(),
-                plist::Value::String("CopyAll".into()),
-            ),
-            (
-                "ProfileType".to_string(),
-                plist::Value::String("Provisioning".into()),
-            ),
-        ])))
-        .await?;
-
-        let data = self.recv_raw().await?;
-        let val: plist::Value = plist::from_bytes(&data)?;
-
-        let status = val
-            .as_dictionary()
-            .and_then(|d| d.get("Status"))
-            .and_then(|v| v.as_unsigned_integer())
-            .unwrap_or(0);
-
-        if status != 0 {
-            return Err(MisagentError::Status(status));
-        }
+        let val = self
+            .execute_request(plist::Value::Dictionary(plist::Dictionary::from_iter([
+                (
+                    "MessageType".to_string(),
+                    plist::Value::String("CopyAll".into()),
+                ),
+                (
+                    "ProfileType".to_string(),
+                    plist::Value::String("Provisioning".into()),
+                ),
+            ])))
+            .await?;
 
         let profiles = val
             .as_dictionary()
@@ -85,7 +144,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
 
     /// Install a provisioning profile (raw DER/XML data).
     pub async fn install(&mut self, profile_data: &[u8]) -> Result<(), MisagentError> {
-        self.send_value(plist::Value::Dictionary(plist::Dictionary::from_iter([
+        self.execute_request(plist::Value::Dictionary(plist::Dictionary::from_iter([
             (
                 "MessageType".to_string(),
                 plist::Value::String("Install".into()),
@@ -100,22 +159,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
             ),
         ])))
         .await?;
-        let data = self.recv_raw().await?;
-        let val: plist::Value = plist::from_bytes(&data)?;
-        let status = val
-            .as_dictionary()
-            .and_then(|d| d.get("Status"))
-            .and_then(|v| v.as_unsigned_integer())
-            .unwrap_or(0);
-        if status != 0 {
-            return Err(MisagentError::Status(status));
-        }
         Ok(())
     }
 
     /// Remove a provisioning profile by UUID.
     pub async fn remove(&mut self, uuid: &str) -> Result<(), MisagentError> {
-        self.send_value(plist::Value::Dictionary(plist::Dictionary::from_iter([
+        self.execute_request(plist::Value::Dictionary(plist::Dictionary::from_iter([
             (
                 "MessageType".to_string(),
                 plist::Value::String("Remove".into()),
@@ -130,44 +179,198 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
             ),
         ])))
         .await?;
-        let data = self.recv_raw().await?;
-        let val: plist::Value = plist::from_bytes(&data)?;
-        let status = val
-            .as_dictionary()
-            .and_then(|d| d.get("Status"))
-            .and_then(|v| v.as_unsigned_integer())
-            .unwrap_or(0);
-        if status != 0 {
-            return Err(MisagentError::Status(status));
-        }
         Ok(())
     }
 
-    async fn send_value(&mut self, plist_val: plist::Value) -> Result<(), MisagentError> {
-        let mut buf = Vec::new();
-        plist::to_writer_xml(&mut buf, &plist_val)?;
-        self.stream
-            .write_all(&(buf.len() as u32).to_be_bytes())
-            .await?;
-        self.stream.write_all(&buf).await?;
-        self.stream.flush().await?;
-        Ok(())
+    async fn execute_request(
+        &mut self,
+        plist_val: plist::Value,
+    ) -> Result<plist::Value, MisagentError> {
+        let deadline = self.deadline()?;
+        check_deadline(deadline, Ok(()))?;
+        let mut request = self.begin_request(deadline)?;
+        let result = await_operation(deadline, async {
+            let mut io = request.io();
+            let mut buf = Vec::new();
+            plist::to_writer_xml(&mut buf, &plist_val)?;
+            io.write_all(&(buf.len() as u32).to_be_bytes()).await?;
+            io.write_all(&buf).await?;
+            io.flush().await?;
+
+            let mut len_buf = [0u8; 4];
+            io.read_exact(&mut len_buf).await?;
+            let len = u32::from_be_bytes(len_buf) as usize;
+            const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
+            if len > MAX_PLIST_SIZE {
+                return Err(MisagentError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("plist length {len} exceeds maximum of {MAX_PLIST_SIZE}"),
+                )));
+            }
+            let mut data = vec![0u8; len];
+            io.read_exact(&mut data).await?;
+            let val: plist::Value = plist::from_bytes(&data)?;
+            let status = val
+                .as_dictionary()
+                .and_then(|d| d.get("Status"))
+                .and_then(|v| {
+                    v.as_unsigned_integer()
+                        .or_else(|| v.as_signed_integer().map(|s| s as u32 as u64))
+                })
+                .unwrap_or(0);
+            if status != 0 {
+                return Err(MisagentError::Status(status));
+            }
+            Ok(val)
+        })
+        .await;
+        request.finish(check_deadline(deadline, result))
+    }
+}
+
+struct MisagentRequest<'a, S> {
+    client: &'a mut MisagentClient<S>,
+    stream: Option<S>,
+    deadline: Option<Instant>,
+    progressed: bool,
+    failed: bool,
+}
+
+impl<S> MisagentRequest<'_, S> {
+    fn io(&mut self) -> MisagentIo<'_, S> {
+        MisagentIo {
+            inner: self.stream.as_mut().expect("active misagent stream"),
+            deadline: self.deadline,
+            progressed: &mut self.progressed,
+            failed: &mut self.failed,
+        }
     }
 
-    async fn recv_raw(&mut self) -> Result<Vec<u8>, MisagentError> {
-        let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-        const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
-        if len > MAX_PLIST_SIZE {
-            return Err(MisagentError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("plist length {len} exceeds maximum of {MAX_PLIST_SIZE}"),
-            )));
+    fn finish<T>(mut self, result: Result<T, MisagentError>) -> Result<T, MisagentError> {
+        if !self.failed && (result.is_ok() || !self.progressed) {
+            self.client.stream = self.stream.take();
+        } else {
+            self.client.usable = false;
         }
-        let mut buf = vec![0u8; len];
-        self.stream.read_exact(&mut buf).await?;
-        Ok(buf)
+        result
+    }
+}
+
+impl<S> Drop for MisagentRequest<'_, S> {
+    fn drop(&mut self) {
+        if self.stream.is_none() {
+            return;
+        }
+        if self.progressed || self.failed {
+            self.client.usable = false;
+        } else {
+            self.client.stream = self.stream.take();
+        }
+    }
+}
+
+struct MisagentIo<'a, S> {
+    inner: &'a mut S,
+    deadline: Option<Instant>,
+    progressed: &'a mut bool,
+    failed: &'a mut bool,
+}
+
+impl<S> MisagentIo<'_, S> {
+    fn expired(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for MisagentIo<'_, S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let before = buf.filled().len();
+        let requested = buf.remaining() > 0;
+        let result = Pin::new(&mut *self.inner).poll_read(cx, buf);
+        *self.progressed |= buf.filled().len() > before;
+        *self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (requested && matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() == before);
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for MisagentIo<'_, S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_write(cx, bytes);
+        *self.progressed |= matches!(result, Poll::Ready(Ok(n)) if n > 0);
+        *self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (!bytes.is_empty() && matches!(result, Poll::Ready(Ok(0))));
+        result
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_flush(cx);
+        *self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_shutdown(cx);
+        *self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+}
+
+fn elapsed_budget() -> MisagentError {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "misagent operation budget elapsed",
+    )
+    .into()
+}
+
+fn check_deadline<T>(
+    deadline: Option<Instant>,
+    result: Result<T, MisagentError>,
+) -> Result<T, MisagentError> {
+    if result.is_ok() && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Err(elapsed_budget())
+    } else {
+        result
+    }
+}
+
+async fn await_operation<T>(
+    deadline: Option<Instant>,
+    operation: impl Future<Output = Result<T, MisagentError>>,
+) -> Result<T, MisagentError> {
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, operation)
+            .await
+            .map_err(|error| {
+                MisagentError::Io(crate::error::context::retained_io(
+                    std::io::ErrorKind::TimedOut,
+                    "misagent operation deadline",
+                    error,
+                ))
+            })?,
+        None => operation.await,
     }
 }
 
@@ -312,5 +515,94 @@ mod tests {
             dict.get("Profile").and_then(plist::Value::as_data),
             Some(&b"PROFILE-DATA"[..])
         );
+    }
+
+    #[tokio::test]
+    async fn misagent_client_zero_budget_fails_without_io_and_retains_stream() {
+        let stream = MockStream::eof();
+        let mut client = MisagentClient::new(stream);
+        client.set_operation_timeout(Some(Duration::ZERO));
+        assert!(client.is_usable());
+
+        let err = client.copy_all().await.unwrap_err();
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        assert!(client.is_usable());
+        assert!(client.stream.is_some());
+    }
+
+    #[tokio::test]
+    async fn misagent_client_progress_timeout_retires_stream_rejecting_subsequent_request() {
+        let (client_side, mut server_side) = tokio::io::duplex(1024);
+        let mut client = MisagentClient::new(client_side);
+        client.set_operation_timeout(Some(Duration::from_millis(50)));
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4];
+            let _ = server_side.read_exact(&mut buf).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let err = client.copy_all().await.unwrap_err();
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        assert!(!client.is_usable());
+        assert!(client.stream.is_none());
+
+        // Subsequent mutation is rejected immediately without reusing stale connection
+        let err2 = client.remove("ANY-UUID").await.unwrap_err();
+        assert!(matches!(err2, MisagentError::Protocol(msg) if msg.contains("unusable")));
+    }
+
+    #[tokio::test]
+    async fn misagent_client_status_error_retires_stream() {
+        let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "Status".to_string(),
+            plist::Value::Integer(0xe8008015u64.into()),
+        )]));
+        let stream = MockStream::with_response(response);
+        let mut client = MisagentClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_secs(5)));
+
+        let err = client.remove("TEST-UUID").await.unwrap_err();
+        assert!(matches!(err, MisagentError::Status(0xe8008015)));
+        // On failure, connection is invalidated
+        assert!(!client.is_usable());
+        assert!(client.stream.is_none());
+    }
+
+    #[tokio::test]
+    async fn misagent_client_successful_copy_all_keeps_stream_usable() {
+        let response = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            ("Status".to_string(), plist::Value::Integer(0.into())),
+            ("Payload".to_string(), plist::Value::Array(Vec::new())),
+        ]));
+        let stream = MockStream::with_response(response);
+        let mut client = MisagentClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_secs(5)));
+
+        let profiles = client.copy_all().await.unwrap();
+        assert!(profiles.is_empty());
+        assert!(client.is_usable());
+        assert!(client.stream.is_some());
+    }
+}
+
+#[cfg(test)]
+mod signed_status_tests {
+    use super::*;
+    use crate::test_util::MockStream;
+
+    #[tokio::test]
+    async fn misagent_client_negative_signed_status_error_retires_stream() {
+        let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "Status".to_string(),
+            plist::Value::Integer((-402_620_398i64).into()),
+        )]));
+        let stream = MockStream::with_response(response);
+        let mut client = MisagentClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_secs(5)));
+
+        let err = client.install(b"EXPIRED-PROFILE").await.unwrap_err();
+        assert!(matches!(err, MisagentError::Status(0xe8008012)));
+        assert!(!client.is_usable());
     }
 }

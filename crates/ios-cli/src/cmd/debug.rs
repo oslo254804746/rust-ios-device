@@ -1,9 +1,15 @@
-use std::path::PathBuf;
+use std::{future::Future, net::Ipv6Addr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 use ios_core::device::ConnectOptions;
 use ios_core::TunMode;
 use semver::Version;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
+
+use crate::cmd::tunnel::NativeScope;
 
 const DEBUGPROXY_SERVICE: &str = "com.apple.internal.dt.remote.debugproxy";
 
@@ -18,10 +24,28 @@ pub struct DebugCmd {
 impl DebugCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for debug"))?;
-        eprintln!("UNTESTED: LLDB workflow generation is implemented from go-ios/pymobiledevice3 references, but no debugserver-capable device is available in this workspace.");
+        let local_target = match self.local_app.as_ref() {
+            Some(path) => path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("local app path is not valid Unicode"))?
+                .to_owned(),
+            None => "/path/to/local/application.app".to_string(),
+        };
+        // Validate before any device operations and never emit multiline LLDB commands.
+        let local_arg = lldb_argument(&local_target)?;
+        let scope = NativeScope::new()?;
+        let primary = self.run_scoped(&udid, &local_arg, &scope).await;
+        let cleanup = scope.close(Duration::from_secs(10)).await;
+        crate::cmd::test_workflow::combine_results(
+            primary,
+            cleanup,
+            "debug original native cleanup failed",
+        )
+    }
 
+    async fn run_scoped(self, udid: &str, local_arg: &str, scope: &NativeScope) -> Result<()> {
         let probe = ios_core::connect(
-            &udid,
+            udid,
             ConnectOptions {
                 tun_mode: TunMode::Userspace,
                 pair_record_path: None,
@@ -30,94 +54,146 @@ impl DebugCmd {
         )
         .await
         .context("failed to probe device version for debugserver")?;
-        let product_version = probe.product_version().await?;
-        ensure_rsd_debugproxy_supported(&product_version)?;
+        ensure_rsd_debugproxy_supported(&probe.product_version().await?)?;
         drop(probe);
 
-        let opts = ConnectOptions {
-            tun_mode: TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: false,
-        };
-        let device = ios_core::connect(&udid, opts)
+        let operation = async {
+            let device = scope
+                .connect(udid, TunMode::Userspace)
+                .await
+                .context("failed to establish device tunnel for debugserver")?;
+            let rsd = match device.rsd() {
+                Some(rsd) => rsd,
+                None => {
+                    crate::output::write_error_line(format_args!("RSD directory unavailable; cannot determine whether remote debugproxy is present."))?;
+                    return Err(crate::output::precondition_decision(
+                        "debug RSD directory unavailable",
+                    ));
+                }
+            };
+            let port = match require_debugproxy_port(rsd.get_port(DEBUGPROXY_SERVICE)) {
+                Ok(port) => port,
+                Err(error) => {
+                    crate::output::write_error_line(format_args!("The device RSD directory does not expose a usable remote debugproxy. A device with this service is required."))?;
+                    return Err(error);
+                }
+            };
+            let host: Ipv6Addr = device
+                .server_address()
+                .ok_or_else(|| anyhow::anyhow!("missing userspace tunnel server address"))?
+                .parse()
+                .context("invalid userspace tunnel server address")?;
+            let proxy_port = device
+                .userspace_port()
+                .ok_or_else(|| anyhow::anyhow!("userspace tunnel proxy unavailable"))?;
+            let app = crate::cmd::runtest::lookup_installed_app(&device, &self.bundle_id).await?;
+            let remote_arg = python_string(&app.path)?;
+            // Wait for the original proxy's remote-connect acknowledgement before
+            // exposing a listener or accepting any LLDB business bytes.
+            let remote = tokio::time::timeout(
+                Duration::from_secs(30),
+                connect_proxy(proxy_port, host, port),
+            )
             .await
-            .context("failed to establish device tunnel for debugserver")?;
-
-        let app = crate::cmd::runtest::lookup_installed_app(&device, &self.bundle_id).await?;
-        let host = device
-            .server_address()
-            .ok_or_else(|| anyhow::anyhow!("missing tunnel server address"))?;
-        let port = device
-            .rsd()
-            .and_then(|rsd| rsd.get_port(DEBUGPROXY_SERVICE))
-            .ok_or_else(|| {
-                anyhow::anyhow!("service '{DEBUGPROXY_SERVICE}' not found in RSD directory")
-            })?;
-        let local_target = self
-            .local_app
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "/path/to/local/application.app".to_string());
-
-        println!("platform select remote-ios");
-        println!("target create \"{local_target}\"");
-        println!(
-            "script lldb.target.module[0].SetPlatformFileSpec(lldb.SBFileSpec(\"{}\"))",
-            app.path
-        );
-        println!("process connect connect://[{host}]:{port}");
-        println!("process launch");
-
-        Ok(())
+            .context("debugproxy connection deadline expired")??;
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+            let address = listener.local_addr()?;
+            crate::output::outln!("platform select remote-ios");
+            crate::output::outln!("target create -- {local_arg}");
+            crate::output::outln!(
+                "script lldb.target.module[0].SetPlatformFileSpec(lldb.SBFileSpec({remote_arg}, False))"
+            );
+            crate::output::outln!("process connect connect://{address}");
+            crate::output::outln!("process launch");
+            crate::output::write_error_line(format_args!("Debug proxy listening on {address}; keep this command running while using LLDB. Ctrl+C stops it."))?;
+            relay_one(listener, remote).await
+        };
+        until_cancelled(operation, tokio::signal::ctrl_c()).await
     }
+}
+
+async fn until_cancelled<F, S>(operation: F, signal: S) -> Result<()>
+where
+    F: Future<Output = Result<()>>,
+    S: Future<Output = std::io::Result<()>>,
+{
+    tokio::pin!(operation, signal);
+    tokio::select! {
+        result = operation => result,
+        signal = signal => match signal {
+            Ok(()) => Err(anyhow::Error::new(ios_core::OperationCancelled::new())),
+            Err(error) => Err(anyhow::Error::new(error).context("waiting for debug cancellation")),
+        },
+    }
+}
+
+fn require_debugproxy_port(port: Option<u16>) -> Result<u16> {
+    match port {
+        Some(port) if port != 0 => Ok(port),
+        _ => Err(crate::output::precondition_decision(
+            "debugproxy missing or invalid in RSD directory",
+        )),
+    }
+}
+
+fn lldb_argument(value: &str) -> Result<String> {
+    anyhow::ensure!(
+        !value.chars().any(char::is_control),
+        "local app path contains a control character"
+    );
+    Ok(format!(
+        "\"{}\"",
+        value.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
+}
+
+fn python_string(value: &str) -> Result<String> {
+    anyhow::ensure!(
+        !value.chars().any(|ch| ch.is_control() || ch == '\\'),
+        "device app path contains a control character or backslash"
+    );
+    // LLDB preprocesses raw `script` commands for backtick expressions even
+    // inside Python quotes. Keep backticks out of the command text entirely.
+    Ok(serde_json::to_string(value)?.replace('`', "\\u0060"))
+}
+
+async fn connect_proxy(proxy_port: u16, host: Ipv6Addr, port: u16) -> Result<TcpStream> {
+    let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, proxy_port)).await?;
+    stream.write_all(&host.octets()).await?;
+    stream
+        .write_all(&(u32::from(port) | ios_core::USERSPACE_PROXY_CONNECT_ACK).to_le_bytes())
+        .await?;
+    stream.flush().await?;
+    match stream.read_u8().await? {
+        0 => Ok(stream),
+        1 => Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "userspace debugproxy remote connection failed",
+        )
+        .into()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid userspace debugproxy acknowledgement",
+        )
+        .into()),
+    }
+}
+
+async fn relay_one(listener: TcpListener, mut remote: TcpStream) -> Result<()> {
+    let (mut local, _) = listener.accept().await?;
+    drop(listener);
+    tokio::io::copy_bidirectional(&mut local, &mut remote)
+        .await
+        .context("debugproxy transfer failed")?;
+    Ok(())
 }
 
 fn ensure_rsd_debugproxy_supported(product_version: &Version) -> Result<()> {
     if product_version.major < 17 {
         anyhow::bail!("debug currently supports only the iOS 17+ RSD/debugproxy path");
     }
-
     Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use clap::Parser;
-    use semver::Version;
-
-    use super::{ensure_rsd_debugproxy_supported, DebugCmd};
-
-    #[derive(Parser)]
-    struct TestCli {
-        #[command(flatten)]
-        command: DebugCmd,
-    }
-
-    #[test]
-    fn parses_debug_command() {
-        let cmd = TestCli::parse_from([
-            "debug",
-            "com.example.App",
-            "--local-app",
-            "C:/build/Demo.app",
-        ]);
-        assert_eq!(cmd.command.bundle_id, "com.example.App");
-        assert_eq!(
-            cmd.command.local_app,
-            Some(std::path::PathBuf::from("C:/build/Demo.app"))
-        );
-    }
-
-    #[test]
-    fn rejects_pre_ios_17_debugproxy_path() {
-        let err = ensure_rsd_debugproxy_supported(&Version::new(15, 5, 0)).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "debug currently supports only the iOS 17+ RSD/debugproxy path"
-        );
-    }
-
-    #[test]
-    fn accepts_ios_17_debugproxy_path() {
-        ensure_rsd_debugproxy_supported(&Version::new(17, 0, 0)).unwrap();
-    }
-}
+mod tests;

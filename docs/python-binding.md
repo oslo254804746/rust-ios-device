@@ -6,6 +6,12 @@ CoreDevice tunnel metadata, and a local userspace transport bridge for compatibl
 devices. It does not provide direct Python bindings for the Rust lockdown or
 individual service clients.
 
+Operation exceptions retain RuntimeError/ValueError types and report a fixed
+phase, error category and process-local correlation. They omit raw source text
+and invalid argument values. Tunnel and patch repr use an address pseudonym;
+attributes and `connect_info()` retain the actual address needed to connect.
+See the [diagnostic contract](diagnostic-contract.md).
+
 ## Build locally
 
 ```sh
@@ -15,13 +21,39 @@ uv pip install rust-ios-device-tunnel
 From a source checkout:
 
 ```sh
+# Run from the repository root; reuse .venv if it already exists.
+uv venv --python 3.12 .venv
+source .venv/bin/activate
 cd crates/ios-py
 uvx maturin develop
+python -c "import ios_rs; print(ios_rs.__file__)"
 ```
 
 `maturin` enables the package's `extension-module` feature automatically. A
 normal host-side `cargo test` intentionally leaves that feature disabled and
 links the tests to the selected Python runtime instead.
+
+With the environment activated, run the binding tests from the repository root:
+
+```sh
+PYO3_PYTHON="$VIRTUAL_ENV/bin/python" cargo test -p ios-py --no-default-features
+```
+
+On Linux, a uv-managed Python may keep `libpython` outside the dynamic linker's
+search path. The embedded test runtime may also need its standard-library prefix.
+Set both from the selected interpreter for that command:
+
+```sh
+ios_python_libdir=$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
+ios_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
+PYO3_PYTHON="$VIRTUAL_ENV/bin/python" PYTHONHOME="$ios_python_prefix" \
+  LD_LIBRARY_PATH="$ios_python_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  cargo test -p ios-py --no-default-features
+```
+
+Creating a venv does not make `cargo test --workspace --all-features` a valid
+host-test configuration: it still enables the packaging-only feature. Keep the
+Rust workspace and Python host tests separate as described in [build.md](build.md).
 
 If needed, set `PYO3_PYTHON` in the shell:
 
@@ -37,17 +69,21 @@ Do not commit machine-specific Python paths.
 import ios_rs
 
 devices = ios_rs.list_devices()
+if not devices:
+    raise SystemExit("no device found")
 print(devices)
 
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
-print(tunnel.server_address)
-print(tunnel.rsd_port)
-print(tunnel.userspace_port)
-print(tunnel.services)
-print(tunnel.service_ports)
-print(tunnel.service_features)
-print(tunnel.connect_info())
-tunnel.close()
+try:
+    print(tunnel.server_address)
+    print(tunnel.rsd_port)
+    print(tunnel.userspace_port)
+    print(tunnel.services)
+    print(tunnel.service_ports)
+    print(tunnel.service_features)
+    print(tunnel.connect_info())
+finally:
+    tunnel.close()
 ```
 
 The `services` list and both mapping attributes use stable service-name order.

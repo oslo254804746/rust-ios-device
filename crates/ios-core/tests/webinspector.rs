@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use ios_core::webinspector::cdp_browser::JsContextCdpAdapter;
 use ios_core::webinspector::{
     AutomationAvailability, AutomationSession, By, InspectorSession, WebInspectorClient,
     WebInspectorError, WebInspectorEvent, WirType,
@@ -488,6 +489,246 @@ async fn inspector_session_wraps_target_commands_and_unwraps_nested_responses() 
 
     let response = task.await.unwrap();
     assert_eq!(response["result"]["enabled"], true);
+}
+
+#[tokio::test]
+async fn browser_page_session_uses_unpaused_setup_and_explicit_teardown() {
+    let (client_stream, mut server_stream) = duplex(16 * 1024);
+    let task = tokio::spawn(async move {
+        let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST-CONNECTION");
+        let mut session = InspectorSession::with_session_id("PID:42", 1, "TEST-SESSION");
+        session
+            .attach_unpaused(&mut client, true, Duration::from_secs(1))
+            .await
+            .unwrap();
+        session
+            .send_bridge_message(&mut client, &json!({"id": 17, "method": "Runtime.enable"}))
+            .await
+            .unwrap();
+        let raw = session
+            .next_raw_message(&mut client, Duration::from_secs(1))
+            .await
+            .unwrap();
+        let reply = session.bridge_message(&raw).unwrap().unwrap();
+        client
+            .send_socket_teardown(
+                session.session_id(),
+                session.application_id(),
+                session.page_id(),
+            )
+            .await
+            .unwrap();
+        reply
+    });
+
+    let setup = read_plist_frame(&mut server_stream).await;
+    let setup = setup.as_dictionary().unwrap();
+    assert_eq!(
+        setup["__selector"].as_string(),
+        Some("_rpc_forwardSocketSetup:")
+    );
+    assert_eq!(
+        setup["__argument"].as_dictionary().unwrap()["WIRAutomaticallyPause"].as_boolean(),
+        Some(false)
+    );
+    server_stream
+        .write_all(&encode_plist(&target_created_message()))
+        .await
+        .unwrap();
+
+    let data = read_plist_frame(&mut server_stream).await;
+    let data = data.as_dictionary().unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(
+        data["__argument"].as_dictionary().unwrap()["WIRSocketDataKey"]
+            .as_data()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(wire["method"], "Target.sendMessageToTarget");
+    let nested: serde_json::Value =
+        serde_json::from_str(wire["params"]["message"].as_str().unwrap()).unwrap();
+    assert_eq!(nested["id"], 17);
+    server_stream.write_all(&encode_plist(&plist::Value::Dictionary(plist::Dictionary::from_iter([
+        ("__selector".to_string(), plist::Value::String("_rpc_applicationSentData:".into())),
+        ("__argument".to_string(), plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "WIRMessageDataKey".to_string(), plist::Value::Data(serde_json::to_vec(&json!({
+                "method": "Target.dispatchMessageFromTarget",
+                "params": {"targetId": "target-1", "message": "{\"id\":17,\"result\":{\"enabled\":true}}"}
+            })).unwrap())
+        )]))),
+    ])))).await.unwrap();
+
+    let teardown = read_plist_frame(&mut server_stream).await;
+    let teardown = teardown.as_dictionary().unwrap();
+    assert_eq!(
+        teardown["__selector"].as_string(),
+        Some("_rpc_forwardDidClose:")
+    );
+    let args = teardown["__argument"].as_dictionary().unwrap();
+    assert_eq!(args["WIRSenderKey"].as_string(), Some("TEST-SESSION"));
+    assert_eq!(args["WIRPageIdentifierKey"].as_unsigned_integer(), Some(1));
+    assert_eq!(task.await.unwrap()["result"]["enabled"], true);
+}
+
+#[tokio::test]
+async fn javascript_context_session_routes_direct_messages_without_target_event() {
+    let (client_stream, mut server_stream) = duplex(16 * 1024);
+    let task = tokio::spawn(async move {
+        let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST-CONNECTION");
+        let mut session = InspectorSession::with_session_id("PID:42", 1, "JS-SESSION");
+        session
+            .attach_unpaused(&mut client, false, Duration::from_secs(1))
+            .await
+            .unwrap();
+        session
+            .send_bridge_message(&mut client, &json!({"id": 3, "method": "Runtime.enable"}))
+            .await
+            .unwrap();
+        let raw = session
+            .next_raw_message(&mut client, Duration::from_secs(1))
+            .await
+            .unwrap();
+        session.bridge_message(&raw).unwrap().unwrap()
+    });
+    let setup = read_plist_frame(&mut server_stream).await;
+    assert_eq!(
+        setup.as_dictionary().unwrap()["__selector"].as_string(),
+        Some("_rpc_forwardSocketSetup:")
+    );
+    let data = read_plist_frame(&mut server_stream).await;
+    let data = data.as_dictionary().unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(
+        data["__argument"].as_dictionary().unwrap()["WIRSocketDataKey"]
+            .as_data()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(wire["method"], "Runtime.enable");
+    server_stream
+        .write_all(&encode_plist(&automation_command_response_message(
+            3,
+            json!({"enabled": true}),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(task.await.unwrap()["result"]["enabled"], true);
+}
+
+#[tokio::test]
+async fn javascript_context_cdp_sequence_uses_synthetic_webinspector_service() {
+    let (client_stream, mut server_stream) = duplex(16 * 1024);
+    let task = tokio::spawn(async move {
+        let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST-CONNECTION");
+        let mut session = InspectorSession::with_session_id("PID:42", 1, "JS-SESSION");
+        let mut adapter = JsContextCdpAdapter::default();
+        session
+            .attach_unpaused(&mut client, false, Duration::from_secs(1))
+            .await
+            .unwrap();
+        for message in adapter.outgoing(json!({"id": 1, "method": "Runtime.enable"})) {
+            session
+                .send_bridge_message(&mut client, &message)
+                .await
+                .unwrap();
+        }
+        let raw = session
+            .next_raw_message(&mut client, Duration::from_secs(1))
+            .await
+            .unwrap();
+        let enabled = adapter.incoming(session.bridge_message(&raw).unwrap().unwrap());
+        assert_eq!(enabled[0]["result"], json!({}));
+        assert_eq!(enabled[1]["method"], "Runtime.executionContextCreated");
+        let evaluation = json!({"id": 2, "method": "Runtime.evaluate", "params": {
+            "expression": "40+2", "contextId": 1
+        }});
+        assert!(adapter.invalid_context_response(&evaluation).is_none());
+        for message in adapter.outgoing(evaluation) {
+            session
+                .send_bridge_message(&mut client, &message)
+                .await
+                .unwrap();
+        }
+        let raw = session
+            .next_raw_message(&mut client, Duration::from_secs(1))
+            .await
+            .unwrap();
+        adapter.incoming(session.bridge_message(&raw).unwrap().unwrap())
+    });
+    let setup = read_plist_frame(&mut server_stream).await;
+    assert_eq!(
+        setup.as_dictionary().unwrap()["__selector"].as_string(),
+        Some("_rpc_forwardSocketSetup:")
+    );
+    for method in ["Runtime.enable", "Console.enable"] {
+        let data = read_plist_frame(&mut server_stream).await;
+        let argument = &data.as_dictionary().unwrap()["__argument"];
+        let wire: serde_json::Value = serde_json::from_slice(
+            argument.as_dictionary().unwrap()["WIRSocketDataKey"]
+                .as_data()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(wire["method"], method);
+    }
+    server_stream
+        .write_all(&encode_plist(&automation_command_response_message(
+            1,
+            json!({}),
+        )))
+        .await
+        .unwrap();
+    let data = read_plist_frame(&mut server_stream).await;
+    let argument = &data.as_dictionary().unwrap()["__argument"];
+    let wire: serde_json::Value = serde_json::from_slice(
+        argument.as_dictionary().unwrap()["WIRSocketDataKey"]
+            .as_data()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(wire["method"], "Runtime.evaluate");
+    assert_eq!(wire["params"], json!({"expression": "40+2"}));
+    server_stream
+        .write_all(&encode_plist(&automation_command_response_message(
+            2,
+            json!({"result": {"type": "number", "value": 42}}),
+        )))
+        .await
+        .unwrap();
+    let evaluation = task.await.unwrap();
+    assert_eq!(evaluation[0]["result"]["result"]["value"], 42);
+}
+
+#[tokio::test]
+async fn inspector_idle_timeout_does_not_consume_later_socket_data() {
+    let (client_stream, mut server_stream) = duplex(16 * 1024);
+    let task = tokio::spawn(async move {
+        let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST-CONNECTION");
+        let mut session = InspectorSession::with_session_id("PID:42", 1, "JS-SESSION");
+        let error = session
+            .next_raw_message(&mut client, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(error
+            .timeout_duration()
+            .is_some_and(|value| !value.is_zero() && value <= Duration::from_millis(20)));
+        assert_eq!(
+            ios_core::classify_error(&error),
+            ios_core::ErrorClass::Timeout
+        );
+        session
+            .next_raw_message(&mut client, Duration::from_millis(200))
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    server_stream
+        .write_all(&encode_plist(&automation_command_response_message(
+            3,
+            json!({"enabled": true}),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(task.await.unwrap()["result"]["enabled"], true);
 }
 
 #[tokio::test]

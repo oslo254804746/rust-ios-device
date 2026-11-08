@@ -6,6 +6,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -24,16 +25,78 @@ const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
 
 type EventFuture = Pin<Box<dyn Future<Output = Result<plist::Dictionary, CompanionError>> + Send>>;
 
+mod lifecycle;
+use lifecycle::CompanionOperation;
+
 service_error!(CompanionError, between {
     /// The operation did not complete before its configured deadline.
     #[error("companion operation timed out after {0:?}")]
     Timeout(Duration),
 });
 
+#[derive(thiserror::Error)]
+#[error("companion deadline elapsed after {duration:?}")]
+struct CompanionTimeout {
+    duration: Duration,
+    #[source]
+    source: tokio::time::error::Elapsed,
+}
+
+crate::redaction::error_debug!(CompanionTimeout);
+
+impl CompanionError {
+    /// The budget reported by a companion-issued deadline or the legacy
+    /// Timeout variant. Other IO TimedOut errors do not supply this value.
+    /// This does not acknowledge remote stop, cancellation or safe retry.
+    pub fn timeout_duration(&self) -> Option<Duration> {
+        if let Self::Timeout(duration) = self {
+            return Some(*duration);
+        }
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if let Some(error) = error.downcast_ref::<CompanionTimeout>() {
+                return Some(error.duration);
+            }
+            next = error.source();
+        }
+        None
+    }
+}
+
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> CompanionError {
+    CompanionError::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
+fn native_timeout(
+    duration: Duration,
+    phase: &'static str,
+    source: tokio::time::error::Elapsed,
+) -> CompanionError {
+    native_error(
+        std::io::ErrorKind::TimedOut,
+        phase,
+        CompanionTimeout { duration, source },
+    )
+}
+
 /// A client for the companion proxy plist protocol.
 pub struct CompanionProxyClient<S> {
     stream: Arc<Mutex<S>>,
+    usable: Arc<AtomicBool>,
     timeout: Duration,
+}
+
+impl<S> CompanionProxyClient<S> {
+    /// Whether tracked owners permit local reuse. This does not prove peer
+    /// liveness, remote stop completion or that a request is safe to retry.
+    pub fn is_usable(&self) -> bool {
+        lifecycle::usable(&self.usable)
+    }
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
@@ -45,10 +108,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
     /// Construct a client with an explicit timeout for request/response
     /// operations.  Device-listening reads are idle by design; use
     /// [`CompanionDeviceStream::next_event_with_timeout`] when an idle limit
-    /// is required for a listener.
+    /// is required for a listener. Zero rejects before I/O; an unrepresentable
+    /// deadline returns InvalidInput. Timer expiry retains the native cause.
     pub fn with_timeout(stream: S, timeout: Duration) -> Self {
         Self {
             stream: Arc::new(Mutex::new(stream)),
+            usable: Arc::new(AtomicBool::new(true)),
             timeout,
         }
     }
@@ -62,6 +127,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
     pub async fn list(&mut self) -> Result<Vec<plist::Value>, CompanionError> {
         let request = command("GetDeviceRegistry");
         let response = self.round_trip(request).await?;
+        // Both lockdown and the RSD shim use this response when there is no
+        // paired watch. Other device errors still represent failed queries.
+        if response.get("Error").and_then(plist::Value::as_string) == Some("NoPairedWatches") {
+            return Ok(Vec::new());
+        }
         if let Some(error) = device_error(&response, "GetDeviceRegistry") {
             return Err(error);
         }
@@ -117,6 +187,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
         self.send_only(command("StartListeningForDevices")).await?;
         Ok(CompanionDeviceStream {
             stream: self.stream,
+            usable: self.usable,
             timeout: self.timeout,
             pending: None,
             finished: false,
@@ -160,34 +231,40 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
             .await?;
         Ok(ForwardingHandle {
             stream: Arc::clone(&self.stream),
+            usable: Arc::clone(&self.usable),
             timeout: self.timeout,
             remote_port: effective_remote_port,
             service_port,
             response,
             stop_response: None,
             stopped: false,
+            drop_cleanup: true,
         })
     }
 
     /// Stop forwarding the given companion-device port and return the raw
     /// response dictionary.  The protocol identifies a forwarding by its
     /// remote port; it does not define a reusable host-side connection ID.
+    /// Cleanup is capped at five seconds or a shorter configured timeout.
     pub async fn stop_forwarding_service_port(
         &mut self,
         remote_port: u16,
     ) -> Result<plist::Dictionary, CompanionError> {
         validate_port(remote_port, "GizmoRemotePortNumber")?;
         let response = self
-            .round_trip(plist::Dictionary::from_iter([
-                (
-                    "Command".to_string(),
-                    plist::Value::String("StopForwardingServicePort".into()),
-                ),
-                (
-                    "GizmoRemotePortNumber".to_string(),
-                    plist::Value::Integer(remote_port.into()),
-                ),
-            ]))
+            .round_trip_with_timeout(
+                plist::Dictionary::from_iter([
+                    (
+                        "Command".to_string(),
+                        plist::Value::String("StopForwardingServicePort".into()),
+                    ),
+                    (
+                        "GizmoRemotePortNumber".to_string(),
+                        plist::Value::Integer(remote_port.into()),
+                    ),
+                ]),
+                self.timeout.min(lifecycle::CLEANUP_TIMEOUT),
+            )
             .await?;
         if let Some(error) = device_error(&response, "StopForwardingServicePort") {
             return Err(error);
@@ -267,43 +344,58 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
     }
 
     async fn send_only(&self, request: plist::Dictionary) -> Result<(), CompanionError> {
+        lifecycle::ensure_usable(&self.usable)?;
         let stream = Arc::clone(&self.stream);
+        let usable = Arc::clone(&self.usable);
         let operation = async move {
             let mut stream = stream.lock().await;
-            super::plist_frame::write_xml_plist_frame(
-                &mut *stream,
+            let mut guard = CompanionOperation::new(&mut *stream, &usable)?;
+            let result = super::plist_frame::write_xml_plist_frame(
+                &mut guard,
                 &plist::Value::Dictionary(request),
                 MAX_PLIST_SIZE,
             )
             .await
-            .map_err(map_frame_error)
+            .map_err(map_frame_error);
+            guard.finish(result)
         };
-        tokio::time::timeout(self.timeout, operation)
-            .await
-            .map_err(|_| CompanionError::Timeout(self.timeout))?
+        lifecycle::await_operation(self.timeout, "send companion request", operation).await
     }
 
     async fn round_trip(
         &self,
         request: plist::Dictionary,
     ) -> Result<plist::Dictionary, CompanionError> {
+        self.round_trip_with_timeout(request, self.timeout).await
+    }
+
+    async fn round_trip_with_timeout(
+        &self,
+        request: plist::Dictionary,
+        timeout: Duration,
+    ) -> Result<plist::Dictionary, CompanionError> {
+        lifecycle::ensure_usable(&self.usable)?;
         let stream = Arc::clone(&self.stream);
+        let usable = Arc::clone(&self.usable);
         let operation = async move {
             let mut stream = stream.lock().await;
-            super::plist_frame::write_xml_plist_frame(
-                &mut *stream,
-                &plist::Value::Dictionary(request),
-                MAX_PLIST_SIZE,
-            )
-            .await
-            .map_err(map_frame_error)?;
-            super::plist_frame::read_plist_frame(&mut *stream, MAX_PLIST_SIZE)
+            let mut guard = CompanionOperation::new(&mut *stream, &usable)?;
+            let result = async {
+                super::plist_frame::write_xml_plist_frame(
+                    &mut guard,
+                    &plist::Value::Dictionary(request),
+                    MAX_PLIST_SIZE,
+                )
                 .await
-                .map_err(map_frame_error)
+                .map_err(map_frame_error)?;
+                super::plist_frame::read_plist_frame(&mut guard, MAX_PLIST_SIZE)
+                    .await
+                    .map_err(map_frame_error)
+            }
+            .await;
+            guard.finish(result)
         };
-        tokio::time::timeout(self.timeout, operation)
-            .await
-            .map_err(|_| CompanionError::Timeout(self.timeout))?
+        lifecycle::await_operation(timeout, "exchange companion request", operation).await
     }
 }
 
@@ -313,6 +405,7 @@ where
     S: AsyncRead + Unpin + Send + 'static,
 {
     stream: Arc<Mutex<S>>,
+    usable: Arc<AtomicBool>,
     timeout: Duration,
     pending: Option<EventFuture>,
     finished: bool,
@@ -331,13 +424,21 @@ where
         if this.finished {
             return Poll::Ready(None);
         }
+        if let Err(error) = lifecycle::ensure_usable(&this.usable) {
+            this.pending = None;
+            this.finished = true;
+            return Poll::Ready(Some(Err(error)));
+        }
         if this.pending.is_none() {
             let stream = Arc::clone(&this.stream);
+            let usable = Arc::clone(&this.usable);
             this.pending = Some(Box::pin(async move {
                 let mut stream = stream.lock().await;
-                super::plist_frame::read_plist_frame(&mut *stream, MAX_PLIST_SIZE)
+                let mut guard = CompanionOperation::new(&mut *stream, &usable)?;
+                let result = super::plist_frame::read_plist_frame(&mut guard, MAX_PLIST_SIZE)
                     .await
-                    .map_err(map_frame_error)
+                    .map_err(map_frame_error);
+                guard.finish(result)
             }));
         }
 
@@ -370,19 +471,29 @@ where
     }
 
     /// Await one event with an idle timeout.  EOF is returned as `Ok(None)`;
-    /// malformed frames and transport errors are returned as `Err`.
+    /// malformed frames and transport errors are returned as `Err`. Actual
+    /// idle expiry terminates the stream and shared connection; a cancelled
+    /// next-event poll retains its owned read until completion or stream Drop.
     pub async fn next_event_with_timeout(
         &mut self,
         timeout: Duration,
     ) -> Result<Option<plist::Dictionary>, CompanionError> {
-        match tokio::time::timeout(timeout, self.next_event()).await {
+        if self.finished {
+            return Ok(None);
+        }
+        let deadline = lifecycle::deadline(timeout)?;
+        match tokio::time::timeout_at(deadline, self.next_event()).await {
             Ok(item) => item.transpose(),
-            Err(_) => {
+            Err(error) => {
                 // A cancelled read_exact may already have consumed part of a
                 // frame. Do not let callers resume on a desynchronized
                 // plist stream after an idle timeout.
                 self.finished = true;
-                Err(CompanionError::Timeout(timeout))
+                // Preserve the existing terminal idle policy. Release the
+                // owned read/mutex now and reject other shared owners, too.
+                lifecycle::invalidate(&self.usable);
+                self.pending = None;
+                Err(native_timeout(timeout, "receive companion event", error))
             }
         }
     }
@@ -394,18 +505,31 @@ where
     }
 }
 
+impl<S> Drop for CompanionDeviceStream<S>
+where
+    S: AsyncRead + Unpin + Send + 'static,
+{
+    fn drop(&mut self) {
+        // The listener already sent StartListeningForDevices. Another shared
+        // owner must not consume an event as a reply after this owner leaves.
+        lifecycle::invalidate(&self.usable);
+    }
+}
+
 /// RAII owner for one active companion-proxy forwarding request.
 pub struct ForwardingHandle<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     stream: Arc<Mutex<S>>,
+    usable: Arc<AtomicBool>,
     timeout: Duration,
     remote_port: u16,
     service_port: u16,
     response: plist::Dictionary,
     stop_response: Option<plist::Dictionary>,
     stopped: bool,
+    drop_cleanup: bool,
 }
 
 impl<S> ForwardingHandle<S>
@@ -446,16 +570,40 @@ where
     }
 
     /// Stop this forwarding.  Repeated calls after success are no-ops and
-    /// return the original stop response; a failed stop remains retryable.
+    /// return the original stop response. Complete business failure can retain
+    /// local reuse; an abandoned request requires a fresh connection.
     pub async fn stop(&mut self) -> Result<plist::Dictionary, CompanionError> {
         self.stop_with_timeout(self.timeout).await
+    }
+
+    /// Consume this handle and await one bounded stop, without a later Drop
+    /// fallback. The configured timeout is clamped by the cleanup cap.
+    ///
+    /// Creating this future disarms best-effort Drop immediately, including
+    /// when the future is never polled. Cancellation drops owned local state;
+    /// it does not guarantee remote stop, rollback or safe retry.
+    pub fn close(self) -> impl Future<Output = Result<plist::Dictionary, CompanionError>> + Send {
+        let timeout = self.timeout;
+        self.close_with_timeout(timeout)
+    }
+
+    /// Consume this handle with a caller-owned cleanup budget, clamped to five
+    /// seconds. No detached fallback is scheduled after success, failure or
+    /// caller cancellation. Other shared owners retain the underlying stream.
+    pub fn close_with_timeout(
+        mut self,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<plist::Dictionary, CompanionError>> + Send {
+        self.drop_cleanup = false;
+        async move { self.stop_with_timeout(timeout).await }
     }
 
     /// Stop this forwarding with a caller-provided remaining deadline.
     ///
     /// This is useful to callers that share one absolute deadline across
     /// connection, start, wait, and cleanup. Repeated calls after success
-    /// remain no-ops regardless of the supplied timeout.
+    /// remain no-ops regardless of the supplied timeout. Cleanup has an
+    /// independent five-second cap, shortened by the supplied budget.
     pub async fn stop_with_timeout(
         &mut self,
         timeout: Duration,
@@ -463,40 +611,60 @@ where
         if self.stopped {
             return Ok(self.stop_response.clone().unwrap_or_default());
         }
-        let response = tokio::time::timeout(
+        lifecycle::ensure_usable(&self.usable)?;
+        let timeout = timeout.min(lifecycle::CLEANUP_TIMEOUT);
+        let response = lifecycle::await_operation(
             timeout,
-            stop_shared(Arc::clone(&self.stream), self.remote_port),
+            "stop companion forwarding",
+            stop_shared(
+                Arc::clone(&self.stream),
+                Arc::clone(&self.usable),
+                self.remote_port,
+            ),
         )
-        .await
-        .map_err(|_| CompanionError::Timeout(timeout))??;
+        .await?;
         self.stopped = true;
         self.stop_response = Some(response.clone());
         Ok(response)
     }
 }
 
+#[cfg(test)]
+mod lifecycle_tests;
+
 impl<S> Drop for ForwardingHandle<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     fn drop(&mut self) {
-        if self.stopped {
+        if !self.drop_cleanup
+            || self.stopped
+            || !lifecycle::usable(&self.usable)
+            || self.timeout.is_zero()
+        {
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
         let stream = Arc::clone(&self.stream);
-        let timeout = self.timeout;
+        let usable = Arc::clone(&self.usable);
+        let timeout = self.timeout.min(lifecycle::CLEANUP_TIMEOUT);
         let remote_port = self.remote_port;
         runtime.spawn(async move {
-            let _ = tokio::time::timeout(timeout, stop_shared(stream, remote_port)).await;
+            let _ = lifecycle::await_operation(
+                timeout,
+                "stop companion forwarding",
+                stop_shared(stream, usable, remote_port),
+            )
+            .await;
         });
     }
 }
 
 async fn stop_shared<S>(
     stream: Arc<Mutex<S>>,
+    usable: Arc<AtomicBool>,
     remote_port: u16,
 ) -> Result<plist::Dictionary, CompanionError>
 where
@@ -504,26 +672,32 @@ where
 {
     validate_port(remote_port, "GizmoRemotePortNumber")?;
     let mut stream = stream.lock().await;
-    super::plist_frame::write_xml_plist_frame(
-        &mut *stream,
-        &plist::Value::Dictionary(plist::Dictionary::from_iter([
-            (
-                "Command".to_string(),
-                plist::Value::String("StopForwardingServicePort".into()),
-            ),
-            (
-                "GizmoRemotePortNumber".to_string(),
-                plist::Value::Integer(remote_port.into()),
-            ),
-        ])),
-        MAX_PLIST_SIZE,
-    )
-    .await
-    .map_err(map_frame_error)?;
-    let response: plist::Dictionary =
-        super::plist_frame::read_plist_frame(&mut *stream, MAX_PLIST_SIZE)
-            .await
-            .map_err(map_frame_error)?;
+    let mut guard = CompanionOperation::new(&mut *stream, &usable)?;
+    let result = async {
+        super::plist_frame::write_xml_plist_frame(
+            &mut guard,
+            &plist::Value::Dictionary(plist::Dictionary::from_iter([
+                (
+                    "Command".to_string(),
+                    plist::Value::String("StopForwardingServicePort".into()),
+                ),
+                (
+                    "GizmoRemotePortNumber".to_string(),
+                    plist::Value::Integer(remote_port.into()),
+                ),
+            ])),
+            MAX_PLIST_SIZE,
+        )
+        .await
+        .map_err(map_frame_error)?;
+        let response: plist::Dictionary =
+            super::plist_frame::read_plist_frame(&mut guard, MAX_PLIST_SIZE)
+                .await
+                .map_err(map_frame_error)?;
+        Ok(response)
+    }
+    .await;
+    let response = guard.finish(result)?;
     if let Some(error) = device_error(&response, "StopForwardingServicePort") {
         return Err(error);
     }
@@ -548,18 +722,27 @@ fn validate_port(port: u16, field: &str) -> Result<(), CompanionError> {
 }
 
 fn parse_port(value: &plist::Value, field: &str) -> Result<u16, CompanionError> {
-    let number = value
-        .as_unsigned_integer()
-        .or_else(|| {
-            value
-                .as_signed_integer()
-                .and_then(|number| number.try_into().ok())
-        })
-        .ok_or_else(|| {
-            CompanionError::Protocol(format!("{field} must be a non-negative integer"))
-        })?;
-    let port = u16::try_from(number).map_err(|_| {
-        CompanionError::Protocol(format!("{field} {number} exceeds the u16 port range"))
+    let number = match value.as_unsigned_integer() {
+        Some(number) => number,
+        None => {
+            let signed = value.as_signed_integer().ok_or_else(|| {
+                CompanionError::Protocol(format!("{field} must be a non-negative integer"))
+            })?;
+            u64::try_from(signed).map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::InvalidData,
+                    "decode companion non-negative port",
+                    error,
+                )
+            })?
+        }
+    };
+    let port = u16::try_from(number).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode companion port range",
+            error,
+        )
     })?;
     validate_port(port, field)?;
     Ok(port)
@@ -612,6 +795,91 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn native_discovery_companion_send_request_and_stop_deadlines_keep_elapsed() {
+        let duration = Duration::from_millis(5);
+        let client = CompanionProxyClient::with_timeout(PendingStream, duration);
+        let error = client
+            .send_only(command("StartListeningForDevices"))
+            .await
+            .unwrap_err();
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(error.timeout_duration(), Some(duration));
+        let error = client
+            .round_trip(command("GetDeviceRegistry"))
+            .await
+            .unwrap_err();
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(error.timeout_duration(), Some(duration));
+        let mut handle = ForwardingHandle {
+            stream: Arc::clone(&client.stream),
+            usable: Arc::clone(&client.usable),
+            timeout: duration,
+            remote_port: 42,
+            service_port: 43,
+            response: plist::Dictionary::new(),
+            stop_response: None,
+            stopped: false,
+            drop_cleanup: true,
+        };
+        let error = handle.stop_with_timeout(duration).await.unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(!handle.is_stopped() && handle.stop_response.is_none());
+        assert_eq!(error.timeout_duration(), Some(duration));
+        assert_eq!(
+            CompanionError::Timeout(duration).timeout_duration(),
+            Some(duration)
+        );
+        assert_eq!(
+            CompanionError::Io(io::Error::new(io::ErrorKind::TimedOut, "owned-private"))
+                .timeout_duration(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn native_discovery_companion_partial_listener_expiry_keeps_elapsed_and_terminal_state() {
+        use tokio::io::AsyncWriteExt;
+        let (stream, mut peer) = tokio::io::duplex(64);
+        peer.write_all(&[0, 0]).await.unwrap();
+        let mut listener = CompanionDeviceStream {
+            stream: Arc::new(Mutex::new(stream)),
+            usable: Arc::new(AtomicBool::new(true)),
+            timeout: Duration::from_millis(5),
+            pending: None,
+            finished: false,
+        };
+        let error = listener
+            .next_event_with_timeout(Duration::from_millis(5))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(listener.finished);
+        assert!(listener.next_event().await.is_none());
+    }
+
+    #[test]
+    fn native_discovery_companion_port_conversions_keep_received_sources() {
+        for value in [
+            plist::Value::Integer((-1i64).into()),
+            plist::Value::Integer(u64::MAX.into()),
+        ] {
+            let error = parse_port(&value, "owned-private").unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+                &error
+            ));
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+        assert!(parse_port(&plist::Value::Integer(0.into()), "port").is_err());
+        assert_eq!(
+            parse_port(&plist::Value::Integer(u16::MAX.into()), "port").unwrap(),
+            u16::MAX
+        );
+    }
+
     fn dict_frame(value: plist::Value) -> Vec<u8> {
         MockStream::plist_frame(value)
     }
@@ -650,6 +918,26 @@ mod tests {
 
         let dict = request_dict(&stream.written);
         assert_eq!(dict["Command"].as_string(), Some("GetDeviceRegistry"));
+    }
+
+    #[tokio::test]
+    async fn list_returns_empty_for_no_paired_watches_but_preserves_other_errors() {
+        for (device_error, empty) in [("NoPairedWatches", true), ("DeviceLocked", false)] {
+            let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Error".to_string(),
+                plist::Value::String(device_error.into()),
+            )]));
+            let stream = MockStream::with_response(response);
+            let mut client = CompanionProxyClient::new(stream);
+            let result = client.list().await;
+            if empty {
+                assert!(result.unwrap().is_empty());
+            } else {
+                assert!(
+                    matches!(result, Err(CompanionError::Protocol(message)) if message.contains(device_error))
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -842,7 +1130,10 @@ mod tests {
             .start_forwarding_service_port(1, None, Some(options))
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("u16 port range"));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+            &error
+        ));
         assert!(stream.written.is_empty());
     }
 
@@ -947,7 +1238,8 @@ mod tests {
         let mut client =
             CompanionProxyClient::with_timeout(PendingStream, Duration::from_millis(5));
         let error = client.list().await.unwrap_err();
-        assert!(matches!(error, CompanionError::Timeout(_)));
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(5)));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
     }
 
     #[tokio::test]
@@ -1059,16 +1351,17 @@ mod tests {
 
         let mut pending = CompanionDeviceStream {
             stream: Arc::new(Mutex::new(PendingStream)),
+            usable: Arc::new(AtomicBool::new(true)),
             timeout: Duration::from_millis(5),
             pending: None,
             finished: false,
         };
-        assert!(matches!(
-            pending
-                .next_event_with_timeout(Duration::from_millis(5))
-                .await,
-            Err(CompanionError::Timeout(_))
-        ));
+        let error = pending
+            .next_event_with_timeout(Duration::from_millis(5))
+            .await
+            .unwrap_err();
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(5)));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
         assert!(pending.next_event().await.is_none());
     }
 }

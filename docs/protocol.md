@@ -45,3 +45,22 @@ entry budget. MobileBackup2 uses bounded file-transfer buffers and reports
 available-space context for insufficient-space failures. These limits are
 implementation safeguards; callers should surface the resulting protocol
 errors and retry only after checking device/service state.
+
+The additive checked Browse also budgets cumulative framed replies under one
+total, rejects malformed CurrentList/Status shapes and invalidates interrupted
+committed clients. Caller-bounded AFC reads request only the remaining allowance
+plus one detection byte (at most 64 KiB), and check reply lengths before body
+allocation; oversize results are errors rather than truncated successes. See
+host protocol evidence.
+
+## Checked observation of an existing RSD endpoint
+
+The additive `observe_existing_rsd` path retains the legacy four compatibility
+handshake modes, each with a fresh owned stream. Optional proxy routing writes
+exactly 16 IPv6 bytes plus a little-endian u32 RSD port to an existing IPv4 loopback
+proxy; scope/flow are rejected. The direct endpoint preserves them. Checked parsing
+admits the entire borrowed directory before retained clones, preserves omissions
+and explicit empty Features, and prefers canonical entries even if incomplete.
+Malformed matching Handshake metadata is terminal rather than another bootstrap.
+This is directory advertisement evidence, without service execution, tunnel
+activation or raw XPC allocation/CPU bounds. Wire fixtures and scope.

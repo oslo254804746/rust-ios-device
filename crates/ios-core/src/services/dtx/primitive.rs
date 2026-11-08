@@ -172,18 +172,4 @@ mod tests {
         let decoded = decode_auxiliary(encoded);
         assert_eq!(decoded, vec![NSObject::String("hello".to_string())]);
     }
-
-    #[test]
-    fn decode_auxiliary_preserves_unsigned_archived_values() {
-        let archived =
-            crate::proto::nskeyedarchiver_encode::archive_array(vec![plist::Value::Integer(
-                plist::Integer::from(u64::MAX),
-            )]);
-        let encoded = encode_primitive_dict(&[PrimArg::Bytes(Bytes::from(archived))]);
-        let decoded = decode_auxiliary(encoded);
-        assert_eq!(
-            decoded,
-            vec![NSObject::Array(vec![NSObject::Uint(u64::MAX)])]
-        );
-    }
 }

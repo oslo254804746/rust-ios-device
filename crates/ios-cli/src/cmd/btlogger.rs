@@ -123,15 +123,16 @@ async fn run_capture(
                     }
                 }
                 Err(err) => {
-                    tracing::debug!("skipping malformed BTPacketLogger record: {err}");
+                    tracing::debug!(error = %ios_core::redaction::diagnostic_error(&err), "skipping malformed BTPacketLogger record");
                     skipped += 1;
                 }
             },
         }
     }
 
+    writer.flush()?;
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "output": output.display().to_string(),
@@ -142,12 +143,12 @@ async fn run_capture(
             }))?
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Saved {written} Bluetooth record(s) to {}",
             output.display()
         );
         if skipped > 0 {
-            println!("SkippedRecords: {skipped}");
+            crate::output::outln!("SkippedRecords: {skipped}");
         }
     }
 

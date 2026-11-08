@@ -3,8 +3,8 @@ use ios_core::debugserver::{select_service_name, GdbRemoteClient};
 use ios_core::MuxClient;
 use ios_core::TunMode;
 use ios_core::{
-    connect, handshake_only_service_tls, start_lockdown_session, start_service, ConnectOptions,
-    LockdownError, PairRecord, LOCKDOWN_PORT,
+    connect, handshake_only_service_tls, start_lockdown_session, start_service_preserving_errors,
+    wrap_service_tls_with_server_name, ConnectOptions, LockdownError, PairRecord, LOCKDOWN_PORT,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -32,7 +32,7 @@ impl DebugserverCmd {
                 let stream = connect_debugserver(&udid).await?;
                 let mut client = GdbRemoteClient::new(stream);
                 let reply = client.request(&packet).await?;
-                println!("{reply}");
+                crate::output::outln!("{reply}");
             }
         }
 
@@ -42,6 +42,110 @@ impl DebugserverCmd {
 
 trait DebugStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> DebugStream for T {}
+
+const RSD_DEBUGPROXY_SERVICE: &str = "com.apple.internal.dt.remote.debugproxy";
+
+struct TunnelDebugStream {
+    stream: tokio::net::TcpStream,
+    _device: ios_core::ConnectedDevice,
+}
+
+impl AsyncRead for TunnelDebugStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for TunnelDebugStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
+async fn connect_rsd_debugproxy(udid: &str) -> Result<Box<dyn DebugStream>> {
+    use tokio::io::AsyncWriteExt;
+    let device = connect(
+        udid,
+        ConnectOptions {
+            tun_mode: TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: false,
+        },
+    )
+    .await?;
+    let rsd = device
+        .rsd()
+        .ok_or_else(|| anyhow::anyhow!("RSD directory unavailable for debugproxy"))?;
+    let port = rsd
+        .get_port(RSD_DEBUGPROXY_SERVICE)
+        .filter(|&p| p != 0)
+        .ok_or_else(|| anyhow::anyhow!("{} missing in RSD directory", RSD_DEBUGPROXY_SERVICE))?;
+    let host: std::net::Ipv6Addr = device
+        .server_address()
+        .ok_or_else(|| anyhow::anyhow!("missing userspace tunnel server address"))?
+        .parse()?;
+    let proxy_port = device
+        .userspace_port()
+        .ok_or_else(|| anyhow::anyhow!("userspace tunnel proxy unavailable"))?;
+    let mut stream =
+        tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, proxy_port)).await?;
+    stream.write_all(&host.octets()).await?;
+    stream.write_all(&u32::from(port).to_le_bytes()).await?;
+    stream.flush().await?;
+    tracing::info!(
+        "debugserver connected via RSD service={} port={}",
+        RSD_DEBUGPROXY_SERVICE,
+        port
+    );
+    Ok(Box::new(TunnelDebugStream {
+        stream,
+        _device: device,
+    }))
+}
+
+async fn wrap_debugserver_stream<S>(
+    stream: S,
+    pair_record: &PairRecord,
+    service_name: &str,
+    enable_ssl: bool,
+) -> Result<Box<dyn DebugStream>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    if !enable_ssl {
+        return Ok(Box::new(stream));
+    }
+    if service_name == ios_core::debugserver::LEGACY_SERVICE_NAME {
+        return Ok(Box::new(
+            handshake_only_service_tls(stream, pair_record, "debugserver").await?,
+        ));
+    }
+    Ok(Box::new(
+        wrap_service_tls_with_server_name(stream, pair_record, "debugserver").await?,
+    ))
+}
 
 async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
     let opts = ConnectOptions {
@@ -62,7 +166,18 @@ async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
     let (_session_id, mut tls_reader, mut tls_writer) =
         start_lockdown_session(lockdown_stream, &pair_record).await?;
     let (resolved_service_name, port, enable_ssl) =
-        start_debugserver_service(&mut tls_reader, &mut tls_writer, service_name).await?;
+        match start_debugserver_service(&mut tls_reader, &mut tls_writer, service_name).await {
+            Ok(resolved) => resolved,
+            Err(err)
+                if version.major >= 17
+                    && ios_core::classify_error(err.as_ref())
+                        == ios_core::ErrorClass::ServiceMissing =>
+            {
+                drop((tls_reader, tls_writer, device));
+                return connect_rsd_debugproxy(udid).await;
+            }
+            Err(err) => return Err(err),
+        };
 
     tracing::info!(
         "debugserver start_service service={} port={} enable_ssl={}",
@@ -76,12 +191,7 @@ async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
         .connect_to_port(device.info.device_id, port)
         .await?;
 
-    if enable_ssl {
-        let stream = handshake_only_service_tls(svc_stream, &pair_record, "debugserver").await?;
-        return Ok(Box::new(stream));
-    }
-
-    Ok(Box::new(svc_stream))
+    wrap_debugserver_stream(svc_stream, &pair_record, resolved_service_name, enable_ssl).await
 }
 
 async fn start_debugserver_service<R, W>(
@@ -93,24 +203,30 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    let mut last_missing = None;
     for service_name in candidate_service_names(preferred_service) {
-        match start_service(reader, writer, service_name).await {
+        match start_service_preserving_errors(reader, writer, service_name).await {
             Ok((port, enable_ssl)) => return Ok((service_name, port, enable_ssl)),
             Err(err) if is_invalid_service(&err) => {
                 tracing::debug!(
                     "debugserver service {} unavailable, trying fallback",
                     service_name
                 );
+                last_missing = Some(err);
             }
             Err(err) => return Err(err.into()),
         }
     }
 
-    Err(anyhow::anyhow!(
+    let context = format!(
         "debugserver is not exposed on this device via lockdown (tried {}, {})",
         ios_core::debugserver::LEGACY_SERVICE_NAME,
         ios_core::debugserver::SECURE_SERVICE_NAME
-    ))
+    );
+    Err(match last_missing {
+        Some(error) => anyhow::Error::new(error).context(context),
+        None => anyhow::anyhow!(context),
+    })
 }
 
 fn candidate_service_names(preferred_service: &str) -> [&'static str; 2] {
@@ -128,14 +244,192 @@ fn candidate_service_names(preferred_service: &str) -> [&'static str; 2] {
 }
 
 fn is_invalid_service(err: &LockdownError) -> bool {
-    matches!(err, LockdownError::Protocol(message) if message.contains("InvalidService"))
+    ios_core::LockdownResponseError::in_error_chain(err).is_some_and(|response| {
+        response.operation() == "StartService" && response.code() == "InvalidService"
+    })
 }
 
 #[cfg(test)]
+#[path = "doctor/device/test_assets.rs"]
+mod test_assets;
+
+#[cfg(test)]
 mod tests {
+    use std::{io, sync::Arc, time::Duration};
+
     use clap::Parser;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::DebugserverSub;
+
+    #[tokio::test]
+    async fn debugserver_uses_the_selected_services_transport_for_rsp() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cert = super::test_assets::TEST_CERT_PEM;
+        let key = super::test_assets::TEST_KEY_PEM;
+        let record = ios_core::PairRecord {
+            device_certificate: vec![],
+            host_certificate: cert.to_vec(),
+            host_private_key: key.to_vec().into(),
+            root_certificate: vec![],
+            host_id: "synthetic-host".into(),
+            system_buid: "synthetic-system".into(),
+            wifi_mac_address: None,
+        };
+        let chain = rustls_pemfile::certs(&mut io::Cursor::new(cert))
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap();
+        let key = rustls_pemfile::private_key(&mut io::Cursor::new(key))
+            .unwrap()
+            .unwrap();
+        // The legacy fixture switches to plaintext immediately after TLS 1.2.
+        // With TLS 1.3 the client can write raw RSP before the server's accept
+        // has consumed its Finished, so this duplex fixture could feed those
+        // raw bytes back into rustls as if they were another TLS record.
+        let legacy_config =
+            rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+                .with_no_client_auth()
+                .with_single_cert(chain.clone(), key.clone_key())
+                .unwrap();
+        let legacy_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(legacy_config));
+        // Keep the secure-service case on the default TLS versions and carry
+        // the entire request and response through the resulting TLS stream.
+        let mut config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        config.send_tls13_tickets = 0;
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+
+        for (name, ssl) in [
+            (ios_core::debugserver::LEGACY_SERVICE_NAME, true),
+            (ios_core::debugserver::SECURE_SERVICE_NAME, true),
+            (ios_core::debugserver::LEGACY_SERVICE_NAME, false),
+            (ios_core::debugserver::SECURE_SERVICE_NAME, false),
+        ] {
+            let (host, peer) = tokio::io::duplex(8192);
+            let client = async {
+                let stream = super::wrap_debugserver_stream(host, &record, name, ssl)
+                    .await
+                    .unwrap();
+                let mut rsp = ios_core::debugserver::GdbRemoteClient::new(stream);
+                assert_eq!(rsp.request("qSupported").await.unwrap(), "PacketSize=4000");
+            };
+            let server = async {
+                let mut stream: Box<dyn super::DebugStream> = if ssl {
+                    let selected = if name == ios_core::debugserver::LEGACY_SERVICE_NAME {
+                        &legacy_acceptor
+                    } else {
+                        &acceptor
+                    };
+                    let tls = selected.accept(peer).await.unwrap();
+                    if name == ios_core::debugserver::LEGACY_SERVICE_NAME {
+                        Box::new(tls.into_inner().0)
+                    } else {
+                        Box::new(tls)
+                    }
+                } else {
+                    Box::new(peer)
+                };
+                let mut request = [0; 15];
+                stream.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"+$qSupported#37");
+                let reply = ios_core::debugserver::format_packet("PacketSize=4000");
+                stream.write_all(reply.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+                let mut ack = [0];
+                stream.read_exact(&mut ack).await.unwrap();
+                assert_eq!(&ack, b"+");
+            };
+            tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(client, server);
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn response_codes_debugserver_falls_back_only_for_exact_owned_code() {
+        use ios_core::{recv_lockdown, send_lockdown, ErrorClass, LockdownResponseError};
+        use tokio::io::AsyncReadExt;
+        for preferred in [
+            ios_core::debugserver::SECURE_SERVICE_NAME,
+            ios_core::debugserver::LEGACY_SERVICE_NAME,
+        ] {
+            for codes in [
+                vec![Some("InvalidService"), None],
+                vec![Some("InvalidService"), Some("InvalidService")],
+                vec![Some("owned-private-InvalidService")],
+                vec![Some("MissingValue")],
+            ] {
+                let (host, mut peer) = tokio::io::duplex(4096);
+                let (mut reader, mut writer) = tokio::io::split(host);
+                let names = super::candidate_service_names(preferred);
+                let caller = async {
+                    let result =
+                        super::start_debugserver_service(&mut reader, &mut writer, preferred).await;
+                    drop(reader);
+                    drop(writer);
+                    result
+                };
+                let server = async {
+                    for (index, code) in codes.iter().enumerate() {
+                        let request: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+                        assert_eq!(
+                            request.as_dictionary().unwrap()["Service"].as_string(),
+                            Some(names[index])
+                        );
+                        let reply = if let Some(code) = code {
+                            plist::Dictionary::from_iter([(
+                                "Error".to_owned(),
+                                plist::Value::String((*code).into()),
+                            )])
+                        } else {
+                            plist::Dictionary::from_iter([
+                                ("Port".to_owned(), plist::Value::Integer(1234.into())),
+                                ("EnableServiceSSL".to_owned(), plist::Value::Boolean(true)),
+                            ])
+                        };
+                        send_lockdown(&mut peer, &reply).await.unwrap();
+                    }
+                    let mut extra = Vec::new();
+                    peer.read_to_end(&mut extra).await.unwrap();
+                    assert!(extra.is_empty(), "unexpected fallback request");
+                };
+                let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                    tokio::join!(caller, server)
+                })
+                .await
+                .unwrap();
+                if codes.last().unwrap().is_none() {
+                    assert_eq!(result.unwrap(), (names[1], 1234, true));
+                } else {
+                    let error = result.unwrap_err();
+                    let observed = LockdownResponseError::in_error_chain(error.as_ref()).unwrap();
+                    assert_eq!(observed.code(), codes.last().unwrap().unwrap());
+                    assert_eq!(
+                        ios_core::classify_error(error.as_ref()),
+                        if codes.len() == 2 {
+                            ErrorClass::ServiceMissing
+                        } else {
+                            ErrorClass::ServiceFailure
+                        }
+                    );
+                    let envelope = crate::output::operation_failure_message(
+                        crate::output::ErrorFormat::Json,
+                        "debugserver",
+                        &error,
+                    )
+                    .unwrap();
+                    assert!(!envelope.contains("owned-private"));
+                }
+            }
+        }
+        assert!(!super::is_invalid_service(
+            &ios_core::LockdownError::Protocol("InvalidService".into())
+        ));
+    }
 
     #[derive(Parser)]
     struct TestCli {

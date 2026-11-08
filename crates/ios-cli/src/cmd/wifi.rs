@@ -19,6 +19,7 @@ enum WifiSub {
         #[arg(
             long,
             env = "IOS_WIFI_PASSWORD",
+            hide_env_values = true,
             help = "Wi-Fi password (never printed)"
         )]
         password: String,
@@ -87,7 +88,7 @@ impl WifiCmd {
             } => {
                 let password = zeroize::Zeroizing::new(password);
                 let profile = build_wifi_profile(&ssid, password.as_str(), &encryption_type)
-                    .map_err(|err| anyhow::anyhow!("invalid Wi-Fi profile: {err}"))?;
+                    .map_err(|err| crate::output::input_error("invalid Wi-Fi profile", err))?;
                 let result = client
                     .prepare_wifi(&ssid, password.as_str(), &encryption_type)
                     .await?;
@@ -95,14 +96,15 @@ impl WifiCmd {
                     super::file::write_local_bytes_atomic(path, profile.as_ref(), force).await?;
                 }
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&result)?);
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "Installed Wi-Fi profile {} (supervised: {})",
-                        result.profile_identifier, result.supervised
+                        result.profile_identifier,
+                        result.supervised
                     );
                     if let Some(path) = profile_output {
-                        println!("Profile written to {}", path.display());
+                        crate::output::outln!("Profile written to {}", path.display());
                     }
                 }
             }
@@ -114,7 +116,7 @@ impl WifiCmd {
                 )?;
                 let result = client.remove_wifi(&ssid).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "removed": true,
@@ -123,9 +125,10 @@ impl WifiCmd {
                         }))?
                     );
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "Removed Wi-Fi profile {} (supervised: {})",
-                        result.profile_identifier, result.supervised
+                        result.profile_identifier,
+                        result.supervised
                     );
                 }
             }

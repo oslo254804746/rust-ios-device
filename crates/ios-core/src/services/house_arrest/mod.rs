@@ -1,8 +1,18 @@
 //! Minimal House Arrest client for vending an app container and then
 //! reusing the returned stream as AFC.
 
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
+
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
+    time::Instant,
+};
 
 use crate::services::afc::{AfcClient, AfcError};
 
@@ -26,14 +36,75 @@ impl From<AfcError> for HouseArrestError {
 
 #[derive(Debug)]
 pub struct HouseArrestClient<S> {
-    stream: S,
+    pub(crate) stream: Option<S>,
+    usable: bool,
+    operation_timeout: Option<Duration>,
+}
+
+impl<S> HouseArrestClient<S> {
+    pub fn new(stream: S) -> Self {
+        Self {
+            stream: Some(stream),
+            usable: true,
+            operation_timeout: None,
+        }
+    }
+
+    pub fn is_usable(&self) -> bool {
+        self.usable && self.stream.is_some()
+    }
+
+    pub fn set_operation_timeout(&mut self, timeout: Option<Duration>) {
+        self.operation_timeout = timeout;
+    }
+
+    pub fn with_operation_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.set_operation_timeout(timeout);
+        self
+    }
+
+    fn ensure_usable(&self) -> Result<(), HouseArrestError> {
+        if self.is_usable() {
+            Ok(())
+        } else {
+            Err(HouseArrestError::Protocol(
+                "house arrest connection is unusable; reconnect before another request".into(),
+            ))
+        }
+    }
+
+    fn deadline(&self) -> Result<Option<Instant>, HouseArrestError> {
+        self.ensure_usable()?;
+        match self.operation_timeout {
+            Some(budget) if budget.is_zero() => Err(elapsed_budget()),
+            Some(budget) => Instant::now().checked_add(budget).map(Some).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "house arrest operation deadline is too large",
+                )
+                .into()
+            }),
+            None => Ok(None),
+        }
+    }
+
+    fn begin_request(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> Result<HouseArrestRequest<'_, S>, HouseArrestError> {
+        self.ensure_usable()?;
+        let stream = self.stream.take();
+        Ok(HouseArrestRequest {
+            client: self,
+            stream,
+            deadline,
+            progressed: false,
+            failed: false,
+        })
+    }
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> HouseArrestClient<S> {
-    pub fn new(stream: S) -> Self {
-        Self { stream }
-    }
-
     pub async fn vend_container(self, bundle_id: &str) -> Result<AfcClient<S>, HouseArrestError> {
         self.send_command("VendContainer", bundle_id).await
     }
@@ -47,54 +118,208 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HouseArrestClient<S> {
         command: &'static str,
         bundle_id: &str,
     ) -> Result<AfcClient<S>, HouseArrestError> {
-        self.send_plist(&VendContainerRequest {
+        let deadline = self.deadline()?;
+        check_deadline(deadline, Ok(()))?;
+        let mut request = self.begin_request(deadline)?;
+        let vend_req = VendContainerRequest {
             command,
             identifier: bundle_id,
-        })
-        .await?;
+        };
+        let result: Result<VendContainerResponse, HouseArrestError> =
+            await_operation(deadline, async {
+                let mut io = request.io();
+                let mut buf = Vec::new();
+                plist::to_writer_xml(&mut buf, &vend_req)?;
+                let len = buf.len() as u32;
+                io.write_all(&len.to_be_bytes()).await?;
+                io.write_all(&buf).await?;
+                io.flush().await?;
 
-        let response: VendContainerResponse = self.recv_plist().await?;
-        match response.status.as_deref() {
-            Some("Complete") => Ok(AfcClient::new(self.stream)),
-            Some(status) => Err(HouseArrestError::Service(status.to_string())),
-            None => {
-                if let Some(error) = response.error {
-                    Err(HouseArrestError::Service(error))
-                } else {
-                    Err(HouseArrestError::Protocol(
-                        "unknown house arrest response".into(),
-                    ))
+                let mut len_buf = [0u8; 4];
+                io.read_exact(&mut len_buf).await?;
+                let len = u32::from_be_bytes(len_buf) as usize;
+                const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
+                if len > MAX_PLIST_SIZE {
+                    return Err(HouseArrestError::Protocol(format!(
+                        "plist length {len} exceeds max {MAX_PLIST_SIZE}"
+                    )));
                 }
-            }
+                let mut resp_buf = vec![0u8; len];
+                io.read_exact(&mut resp_buf).await?;
+                Ok(plist::from_bytes(&resp_buf)?)
+            })
+            .await;
+
+        let response = check_deadline(deadline, result);
+        match response {
+            Ok(resp) => match resp.status.as_deref() {
+                Some("Complete") => {
+                    let stream = request.take_stream().expect("active stream for handoff");
+                    Ok(AfcClient::new(stream))
+                }
+                Some(status) => request.finish(Err(HouseArrestError::Service(status.to_string()))),
+                None => {
+                    if let Some(error) = resp.error {
+                        request.finish(Err(HouseArrestError::Service(error)))
+                    } else {
+                        request.finish(Err(HouseArrestError::Protocol(
+                            "unknown house arrest response".into(),
+                        )))
+                    }
+                }
+            },
+            Err(e) => request.finish(Err(e)),
+        }
+    }
+}
+
+struct HouseArrestRequest<'a, S> {
+    client: &'a mut HouseArrestClient<S>,
+    stream: Option<S>,
+    deadline: Option<Instant>,
+    progressed: bool,
+    failed: bool,
+}
+
+impl<S> HouseArrestRequest<'_, S> {
+    fn io(&mut self) -> HouseArrestIo<'_, S> {
+        HouseArrestIo {
+            inner: self.stream.as_mut().expect("active house arrest stream"),
+            deadline: self.deadline,
+            progressed: &mut self.progressed,
+            failed: &mut self.failed,
         }
     }
 
-    async fn send_plist<T: Serialize>(&mut self, value: &T) -> Result<(), HouseArrestError> {
-        let mut buf = Vec::new();
-        plist::to_writer_xml(&mut buf, value)?;
-        let len = buf.len() as u32;
-        self.stream.write_all(&len.to_be_bytes()).await?;
-        self.stream.write_all(&buf).await?;
-        self.stream.flush().await?;
-        Ok(())
+    fn take_stream(&mut self) -> Option<S> {
+        self.stream.take()
     }
 
-    async fn recv_plist<T>(&mut self) -> Result<T, HouseArrestError>
-    where
-        T: for<'de> Deserialize<'de>,
-    {
-        let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-        const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
-        if len > MAX_PLIST_SIZE {
-            return Err(HouseArrestError::Protocol(format!(
-                "plist length {len} exceeds max {MAX_PLIST_SIZE}"
-            )));
+    fn finish<T>(mut self, result: Result<T, HouseArrestError>) -> Result<T, HouseArrestError> {
+        if !self.failed && (result.is_ok() || !self.progressed) {
+            self.client.stream = self.stream.take();
+        } else {
+            self.client.usable = false;
         }
-        let mut buf = vec![0u8; len];
-        self.stream.read_exact(&mut buf).await?;
-        Ok(plist::from_bytes(&buf)?)
+        result
+    }
+}
+
+impl<S> Drop for HouseArrestRequest<'_, S> {
+    fn drop(&mut self) {
+        if self.stream.is_none() {
+            return;
+        }
+        if self.progressed || self.failed {
+            self.client.usable = false;
+        } else {
+            self.client.stream = self.stream.take();
+        }
+    }
+}
+
+struct HouseArrestIo<'a, S> {
+    inner: &'a mut S,
+    deadline: Option<Instant>,
+    progressed: &'a mut bool,
+    failed: &'a mut bool,
+}
+
+impl<S> HouseArrestIo<'_, S> {
+    fn expired(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for HouseArrestIo<'_, S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let before = buf.filled().len();
+        let requested = buf.remaining() > 0;
+        let result = Pin::new(&mut *self.inner).poll_read(cx, buf);
+        *self.progressed |= buf.filled().len() > before;
+        *self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (requested && matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() == before);
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for HouseArrestIo<'_, S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_write(cx, bytes);
+        *self.progressed |= matches!(result, Poll::Ready(Ok(n)) if n > 0);
+        *self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (!bytes.is_empty() && matches!(result, Poll::Ready(Ok(0))));
+        result
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_flush(cx);
+        *self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.expired() {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_shutdown(cx);
+        *self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+}
+
+fn elapsed_budget() -> HouseArrestError {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "house arrest operation budget elapsed",
+    )
+    .into()
+}
+
+fn check_deadline<T>(
+    deadline: Option<Instant>,
+    result: Result<T, HouseArrestError>,
+) -> Result<T, HouseArrestError> {
+    if result.is_ok() && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Err(elapsed_budget())
+    } else {
+        result
+    }
+}
+
+async fn await_operation<T>(
+    deadline: Option<Instant>,
+    operation: impl Future<Output = Result<T, HouseArrestError>>,
+) -> Result<T, HouseArrestError> {
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, operation)
+            .await
+            .map_err(|error| {
+                HouseArrestError::Io(crate::error::context::retained_io(
+                    std::io::ErrorKind::TimedOut,
+                    "house arrest operation deadline",
+                    error,
+                ))
+            })?,
+        None => operation.await,
     }
 }
 
@@ -244,5 +469,68 @@ mod tests {
             .unwrap();
         let entries = afc.list_dir("/").await.unwrap();
         assert_eq!(entries, vec!["Documents"]);
+    }
+
+    #[tokio::test]
+    async fn test_house_arrest_zero_budget_fails_without_io() {
+        let (client_side, _) = tokio::io::duplex(1024);
+        let client =
+            HouseArrestClient::new(client_side).with_operation_timeout(Some(Duration::ZERO));
+        let Err(err) = client.vend_container("com.example.TestApp").await else {
+            panic!("expected error");
+        };
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+    }
+
+    #[tokio::test]
+    async fn test_house_arrest_progress_timeout_drops_stream() {
+        let (client_side, mut server_side) = tokio::io::duplex(1024);
+        let client = HouseArrestClient::new(client_side)
+            .with_operation_timeout(Some(Duration::from_millis(50)));
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4];
+            let _ = server_side.read_exact(&mut buf).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let Err(err) = client.vend_container("com.example.TestApp").await else {
+            panic!("expected error");
+        };
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+    }
+
+    #[tokio::test]
+    async fn test_house_arrest_error_priority_prefers_status_over_error() {
+        let (client_side, mut server_side) = tokio::io::duplex(4096);
+
+        tokio::spawn(async move {
+            let _ = read_plist_frame(&mut server_side).await;
+            let response = plist::Dictionary::from_iter([
+                (
+                    "Status".to_string(),
+                    plist::Value::String("InstallationLookupFailed".into()),
+                ),
+                (
+                    "Error".to_string(),
+                    plist::Value::String("SomeErrorDescription".into()),
+                ),
+            ]);
+            let mut buf = Vec::new();
+            plist::to_writer_xml(&mut buf, &plist::Value::Dictionary(response)).unwrap();
+            let len = buf.len() as u32;
+            server_side.write_all(&len.to_be_bytes()).await.unwrap();
+            server_side.write_all(&buf).await.unwrap();
+        });
+
+        let client = HouseArrestClient::new(client_side)
+            .with_operation_timeout(Some(Duration::from_secs(5)));
+        let Err(err) = client.vend_container("com.example.TestApp").await else {
+            panic!("expected error");
+        };
+        // Priority: Status is preferred over Error field
+        assert!(
+            matches!(err, HouseArrestError::Service(status) if status == "InstallationLookupFailed")
+        );
     }
 }

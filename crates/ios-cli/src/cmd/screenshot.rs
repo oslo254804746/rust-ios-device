@@ -33,8 +33,7 @@ pub struct ScreenshotCmd {
         short = 'H',
         long,
         default_value = "127.0.0.1",
-        help = "Address to bind the screenshot stream to; the stream is unauthenticated, \
-                so only widen this on a network you trust"
+        help = "Literal loopback IP or localhost; the raw stream uses local host trust"
     )]
     pub host: String,
 }
@@ -50,7 +49,7 @@ impl ScreenshotCmd {
         // Checked before the capture so a doomed shot costs nothing; stream mode
         // writes no file and is deliberately not guarded.
         crate::cmd::file::ensure_local_overwrite_allowed(Path::new(&self.output), self.force)?;
-        let (image, transport) = capture_screenshot(&udid).await?;
+        let (image, transport) = Box::pin(capture_screenshot(&udid)).await?;
         crate::cmd::file::write_local_bytes_atomic(
             Path::new(&self.output),
             &image.data,
@@ -62,19 +61,26 @@ impl ScreenshotCmd {
     }
 
     async fn run_stream_server(&self, udid: &str) -> Result<()> {
-        // Loopback by default: the stream is a live, unauthenticated view of the
-        // device screen, and `forward` / `tunnel serve` bind loopback too.
-        let bind_addr = format!("{}:{}", self.host, self.port);
-        let listener = TcpListener::bind(&bind_addr).await?;
-        eprintln!("Serving screenshot stream on http://{bind_addr}/");
+        let address = crate::access::loopback_address(&self.host)?;
+        let listener = TcpListener::bind((address, self.port)).await?;
+        let bind_addr = listener.local_addr()?;
+        crate::output::write_error_line(format_args!(
+            "Serving screenshot stream on http://{bind_addr}/"
+        ))?;
 
         loop {
             let (socket, peer) = listener.accept().await?;
-            eprintln!("Screenshot stream client connected: {peer}");
+            crate::output::write_error_line(format_args!(
+                "Screenshot stream client connected: {}",
+                ios_core::redaction::diagnostic_id(&peer.to_string())
+            ))?;
             let udid = udid.to_string();
             tokio::spawn(async move {
-                if let Err(err) = serve_stream_client(socket, &udid).await {
-                    eprintln!("screenshot stream client error: {err}");
+                if let Err(err) = Box::pin(serve_stream_client_on_large_stack(socket, udid)).await {
+                    let _ = crate::output::write_error_line(format_args!(
+                        "screenshot stream client error: {}",
+                        crate::output::error_message(&err)
+                    ));
                 }
             });
         }
@@ -84,28 +90,28 @@ impl ScreenshotCmd {
 async fn capture_screenshot(udid: &str) -> Result<(ScreenshotImage, &'static str)> {
     let version = probe_product_version(udid).await?;
     if version.major >= 17 {
-        match connect_userspace_tunnel(udid).await {
-            Ok(device) => match try_coredevice_screenshot(&device).await {
+        match Box::pin(connect_userspace_tunnel(udid)).await {
+            Ok(device) => match Box::pin(try_coredevice_screenshot(&device)).await {
                 Ok(image) => return Ok((ScreenshotImage::from_bytes(image.data), "coredevice")),
                 Err(error) if coredevice_fallback_allowed(&error) => {
                     // Screenshot is read-only, so falling back after a modern
                     // service error cannot repeat a mutating operation. Keep the
                     // failure as context in debug logs and try legacy DTX/lockdown.
-                    tracing::debug!("CoreDevice screenshot failed, falling back: {error}");
+                    tracing::debug!(error = %crate::output::error_message(&error), "CoreDevice screenshot failed, falling back");
                 }
                 Err(error) => return Err(error),
             },
             Err(error) if coredevice_fallback_allowed(&error) => {
-                tracing::debug!("CoreDevice tunnel unavailable, falling back: {error}");
+                tracing::debug!(error = %crate::output::error_message(&error), "CoreDevice tunnel unavailable, falling back");
             }
             Err(error) => return Err(error),
         }
     }
-    match try_dtx_screenshot(udid).await {
+    match Box::pin(try_dtx_screenshot(udid)).await {
         Ok(data) => Ok((ScreenshotImage::from_bytes(data), "dtx")),
         Err(e) if dtx_fallback_allowed(&e) => {
-            tracing::debug!("DTX screenshot failed, falling back to legacy: {e}");
-            let data = take_legacy_screenshot(udid).await?;
+            tracing::debug!(error = %crate::output::error_message(&e), "DTX screenshot failed, falling back to legacy");
+            let data = Box::pin(take_legacy_screenshot(udid)).await?;
             Ok((data, "legacy"))
         }
         Err(e) => Err(e),
@@ -115,7 +121,7 @@ async fn capture_screenshot(udid: &str) -> Result<(ScreenshotImage, &'static str
 /// Fallback is only valid when the preferred service is unavailable. Protocol,
 /// permission, and malformed-response errors must reach the caller rather
 /// than being hidden by a second transport attempt.
-fn coredevice_fallback_allowed(error: &anyhow::Error) -> bool {
+pub(super) fn coredevice_fallback_allowed(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<ios_core::error::CoreError>()
@@ -129,6 +135,11 @@ fn coredevice_fallback_allowed(error: &anyhow::Error) -> bool {
                                 "service 'com.apple.coredevice.screencaptureservice' not found",
                             )
                 )
+                    || matches!(
+                        error,
+                        ios_core::CoreError::Xpc(ios_core::XpcError::ServiceNotFound(name))
+                            if name == "com.apple.coredevice.screencaptureservice"
+                    )
             })
             || cause
                 .downcast_ref::<ios_core::error::CoreError>()
@@ -156,6 +167,12 @@ fn dtx_fallback_allowed(error: &anyhow::Error) -> bool {
                                 "service 'com.apple.instruments.server.services.deviceinfo' not found",
                             )
                 )
+                    || matches!(
+                        error,
+                        ios_core::CoreError::Xpc(ios_core::XpcError::ServiceNotFound(name))
+                            if name == "com.apple.instruments.dtservicehub"
+                                || name == "com.apple.instruments.server.services.deviceinfo"
+                    )
             })
             || cause
                 .downcast_ref::<ios_core::dtx::DtxError>()
@@ -183,26 +200,81 @@ async fn try_coredevice_screenshot(
 async fn try_dtx_screenshot(udid: &str) -> Result<Bytes> {
     use crate::cmd::instruments::connect_instruments;
 
-    let (_device, stream) = connect_instruments(udid).await?;
+    let (_device, stream) = Box::pin(connect_instruments(udid)).await?;
     let data = ios_core::instruments::screenshot::take_screenshot_dtx(stream)
         .await
         .map_err(|e| anyhow::Error::new(e).context("DTX screenshot"))?;
     Ok(data)
 }
 
-async fn take_legacy_screenshot(udid: &str) -> Result<ScreenshotImage> {
-    let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    let device = ios_core::connect(udid, opts).await?;
-    let mut stream = device
-        .connect_service(ios_core::screenshot::SERVICE_NAME)
-        .await?;
+/// Viewer captures share its original native retirement scope, including the
+/// read-only DTX fallback. Never create an unowned tunnel for a frame.
+pub(super) async fn capture_fallback_scoped(
+    udid: &str,
+    native: &crate::cmd::tunnel::NativeScope,
+) -> Result<ScreenshotImage> {
+    let result = async {
+        let version = probe_product_version(udid).await?;
+        if version.major < 17 {
+            return Box::pin(try_dtx_screenshot(udid)).await;
+        }
+        let device = Box::pin(native.connect(udid, ios_core::TunMode::Userspace)).await?;
+        let stream = device
+            .connect_rsd_service(ios_core::instruments::SERVICE_IOS17)
+            .await?;
+        ios_core::instruments::screenshot::take_screenshot_dtx(stream)
+            .await
+            .map_err(|error| anyhow::Error::new(error).context("DTX screenshot"))
+    }
+    .await;
+    // The original connection and stream have been dropped before collection.
+    let cleanup = native.collect(Duration::from_secs(5)).await;
+    if cleanup.is_err() {
+        return crate::cmd::viewer::finish(result.map(ScreenshotImage::from_bytes), cleanup);
+    }
+    match result {
+        Ok(data) => Ok(ScreenshotImage::from_bytes(data)),
+        Err(error) if dtx_fallback_allowed(&error) => Box::pin(take_legacy_screenshot(udid)).await,
+        Err(error) => Err(error),
+    }
+}
 
-    eprintln!("Capturing screenshot (legacy screenshotr)...");
-    Ok(ios_core::screenshot::take_screenshot(&mut stream).await?)
+async fn take_legacy_screenshot(udid: &str) -> Result<ScreenshotImage> {
+    let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+        udid,
+        ios_core::screenshot::SERVICE_NAME,
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    crate::output::write_error_line(format_args!("Capturing screenshot (legacy screenshotr)..."))?;
+    let mut client = ios_core::screenshot::ScreenshotClient::new(stream);
+    client.set_operation_timeout(Some(Duration::from_secs(30)));
+    Ok(Box::pin(client.take_screenshot()).await?)
+}
+
+async fn serve_stream_client_on_large_stack(socket: TcpStream, udid: String) -> Result<()> {
+    let handle = tokio::runtime::Handle::current();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let (abort_tx, mut abort_rx) = tokio::sync::oneshot::channel::<()>();
+    std::thread::Builder::new()
+        .name("ios-screenshot-stream".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let result = handle.block_on(async move {
+                let client = Box::pin(serve_stream_client(socket, &udid));
+                tokio::select! {
+                    biased;
+                    _ = &mut abort_rx => Ok(()),
+                    res = client => res,
+                }
+            });
+            let _ = done_tx.send(result);
+        })?;
+    let _abort_guard = abort_tx;
+    done_rx
+        .await
+        .map_err(|_| anyhow::anyhow!("screenshot stream worker thread terminated unexpectedly"))?
 }
 
 async fn serve_stream_client(mut socket: TcpStream, udid: &str) -> Result<()> {
@@ -211,7 +283,7 @@ async fn serve_stream_client(mut socket: TcpStream, udid: &str) -> Result<()> {
         .await?;
 
     loop {
-        let (frame, _) = capture_screenshot(udid).await?;
+        let (frame, _) = Box::pin(capture_screenshot(udid)).await?;
         let multipart = encode_multipart_frame(&frame);
         socket.write_all(&multipart).await?;
         socket.flush().await?;
@@ -240,7 +312,7 @@ fn print_screenshot_result(
     json: bool,
 ) -> Result<()> {
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "output": output,
@@ -252,12 +324,12 @@ fn print_screenshot_result(
             }))?
         );
     } else {
-        eprintln!(
+        crate::output::write_error_line(format_args!(
             "Saved {} bytes -> {output} (via {transport}, {}, {})",
             image.byte_len(),
             format_label(image.format),
             image.mime_type()
-        );
+        ))?;
     }
     Ok(())
 }
@@ -286,6 +358,19 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         command: ScreenshotCmd,
+    }
+
+    #[tokio::test]
+    async fn nonloopback_stream_fails_before_listener_or_screenshot_access() {
+        let command = TestCli::parse_from(["screenshot", "--stream", "--host", "0.0.0.0"]);
+        let error = command
+            .command
+            .run(Some("synthetic-device".into()))
+            .await
+            .unwrap_err();
+        assert!(error
+            .chain()
+            .any(|cause| cause.to_string().contains("loopback")));
     }
 
     #[test]
@@ -378,5 +463,36 @@ mod tests {
             "service disconnected",
         )));
         assert!(dtx_fallback_allowed(&dtx_io));
+    }
+
+    #[test]
+    fn typed_rsd_misses_preserve_service_specific_fallback_without_hiding_probe_failures() {
+        for (name, coredevice, dtx) in [
+            ("com.apple.coredevice.screencaptureservice", true, false),
+            ("com.apple.instruments.dtservicehub", false, true),
+            (
+                "com.apple.instruments.server.services.deviceinfo",
+                false,
+                true,
+            ),
+            ("synthetic.unknown.service", false, false),
+        ] {
+            let error = anyhow::Error::new(ios_core::CoreError::Xpc(
+                ios_core::XpcError::ServiceNotFound(name.into()),
+            ));
+            assert_eq!(coredevice_fallback_allowed(&error), coredevice);
+            assert_eq!(dtx_fallback_allowed(&error), dtx);
+        }
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::ConnectionRefused,
+        ] {
+            let error = anyhow::Error::new(ios_core::CoreError::Xpc(ios_core::XpcError::Io(
+                std::io::Error::new(kind, "synthetic-private-probe-error"),
+            )));
+            assert!(!coredevice_fallback_allowed(&error));
+            assert!(!dtx_fallback_allowed(&error));
+        }
     }
 }

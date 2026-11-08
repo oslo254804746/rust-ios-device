@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
@@ -24,19 +25,19 @@ impl DiskspaceCmd {
             .await?;
 
         if json {
-            println!("{}", serde_json::to_string_pretty(&plist_to_json(&value))?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&plist_to_json(&value))?);
         } else {
-            print_diskspace(&value);
+            print_diskspace(&value)?;
         }
 
         Ok(())
     }
 }
 
-fn print_diskspace(value: &plist::Value) {
+fn print_diskspace(value: &plist::Value) -> Result<()> {
     let Some(dict) = value.as_dictionary() else {
-        println!("{value:?}");
-        return;
+        crate::output::outln!("{value:?}");
+        return Ok(());
     };
 
     let keys = [
@@ -51,9 +52,10 @@ fn print_diskspace(value: &plist::Value) {
 
     for key in keys {
         if let Some(bytes) = dict.get(key).and_then(plist_value_to_u64) {
-            println!("{key:<22} {bytes} ({:.2} GiB)", bytes_to_gib(bytes));
+            crate::output::outln!("{key:<22} {bytes} ({:.2} GiB)", bytes_to_gib(bytes));
         }
     }
+    Ok(())
 }
 
 fn plist_value_to_u64(value: &plist::Value) -> Option<u64> {
@@ -70,30 +72,7 @@ fn bytes_to_gib(bytes: u64) -> f64 {
 }
 
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(plist_to_json).collect())
-        }
-        plist::Value::Boolean(v) => serde_json::Value::Bool(*v),
-        plist::Value::Data(bytes) => serde_json::Value::String(hex::encode(bytes)),
-        plist::Value::Date(date) => serde_json::Value::String(date.to_xml_format()),
-        plist::Value::Dictionary(dict) => serde_json::Value::Object(
-            dict.iter()
-                .map(|(k, v)| (k.clone(), plist_to_json(v)))
-                .collect(),
-        ),
-        plist::Value::Integer(n) => n
-            .as_signed()
-            .map(serde_json::Value::from)
-            .or_else(|| n.as_unsigned().map(serde_json::Value::from))
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Real(v) => serde_json::Number::from_f64(*v)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::String(s) => serde_json::Value::String(s.clone()),
-        plist::Value::Uid(uid) => serde_json::Value::from(uid.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::HexString))
 }
 
 #[cfg(test)]
@@ -104,4 +83,15 @@ mod tests {
     fn bytes_to_gib_uses_binary_units() {
         assert_eq!(bytes_to_gib(1_073_741_824), 1.0);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        true,
+    );
 }

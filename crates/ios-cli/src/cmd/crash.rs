@@ -161,7 +161,7 @@ impl CrashCmd {
                 let reports = client.list_reports(Some(&pattern)).await?;
 
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&reports_to_json(&reports))?
                     );
@@ -179,7 +179,7 @@ impl CrashCmd {
                             report.path,
                         ]);
                     }
-                    println!("{table}");
+                    crate::output::outln!("{table}");
                 }
             }
             CrashSub::Pull {
@@ -209,7 +209,7 @@ impl CrashCmd {
                 let data = client.read_report(&report).await?;
                 crate::cmd::file::write_local_bytes_atomic(Path::new(&local_path), &data, force)
                     .await?;
-                println!("Downloaded {} bytes to {}", data.len(), local_path);
+                crate::output::outln!("Downloaded {} bytes to {}", data.len(), local_path);
             }
             CrashSub::Show { report, head } => {
                 let mut mover = connect_crash_service(
@@ -230,9 +230,9 @@ impl CrashCmd {
                 let data = client.read_report(&report).await?;
                 let text = decode_report_text(&data)?;
                 if head {
-                    println!("{}", head_line(&text)?);
+                    crate::output::outln!("{}", head_line(&text)?);
                 } else {
-                    print!("{text}");
+                    crate::output::out!("{text}");
                 }
             }
             CrashSub::PullAll {
@@ -265,7 +265,7 @@ impl CrashCmd {
                     crate::cmd::file::ensure_local_overwrite_allowed(&local_path, force)?;
                     let data = client.read_report(&report.path).await?;
                     crate::cmd::file::write_local_bytes_atomic(&local_path, &data, force).await?;
-                    println!(
+                    crate::output::outln!(
                         "Downloaded {} bytes to {}",
                         data.len(),
                         local_path.display()
@@ -295,10 +295,10 @@ impl CrashCmd {
                 let mut client = CrashReportClient::new(stream);
                 let removed = client.remove_reports(Some(&pattern)).await?;
                 if removed == 0 {
-                    println!("No crash reports matched {pattern}");
+                    crate::output::outln!("No crash reports matched {pattern}");
                     return Ok(());
                 }
-                println!("Removed {removed} crash report(s)");
+                crate::output::outln!("Removed {removed} crash report(s)");
             }
             CrashSub::Flush { json, .. } => {
                 let mut mover = connect_crash_service_until(
@@ -308,13 +308,14 @@ impl CrashCmd {
                     flush_deadline,
                 )
                 .await?;
-                let deadline = flush_deadline
-                    .ok_or_else(|| anyhow::anyhow!("missing crash operation deadline"))?;
+                let deadline = flush_deadline.ok_or_else(|| {
+                    crate::output::precondition_decision("missing crash operation deadline")
+                })?;
                 flush_crash_reports(&mut mover, use_rsd, deadline).await?;
                 if json {
-                    println!(r#"{{"flushed":true}}"#);
+                    crate::output::outln!(r#"{{"flushed":true}}"#);
                 } else {
-                    println!("Crash reports flushed");
+                    crate::output::outln!("Crash reports flushed");
                 }
             }
             CrashSub::Clear { path, force } => {
@@ -338,7 +339,7 @@ impl CrashCmd {
                 .await?;
                 let mut client = CrashReportClient::new(stream);
                 let removed = client.clear_reports(&path).await?;
-                println!(
+                crate::output::outln!(
                     "Removed {removed} crash report entr{}",
                     if removed == 1 { "y" } else { "ies" }
                 );
@@ -371,7 +372,10 @@ impl CrashCmd {
                 let mut reports = Box::pin(client.watch_reports(Some(&pattern), options));
                 loop {
                     tokio::select! {
-                        _ = tokio::signal::ctrl_c() => break,
+                        signal = tokio::signal::ctrl_c() => {
+                            signal?;
+                            break;
+                        },
                         item = reports.next() => match item {
                             Some(Ok(report)) => print_parsed_report(&report, json)?,
                             Some(Err(error)) => return Err(error.into()),
@@ -435,7 +439,7 @@ impl CrashCmd {
                 sort_parsed_reports(&mut reports);
                 reports.truncate(count);
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&reports)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&reports)?);
                 } else {
                     for report in reports {
                         print_parsed_report(&report, false)?;
@@ -467,7 +471,7 @@ async fn connect_crash_device(
         Some(deadline) => match tokio::time::timeout_at(deadline, device.product_version()).await {
             Ok(Ok(version)) => version.major >= 17,
             Ok(Err(error)) => return Err(error.into()),
-            Err(_) => return Err(anyhow::anyhow!("crash service connection timed out")),
+            Err(elapsed) => return Err(crash_connection_timeout(elapsed)),
         },
         None => device.product_version().await?.major >= 17,
     };
@@ -492,11 +496,15 @@ async fn connect_with_deadline(
         Some(deadline) => {
             let device = tokio::time::timeout_at(deadline, connect(udid, options))
                 .await
-                .map_err(|_| anyhow::anyhow!("crash service connection timed out"))??;
+                .map_err(crash_connection_timeout)??;
             Ok(device)
         }
         None => Ok(connect(udid, options).await?),
     }
+}
+
+fn crash_connection_timeout(elapsed: tokio::time::error::Elapsed) -> anyhow::Error {
+    anyhow::Error::new(elapsed).context("crash service connection timed out")
 }
 
 async fn connect_crash_service(
@@ -524,7 +532,9 @@ async fn connect_crash_service_until(
             } else {
                 tokio::time::timeout_at(deadline, device.connect_service(classic_service)).await
             };
-            Ok(result.map_err(|_| anyhow::anyhow!("crash service connection timed out"))??)
+            Ok(result.map_err(|error| {
+                anyhow::Error::new(error).context("crash service connection timed out")
+            })??)
         }
         None => connect_crash_service(device, classic_service, rsd_service).await,
     }
@@ -555,7 +565,7 @@ async fn flush_crash_reports(
 fn flush_deadline(timeout: u64) -> Result<tokio::time::Instant> {
     tokio::time::Instant::now()
         .checked_add(Duration::from_secs(timeout))
-        .ok_or_else(|| anyhow::anyhow!("flush timeout is too large"))
+        .ok_or_else(|| crate::output::input_decision("flush timeout is too large"))
 }
 
 /// Read a local report without allowing a sparse or growing file to bypass the
@@ -578,38 +588,38 @@ async fn read_local_report(path: &Path) -> Result<Vec<u8>> {
 
 fn print_parsed_report(report: &ParsedCrashReport, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string(report)?);
+        crate::output::outln!("{}", serde_json::to_string(report)?);
         return Ok(());
     }
-    println!("{} {}", report.format, report.path);
+    crate::output::outln!("{} {}", report.format, report.path);
     if let Some(value) = &report.incident_id {
-        println!("incident_id: {value}");
+        crate::output::outln!("incident_id: {value}");
     }
     if let Some(value) = &report.timestamp {
-        println!("timestamp: {value}");
+        crate::output::outln!("timestamp: {value}");
     }
     if let Some(value) = &report.process {
-        println!("process: {value}");
+        crate::output::outln!("process: {value}");
     }
     if let Some(value) = &report.bundle_id {
-        println!("bundle_id: {value}");
+        crate::output::outln!("bundle_id: {value}");
     }
     if let Some(value) = &report.process_path {
-        println!("process_path: {value}");
+        crate::output::outln!("process_path: {value}");
     }
     if let Some(value) = report.pid {
-        println!("pid: {value}");
+        crate::output::outln!("pid: {value}");
     }
     if let Some(value) = &report.exception {
-        println!("exception: {value}");
+        crate::output::outln!("exception: {value}");
     }
     if let Some(value) = &report.termination {
-        println!("termination: {value}");
+        crate::output::outln!("termination: {value}");
     }
     if let Some(value) = report.triggered_thread {
-        println!("triggered_thread: {value}");
+        crate::output::outln!("triggered_thread: {value}");
     }
-    println!(
+    crate::output::outln!(
         "threads: {}  images: {}",
         report.threads.len(),
         report.images.len()
@@ -689,6 +699,21 @@ fn reports_to_json(reports: &[ios_core::crashreport::CrashReportEntry]) -> serde
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stream_contract_crash_version_deadline_preserves_actual_elapsed() {
+        let elapsed = tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>())
+            .await
+            .unwrap_err();
+        let error = super::crash_connection_timeout(elapsed);
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|cause| cause.is::<tokio::time::error::Elapsed>()));
+    }
+
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use clap::Parser;
@@ -833,7 +858,12 @@ mod tests {
 
     #[test]
     fn flush_deadline_rejects_duration_overflow() {
-        assert!(super::flush_deadline(u64::MAX).is_err());
+        let error = super::flush_deadline(u64::MAX).unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert_eq!(error.to_string(), "flush timeout is too large");
         assert!(super::flush_deadline(0).is_ok());
         assert!(super::flush_deadline(1).is_ok());
     }

@@ -6,21 +6,74 @@
 //! - Compatible with go-ios local proxy protocol:
 //!   client sends 16-byte IPv6 addr + 4-byte LE port after connecting
 
-use std::collections::{HashMap, VecDeque};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
+#[cfg(test)]
+use smoltcp::iface::SocketSet;
+use smoltcp::iface::{Config, Interface, SocketHandle};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant as SmolInstant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv6Address};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::tunnel::owner::phase_outcomes::{Phase, PhaseOutcomes};
+use crate::tunnel::owner::unit_stop as watch;
+use crate::tunnel::owner::{self, ChildRole, Ledger, OwnedTask, ParentRole, SharedChildTaskSet};
 use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
+
+pub(crate) mod owned_buffer;
+use owned_buffer::OwnedBuffer;
+pub(crate) mod runtime_storage;
+use runtime_storage::{socket_buffers, OwnedQueue, RuntimeStorage, SocketFees, TaskHandles};
+mod socket_slots;
+use socket_slots::SocketSlots;
+mod owned_channel;
+use owned_channel as mpsc;
+mod worker_future;
+use worker_future::PreparedWorker;
+mod backend;
+#[cfg(all(
+    feature = "tunnel-kernel",
+    any(target_os = "linux", target_os = "macos")
+))]
+mod kernel_unix;
+#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+mod kernel_windows;
+mod launch;
+#[cfg(feature = "tunnel-kernel")]
+mod native;
+#[cfg(feature = "tunnel-kernel")]
+mod native_jobs;
+#[cfg(all(
+    feature = "tunnel-kernel",
+    any(target_os = "linux", target_os = "macos")
+))]
+pub(crate) use kernel_unix::KernelRuntime;
+#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+pub(crate) use kernel_windows::KernelRuntime;
+#[cfg(all(feature = "tunnel-kernel", target_os = "linux"))]
+use native::linux::Plan as KernelPlan;
+#[cfg(all(feature = "tunnel-kernel", target_os = "macos"))]
+use native::macos::Plan as KernelPlan;
+#[cfg(all(test, feature = "tunnel-kernel", target_os = "windows"))]
+pub(crate) use native::windows::scripted_runtime::{
+    Operation as ScriptOperation, Script as WindowsScript,
+};
+#[cfg(all(feature = "tunnel-kernel", target_os = "windows"))]
+use native::windows::Plan as KernelPlan;
+mod packet_link;
+mod private_connect;
+use backend::{BackendControl, PortLease};
+use launch::{LaunchControl, LaunchGuard};
+#[cfg(test)]
+use packet_link::{read_ios_packets_owned, write_ios_packets_owned};
+pub(crate) use private_connect::PrivateConnector;
 
 const PREFIX_LEN: u8 = 64;
 const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
@@ -35,19 +88,97 @@ const EPHEMERAL_PORT_MIN: u16 = 40000;
 const EPHEMERAL_PORT_MAX: u16 = u16::MAX;
 const EPHEMERAL_PORT_COUNT: usize = (EPHEMERAL_PORT_MAX - EPHEMERAL_PORT_MIN) as usize + 1;
 const LOCAL_PROXY_PREAMBLE_LEN: usize = 16 + 4;
+/// Opt-in extension to the go-ios preamble: wait for one connect-status byte
+/// (0 = established, 1 = aborted) before exchanging application bytes.
+/// Ordinary u16 ports retain the original transparent proxy protocol.
+pub const LOCAL_PROXY_CONNECT_ACK: u32 = 1 << 31;
 const LOCAL_PROXY_PREAMBLE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_LOCAL_PROXY_CLIENTS: usize = 64;
 
+#[cfg(test)]
+fn runtime_channel_bytes() -> usize {
+    mpsc::required_bytes::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY)
+        + packet_link::egress_bytes()
+        + mpsc::required_bytes::<ConnRequest>(32)
+}
+
+#[cfg(test)]
+fn runtime_owner_bytes() -> usize {
+    Ledger::reservation_bytes()
+        + SharedChildTaskSet::body_bytes()
+        + TaskHandles::body_bytes()
+        + LaunchControl::body_bytes()
+        + BackendControl::body_bytes()
+}
+
 // ── smoltcp Device implementation ─────────────────────────────────────────────
+
+#[cfg(test)]
+type TxAdmissionHook = std::cell::RefCell<Option<Box<dyn FnOnce(bool)>>>;
+#[cfg(test)]
+type BeforeTxAdmissionHook = std::cell::RefCell<Option<Box<dyn FnOnce()>>>;
+
+#[cfg(test)]
+thread_local! {
+    static TX_ADMISSION: TxAdmissionHook = const { std::cell::RefCell::new(None) };
+    static BEFORE_TX_ADMISSION: BeforeTxAdmissionHook = const { std::cell::RefCell::new(None) };
+}
 
 struct ChannelDevice {
     mtu: ValidatedMtu,
-    rx_buf: VecDeque<Vec<u8>>,
-    tx_buf: VecDeque<Vec<u8>>,
+    rx_buf: OwnedQueue<OwnedBuffer>,
+    tx_buf: OwnedQueue<OwnedBuffer>,
+    storage: RuntimeStorage,
 }
 
-struct SmolRxToken(Vec<u8>);
-struct SmolTxToken<'a>(&'a mut VecDeque<Vec<u8>>);
+impl ChannelDevice {
+    fn new(mtu: ValidatedMtu, storage: RuntimeStorage) -> Self {
+        Self {
+            mtu,
+            rx_buf: OwnedQueue::new(storage.bank.as_ref()),
+            tx_buf: OwnedQueue::new(storage.bank.as_ref()),
+            storage,
+        }
+    }
+
+    fn prepare_transmit(&mut self) -> Option<Option<OwnedBuffer>> {
+        if self.storage.stopped() {
+            return None;
+        }
+        #[cfg(test)]
+        BEFORE_TX_ADMISSION.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().take() {
+                callback();
+            }
+        });
+        let prepared = self.tx_buf.prepare_push().and_then(|()| {
+            self.storage
+                .bank
+                .as_ref()
+                .map(|bank| OwnedBuffer::zeroed(self.mtu.as_usize(), Some(bank)))
+                .transpose()
+        });
+        #[cfg(test)]
+        TX_ADMISSION.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().take() {
+                callback(prepared.is_err());
+            }
+        });
+        match prepared {
+            Ok(buffer) => Some(buffer),
+            Err(original) => {
+                self.storage.fail(ParentRole::Smoltcp, original);
+                None
+            }
+        }
+    }
+}
+
+struct SmolRxToken(OwnedBuffer);
+struct SmolTxToken<'a> {
+    queue: &'a mut OwnedQueue<OwnedBuffer>,
+    buffer: Option<OwnedBuffer>,
+}
 
 impl smoltcp::phy::RxToken for SmolRxToken {
     fn consume<R, F: FnOnce(&mut [u8]) -> R>(mut self, f: F) -> R {
@@ -56,11 +187,24 @@ impl smoltcp::phy::RxToken for SmolRxToken {
 }
 
 impl smoltcp::phy::TxToken for SmolTxToken<'_> {
-    fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, len: usize, f: F) -> R {
-        let mut buf = vec![0u8; len];
-        let r = f(&mut buf);
-        self.0.push_back(buf);
-        r
+    fn consume<R, F: FnOnce(&mut [u8]) -> R>(mut self, len: usize, f: F) -> R {
+        let mut buffer = match self.buffer.take() {
+            Some(mut buffer) => {
+                // Metered admission completed before this token existed.
+                assert!(
+                    len <= buffer.len(),
+                    "smoltcp transmit exceeds negotiated MTU"
+                );
+                buffer.truncate(len);
+                buffer
+            }
+            // Preserve the legacy no-bank constructor's exact requested-length
+            // allocation. This branch never substitutes for a quota refusal.
+            None => OwnedBuffer::unmetered_zeroed(len),
+        };
+        let result = f(&mut buffer);
+        self.queue.push_reserved(buffer);
+        result
     }
 }
 
@@ -69,13 +213,29 @@ impl Device for ChannelDevice {
     type TxToken<'a> = SmolTxToken<'a>;
 
     fn receive(&mut self, _ts: SmolInstant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        self.rx_buf
+        if self.rx_buf.is_empty() {
+            return None;
+        }
+        let buffer = self.prepare_transmit()?;
+        let packet = self
+            .rx_buf
             .pop_front()
-            .map(|pkt| (SmolRxToken(pkt), SmolTxToken(&mut self.tx_buf)))
+            .expect("observed receive queue slot");
+        Some((
+            SmolRxToken(packet),
+            SmolTxToken {
+                queue: &mut self.tx_buf,
+                buffer,
+            },
+        ))
     }
 
     fn transmit(&mut self, _ts: SmolInstant) -> Option<Self::TxToken<'_>> {
-        Some(SmolTxToken(&mut self.tx_buf))
+        let buffer = self.prepare_transmit()?;
+        Some(SmolTxToken {
+            queue: &mut self.tx_buf,
+            buffer,
+        })
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -91,17 +251,19 @@ impl Device for ChannelDevice {
 struct ConnRequest {
     remote_ip: Ipv6Address,
     remote_port: u16,
-    from_client: mpsc::Receiver<Vec<u8>>,
-    to_client: mpsc::Sender<Vec<u8>>,
+    from_client: mpsc::Receiver<OwnedBuffer>,
+    to_client: mpsc::Sender<OwnedBuffer>,
     connected: tokio::sync::oneshot::Sender<()>,
+    source_port: Option<u16>,
 }
 
 struct ConnState {
-    from_client: mpsc::Receiver<Vec<u8>>,
-    to_client: mpsc::Sender<Vec<u8>>,
+    from_client: mpsc::Receiver<OwnedBuffer>,
+    to_client: mpsc::Sender<OwnedBuffer>,
     connected: Option<tokio::sync::oneshot::Sender<()>>,
-    pending_to_client: VecDeque<Vec<u8>>,
-    pending_from_client: VecDeque<Vec<u8>>,
+    pending_to_client: OwnedQueue<OwnedBuffer>,
+    pending_from_client: OwnedQueue<OwnedBuffer>,
+    _socket_fees: SocketFees,
 }
 
 // ── Main struct ────────────────────────────────────────────────────────────────
@@ -109,7 +271,14 @@ struct ConnState {
 /// Userspace TUN device using smoltcp + local TCP proxy.
 pub struct UserspaceTunDevice {
     pub local_port: u16,
-    task_handles: Vec<JoinHandle<()>>,
+    task_handles: TaskHandles,
+    stop: watch::Sender,
+    clients: SharedChildTaskSet,
+    outcomes: Ledger,
+    launch: LaunchControl,
+    backend: BackendControl,
+    private: Option<PrivateConnector>,
+    phases: Option<PhaseOutcomes>,
 }
 
 impl UserspaceTunDevice {
@@ -141,152 +310,531 @@ impl UserspaceTunDevice {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
+        Self::start_validated_with_bank(client_address, _server_address, mtu, ios_stream, None)
+            .await
+    }
+
+    /// Manager-owned runtime storage uses the reservation's original byte bank.
+    /// Legacy callers keep the same no-bank constructor and packet semantics.
+    pub(crate) async fn start_validated_with_bank<S>(
+        client_address: &str,
+        _server_address: &str,
+        mtu: ValidatedMtu,
+        ios_stream: S,
+        byte_bank: Option<Arc<Semaphore>>,
+    ) -> Result<Self, TunnelError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (runtime, launch) = Self::prepare_validated_with_bank(
+            client_address,
+            _server_address,
+            mtu,
+            ios_stream,
+            byte_bank,
+        )
+        .await?;
+        launch()?;
+        Ok(runtime)
+    }
+
+    /// Prepare the same original runtime without spawning or polling workers.
+    /// Activation attaches its exact handle before calling the returned launch.
+    pub(crate) async fn prepare_validated_with_bank<S>(
+        client_address: &str,
+        _server_address: &str,
+        mtu: ValidatedMtu,
+        ios_stream: S,
+        byte_bank: Option<Arc<Semaphore>>,
+    ) -> Result<
+        (
+            Self,
+            impl FnOnce() -> Result<(), TunnelError> + Send + 'static,
+        ),
+        TunnelError,
+    >
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::prepare_with_proxy_policy(
+            client_address,
+            _server_address,
+            mtu,
+            ios_stream,
+            byte_bank,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_private_validated_with_bank<S>(
+        client_address: &str,
+        server_address: &str,
+        mtu: ValidatedMtu,
+        ios_stream: S,
+        bank: Arc<Semaphore>,
+        private_capacity: usize,
+        reserve_for_kernel: bool,
+    ) -> Result<
+        (
+            Self,
+            impl FnOnce() -> Result<(), TunnelError> + Send + 'static,
+        ),
+        TunnelError,
+    >
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::prepare_with_proxy_policy(
+            client_address,
+            server_address,
+            mtu,
+            ios_stream,
+            Some(bank),
+            Some((private_capacity, reserve_for_kernel)),
+        )
+        .await
+    }
+
+    async fn prepare_with_proxy_policy<S>(
+        client_address: &str,
+        _server_address: &str,
+        mtu: ValidatedMtu,
+        ios_stream: S,
+        byte_bank: Option<Arc<Semaphore>>,
+        private_policy: Option<(usize, bool)>,
+    ) -> Result<
+        (
+            Self,
+            impl FnOnce() -> Result<(), TunnelError> + Send + 'static,
+        ),
+        TunnelError,
+    >
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let payload_capacity = mtu.ipv6_payload_capacity()?;
         let client_ipv6: Ipv6Address = client_address.parse().map_err(|_| {
             TunnelError::Protocol(format!("invalid client IPv6 address: {client_address}"))
         })?;
 
-        let (ios_to_smol_tx, ios_to_smol_rx) =
-            mpsc::channel::<Vec<u8>>(IOS_PACKET_CHANNEL_CAPACITY);
-        let (smol_to_ios_tx, smol_to_ios_rx) =
-            mpsc::channel::<Vec<u8>>(IOS_PACKET_CHANNEL_CAPACITY);
-        let (conn_req_tx, conn_req_rx) = mpsc::channel::<ConnRequest>(32);
+        // One packet port owns the backend ends; the original transport
+        // reader/writer keep the other ends through the complete runtime.
+        let (packet_link, packets) =
+            packet_link::PreparedPacketLink::prepare(mtu, payload_capacity, byte_bank.as_ref())?;
+        let (conn_req_tx, conn_req_rx) = mpsc::with_bank::<ConnRequest>(32, byte_bank.as_ref())?;
+        let outcomes = Ledger::with_metadata(byte_bank.as_ref())?;
+        let phases = if private_policy.is_some_and(|(_, kernel)| kernel) {
+            let phases = PhaseOutcomes::new(byte_bank.as_ref())?;
+            phases
+                .bind(&outcomes, Phase::Original)
+                .map_err(|source| TunnelError::Io(std::io::Error::other(source)))?;
+            Some(phases)
+        } else {
+            None
+        };
+        let clients = SharedChildTaskSet::with_metadata(
+            outcomes.clone(),
+            ChildRole::ProxyClient,
+            byte_bank.as_ref(),
+        )?;
+        let task_handles = runtime_storage::task_handles(byte_bank.as_ref())?;
+        let control = LaunchControl::prepare(byte_bank.as_ref(), &outcomes)?;
+        let backend = BackendControl::prepare(byte_bank.as_ref())?;
+        let client_permits = ListenerSlots::new(MAX_LOCAL_PROXY_CLIENTS, byte_bank.as_ref())?;
 
-        let (mut ios_reader, mut ios_writer) = tokio::io::split(ios_stream);
-
-        let reader_task = tokio::spawn(async move {
-            read_ios_packets(&mut ios_reader, payload_capacity, ios_to_smol_tx).await;
-            tracing::debug!("userspace: iOS packet reader exited");
-        });
-
-        let writer_task = tokio::spawn(async move {
-            write_ios_packets(&mut ios_writer, mtu, smol_to_ios_rx).await;
-            tracing::debug!("userspace: iOS packet writer exited");
-        });
-
-        let smoltcp_task = tokio::spawn(async move {
-            run_smoltcp(
-                client_ipv6,
-                mtu,
-                ios_to_smol_rx,
-                smol_to_ios_tx,
-                conn_req_rx,
-            )
-            .await;
-            tracing::debug!("userspace: smoltcp loop exited");
-        });
-
+        // All buffer/channel admission precedes listener setup and workers.
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_port = listener.local_addr()?.port();
+        let private = private_policy
+            .map(|(capacity, reserve)| {
+                PrivateConnector::prepare(
+                    local_port,
+                    capacity,
+                    reserve,
+                    byte_bank.as_ref().expect("private original bank"),
+                )
+            })
+            .transpose()?;
 
-        let listener_task = tokio::spawn(async move {
-            run_local_listener(listener, conn_req_tx).await;
+        let (ios_reader, ios_writer) = tokio::io::split(ios_stream);
+        let (stop, stop_rx) = watch::channel(outcomes.clone());
+
+        let storage = RuntimeStorage {
+            bank: byte_bank.clone(),
+            ledger: outcomes.clone(),
+            stop: stop.clone(),
+        };
+        let future_bank = byte_bank.clone();
+        let (reader_future, writer_future) =
+            packet_link.workers(ios_reader, ios_writer, byte_bank, storage.clone());
+
+        let smoltcp_storage = storage.clone();
+        let smoltcp_control = backend.clone();
+        let smoltcp_future = async move {
+            let returned = run_smoltcp(
+                client_ipv6,
+                mtu,
+                packets,
+                conn_req_rx,
+                smoltcp_storage.clone(),
+                &smoltcp_control,
+            )
+            .await;
+            smoltcp_control.returned(returned);
+            tracing::debug!("userspace: smoltcp loop exited");
+            smoltcp_storage.result()
+        };
+
+        let listener_clients = clients.clone();
+        let listener_outcomes = outcomes.clone();
+        let listener_control = backend.clone();
+        let listener_private = private.clone();
+        let listener_future = async move {
+            run_local_listener_owned(
+                listener,
+                conn_req_tx,
+                ListenerControl {
+                    stop: stop_rx,
+                    private: Some(listener_control),
+                    access: listener_private,
+                },
+                listener_clients,
+                listener_outcomes,
+                storage,
+                client_permits,
+            )
+            .await;
             tracing::debug!("userspace: local listener exited");
-        });
+            Ok(())
+        };
 
-        tracing::info!("userspace TUN started on 127.0.0.1:{local_port}");
-        Ok(Self {
-            local_port,
-            task_handles: vec![reader_task, writer_task, smoltcp_task, listener_task],
-        })
+        // Every fallible payload admission completes before the first worker.
+        // Legacy callers retain Tokio's original unboxed spawn path.
+        let reader = PreparedWorker::prepare(
+            launch::gated(control.clone(), outcomes.clone(), reader_future),
+            future_bank.as_ref(),
+        )?;
+        let writer = PreparedWorker::prepare(
+            launch::gated(control.clone(), outcomes.clone(), writer_future),
+            future_bank.as_ref(),
+        )?;
+        let smoltcp = PreparedWorker::prepare(
+            launch::gated(control.clone(), outcomes.clone(), smoltcp_future),
+            future_bank.as_ref(),
+        )?;
+        let listener = PreparedWorker::prepare(
+            launch::gated(control.clone(), outcomes.clone(), listener_future),
+            future_bank.as_ref(),
+        )?;
+        let guard = LaunchGuard::new(
+            task_handles.clone(),
+            control.clone(),
+            outcomes.clone(),
+            stop.clone(),
+        );
+        let prepared = launch::PreparedLaunch::new(reader, writer, smoltcp, listener, guard);
+        let launch = move || {
+            prepared.run()?;
+            tracing::info!("userspace TUN started on 127.0.0.1:{local_port}");
+            Ok(())
+        };
+        Ok((
+            Self {
+                local_port,
+                task_handles,
+                stop,
+                clients,
+                outcomes,
+                launch: control,
+                backend,
+                private,
+                phases,
+            },
+            launch,
+        ))
     }
 
     pub fn is_alive(&self) -> bool {
-        self.task_handles.iter().all(|handle| !handle.is_finished())
+        self.launch.opened()
+            && self.task_handles.all_installed()
+            && !self.outcomes.is_runtime_stopped()
+            && self.task_handles.iter().all(|handle| !handle.is_finished())
+    }
+
+    pub(crate) fn private_connector(&self) -> Option<PrivateConnector> {
+        self.private.clone()
+    }
+
+    pub(crate) fn phase_outcomes(&self) -> Option<&PhaseOutcomes> {
+        self.phases.as_ref()
+    }
+    pub(crate) fn ledger(&self) -> &Ledger {
+        &self.outcomes
+    }
+
+    #[cfg(all(
+        feature = "tunnel-kernel",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
+    pub(crate) fn prepare_kernel(
+        &self,
+        bank: Arc<Semaphore>,
+        info: &crate::tunnel::TunnelInfo,
+        deadline: tokio::time::Instant,
+    ) -> Result<KernelRuntime, TunnelError> {
+        KernelRuntime::prepare(self, bank, Self::kernel_plan(info)?, deadline)
+    }
+
+    #[cfg(all(test, feature = "tunnel-kernel", target_os = "windows"))]
+    pub(crate) fn prepare_kernel_scripted(
+        &self,
+        bank: Arc<Semaphore>,
+        info: &crate::tunnel::TunnelInfo,
+        deadline: tokio::time::Instant,
+        script: &WindowsScript,
+    ) -> Result<KernelRuntime, TunnelError> {
+        KernelRuntime::prepare_scripted(
+            self,
+            bank,
+            Self::kernel_plan(info)?,
+            deadline,
+            script.allocator(),
+        )
+    }
+
+    #[cfg(all(
+        feature = "tunnel-kernel",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
+    fn kernel_plan(info: &crate::tunnel::TunnelInfo) -> Result<KernelPlan, TunnelError> {
+        let parse = |address: &str| {
+            address.parse::<std::net::Ipv6Addr>().map_err(|source| {
+                TunnelError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    source,
+                ))
+            })
+        };
+        Ok(KernelPlan {
+            client: parse(&info.client_address)?,
+            server: parse(&info.server_address)?,
+            mtu: ValidatedMtu::new(info.client_mtu)?.as_u16(),
+            prefix: PREFIX_LEN,
+        })
+    }
+
+    /// The original transport pair survives a successful backend handoff.
+    /// The private listener and smoltcp joins normally finish at that boundary.
+    pub(crate) fn transport_is_alive(&self) -> bool {
+        self.launch.opened()
+            && self.task_handles.all_installed()
+            && !self.outcomes.is_runtime_stopped()
+            && (0..2).all(|index| {
+                self.task_handles
+                    .get(index)
+                    .is_some_and(|task| !task.is_finished())
+            })
+    }
+
+    pub(crate) fn open_public(&self) {
+        if let Some(private) = &self.private {
+            private.open_public();
+        }
+    }
+
+    pub(crate) fn private_work_result(&self) -> Result<(), TunnelError> {
+        self.outcomes.work_result()?;
+        if !self.is_alive() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn private_interrupted(&self) -> TunnelError {
+        self.launch.finished().await;
+        if let Err(original) = self.private_work_result() {
+            return original;
+        }
+        let mut stop = self.stop.subscribe();
+        tokio::select! {
+            biased;
+            _ = self.task_handles.get(0).expect("original packet reader").join() => {},
+            _ = self.task_handles.get(1).expect("original packet writer").join() => {},
+            _ = self.task_handles.get(2).expect("original private engine").join() => {},
+            _ = self.task_handles.get(3).expect("original private listener").join() => {},
+            _ = stop.changed() => {},
+        }
+        self.outcomes
+            .work_result()
+            .err()
+            .unwrap_or_else(|| std::io::Error::other(crate::OperationCancelled::new()).into())
+    }
+
+    /// Only the original transport pair is persistent after private quiescence.
+    /// Collect its actual completion before selecting a cancellation fallback.
+    pub(crate) async fn transport_interrupted(&self) -> TunnelError {
+        self.launch.finished().await;
+        if let Err(original) = self.outcomes.work_result() {
+            return original;
+        }
+        let mut stop = self.stop.subscribe();
+        tokio::select! {
+            biased;
+            _ = self.task_handles.get(0).expect("original packet reader").join() => {},
+            _ = self.task_handles.get(1).expect("original packet writer").join() => {},
+            _ = stop.changed() => {},
+        }
+        self.outcomes
+            .work_result()
+            .err()
+            .unwrap_or_else(|| std::io::Error::other(crate::OperationCancelled::new()).into())
+    }
+
+    /// Join only the private producers; the same transport pair stays alive.
+    /// The caller's existing absolute deadline covers this whole transition.
+    pub(super) async fn quiesce_backend(&self) -> Result<PortLease, TunnelError> {
+        self.launch.finished().await;
+        self.outcomes.work_result()?;
+        if self.outcomes.is_runtime_stopped() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        self.backend.close_listener();
+        self.task_handles
+            .get(3)
+            .expect("installed original listener")
+            .join()
+            .await;
+        self.clients.drain().await;
+        self.outcomes.work_result()?;
+        self.backend.quiesce();
+        self.task_handles
+            .get(2)
+            .expect("installed original smoltcp")
+            .join()
+            .await;
+        self.outcomes.work_result()?;
+        if self.outcomes.is_runtime_stopped() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        self.backend.lease()
+    }
+
+    pub(crate) async fn quiesce_and_flush(&self) -> Result<PortLease, TunnelError> {
+        let mut lease = self.quiesce_backend().await?;
+        let writer = self.task_handles.get(1).expect("installed original writer");
+        let flushed = tokio::select! {
+            biased;
+            result = lease.port().outgoing.flush_barrier(&self.outcomes, &self.stop) => result,
+            _ = writer.join() => {
+                self.outcomes.work_result()?;
+                Err(TunnelError::Io(std::io::Error::other(crate::OperationCancelled::new())))
+            }
+        };
+        if flushed.is_err() {
+            // A writer panic/normal terminal state is not a flush ACK. Collect
+            // its actual typed completion before choosing the local fallback.
+            writer.join().await;
+            self.outcomes.work_result()?;
+        }
+        flushed?;
+        self.outcomes.work_result()?;
+        if self.outcomes.is_runtime_stopped() {
+            return Err(std::io::Error::other(crate::OperationCancelled::new()).into());
+        }
+        Ok(lease)
+    }
+
+    pub(crate) fn request_stop(&self) {
+        if let Some(private) = &self.private {
+            private.seal();
+        }
+        let _abort = launch::AbortInstalled::first_three(&self.task_handles);
+        self.outcomes.request_runtime_stop();
+        self.stop.send_replace(());
+        self.launch.cancel();
+        // Listener remains owned/running long enough to drain its child set.
+    }
+
+    /// Stop and join all four workers and proxy children under one cooperative
+    /// absolute budget, starting at this call before the future is polled.
+    /// Join-mutex waits share it. Zero requests stop and returns native expiry;
+    /// overflow returns InvalidInput without stopping. Retain the owner to retry
+    /// unfinished joins after timeout or caller-future Drop. Native failures
+    /// remain errors after recovery. Final Drop requests cancellation only.
+    pub fn shutdown(
+        &self,
+        budget: Duration,
+    ) -> impl std::future::Future<Output = Result<(), TunnelError>> + Send + '_ {
+        let deadline = owner::deadline(budget);
+        if deadline.is_ok() {
+            self.request_stop();
+        }
+        self.shutdown_until(deadline)
+    }
+
+    pub(crate) fn shutdown_until(
+        &self,
+        deadline: Result<tokio::time::Instant, TunnelError>,
+    ) -> impl std::future::Future<Output = Result<(), TunnelError>> + Send + '_ {
+        owner::join_until(deadline, &self.outcomes, async {
+            self.collect_original().await;
+            self.release_original();
+        })
+    }
+
+    /// Collect actual original joins without retiring packet/flow ownership.
+    /// A staged native owner must also finish its packet jobs before undo.
+    pub(crate) async fn collect_original(&self) {
+        self.launch.finished().await;
+        for task in &self.task_handles {
+            task.join().await;
+        }
+        self.clients.drain().await;
+    }
+
+    /// Called only after all original/native/undo joins have completed. The
+    /// exact packet mailbox and reserved descriptors die outside their guards.
+    pub(crate) fn release_original(&self) {
+        drop(self.backend.close_port());
+        if let Some(private) = &self.private {
+            private.close();
+        }
+    }
+
+    /// Observe acquired native failures/join progress without requesting stop
+    /// or polling workers. This is an immutable observation, not an attempt.
+    pub fn shutdown_status(&self) -> Result<(), TunnelError> {
+        self.outcomes.result(None)
     }
 }
 
 impl Drop for UserspaceTunDevice {
     fn drop(&mut self) {
-        for handle in self.task_handles.drain(..) {
+        for handle in self.task_handles.iter() {
             handle.abort();
         }
+        self.launch.cancel_state();
     }
 }
 
 // ── iOS packet I/O ─────────────────────────────────────────────────────────────
 
-async fn read_ios_packets<R>(reader: &mut R, payload_capacity: usize, tx: mpsc::Sender<Vec<u8>>)
+#[cfg(test)]
+async fn read_ios_packets<R>(reader: &mut R, payload_capacity: usize, tx: mpsc::Sender<OwnedBuffer>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut hdr = vec![0u8; IPV6_HEADER_LEN];
-    loop {
-        if reader.read_exact(&mut hdr).await.is_err() {
-            break;
-        }
-        let payload_len = u16::from_be_bytes([hdr[4], hdr[5]]) as usize;
-        if hdr[0] >> 4 != 6 {
-            tracing::warn!("userspace: non-IPv6 packet from iOS, skipping");
-            if !discard_bytes(reader, payload_len).await {
-                break;
-            }
-            continue;
-        }
-        if payload_len > payload_capacity {
-            tracing::warn!(
-                "userspace: IPv6 payload {payload_len} exceeds negotiated payload capacity {payload_capacity}"
-            );
-            if !discard_bytes(reader, payload_len).await {
-                break;
-            }
-            continue;
-        }
-        let packet_len = match IPV6_HEADER_LEN.checked_add(payload_len) {
-            Some(packet_len) => packet_len,
-            None => {
-                tracing::warn!("userspace: IPv6 packet length overflow");
-                break;
-            }
-        };
-        let mut pkt = Vec::with_capacity(packet_len);
-        pkt.extend_from_slice(&hdr);
-        pkt.resize(packet_len, 0);
-        if reader
-            .read_exact(&mut pkt[IPV6_HEADER_LEN..])
-            .await
-            .is_err()
-        {
-            break;
-        }
-        if tx.send(pkt).await.is_err() {
-            break;
-        }
-    }
+    let header = OwnedBuffer::zeroed(IPV6_HEADER_LEN, None).unwrap();
+    let _ = read_ios_packets_owned(reader, payload_capacity, tx, header, None).await;
 }
 
-async fn discard_bytes<R>(reader: &mut R, mut remaining: usize) -> bool
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let mut discard = [0u8; 4096];
-    while remaining > 0 {
-        let chunk_len = remaining.min(discard.len());
-        if reader.read_exact(&mut discard[..chunk_len]).await.is_err() {
-            return false;
-        }
-        remaining -= chunk_len;
-    }
-    true
-}
-
-async fn write_ios_packets<W>(writer: &mut W, mtu: ValidatedMtu, mut rx: mpsc::Receiver<Vec<u8>>)
+#[cfg(test)]
+async fn write_ios_packets<W>(writer: &mut W, mtu: ValidatedMtu, rx: mpsc::Receiver<OwnedBuffer>)
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    while let Some(pkt) = rx.recv().await {
-        if pkt.len() > mtu.as_usize() {
-            tracing::warn!(
-                "userspace: generated IPv6 packet length {} exceeds negotiated MTU {}",
-                pkt.len(),
-                mtu.as_u16()
-            );
-            continue;
-        }
-        if writer.write_all(&pkt).await.is_err() {
-            break;
-        }
-    }
+    let _ = write_ios_packets_owned(writer, mtu, rx, None).await;
 }
 
 // ── smoltcp event loop ─────────────────────────────────────────────────────────
@@ -355,58 +903,139 @@ fn take_ephemeral_port(cursor: &mut u16, mut in_use: impl FnMut(u16) -> bool) ->
 async fn run_smoltcp(
     client_ipv6: Ipv6Address,
     mtu: ValidatedMtu,
-    mut ios_rx: mpsc::Receiver<Vec<u8>>,
-    ios_tx: mpsc::Sender<Vec<u8>>,
-    mut conn_req_rx: mpsc::Receiver<ConnRequest>,
-) {
-    let mut device = ChannelDevice {
+    packets: packet_link::PacketPort,
+    conn_req_rx: mpsc::Receiver<ConnRequest>,
+    storage: RuntimeStorage,
+    backend: &BackendControl,
+) -> Option<packet_link::PacketPort> {
+    let packet_link::PacketPort {
+        incoming: mut ios_rx,
+        outgoing: ios_tx,
+    } = packets;
+    // This inner future owns the original socket/device/fee scope. Its drop
+    // glue finishes before the same unique port is reassembled and returned.
+    let quiesced = run_smoltcp_inner(
+        client_ipv6,
         mtu,
-        rx_buf: VecDeque::new(),
-        tx_buf: VecDeque::new(),
-    };
+        &mut ios_rx,
+        &ios_tx,
+        conn_req_rx,
+        storage,
+        backend,
+    )
+    .await;
+    quiesced.then_some(packet_link::PacketPort {
+        incoming: ios_rx,
+        outgoing: ios_tx,
+    })
+}
+
+async fn run_smoltcp_inner(
+    client_ipv6: Ipv6Address,
+    mtu: ValidatedMtu,
+    ios_rx: &mut mpsc::Receiver<OwnedBuffer>,
+    ios_tx: &packet_link::PacketSender,
+    mut conn_req_rx: mpsc::Receiver<ConnRequest>,
+    storage: RuntimeStorage,
+    backend: &BackendControl,
+) -> bool {
+    let mut device = ChannelDevice::new(mtu, storage.clone());
     let config = Config::new(HardwareAddress::Ip);
     let mut iface = Interface::new(config, &mut device, smol_now());
     iface.update_ip_addrs(|addrs| {
         let _ = addrs.push(IpCidr::new(IpAddress::Ipv6(client_ipv6), PREFIX_LEN));
     });
 
-    let mut sockets = SocketSet::new(vec![]);
-    let mut connections: HashMap<SocketHandle, ConnState> = HashMap::new();
+    // Declare the fee owners before sockets: SocketSet drops first on normal,
+    // cancelled or unwinding exits, and explicit removal follows the same order.
+    let mut connections: OwnedQueue<(SocketHandle, ConnState)> =
+        OwnedQueue::new(storage.bank.as_ref());
+    let mut sockets = SocketSlots::new(storage.bank.as_ref());
     let mut ephemeral_port: u16 = EPHEMERAL_PORT_MIN;
-    let mut pending_ios_tx = VecDeque::new();
+    let mut pending_ios_tx = OwnedQueue::new(storage.bank.as_ref());
 
     loop {
+        if storage.stopped() {
+            return false;
+        }
+        if backend.is_quiescing() {
+            // No further iface.poll produces packets after this boundary.
+            // Keep each already emitted buffer in this original worker while
+            // waiting for the same egress FIFO; only whole-runtime stop cancels.
+            let mut stop = storage.stop.subscribe();
+            while let Some(packet) = pending_ios_tx
+                .pop_front()
+                .or_else(|| device.tx_buf.pop_front())
+            {
+                tokio::select! {
+                    biased;
+                    sent = ios_tx.send(packet) => {
+                        if sent.is_err() { return false; }
+                    }
+                    _ = stop.changed() => return false,
+                }
+            }
+            return true;
+        }
         let mut made_progress = false;
 
         while let Ok(pkt) = ios_rx.try_recv() {
             tracing::trace!("userspace: rx packet {} bytes from iOS", pkt.len());
-            device.rx_buf.push_back(pkt);
+            if let Err((original, packet)) = device.rx_buf.push_back(pkt) {
+                storage.fail(ParentRole::Smoltcp, original);
+                drop(packet);
+                return false;
+            }
             made_progress = true;
         }
 
         while let Ok(req) = conn_req_rx.try_recv() {
             tracing::info!(
-                "userspace: new conn request to [{:?}]:{}",
-                req.remote_ip,
-                req.remote_port
+                remote = %crate::redaction::diagnostic_id(&req.remote_ip.to_string()),
+                port = req.remote_port,
+                "userspace: new conn request"
             );
-            let rx_buf = tcp::SocketBuffer::new(vec![0u8; SOCKET_BUFFER_BYTES]);
-            let tx_buf = tcp::SocketBuffer::new(vec![0u8; SOCKET_BUFFER_BYTES]);
+            // All fallible connection backing work ends before any socket
+            // buffer is allocated or transferred to SocketSet. Later insertion
+            // is reserved and cannot drop fees inside a failed queue admission.
+            if let Err(original) = connections.prepare_push() {
+                storage.fail(ParentRole::Smoltcp, original);
+                return false;
+            }
+            if let Err(original) = sockets.prepare_add() {
+                storage.fail(ParentRole::Smoltcp, original);
+                return false;
+            }
+            let (rx, tx, socket_fees) =
+                match socket_buffers(storage.bank.as_ref(), SOCKET_BUFFER_BYTES) {
+                    Ok(buffers) => buffers,
+                    Err(original) => {
+                        storage.fail(ParentRole::Smoltcp, original);
+                        return false;
+                    }
+                };
+            let rx_buf = tcp::SocketBuffer::new(rx);
+            let tx_buf = tcp::SocketBuffer::new(tx);
             let mut socket = tcp::Socket::new(rx_buf, tx_buf);
             socket.set_timeout(Some(smoltcp::time::Duration::from_secs(30)));
             socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(1)));
-            let Some(local_port) = take_ephemeral_port(&mut ephemeral_port, |port| {
-                connections.keys().any(|&handle| {
-                    sockets
-                        .get::<tcp::Socket>(handle)
-                        .local_endpoint()
-                        .is_some_and(|endpoint| endpoint.port == port)
+            let local_port = req.source_port.or_else(|| {
+                take_ephemeral_port(&mut ephemeral_port, |port| {
+                    connections.iter().any(|(handle, _)| {
+                        let handle = *handle;
+                        sockets.with_set(|set| {
+                            set.get::<tcp::Socket>(handle)
+                                .local_endpoint()
+                                .is_some_and(|endpoint| endpoint.port == port)
+                        })
+                    })
                 })
-            }) else {
+            });
+            let Some(local_port) = local_port else {
                 tracing::error!(
-                    "userspace: no free ephemeral port for [{:?}]:{}",
-                    req.remote_ip,
-                    req.remote_port
+                    remote = %crate::redaction::diagnostic_id(&req.remote_ip.to_string()),
+                    port = req.remote_port,
+                    "userspace: no free ephemeral port"
                 );
                 continue;
             };
@@ -414,17 +1043,16 @@ async fn run_smoltcp(
             match socket.connect(iface.context(), remote_ep, local_port) {
                 Ok(()) => {
                     tracing::debug!("userspace: socket connected state={:?}", socket.state());
-                    let handle = sockets.add(socket);
-                    connections.insert(
-                        handle,
-                        ConnState {
-                            from_client: req.from_client,
-                            to_client: req.to_client,
-                            connected: Some(req.connected),
-                            pending_to_client: VecDeque::new(),
-                            pending_from_client: VecDeque::new(),
-                        },
-                    );
+                    let handle = sockets.with_set(|set| set.add(socket));
+                    let state = ConnState {
+                        from_client: req.from_client,
+                        to_client: req.to_client,
+                        connected: Some(req.connected),
+                        pending_to_client: OwnedQueue::new(storage.bank.as_ref()),
+                        pending_from_client: OwnedQueue::new(storage.bank.as_ref()),
+                        _socket_fees: socket_fees,
+                    };
+                    connections.push_reserved((handle, state));
                     made_progress = true;
                 }
                 Err(e) => {
@@ -433,106 +1061,142 @@ async fn run_smoltcp(
             }
         }
 
-        iface.poll(smol_now(), &mut device, &mut sockets);
+        sockets.with_set(|set| iface.poll(smol_now(), &mut device, set));
+        if storage.stopped() {
+            return false;
+        }
 
         while let Some(pkt) = device.tx_buf.pop_front() {
-            tracing::trace!(
-                "userspace: tx packet {} bytes to iOS, src={:?} dst={:?}",
-                pkt.len(),
-                pkt.get(8..24).map(|b| format!("{:02x?}", b)),
-                pkt.get(24..40).map(|b| format!("{:02x?}", b))
-            );
+            tracing::trace!("userspace: tx packet {} bytes to iOS", pkt.len());
             match ios_tx.try_send(pkt) {
                 Ok(()) => {
                     made_progress = true;
                 }
                 Err(mpsc::error::TrySendError::Full(pkt)) => {
-                    pending_ios_tx.push_back(pkt);
+                    if let Err((original, packet)) = pending_ios_tx.push_back(pkt) {
+                        storage.fail(ParentRole::Smoltcp, original);
+                        drop(packet);
+                        return false;
+                    }
                     break;
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     tracing::debug!("userspace: iOS packet writer closed");
-                    return;
+                    return false;
                 }
             }
         }
-        made_progress |= flush_channel_queue(&ios_tx, &mut pending_ios_tx);
+        made_progress |= flush_channel_queue(ios_tx, &mut pending_ios_tx);
 
-        let mut to_remove = Vec::new();
-        for (&handle, state) in &mut connections {
-            let socket = sockets.get_mut::<tcp::Socket>(handle);
-            tracing::trace!(
-                "userspace: socket state={:?} can_send={} can_recv={} is_open={}",
-                socket.state(),
-                socket.can_send(),
-                socket.can_recv(),
-                socket.is_open()
-            );
+        let mut to_remove = OwnedQueue::new(storage.bank.as_ref());
+        let socket_result = sockets.with_set(|set| -> Result<(), ()> {
+            for (handle, state) in connections.iter_mut() {
+                let handle = *handle;
+                let socket = set.get_mut::<tcp::Socket>(handle);
+                tracing::trace!(
+                    "userspace: socket state={:?} can_send={} can_recv={} is_open={}",
+                    socket.state(),
+                    socket.can_send(),
+                    socket.can_recv(),
+                    socket.is_open()
+                );
 
-            // Notify proxy_local_client when TCP connection is established
-            if socket.state() == tcp::State::Established {
-                if let Some(tx) = state.connected.take() {
-                    let _ = tx.send(());
-                    made_progress = true;
+                // Notify proxy_local_client when TCP connection is established
+                if socket.state() == tcp::State::Established {
+                    if let Some(tx) = state.connected.take() {
+                        let _ = tx.send(());
+                        made_progress = true;
+                    }
                 }
-            }
-            made_progress |= flush_channel_queue(&state.to_client, &mut state.pending_to_client);
-            if state.pending_to_client.is_empty() {
-                while socket.can_recv() {
-                    let mut buf = vec![0u8; SOCKET_RECV_CHUNK_BYTES];
-                    match socket.recv_slice(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            buf.truncate(n);
-                            tracing::trace!("userspace: from_device {} bytes", n);
-                            match state.to_client.try_send(buf) {
-                                Ok(()) => {
-                                    made_progress = true;
-                                }
-                                Err(mpsc::error::TrySendError::Full(buf)) => {
-                                    state.pending_to_client.push_back(buf);
-                                    break;
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    tracing::debug!(
-                                        "userspace: local client receive channel closed"
-                                    );
-                                    socket.close();
-                                    break;
+                made_progress |=
+                    flush_channel_queue(&state.to_client, &mut state.pending_to_client);
+                if state.pending_to_client.is_empty() {
+                    while socket.can_recv() {
+                        let mut buf = match OwnedBuffer::zeroed(
+                            SOCKET_RECV_CHUNK_BYTES,
+                            storage.bank.as_ref(),
+                        ) {
+                            Ok(buffer) => buffer,
+                            Err(original) => {
+                                storage.fail(ParentRole::Smoltcp, original);
+                                return Err(());
+                            }
+                        };
+                        match socket.recv_slice(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                buf.truncate(n);
+                                tracing::trace!("userspace: from_device {} bytes", n);
+                                match state.to_client.try_send(buf) {
+                                    Ok(()) => {
+                                        made_progress = true;
+                                    }
+                                    Err(mpsc::error::TrySendError::Full(buf)) => {
+                                        if let Err((original, buffer)) =
+                                            state.pending_to_client.push_back(buf)
+                                        {
+                                            storage.fail(ParentRole::Smoltcp, original);
+                                            drop(buffer);
+                                            return Err(());
+                                        }
+                                        break;
+                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                                        tracing::debug!(
+                                            "userspace: local client receive channel closed"
+                                        );
+                                        socket.close();
+                                        break;
+                                    }
                                 }
                             }
+                            Err(_) => break,
                         }
-                        Err(_) => break,
                     }
                 }
-            }
-            made_progress |= flush_socket_send(socket, &mut state.pending_from_client);
-            if state.pending_from_client.is_empty() && socket.can_send() {
-                loop {
-                    let data = match state.from_client.try_recv() {
-                        Ok(data) => data,
-                        Err(mpsc::error::TryRecvError::Empty) => break,
-                        Err(mpsc::error::TryRecvError::Disconnected) => {
-                            socket.close();
+                made_progress |= flush_socket_send(socket, &mut state.pending_from_client);
+                if state.pending_from_client.is_empty() && socket.can_send() {
+                    loop {
+                        let data = match state.from_client.try_recv() {
+                            Ok(data) => data,
+                            Err(mpsc::error::TryRecvError::Empty) => break,
+                            Err(mpsc::error::TryRecvError::Disconnected) => {
+                                socket.close();
+                                break;
+                            }
+                        };
+                        tracing::trace!("userspace: to_device {} bytes via socket", data.len());
+                        if let Err((original, buffer)) = state.pending_from_client.push_back(data) {
+                            storage.fail(ParentRole::Smoltcp, original);
+                            drop(buffer);
+                            return Err(());
+                        }
+                        made_progress |= flush_socket_send(socket, &mut state.pending_from_client);
+                        if !state.pending_from_client.is_empty() || !socket.can_send() {
                             break;
                         }
-                    };
-                    tracing::trace!("userspace: to_device {} bytes via socket", data.len());
-                    state.pending_from_client.push_back(data);
-                    made_progress |= flush_socket_send(socket, &mut state.pending_from_client);
-                    if !state.pending_from_client.is_empty() || !socket.can_send() {
-                        break;
+                    }
+                }
+                if !socket.is_open() {
+                    tracing::debug!("userspace: socket closed state={:?}", socket.state());
+                    if let Err((original, _)) = to_remove.push_back(handle) {
+                        storage.fail(ParentRole::Smoltcp, original);
+                        return Err(());
                     }
                 }
             }
-            if !socket.is_open() {
-                tracing::debug!("userspace: socket closed state={:?}", socket.state());
-                to_remove.push(handle);
-            }
+            Ok(())
+        });
+        if socket_result.is_err() {
+            return false;
         }
-        for h in to_remove {
-            connections.remove(&h);
-            sockets.remove(h);
+        while let Some(handle) = to_remove.pop_front() {
+            sockets.with_set(|set| drop(set.remove(handle)));
+            let index = connections
+                .iter()
+                .position(|(current, _)| *current == handle)
+                .expect("original socket connection owner");
+            drop(connections.remove(index));
         }
 
         if made_progress {
@@ -540,15 +1204,25 @@ async fn run_smoltcp(
             continue;
         }
 
-        tokio::time::sleep(smoltcp_poll_sleep_duration(
-            iface.poll_delay(smol_now(), &sockets),
-            !connections.is_empty(),
-        ))
-        .await;
+        let mut stop = storage.stop.subscribe();
+        if storage.stopped() {
+            return false;
+        }
+        tokio::select! {
+            biased;
+            _ = stop.changed() => return false,
+            _ = backend.quiescing() => {},
+            _ = tokio::time::sleep(smoltcp_poll_sleep_duration(
+                sockets.with_set(|set| iface.poll_delay(smol_now(), set)), !connections.is_empty(),
+            )) => {},
+        }
     }
 }
 
-fn flush_channel_queue(tx: &mpsc::Sender<Vec<u8>>, pending: &mut VecDeque<Vec<u8>>) -> bool {
+fn flush_channel_queue<T>(
+    tx: &impl packet_link::TrySender<T>,
+    pending: &mut OwnedQueue<T>,
+) -> bool {
     let mut made_progress = false;
     while let Some(buf) = pending.pop_front() {
         match tx.try_send(buf) {
@@ -556,7 +1230,7 @@ fn flush_channel_queue(tx: &mpsc::Sender<Vec<u8>>, pending: &mut VecDeque<Vec<u8
                 made_progress = true;
             }
             Err(mpsc::error::TrySendError::Full(buf)) => {
-                pending.push_front(buf);
+                pending.push_front_reserved(buf);
                 break;
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -568,10 +1242,10 @@ fn flush_channel_queue(tx: &mpsc::Sender<Vec<u8>>, pending: &mut VecDeque<Vec<u8
     made_progress
 }
 
-fn flush_socket_send(socket: &mut tcp::Socket, pending: &mut VecDeque<Vec<u8>>) -> bool {
+fn flush_socket_send(socket: &mut tcp::Socket, pending: &mut OwnedQueue<OwnedBuffer>) -> bool {
     let mut made_progress = false;
     while socket.can_send() {
-        let Some(buf) = pending.pop_front() else {
+        let Some(mut buf) = pending.pop_front() else {
             break;
         };
         match socket.send_slice(&buf) {
@@ -580,13 +1254,14 @@ fn flush_socket_send(socket: &mut tcp::Socket, pending: &mut VecDeque<Vec<u8>>) 
             }
             Ok(sent) => {
                 if sent < buf.len() {
-                    pending.push_front(buf[sent..].to_vec());
+                    buf.advance(sent);
+                    pending.push_front_reserved(buf);
                 }
                 made_progress |= sent > 0;
                 break;
             }
             Err(_) => {
-                pending.push_front(buf);
+                pending.push_front_reserved(buf);
                 break;
             }
         }
@@ -596,84 +1271,279 @@ fn flush_socket_send(socket: &mut tcp::Socket, pending: &mut VecDeque<Vec<u8>>) 
 
 // ── Local TCP listener (go-ios compatible protocol) ────────────────────────────
 
-async fn run_local_listener(listener: TcpListener, conn_req_tx: mpsc::Sender<ConnRequest>) {
-    run_local_listener_with_limit(
+struct ListenerLimits {
+    permits: ListenerSlots,
+    preamble_timeout: Duration,
+}
+
+struct ListenerControl {
+    stop: watch::Receiver,
+    private: Option<BackendControl>,
+    access: Option<PrivateConnector>,
+}
+
+#[derive(Clone)]
+enum ListenerSlots {
+    Legacy(Arc<Semaphore>),
+    Metered(mpsc::Slots),
+}
+enum ListenerPermit {
+    Legacy { _permit: OwnedSemaphorePermit },
+    Metered { _permit: mpsc::SlotPermit },
+}
+impl ListenerSlots {
+    fn new(capacity: usize, bank: Option<&Arc<Semaphore>>) -> Result<Self, TunnelError> {
+        match bank {
+            Some(bank) => mpsc::Slots::with_metadata(capacity, bank).map(Self::Metered),
+            None => Ok(Self::Legacy(Arc::new(Semaphore::new(capacity)))),
+        }
+    }
+    fn try_acquire_owned(self) -> Result<ListenerPermit, tokio::sync::TryAcquireError> {
+        match self {
+            Self::Legacy(slots) => slots
+                .try_acquire_owned()
+                .map(|permit| ListenerPermit::Legacy { _permit: permit }),
+            Self::Metered(slots) => slots
+                .try_acquire_owned()
+                .map(|permit| ListenerPermit::Metered { _permit: permit }),
+        }
+    }
+}
+
+async fn run_local_listener_owned(
+    listener: TcpListener,
+    conn_req_tx: mpsc::Sender<ConnRequest>,
+    control: ListenerControl,
+    clients: SharedChildTaskSet,
+    outcomes: Ledger,
+    storage: RuntimeStorage,
+    permits: ListenerSlots,
+) {
+    run_local_listener_with_limit_storage(
         listener,
         conn_req_tx,
-        MAX_LOCAL_PROXY_CLIENTS,
-        LOCAL_PROXY_PREAMBLE_TIMEOUT,
+        ListenerLimits {
+            permits,
+            preamble_timeout: LOCAL_PROXY_PREAMBLE_TIMEOUT,
+        },
+        control,
+        clients,
+        outcomes,
+        storage,
     )
     .await;
 }
 
+#[cfg(test)]
 async fn run_local_listener_with_limit(
     listener: TcpListener,
     conn_req_tx: mpsc::Sender<ConnRequest>,
     max_clients: usize,
     preamble_timeout: Duration,
 ) {
-    let permits = Arc::new(Semaphore::new(max_clients));
-    let mut client_tasks = JoinSet::new();
+    let outcomes = Ledger::new();
+    let clients = SharedChildTaskSet::new(outcomes.clone(), ChildRole::ProxyClient);
+    let (_stop, receiver) = watch::channel(outcomes.clone());
+    run_local_listener_with_limit_owned(
+        listener,
+        conn_req_tx,
+        max_clients,
+        preamble_timeout,
+        receiver,
+        clients,
+        outcomes,
+    )
+    .await;
+}
+
+#[cfg(test)]
+async fn run_local_listener_with_limit_owned(
+    listener: TcpListener,
+    conn_req_tx: mpsc::Sender<ConnRequest>,
+    max_clients: usize,
+    preamble_timeout: Duration,
+    stop: watch::Receiver,
+    clients: SharedChildTaskSet,
+    outcomes: Ledger,
+) {
+    run_local_listener_with_limit_storage(
+        listener,
+        conn_req_tx,
+        ListenerLimits {
+            permits: ListenerSlots::new(max_clients, None).expect("legacy slot constructor"),
+            preamble_timeout,
+        },
+        ListenerControl {
+            stop,
+            private: None,
+            access: None,
+        },
+        clients,
+        outcomes,
+        RuntimeStorage::unmetered(),
+    )
+    .await;
+}
+
+async fn run_local_listener_with_limit_storage(
+    listener: TcpListener,
+    conn_req_tx: mpsc::Sender<ConnRequest>,
+    limits: ListenerLimits,
+    control: ListenerControl,
+    clients: SharedChildTaskSet,
+    outcomes: Ledger,
+    storage: RuntimeStorage,
+) {
+    let ListenerControl {
+        mut stop,
+        private,
+        access,
+    } = control;
+    let ListenerLimits {
+        permits,
+        preamble_timeout,
+    } = limits;
+    let mut client_tasks = clients.lock().await;
 
     loop {
         tokio::select! {
             biased;
+            _ = stop.changed() => break,
+            _ = async {
+                match &private {
+                    Some(control) => control.listener_closed().await,
+                    None => std::future::pending().await,
+                }
+            } => break,
             _ = conn_req_tx.closed() => break,
             joined = client_tasks.join_next(), if !client_tasks.is_empty() => {
                 if let Some(Err(error)) = joined {
-                    tracing::debug!("userspace: local proxy task exited with error: {error}");
+                    tracing::debug!(error = %crate::redaction::diagnostic_error(&error), "userspace: local proxy task exited with error");
                 }
             }
             accepted = listener.accept() => {
-                let Ok((client, peer)) = accepted else {
-                    break;
+                let (client, peer) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        // Capture the acquired native primary before child joins.
+                        outcomes.record_work(3, Arc::new(TunnelError::Io(error)));
+                        break;
+                    }
+                };
+                let authorization = match &access {
+                    Some(access) => match access.claim(peer) {
+                        Some(authorization) => authorization,
+                        None => { drop(client); continue; }
+                    },
+                    None => private_connect::Access::Public,
                 };
                 let permit = match permits.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
-                        tracing::debug!("userspace: rejecting local connection from {peer}: proxy limit reached");
+                        tracing::debug!(peer = %crate::redaction::diagnostic_id(&peer.to_string()), "userspace: rejecting local connection: proxy limit reached");
                         // Dropping the stream sends a connection reset/FIN without
                         // allowing an excess client to consume an unbounded task.
                         drop(client);
                         continue;
                     }
                 };
-                tracing::info!("userspace: local connection from {peer}");
+                tracing::info!(peer = %crate::redaction::diagnostic_id(&peer.to_string()), "userspace: local connection");
                 let tx = conn_req_tx.clone();
-                client_tasks.spawn(async move {
-                    handle_local_client(client, tx, permit, preamble_timeout).await;
-                });
+                let client_storage = storage.clone();
+                let future = async move {
+                    handle_local_client_storage(client, tx, permit, preamble_timeout, client_storage, authorization).await;
+                };
+                match PreparedWorker::prepare(future, storage.bank.as_ref()) {
+                    Ok(prepared) => prepared.spawn_child(&mut client_tasks),
+                    Err(original) => {
+                        storage.fail(ParentRole::Listener, original);
+                        break;
+                    }
+                }
             }
         }
     }
+    drop(listener);
+    client_tasks.abort_all();
+    while client_tasks.join_next().await.is_some() {}
 }
 
+#[cfg(test)]
 async fn handle_local_client(
-    mut client: tokio::net::TcpStream,
+    client: tokio::net::TcpStream,
     conn_req_tx: mpsc::Sender<ConnRequest>,
-    _permit: OwnedSemaphorePermit,
+    permit: OwnedSemaphorePermit,
     preamble_timeout: Duration,
 ) {
-    let (remote_ip, remote_port) =
-        match tokio::time::timeout(preamble_timeout, read_proxy_preamble(&mut client)).await {
-            Ok(Ok(remote)) => remote,
-            Ok(Err(error)) => {
-                tracing::debug!("userspace: local proxy preamble read failed: {error}");
+    handle_local_client_storage(
+        client,
+        conn_req_tx,
+        ListenerPermit::Legacy { _permit: permit },
+        preamble_timeout,
+        RuntimeStorage::unmetered(),
+        private_connect::Access::Public,
+    )
+    .await;
+}
+
+async fn handle_local_client_storage(
+    mut client: tokio::net::TcpStream,
+    conn_req_tx: mpsc::Sender<ConnRequest>,
+    _permit: ListenerPermit,
+    preamble_timeout: Duration,
+    storage: RuntimeStorage,
+    authorization: private_connect::Access,
+) {
+    let (remote_ip, remote_port, connect_ack) = match tokio::time::timeout(
+        preamble_timeout,
+        read_proxy_preamble(&mut client),
+    )
+    .await
+    {
+        Ok(Ok(remote)) => remote,
+        Ok(Err(error)) => {
+            tracing::debug!(error = %crate::redaction::diagnostic_error(&error), "userspace: local proxy preamble read failed");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!(
+                "userspace: local proxy preamble timed out after {} ms",
+                preamble_timeout.as_millis()
+            );
+            return;
+        }
+    };
+
+    let source_port = match authorization {
+        private_connect::Access::Public => None,
+        private_connect::Access::Private {
+            endpoint,
+            source_port,
+        } => {
+            if remote_ip != Ipv6Address::from_bytes(&endpoint.ip().octets())
+                || remote_port != endpoint.port()
+            {
                 return;
             }
-            Err(_) => {
-                tracing::debug!(
-                    "userspace: local proxy preamble timed out after {} ms",
-                    preamble_timeout.as_millis()
-                );
-                return;
-            }
-        };
+            Some(source_port)
+        }
+    };
 
-    tracing::info!("userspace: tunneling to [{remote_ip}]:{remote_port}");
+    tracing::info!(remote = %crate::redaction::diagnostic_id(&remote_ip.to_string()), port = remote_port, "userspace: tunneling");
 
-    let (from_client_tx, from_client_rx) = mpsc::channel::<Vec<u8>>(LOCAL_PROXY_CHANNEL_CAPACITY);
-    let (to_client_tx, to_client_rx) = mpsc::channel::<Vec<u8>>(LOCAL_PROXY_CHANNEL_CAPACITY);
+    let channels = (|| -> Result<_, TunnelError> {
+        Ok((
+            mpsc::with_bank::<OwnedBuffer>(LOCAL_PROXY_CHANNEL_CAPACITY, storage.bank.as_ref())?,
+            mpsc::with_bank::<OwnedBuffer>(LOCAL_PROXY_CHANNEL_CAPACITY, storage.bank.as_ref())?,
+        ))
+    })();
+    let ((from_client_tx, from_client_rx), (to_client_tx, to_client_rx)) = match channels {
+        Ok(channels) => channels,
+        Err(original) => {
+            storage.fail(ParentRole::Smoltcp, original);
+            return;
+        }
+    };
     let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
 
     let req = ConnRequest {
@@ -682,52 +1552,85 @@ async fn handle_local_client(
         from_client: from_client_rx,
         to_client: to_client_tx,
         connected: connected_tx,
+        source_port,
     };
     if conn_req_tx.send(req).await.is_err() {
         return;
     }
 
-    proxy_local_client(client, from_client_tx, to_client_rx, connected_rx).await;
+    proxy_local_client(
+        client,
+        from_client_tx,
+        to_client_rx,
+        connected_rx,
+        storage,
+        connect_ack,
+    )
+    .await;
 }
 
 async fn read_proxy_preamble(
     client: &mut tokio::net::TcpStream,
-) -> std::io::Result<(Ipv6Address, u16)> {
+) -> std::io::Result<(Ipv6Address, u16, bool)> {
     let mut preamble = [0u8; LOCAL_PROXY_PREAMBLE_LEN];
     client.read_exact(&mut preamble).await?;
     let remote_port = u32::from_le_bytes(preamble[16..20].try_into().expect("fixed preamble"));
-    let remote_port = u16::try_from(remote_port).map_err(|_| {
-        std::io::Error::new(
+    let connect_ack = remote_port & LOCAL_PROXY_CONNECT_ACK != 0;
+    let remote_port = u16::try_from(remote_port & !LOCAL_PROXY_CONNECT_ACK).map_err(|source| {
+        crate::error::context::retained_io(
             std::io::ErrorKind::InvalidInput,
-            format!("userspace proxy port is outside u16 range: {remote_port}"),
+            "decode userspace proxy port",
+            source,
         )
     })?;
     let mut remote_addr = [0u8; 16];
     remote_addr.copy_from_slice(&preamble[..16]);
-    Ok((Ipv6Address::from_bytes(&remote_addr), remote_port))
+    Ok((
+        Ipv6Address::from_bytes(&remote_addr),
+        remote_port,
+        connect_ack,
+    ))
 }
 
 async fn proxy_local_client(
-    client: tokio::net::TcpStream,
-    to_smoltcp: mpsc::Sender<Vec<u8>>,
-    mut from_smoltcp: mpsc::Receiver<Vec<u8>>,
+    mut client: tokio::net::TcpStream,
+    to_smoltcp: mpsc::Sender<OwnedBuffer>,
+    mut from_smoltcp: mpsc::Receiver<OwnedBuffer>,
     connected: tokio::sync::oneshot::Receiver<()>,
+    storage: RuntimeStorage,
+    connect_ack: bool,
 ) {
     // Wait for TCP connection to be established before forwarding data
     // This mirrors gVisor's behavior of waiting for Connect() to complete
-    if connected.await.is_err() {
+    let established = connected.await.is_ok();
+    if connect_ack
+        && client
+            .write_all(&[if established { 0 } else { 1 }])
+            .await
+            .is_err()
+    {
+        return;
+    }
+    if !established {
         tracing::debug!("userspace: connection aborted before established");
         return;
     }
 
     let (mut r, mut w) = client.into_split();
     let read_half = async {
-        let mut buf = vec![0u8; 4096];
         loop {
+            let mut buf = match OwnedBuffer::zeroed(4096, storage.bank.as_ref()) {
+                Ok(buffer) => buffer,
+                Err(original) => {
+                    storage.fail(ParentRole::Smoltcp, original);
+                    return;
+                }
+            };
             match r.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if to_smoltcp.send(buf[..n].to_vec()).await.is_err() {
+                    buf.truncate(n);
+                    if to_smoltcp.send(buf).await.is_err() {
                         break;
                     }
                 }
@@ -745,15 +1648,413 @@ async fn proxy_local_client(
 }
 
 #[cfg(test)]
+mod connect_ack_tests;
+#[cfg(test)]
+mod shutdown_tests;
+
+#[cfg(test)]
+mod owner_storage_tests;
+
+#[cfg(test)]
+mod launch_tests;
+
+#[cfg(test)]
+mod receive_storage_tests;
+
+#[cfg(test)]
+mod transmit_storage_tests;
+
+#[cfg(test)]
 mod tests {
+    fn test_buffer(bytes: &[u8]) -> super::OwnedBuffer {
+        let mut buffer = super::OwnedBuffer::zeroed(bytes.len(), None).unwrap();
+        buffer.copy_from_slice(bytes);
+        buffer
+    }
+    #[tokio::test]
+    async fn connection_native_proxy_port_keeps_real_conversion_and_local_eof() {
+        use std::error::Error;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let caller = async move {
+                let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+                client
+                    .write_all(&proxy_preamble([0; 16], u32::MAX))
+                    .await
+                    .unwrap();
+                client.shutdown().await.unwrap();
+                let mut reply = Vec::new();
+                client.read_to_end(&mut reply).await.unwrap();
+                assert!(reply.is_empty());
+            };
+            let server = async move {
+                let (mut peer, _) = listener.accept().await.unwrap();
+                let error = super::read_proxy_preamble(&mut peer).await.unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+                assert_eq!(
+                    crate::classify_error(&error),
+                    crate::ErrorClass::InvalidInput
+                );
+                assert!(error.source().unwrap().is::<std::num::TryFromIntError>());
+                drop(peer);
+            };
+            tokio::join!(caller, server);
+        })
+        .await
+        .unwrap();
+    }
+
     use std::collections::VecDeque;
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
+    use super::mpsc;
     use tokio::io::AsyncWrite;
-    use tokio::sync::mpsc;
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifecycle_userspace_native_bind_failure_releases_stream_without_workers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncRead, ReadBuf};
+
+        const CHILD_ENV: &str = "IOS_USERSPACE_BIND_FAILURE_CHILD";
+        const TEST_NAME: &str = "tunnel::tun::userspace::tests::lifecycle_userspace_native_bind_failure_releases_stream_without_workers";
+        let isolated_child = std::env::var_os(CHILD_ENV).is_some()
+            && std::env::args().any(|argument| argument == "--exact");
+        if !isolated_child {
+            // Descriptor limits are process-wide. Only this exact child changes
+            // them; the parent harness keeps its normal limit and runtime.
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--test-threads=1"])
+                .env(CHILD_ENV, "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn isolated userspace bind-failure fixture");
+            match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+                Ok(Ok(status)) => {
+                    assert!(status.success(), "isolated userspace bind fixture failed");
+                }
+                result => {
+                    // Both a timeout and a wait error keep ownership until an
+                    // explicit kill request and a separate, bounded reap.
+                    let kill = child.start_kill();
+                    let reaped = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                    panic!(
+                        "isolated userspace bind fixture did not exit: wait={result:?}, kill={kill:?}, reap={reaped:?}"
+                    );
+                }
+            }
+            return;
+        }
+
+        struct DescriptorLimit {
+            original: libc::rlimit,
+            restored: bool,
+        }
+
+        impl DescriptorLimit {
+            fn reduce() -> Self {
+                let mut original = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                // SAFETY: a valid writable rlimit pointer is supplied.
+                assert_eq!(
+                    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
+                    0
+                );
+                let limit = libc::rlimit {
+                    rlim_cur: original.rlim_cur.min(64),
+                    rlim_max: original.rlim_max,
+                };
+                let guard = Self {
+                    original,
+                    restored: false,
+                };
+                // SAFETY: only this isolated child's soft limit is reduced;
+                // the hard limit and the valid original value are preserved.
+                assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+                guard
+            }
+
+            fn restore(mut self) {
+                // SAFETY: the original limits came from getrlimit and the
+                // hard limit was never changed by this fixture.
+                assert_eq!(
+                    unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.original) },
+                    0
+                );
+                self.restored = true;
+            }
+        }
+
+        impl Drop for DescriptorLimit {
+            fn drop(&mut self) {
+                if !self.restored {
+                    // SAFETY: restore the saved, valid limit on assertion or
+                    // other early exits. The normal path checks restoration.
+                    let _ = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.original) };
+                }
+            }
+        }
+
+        #[derive(Default)]
+        struct Probe {
+            read_polls: AtomicUsize,
+            write_polls: AtomicUsize,
+            drops: AtomicUsize,
+        }
+
+        struct TrackedStream {
+            inner: tokio::io::DuplexStream,
+            probe: Arc<Probe>,
+        }
+
+        impl AsyncRead for TrackedStream {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                let this = self.get_mut();
+                this.probe.read_polls.fetch_add(1, Ordering::SeqCst);
+                Pin::new(&mut this.inner).poll_read(cx, buf)
+            }
+        }
+
+        impl AsyncWrite for TrackedStream {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                let this = self.get_mut();
+                this.probe.write_polls.fetch_add(1, Ordering::SeqCst);
+                Pin::new(&mut this.inner).poll_write(cx, buf)
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                let this = self.get_mut();
+                this.probe.write_polls.fetch_add(1, Ordering::SeqCst);
+                Pin::new(&mut this.inner).poll_flush(cx)
+            }
+
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                let this = self.get_mut();
+                this.probe.write_polls.fetch_add(1, Ordering::SeqCst);
+                Pin::new(&mut this.inner).poll_shutdown(cx)
+            }
+        }
+
+        impl Drop for TrackedStream {
+            fn drop(&mut self) {
+                self.probe.drops.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // The current-thread runtime and its driver already exist. This
+        // stable Tokio metric is consistent here and requires no new FD.
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let baseline = metrics.num_alive_tasks();
+        let limit = DescriptorLimit::reduce();
+        let mut held_files = Vec::new();
+        loop {
+            match std::fs::File::open("/dev/null") {
+                Ok(file) => {
+                    assert!(held_files.len() < 64, "descriptor exhaustion is bounded");
+                    held_files.push(file);
+                }
+                Err(error) => {
+                    assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+                    break;
+                }
+            }
+        }
+
+        for attempt in 0..3 {
+            let (inner, mut peer) = tokio::io::duplex(128);
+            let probe = Arc::new(Probe::default());
+            let stream = TrackedStream {
+                inner,
+                probe: Arc::clone(&probe),
+            };
+            let error = UserspaceTunDevice::start("fd00::1", "fd00::2", 1280, stream)
+                .await
+                .err()
+                .expect("native listener bind must fail with no available descriptors");
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Io);
+            let native = std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .expect("native bind failure lost its IO source");
+            assert_eq!(native.raw_os_error(), Some(libc::EMFILE));
+            let TunnelError::Io(error) = error else {
+                panic!("native bind failure lost its IO error variant");
+            };
+            assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Io);
+            eprintln!(
+                "failed construction attempt={attempt}, alive={}, baseline={baseline}, drops={}, read_polls={}, write_polls={}",
+                metrics.num_alive_tasks(),
+                probe.drops.load(Ordering::SeqCst),
+                probe.read_polls.load(Ordering::SeqCst),
+                probe.write_polls.load(Ordering::SeqCst),
+            );
+            assert_eq!(
+                metrics.num_alive_tasks(),
+                baseline,
+                "failed construction spawned workers on attempt {attempt}"
+            );
+            assert_eq!(probe.drops.load(Ordering::SeqCst), 1);
+            assert_eq!(probe.read_polls.load(Ordering::SeqCst), 0);
+            assert_eq!(probe.write_polls.load(Ordering::SeqCst), 0);
+            // Keep the actual peer open: EOF must come from releasing the
+            // failed construction's owned stream, not from dropping the peer.
+            let mut byte = [0u8; 1];
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte))
+                    .await
+                    .expect("failed construction retained the duplex stream")
+                    .unwrap(),
+                0
+            );
+            tokio::task::yield_now().await;
+            assert_eq!(metrics.num_alive_tasks(), baseline);
+        }
+
+        drop(held_files);
+        limit.restore();
+
+        // A real successful bind after restoring the limit still starts all
+        // four workers. No local proxy client or physical device is involved.
+        let (inner, mut peer) = tokio::io::duplex(128);
+        let probe = Arc::new(Probe::default());
+        let stream = TrackedStream {
+            inner,
+            probe: Arc::clone(&probe),
+        };
+        let device = UserspaceTunDevice::start("fd00::1", "fd00::2", 1280, stream)
+            .await
+            .expect("userspace initialization after descriptor-limit restoration");
+        assert_ne!(device.local_port, 0);
+        assert_eq!(device.task_handles.len(), 4);
+        assert!(device.is_alive());
+        assert_eq!(metrics.num_alive_tasks(), baseline + 4);
+        assert_eq!(probe.drops.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while probe.read_polls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("successful constructor's packet reader was not polled");
+        assert!(device.is_alive());
+        drop(device);
+        // Observe this fixture's abort completion and stream release; this
+        // does not add or certify an explicit join API or device cleanup ACK.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while metrics.num_alive_tasks() != baseline || probe.drops.load(Ordering::SeqCst) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dropped successful userspace owner retained workers or stream");
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte))
+                .await
+                .expect("dropped successful userspace owner retained duplex peer")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_timeout_and_eof_diagnostics_hide_raw_partial_preamble() {
+        const CHILD_ENV: &str = "IOS_PROXY_DIAGNOSTIC_CAPTURE_CHILD";
+        const TEST_NAME: &str = "tunnel::tun::userspace::tests::proxy_timeout_and_eof_diagnostics_hide_raw_partial_preamble";
+        let isolated_child = std::env::var_os(CHILD_ENV).is_some()
+            && std::env::args().any(|argument| argument == "--exact");
+        if !isolated_child {
+            // Tracing callsite interests and maximum levels are process-wide.
+            // Capture in a dedicated harness so other parallel tests cannot
+            // change the filter while this async fixture is suspended.
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--test-threads=1"])
+                .env(CHILD_ENV, "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn isolated proxy diagnostic fixture");
+            let result = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+            if result.is_err() {
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                panic!("isolated proxy diagnostic fixture timed out");
+            }
+            assert!(
+                result
+                    .unwrap()
+                    .expect("wait for diagnostic fixture")
+                    .success(),
+                "isolated proxy diagnostic fixture failed"
+            );
+            return;
+        }
+        let (dispatch, log) = crate::redaction::test_support::capture();
+        tracing::dispatcher::set_global_default(dispatch).expect("isolated diagnostic subscriber");
+        let secret = b"secret42";
+        for eof in [false, true] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (server, _) = listener.accept().await.unwrap();
+            client.write_all(secret).await.unwrap();
+            let held_client = if eof {
+                drop(client);
+                None
+            } else {
+                Some(client)
+            };
+            let semaphore = Arc::new(Semaphore::new(1));
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let (tx, mut rx) = mpsc::channel(1);
+            *log.lock().unwrap() = Default::default();
+            handle_local_client(server, tx, permit, Duration::from_millis(20)).await;
+            let log = log.lock().unwrap();
+            assert!(!log.overflow);
+            assert!(!log.raw.contains(std::str::from_utf8(secret).unwrap()));
+            assert!(!log.raw.contains(&hex::encode(secret)));
+            assert!(!log.raw.contains(&format!("{secret:?}")));
+            assert!(
+                log.raw.contains(if eof {
+                    "preamble read failed"
+                } else {
+                    "preamble timed out"
+                }),
+                "expected lifecycle phase missing; eof={eof}, captured_bytes={}",
+                log.raw.len()
+            );
+            if eof {
+                assert!(log.raw.contains("io/UnexpectedEof error:"));
+            }
+            assert_eq!(semaphore.available_permits(), 1);
+            assert!(rx.try_recv().is_err());
+            drop(held_client);
+        }
+    }
 
     #[derive(Default)]
     struct CountingWriter {
@@ -787,8 +2088,8 @@ mod tests {
     #[tokio::test]
     async fn write_ios_packets_does_not_flush_every_packet() {
         let (tx, rx) = mpsc::channel(4);
-        tx.send(vec![1, 2, 3]).await.unwrap();
-        tx.send(vec![4, 5, 6]).await.unwrap();
+        tx.send(test_buffer(&[1, 2, 3])).await.unwrap();
+        tx.send(test_buffer(&[4, 5, 6])).await.unwrap();
         drop(tx);
 
         let mut writer = CountingWriter::default();
@@ -804,7 +2105,9 @@ mod tests {
     #[tokio::test]
     async fn write_ios_packets_drops_generated_packets_over_negotiated_mtu() {
         let (tx, rx) = mpsc::channel(2);
-        tx.send(vec![0u8; 1281]).await.unwrap();
+        tx.send(OwnedBuffer::zeroed(1281, None).unwrap())
+            .await
+            .unwrap();
         drop(tx);
 
         let mut writer = CountingWriter::default();
@@ -834,18 +2137,14 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         read_ios_packets(&mut reader, payload_capacity, tx).await;
 
-        assert_eq!(rx.recv().await.unwrap(), expected);
+        assert_eq!(&*rx.recv().await.unwrap(), expected.as_slice());
         assert!(rx.recv().await.is_none());
     }
 
     #[test]
     fn channel_device_uses_the_negotiated_mtu() {
         let mtu = ValidatedMtu::new(9000).unwrap();
-        let device = ChannelDevice {
-            mtu,
-            rx_buf: VecDeque::new(),
-            tx_buf: VecDeque::new(),
-        };
+        let device = ChannelDevice::new(mtu, RuntimeStorage::unmetered());
 
         assert_eq!(device.capabilities().max_transmission_unit, 9000);
     }
@@ -855,14 +2154,16 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1);
         tx.send(vec![9]).await.unwrap();
 
-        let mut pending = VecDeque::from([vec![1, 2, 3], vec![4, 5, 6]]);
+        let mut pending = OwnedQueue::new(None);
+        pending.push_back(vec![1, 2, 3]).unwrap();
+        pending.push_back(vec![4, 5, 6]).unwrap();
         assert!(!flush_channel_queue(&tx, &mut pending));
         assert_eq!(pending.len(), 2);
 
         assert_eq!(rx.recv().await.unwrap(), vec![9]);
         assert!(flush_channel_queue(&tx, &mut pending));
         assert_eq!(rx.recv().await.unwrap(), vec![1, 2, 3]);
-        assert_eq!(pending, VecDeque::from([vec![4, 5, 6]]));
+        assert_eq!(pending.values(), &VecDeque::from([vec![4, 5, 6]]));
     }
 
     #[test]

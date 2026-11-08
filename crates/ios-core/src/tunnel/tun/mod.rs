@@ -2,6 +2,8 @@
 pub mod kernel;
 #[cfg(feature = "tunnel-userspace")]
 pub mod userspace;
+#[cfg(all(feature = "tunnel-private-ip", not(feature = "tunnel-userspace")))]
+pub(crate) mod userspace;
 
 use crate::tunnel::TunnelError;
 

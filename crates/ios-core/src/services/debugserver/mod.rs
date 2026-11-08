@@ -2,6 +2,8 @@
 //!
 //! Reference: go-ios/ios/debugserver/*
 
+crate::redaction::error_debug!(DebugserverError);
+
 use semver::Version;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -14,7 +16,7 @@ pub struct ParsedPacket {
     pub consumed: usize,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DebugserverError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

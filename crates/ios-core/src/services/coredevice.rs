@@ -73,6 +73,7 @@ pub(crate) fn build_request(
 /// identifier.  ScreenCaptureService uses this shape; keeping it next to the
 /// ordinary builder prevents its CoreDevice version and identifier fields from
 /// drifting from the other feature services.
+#[cfg(any(feature = "display", feature = "screencapture"))]
 pub(crate) fn build_request_with_action(
     _device_identifier: &str,
     feature_identifier: &str,
@@ -106,6 +107,7 @@ fn build_modern_request(feature_identifier: &str, input: XpcValue) -> XpcValue {
 /// ConfigurationService uses `CoreDevice.actionIdentifier` and deliberately
 /// omits `CoreDevice.featureIdentifier`/`CoreDevice.action`; this is the exact
 /// action-only shape emitted by pymobiledevice3's `CoreDeviceService.invoke`.
+#[cfg(any(test, feature = "configuration"))]
 pub(crate) fn build_action_request(
     _device_identifier: &str,
     action_identifier: &str,
@@ -278,19 +280,22 @@ pub(crate) fn stream_invoke<'a>(
     let request = build_stream_request(device_identifier, feature_identifier, input);
 
     async_stream::try_stream! {
-        let mut messages = Box::pin(client.stream_invoke(request));
+        let mut messages = Box::pin(client.stream_invoke_mapped(request, crate::xpc::message::flags::WANTING_REPLY, |message| {
+            if message.body.as_ref().map_or(true, |body| {
+                matches!(body, XpcValue::Dictionary(values) if values.is_empty())
+            }) {
+                return Ok(None);
+            }
+            let status = parse_stream_status(message)?;
+            let finished = matches!(status, StreamStatus::Finished);
+            Ok(Some((status, finished)))
+        }));
         while let Some(message) = messages.next().await {
-            let message = message?;
             // RemoteXPC can interleave bodyless acknowledgements (or an empty
             // dictionary control message) before the side-channel status. The
             // reference receive_response loop discards these frames; they are
             // transport control, not an unknown stream status.
-            if message.body.as_ref().map_or(true, |body| {
-                matches!(body, XpcValue::Dictionary(values) if values.is_empty())
-            }) {
-                continue;
-            }
-            match parse_stream_status(message)? {
+            match message? {
                 StreamStatus::Elements(elements) => {
                     for element in elements {
                         yield element;

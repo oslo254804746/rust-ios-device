@@ -23,15 +23,16 @@ use zeroize::Zeroizing;
 use crate::proto::nskeyedarchiver::{unarchive, ArchiveValue};
 
 use super::crypto::{expected_payload_ciphertext_len, BackupCrypto, CryptoError};
-#[cfg(test)]
-use super::mbdb::MbdbRecord;
-use super::mbdb::{MbdbError, MbdbManifest};
-use super::{
+use super::host_fs::{
     canonical_backup_root, create_dir_all_no_symlink, ensure_backup_directory,
     ensure_no_symlink_components_at_root, manifest_relative_path_string, open_file_for_read,
     open_file_for_write, read_backup_dictionary, sanitize_relative_path, symlink_path_error,
-    validate_backup_identifier, BackupFilter, Mobilebackup2Error,
+    validate_backup_identifier,
 };
+#[cfg(test)]
+use super::mbdb::MbdbRecord;
+use super::mbdb::{MbdbError, MbdbManifest};
+use super::{BackupFilter, Mobilebackup2Error};
 
 const MAX_MANIFEST_ROWS: usize = 1_000_000;
 const MAX_MANIFEST_DB_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -64,8 +65,8 @@ pub struct ExtractionResult {
 
 /// A redacted, host-side view of one entry in a completed backup manifest.
 ///
-/// Encryption keys are intentionally not exposed. `link_target` is present only for legacy
-/// MBDB records because modern manifests carry symlink contents in the payload blob.
+/// Encryption keys are intentionally not exposed. `link_target` contains a symlink target
+/// recorded in legacy MBDB or modern MBFile metadata when available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BackupManifestEntry {
     pub file_id: String,
@@ -136,12 +137,10 @@ pub fn patch_backup_directory(
         return patch_mbdb_backup_directory(&device_directory, &manifest, filter);
     }
     let (rows, row_ids, allowed_ids) = collect_manifest_rows(&manifest.source_path, filter)?;
-    let entries_seen = u64::try_from(rows.len()).map_err(|_| {
-        Mobilebackup2Error::Protocol("Manifest.db row count does not fit in u64".into())
-    })?;
-    let entries_kept = u64::try_from(allowed_ids.len()).map_err(|_| {
-        Mobilebackup2Error::Protocol("Manifest.db row count does not fit in u64".into())
-    })?;
+    let entries_seen = u64::try_from(rows.len())
+        .map_err(|error| protocol_source("convert Manifest.db row count", error))?;
+    let entries_kept = u64::try_from(allowed_ids.len())
+        .map_err(|error| protocol_source("convert retained Manifest.db row count", error))?;
     let entries_removed = entries_seen.saturating_sub(entries_kept);
 
     // Validate the complete payload tree before creating any replacement. In particular, a
@@ -191,17 +190,15 @@ fn patch_mbdb_backup_directory(
         Mobilebackup2Error::Protocol("legacy manifest workspace has no parsed Manifest.mbdb".into())
     })?;
     let entries = load_mbdb_entries(mbdb, manifest.crypto.is_some())?;
-    let entries_seen = u64::try_from(entries.len()).map_err(|_| {
-        Mobilebackup2Error::Protocol("Manifest.mbdb record count does not fit in u64".into())
-    })?;
+    let entries_seen = u64::try_from(entries.len())
+        .map_err(|error| protocol_source("convert Manifest.mbdb record count", error))?;
     let allowed_ids: HashSet<String> = entries
         .iter()
         .filter(|entry| filter.matches_manifest_entry(&entry.domain, &entry.relative_path))
         .map(|entry| entry.file_id.clone())
         .collect();
-    let entries_kept = u64::try_from(allowed_ids.len()).map_err(|_| {
-        Mobilebackup2Error::Protocol("Manifest.mbdb record count does not fit in u64".into())
-    })?;
+    let entries_kept = u64::try_from(allowed_ids.len())
+        .map_err(|error| protocol_source("convert retained Manifest.mbdb record count", error))?;
     let entries_removed = entries_seen.saturating_sub(entries_kept);
 
     validate_payload_tree(device_directory)?;
@@ -527,12 +524,37 @@ fn manifest_is_encrypted(manifest: &plist::Dictionary) -> bool {
         .unwrap_or(false)
 }
 
+fn retained_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> Mobilebackup2Error {
+    Mobilebackup2Error::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
+fn protocol_source(
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> Mobilebackup2Error {
+    retained_error(std::io::ErrorKind::InvalidData, phase, source)
+}
+
 fn crypto_error(error: CryptoError) -> Mobilebackup2Error {
-    Mobilebackup2Error::Protocol(error.to_string())
+    let kind = match &error {
+        CryptoError::Io(native) => native.kind(),
+        CryptoError::Crypto => std::io::ErrorKind::Other,
+        // InvalidPassword also represents an invalid wrapped key: do not infer
+        // permission denial or distinguish causes the backend did not expose.
+        CryptoError::Keybag(_)
+        | CryptoError::Manifest(_)
+        | CryptoError::Payload(_)
+        | CryptoError::InvalidPassword => std::io::ErrorKind::InvalidData,
+    };
+    retained_error(kind, "process encrypted backup material", error)
 }
 
 fn mbdb_error(error: MbdbError) -> Mobilebackup2Error {
-    Mobilebackup2Error::Protocol(format!("Manifest.mbdb is malformed: {error}"))
+    protocol_source("process Manifest.mbdb index", error)
 }
 
 fn safe_device_directory(
@@ -557,7 +579,7 @@ fn safe_device_directory(
 
 fn safe_file(directory: &Path, name: &str) -> Result<PathBuf, Mobilebackup2Error> {
     let path = directory.join(name);
-    super::reject_symlink_components(&path)?;
+    super::host_fs::reject_symlink_components(&path)?;
     let metadata = fs::symlink_metadata(&path)?;
     if metadata.file_type().is_symlink() {
         return Err(symlink_path_error(&path));
@@ -594,9 +616,8 @@ fn read_bounded_file(
             length
         )));
     }
-    let capacity = usize::try_from(length).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!("{description} length does not fit in host memory"))
-    })?;
+    let capacity = usize::try_from(length)
+        .map_err(|error| protocol_source("convert backup file allocation length", error))?;
     let mut bytes = Vec::with_capacity(capacity);
     file.read_to_end(&mut bytes)?;
     if bytes.len() as u64 != length {
@@ -653,12 +674,12 @@ fn replace_file_atomically(temporary: &Path, destination: &Path) -> Result<(), M
     // The temporary file is created in the destination directory and has already been synced by
     // the crypto writer. Unix rename atomically replaces the old file; Windows needs
     // MoveFileEx(REPLACE_EXISTING), provided by the shared helper with the official constants.
-    super::reject_symlink_components(destination)?;
+    super::host_fs::reject_symlink_components(destination)?;
     crate::fs_replace::move_file_replace(temporary, destination)?;
     // A directory fsync failure occurs after the atomic replacement and must not be reported as
     // a failed transaction: callers cannot safely roll the replacement back at that point.
     if let Err(error) = sync_directory(destination.parent()) {
-        warn!(path = %destination.display(), error = %error, "could not sync backup replacement directory");
+        warn!(path = %crate::redaction::diagnostic_id(&destination.to_string_lossy()), error = %crate::redaction::diagnostic_error(&error), "could not sync backup replacement directory");
     }
     Ok(())
 }
@@ -726,12 +747,38 @@ fn open_manifest(path: &Path, read_only: bool) -> Result<Connection, Mobilebacku
     // SQLITE_OPEN_NOFOLLOW.  Only empty companions are accepted; a non-empty sidecar belongs to
     // a live/incomplete SQLite state that cannot be safely decrypted or patched in isolation.
     validate_manifest_sidecars(path)?;
-    let flags = if read_only {
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW
+    if read_only {
+        // A read-only SQLite connection to a WAL-mode database can create WAL
+        // and SHM files, making our next sidecar validation reject the same
+        // backup. After the sidecar check, read only the main database as an
+        // immutable snapshot. File URLs escape spaces, #, %, and Unicode.
+        let url = url::Url::from_file_path(path).map_err(|()| {
+            Mobilebackup2Error::Protocol("cannot encode Manifest.db path as a file URL".into())
+        })?;
+        #[cfg(windows)]
+        let uri = if let Some(host) = url.host_str() {
+            // SQLite rejects non-local file URI authorities by default; use
+            // an empty authority and retain the UNC path's leading slashes.
+            format!("file:////{host}{}?immutable=1", url.path())
+        } else {
+            format!("{url}?immutable=1")
+        };
+        #[cfg(not(windows))]
+        let uri = format!("{url}?immutable=1");
+        Connection::open_with_flags(
+            uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW
+                | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(sqlite_error)
     } else {
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW
-    };
-    Connection::open_with_flags(path, flags).map_err(sqlite_error)
+        Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(sqlite_error)
+    }
 }
 
 fn collect_manifest_rows(
@@ -838,7 +885,13 @@ fn load_manifest_entries(
         }
         validate_file_id(&file_id)?;
         let domain = validate_domain(&domain)?;
-        let relative_path = manifest_relative_path_string(&sanitize_relative_path(&relative_path)?);
+        // A domain's root directory has an empty relative path. Check its
+        // archived Mode below; keep existing validation for nonempty paths.
+        let relative_path = if relative_path.is_empty() {
+            relative_path
+        } else {
+            manifest_relative_path_string(&sanitize_relative_path(&relative_path)?)
+        };
         if !seen_ids.insert(file_id.clone()) {
             return Err(Mobilebackup2Error::Protocol(format!(
                 "Manifest.db contains duplicate fileID {file_id:?}"
@@ -855,24 +908,27 @@ fn load_manifest_entries(
                 archive.len()
             )));
         }
-        total_archive_bytes = total_archive_bytes
-            .checked_add(u64::try_from(archive.len()).map_err(|_| {
-                Mobilebackup2Error::Protocol("Manifest.db archive length does not fit u64".into())
-            })?)
-            .ok_or_else(|| {
-                Mobilebackup2Error::Protocol(
-                    "Manifest.db metadata archive byte count overflow".into(),
-                )
-            })?;
+        total_archive_bytes =
+            total_archive_bytes
+                .checked_add(u64::try_from(archive.len()).map_err(|error| {
+                    protocol_source("convert Manifest.db archive length", error)
+                })?)
+                .ok_or_else(|| {
+                    Mobilebackup2Error::Protocol(
+                        "Manifest.db metadata archive byte count overflow".into(),
+                    )
+                })?;
         if total_archive_bytes > MAX_TOTAL_ARCHIVE_BYTES {
             return Err(Mobilebackup2Error::Protocol(format!(
                 "Manifest.db metadata archives exceed {MAX_TOTAL_ARCHIVE_BYTES} bytes"
             )));
         }
         let value = unarchive(&archive).map_err(|error| {
-            Mobilebackup2Error::Protocol(format!(
-                "cannot decode Manifest.db metadata for {file_id}: {error}"
-            ))
+            retained_error(
+                std::io::ErrorKind::Other,
+                "decode Manifest.db metadata archive",
+                error,
+            )
         })?;
         let dictionary = value.as_dict().ok_or_else(|| {
             Mobilebackup2Error::Protocol(format!(
@@ -882,11 +938,8 @@ fn load_manifest_entries(
         let mode = archive_integer(dictionary, "Mode")?.ok_or_else(|| {
             Mobilebackup2Error::Protocol(format!("Manifest.db metadata for {file_id} has no Mode"))
         })?;
-        let mode = u32::try_from(mode).map_err(|_| {
-            Mobilebackup2Error::Protocol(format!(
-                "Manifest.db metadata Mode for {file_id} is outside u32"
-            ))
-        })?;
+        let mode = u32::try_from(mode)
+            .map_err(|error| protocol_source("convert Manifest.db metadata Mode", error))?;
         let file_type = mode & MODE_TYPE_MASK;
         if !matches!(
             file_type,
@@ -896,12 +949,14 @@ fn load_manifest_entries(
                 "Manifest.db metadata for {file_id} has unsupported mode type 0x{file_type:04x}"
             )));
         }
+        if relative_path.is_empty() && file_type != MODE_TYPE_DIRECTORY {
+            return Err(Mobilebackup2Error::Protocol(
+                "backup relative path must not be empty for a non-directory entry".into(),
+            ));
+        }
         let size = archive_integer(dictionary, "Size")?.unwrap_or(0);
-        let size = u64::try_from(size).map_err(|_| {
-            Mobilebackup2Error::Protocol(format!(
-                "Manifest.db metadata Size for {file_id} is negative"
-            ))
-        })?;
+        let size = u64::try_from(size)
+            .map_err(|error| protocol_source("convert Manifest.db metadata Size", error))?;
         if size > MAX_SINGLE_ENTRY_BYTES {
             return Err(Mobilebackup2Error::Protocol(format!(
                 "Manifest.db entry {file_id} is too large ({} bytes; max {MAX_SINGLE_ENTRY_BYTES})",
@@ -916,9 +971,30 @@ fn load_manifest_entries(
                 "Manifest.db total extraction size exceeds {MAX_TOTAL_EXTRACT_BYTES} bytes"
             )));
         }
+        let link_target = if file_type == MODE_TYPE_SYMLINK {
+            dictionary
+                .get("Target")
+                .map(|value| {
+                    let target = value.as_str().ok_or_else(|| {
+                        Mobilebackup2Error::Protocol(
+                            "Manifest.db symlink Target is not a string".into(),
+                        )
+                    })?;
+                    if target.len() > MAX_SYMLINK_TARGET_BYTES {
+                        return Err(Mobilebackup2Error::Protocol(
+                            "Manifest.db symlink target exceeds safety limit".into(),
+                        ));
+                    }
+                    Ok(target.to_owned())
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let encryption_key = archive_encryption_key(dictionary, &file_id)?;
         if manifest.crypto.is_some()
-            && matches!(file_type, MODE_TYPE_FILE | MODE_TYPE_SYMLINK)
+            && (file_type == MODE_TYPE_FILE
+                || (file_type == MODE_TYPE_SYMLINK && link_target.is_none()))
             && encryption_key.is_none()
         {
             return Err(Mobilebackup2Error::Protocol(format!(
@@ -932,7 +1008,7 @@ fn load_manifest_entries(
             mode,
             size,
             encryption_key,
-            link_target: None,
+            link_target,
         });
     }
     Ok(entries)
@@ -1073,6 +1149,11 @@ fn archive_integer(
     dictionary
         .get(key)
         .map(|value| {
+            if let ArchiveValue::Uint(value) = value {
+                return i64::try_from(*value).map_err(|error| {
+                    protocol_source("convert Manifest.db metadata integer", error)
+                });
+            }
             value.as_int().ok_or_else(|| {
                 Mobilebackup2Error::Protocol(format!(
                     "Manifest.db metadata field {key} is not an integer"
@@ -1083,11 +1164,8 @@ fn archive_integer(
 }
 
 fn validate_file_id(file_id: &str) -> Result<(), Mobilebackup2Error> {
-    validate_backup_identifier(file_id).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!(
-            "Manifest.db fileID must be one safe path component: {file_id:?}"
-        ))
-    })
+    validate_backup_identifier(file_id)
+        .map_err(|error| protocol_source("validate Manifest.db fileID path component", error))
 }
 
 fn check_manifest_text_length(length: i64, field: &str) -> Result<(), Mobilebackup2Error> {
@@ -1120,7 +1198,7 @@ fn validate_domain(domain: &str) -> Result<String, Mobilebackup2Error> {
             "Manifest.db domain must be one path component: {domain:?}"
         )));
     }
-    if super::has_windows_drive_prefix(domain) {
+    if super::host_fs::has_windows_drive_prefix(domain) {
         return Err(Mobilebackup2Error::Protocol(format!(
             "Manifest.db domain has a platform path prefix: {domain:?}"
         )));
@@ -1195,9 +1273,9 @@ impl PayloadStage {
             if fs::symlink_metadata(staged).is_ok() {
                 if let Err(error) = fs::rename(staged, source) {
                     warn!(
-                        source = %source.display(),
-                        staged = %staged.display(),
-                        error = %error,
+                        source = %crate::redaction::diagnostic_id(&source.to_string_lossy()),
+                        staged = %crate::redaction::diagnostic_id(&staged.to_string_lossy()),
+                        error = %crate::redaction::diagnostic_error(&error),
                         "could not roll back staged backup payload"
                     );
                 }
@@ -1215,18 +1293,18 @@ impl PayloadStage {
         let staging_is_directory = match fs::symlink_metadata(&self.staging) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => true,
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                warn!(path = %self.staging.display(), "refusing to clean symlinked backup staging directory");
+                warn!(path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()), "refusing to clean symlinked backup staging directory");
                 false
             }
             Ok(_) => {
-                warn!(path = %self.staging.display(), "refusing to clean non-directory backup staging path");
+                warn!(path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()), "refusing to clean non-directory backup staging path");
                 false
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => {
                 warn!(
-                    path = %self.staging.display(),
-                    error = %error,
+                    path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()),
+                    error = %crate::redaction::diagnostic_error(&error),
                     "could not inspect backup payload staging directory"
                 );
                 false
@@ -1240,8 +1318,8 @@ impl PayloadStage {
                             Ok(entry) => entry.path(),
                             Err(error) => {
                                 warn!(
-                                    path = %self.staging.display(),
-                                    error = %error,
+                                    path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()),
+                                    error = %crate::redaction::diagnostic_error(&error),
                                     "could not enumerate backup payload staging directory"
                                 );
                                 continue;
@@ -1253,8 +1331,8 @@ impl PayloadStage {
                             {
                                 if let Err(error) = fs::remove_file(&path) {
                                     warn!(
-                                        path = %path.display(),
-                                        error = %error,
+                                        path = %crate::redaction::diagnostic_id(&path.to_string_lossy()),
+                                        error = %crate::redaction::diagnostic_error(&error),
                                         "could not remove staged backup payload"
                                     );
                                 }
@@ -1263,16 +1341,16 @@ impl PayloadStage {
                                 // Stage entries are flat regular files.  Never recursively delete an
                                 // unexpected directory because the staging path shares a user-owned
                                 // filesystem and cleanup must not follow an injected tree.
-                                warn!(path = %path.display(), "refusing to recursively remove staged directory");
+                                warn!(path = %crate::redaction::diagnostic_id(&path.to_string_lossy()), "refusing to recursively remove staged directory");
                             }
                             Ok(_) => {
-                                warn!(path = %path.display(), "refusing to remove special staged payload");
+                                warn!(path = %crate::redaction::diagnostic_id(&path.to_string_lossy()), "refusing to remove special staged payload");
                             }
                             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                             Err(error) => {
                                 warn!(
-                                    path = %path.display(),
-                                    error = %error,
+                                    path = %crate::redaction::diagnostic_id(&path.to_string_lossy()),
+                                    error = %crate::redaction::diagnostic_error(&error),
                                     "could not inspect staged backup payload"
                                 );
                             }
@@ -1282,15 +1360,15 @@ impl PayloadStage {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
                     warn!(
-                        path = %self.staging.display(),
-                        error = %error,
+                        path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()),
+                        error = %crate::redaction::diagnostic_error(&error),
                         "could not inspect backup payload staging directory"
                     );
                 }
             }
         }
         if let Err(error) = fs::remove_dir(&self.staging) {
-            warn!(path = %self.staging.display(), error = %error, "could not remove backup payload staging directory");
+            warn!(path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()), error = %crate::redaction::diagnostic_error(&error), "could not remove backup payload staging directory");
         }
         // Prefix directories are only an index for hashed payload names. Remove only the direct
         // parents of files moved by this operation; scanning every empty directory here could
@@ -1315,6 +1393,44 @@ impl PayloadStage {
             }
         }
         self.removed
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn rollback_failure_diagnostics_hide_original_and_staged_paths() {
+        let secret = "synthetic-private-UDID-backup-path";
+        let root = std::env::temp_dir().join(format!("ios-diagnostic-{}", uuid::Uuid::new_v4()));
+        let staging = root.join(format!("{secret}-staging"));
+        fs::create_dir_all(&staging).unwrap();
+        let source = root.join(format!("{secret}-source"));
+        fs::create_dir(&source).unwrap();
+        let staged = staging.join(secret);
+        fs::write(&staged, b"synthetic payload").unwrap();
+        let mut stage = PayloadStage {
+            directory: root.clone(),
+            staging,
+            moved: vec![(source.clone(), staged.clone())],
+            removed: 0,
+        };
+        let (dispatch, log) = crate::redaction::test_support::capture();
+        tracing::dispatcher::with_default(&dispatch, || stage.rollback());
+        let log = log.lock().unwrap();
+        assert!(!log.overflow);
+        assert!(log
+            .raw
+            .contains("could not roll back staged backup payload"));
+        assert!(log.raw.contains("io/"));
+        assert!(log.raw.contains("id:"));
+        assert!(!log.raw.contains(secret));
+        assert!(!log.raw.contains(&source.to_string_lossy().to_string()));
+        assert!(!log.raw.contains(&staged.to_string_lossy().to_string()));
+        assert!(source.is_dir());
+        assert_eq!(fs::read(staged).unwrap(), b"synthetic payload");
+        fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -1483,7 +1599,7 @@ fn prepare_output_directory(
                     path.display()
                 )));
             }
-            super::ensure_tree_has_no_symlinks(&path)?;
+            super::host_fs::ensure_tree_has_no_symlinks(&path)?;
             fs::remove_dir_all(&path)?;
         }
         let path = create_dir_all_no_symlink(root, &relative)?;
@@ -1491,8 +1607,8 @@ fn prepare_output_directory(
         Ok(path)
     } else {
         fs::create_dir_all(&path)?;
-        super::reject_symlink_components(&path)?;
-        let path = super::canonicalize_simplified(&path)?;
+        super::host_fs::reject_symlink_components(&path)?;
+        let path = super::host_fs::canonicalize_simplified(&path)?;
         let metadata = fs::symlink_metadata(&path)?;
         if !metadata.is_dir() {
             return Err(Mobilebackup2Error::Protocol(format!(
@@ -1511,8 +1627,8 @@ fn prepare_explicit_parent(
 ) -> Result<PathBuf, Mobilebackup2Error> {
     reject_output_path(path)?;
     fs::create_dir_all(path)?;
-    super::reject_symlink_components(path)?;
-    let canonical = super::canonicalize_simplified(path)?;
+    super::host_fs::reject_symlink_components(path)?;
+    let canonical = super::host_fs::canonicalize_simplified(path)?;
     if !canonical.is_dir() {
         return Err(Mobilebackup2Error::Protocol(format!(
             "output parent is not a directory: {}",
@@ -1529,7 +1645,7 @@ fn reject_output_path(path: &Path) -> Result<(), Mobilebackup2Error> {
             "output path must not be empty".into(),
         ));
     }
-    super::reject_symlink_components(path)
+    super::host_fs::reject_symlink_components(path)
 }
 
 fn reject_output_overlap(path: &Path, source_directory: &Path) -> Result<(), Mobilebackup2Error> {
@@ -1555,9 +1671,8 @@ fn extract_entries(
 ) -> Result<ExtractionResult, Mobilebackup2Error> {
     let mut result = ExtractionResult {
         output_directory: output_directory.to_path_buf(),
-        entries_seen: u64::try_from(entries.len()).map_err(|_| {
-            Mobilebackup2Error::Protocol("Manifest.db entry count does not fit in u64".into())
-        })?,
+        entries_seen: u64::try_from(entries.len())
+            .map_err(|error| protocol_source("convert extracted Manifest.db entry count", error))?,
         files_extracted: 0,
         bytes_extracted: 0,
     };
@@ -1606,12 +1721,14 @@ fn extract_entry_to(
         Some(path) => path.to_path_buf(),
         None => output_path(output_directory, entry)?,
     };
-    let relative = destination.strip_prefix(output_directory).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!(
-            "extraction destination is outside output directory: {}",
-            destination.display()
-        ))
-    })?;
+    let relative = destination
+        .strip_prefix(output_directory)
+        .map_err(|error| {
+            protocol_source(
+                "validate extraction destination within output directory",
+                error,
+            )
+        })?;
     ensure_no_symlink_components_at_root(output_directory, relative)?;
     let file_type = entry.mode & MODE_TYPE_MASK;
     match file_type {
@@ -1638,6 +1755,21 @@ fn extract_entry_to(
                 })?,
                 "entry",
             )?;
+            // Plain backup payloads may be snapshots whose length differs from
+            // MBFile Size. Enforce the existing extraction budgets on the bytes
+            // actually stored; encrypted payloads retain the manifest length.
+            let plain_size = if crypto.is_some() {
+                entry.size
+            } else {
+                stored_size
+            };
+            if plain_size > MAX_SINGLE_ENTRY_BYTES {
+                return Err(Mobilebackup2Error::Protocol(format!(
+                    "backup entry {} is too large ({} bytes; max {MAX_SINGLE_ENTRY_BYTES})",
+                    entry.file_id, plain_size
+                )));
+            }
+            account_extracted_bytes(result, plain_size)?;
             let copied = if let Some(crypto) = crypto {
                 let encryption_key = entry.encryption_key.as_ref().ok_or_else(|| {
                     Mobilebackup2Error::Protocol(format!(
@@ -1663,26 +1795,19 @@ fn extract_entry_to(
                     )
                     .map_err(crypto_error)?
             } else {
-                if stored_size != entry.size {
-                    return Err(Mobilebackup2Error::Protocol(format!(
-                        "payload size mismatch for {}: Manifest.db says {}, stored {}",
-                        entry.file_id, entry.size, stored_size
-                    )));
-                }
                 let mut destination_file = open_file_for_write(&temporary.path)?;
                 let copied =
-                    copy_bounded_no_accounting(&mut source, &mut destination_file, entry.size)?;
+                    copy_bounded_no_accounting(&mut source, &mut destination_file, stored_size)?;
                 destination_file.flush()?;
                 destination_file.sync_all()?;
                 copied
             };
-            if copied != entry.size {
+            if copied != plain_size {
                 return Err(Mobilebackup2Error::Protocol(format!(
-                    "payload size mismatch for {}: Manifest.db says {}, copied {}",
-                    entry.file_id, entry.size, copied
+                    "payload size mismatch for {}: expected {}, copied {}",
+                    entry.file_id, plain_size, copied
                 )));
             }
-            account_extracted_bytes(result, entry.size)?;
             replace_file_atomically(&temporary.path, &destination)?;
             set_permissions(&destination, entry.mode & 0o7777)?;
             result.files_extracted = result.files_extracted.saturating_add(1);
@@ -1715,17 +1840,15 @@ fn copy_bounded_no_accounting<R: Read, W: Write>(
     let mut buffer = [0u8; 128 * 1024];
     let mut copied = 0u64;
     while remaining > 0 {
-        let request = usize::try_from(remaining.min(buffer.len() as u64)).map_err(|_| {
-            Mobilebackup2Error::Protocol("file transfer chunk does not fit usize".into())
-        })?;
+        let request = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|error| protocol_source("convert backup file transfer chunk length", error))?;
         let count = source.read(&mut buffer[..request])?;
         if count == 0 {
             break;
         }
         destination.write_all(&buffer[..count])?;
-        let count = u64::try_from(count).map_err(|_| {
-            Mobilebackup2Error::Protocol("file transfer count does not fit u64".into())
-        })?;
+        let count = u64::try_from(count)
+            .map_err(|error| protocol_source("convert backup file transfer count", error))?;
         remaining -= count;
         copied = copied.checked_add(count).ok_or_else(|| {
             Mobilebackup2Error::Protocol("file transfer byte count overflow".into())
@@ -1795,11 +1918,9 @@ fn is_modern_storage(version: &str) -> Result<bool, Mobilebackup2Error> {
                 "invalid ProductVersion component {component:?}"
             )));
         }
-        digits.parse::<u64>().map_err(|_| {
-            Mobilebackup2Error::Protocol(format!(
-                "ProductVersion component {component:?} is too large"
-            ))
-        })
+        digits
+            .parse::<u64>()
+            .map_err(|error| protocol_source("parse backup ProductVersion component", error))
     };
     let mut components = version.split('.');
     let major = components
@@ -1859,9 +1980,8 @@ fn extract_symlink(
                 "symlink target exceeds safety limit".into(),
             ));
         }
-        let size = u64::try_from(target.len()).map_err(|_| {
-            Mobilebackup2Error::Protocol("symlink target length does not fit u64".into())
-        })?;
+        let size = u64::try_from(target.len())
+            .map_err(|error| protocol_source("convert backup symlink target length", error))?;
         (target, size)
     } else {
         let stored = stored_payload_path(source_directory, &entry.file_id, modern)?;
@@ -1918,19 +2038,18 @@ fn extract_symlink(
             "symlink target exceeds safety limit".into(),
         ));
     }
-    let target = String::from_utf8(target).map_err(|error| {
-        Mobilebackup2Error::Protocol(format!("symlink target is not UTF-8: {error}"))
-    })?;
+    let target = String::from_utf8(target)
+        .map_err(|error| protocol_source("decode backup symlink target UTF-8", error))?;
     let clean_target = normalize_symlink_target(&target)?;
     let parent = destination
         .parent()
         .ok_or_else(|| Mobilebackup2Error::Protocol("symlink destination has no parent".into()))?;
     let target_path = parent.join(&clean_target);
-    let target_relative = target_path.strip_prefix(output_directory).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!(
-            "symlink target escapes output directory: {target:?}"
-        ))
-    })?;
+    let target_relative = target_path
+        .strip_prefix(output_directory)
+        .map_err(|error| {
+            protocol_source("validate symlink target within output directory", error)
+        })?;
     ensure_no_symlink_components_at_root(output_directory, target_relative)?;
     if fs::symlink_metadata(destination).is_ok() {
         return Err(Mobilebackup2Error::Protocol(format!(
@@ -1998,8 +2117,17 @@ fn set_permissions(path: &Path, mode: u32) -> Result<(), Mobilebackup2Error> {
 }
 
 fn sqlite_error(error: rusqlite::Error) -> Mobilebackup2Error {
-    Mobilebackup2Error::Protocol(format!("Manifest.db SQLite error: {error}"))
+    let kind = match &error {
+        rusqlite::Error::InvalidColumnType(..)
+        | rusqlite::Error::IntegralValueOutOfRange(..)
+        | rusqlite::Error::Utf8Error(_) => std::io::ErrorKind::InvalidData,
+        _ => std::io::ErrorKind::Other,
+    };
+    retained_error(kind, "process Manifest.db SQLite operation", error)
 }
+
+#[cfg(test)]
+mod source_contract_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2019,7 +2147,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock")
             .as_nanos();
-        super::super::canonicalize_simplified(&std::env::temp_dir())
+        super::super::host_fs::canonicalize_simplified(&std::env::temp_dir())
             .expect("canonical temp directory")
             .join(format!(
                 "ios-core-backup2-manifest-{}-{label}-{nonce}",
@@ -2035,6 +2163,57 @@ mod tests {
             ("GroupID".into(), plist::Value::Integer(0.into())),
             ("UserID".into(), plist::Value::Integer(0.into())),
         ])
+    }
+
+    fn mbfile_metadata_archive(mode: u64, size: u64, relative_path: &str) -> Vec<u8> {
+        mbfile_metadata_archive_with_target(mode, size, relative_path, None)
+    }
+
+    fn mbfile_metadata_archive_with_target(
+        mode: u64,
+        size: u64,
+        relative_path: &str,
+        target: Option<plist::Value>,
+    ) -> Vec<u8> {
+        let mut root = plist::Dictionary::from_iter([
+            ("$class", plist::Value::Uid(plist::Uid::new(2))),
+            ("RelativePath", plist::Value::Uid(plist::Uid::new(3))),
+            (
+                "LastModified",
+                plist::Value::Integer(1_788_671_599u64.into()),
+            ),
+            ("Mode", plist::Value::Integer(mode.into())),
+            ("Size", plist::Value::Integer(size.into())),
+            ("GroupID", plist::Value::Integer(0u64.into())),
+        ]);
+        if target.is_some() {
+            root.insert("Target".into(), plist::Value::Uid(plist::Uid::new(4)));
+        }
+        let class = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            ("$classname", plist::Value::String("MBFile".into())),
+            (
+                "$classes",
+                plist::Value::Array(vec!["MBFile".into(), "NSObject".into()]),
+            ),
+        ]));
+        let mut objects = vec!["$null".into(), root.into(), class, relative_path.into()];
+        if let Some(target) = target {
+            objects.push(target);
+        }
+        let archive = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            ("$archiver", plist::Value::String("NSKeyedArchiver".into())),
+            ("$objects", plist::Value::Array(objects)),
+            (
+                "$top",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "root",
+                    plist::Value::Uid(plist::Uid::new(1)),
+                )])),
+            ),
+        ]));
+        let mut bytes = Vec::new();
+        plist::to_writer_binary(&mut bytes, &archive).unwrap();
+        bytes
     }
 
     fn write_fixture(label: &str) -> (PathBuf, PathBuf, String, String) {
@@ -2488,7 +2667,22 @@ mod tests {
             Some("wrong-password"),
         )
         .expect_err("wrong password");
-        assert!(error.to_string().contains("password") || error.to_string().contains("wrapped"));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+        let mut found = false;
+        for _ in 0..32 {
+            let Some(current) = source else { break };
+            if let Some(native) = current.downcast_ref::<aes_kw::Error>() {
+                assert!(matches!(native, aes_kw::Error::IntegrityCheckFailed));
+                found = true;
+                break;
+            }
+            source = current.source();
+        }
+        assert!(
+            found,
+            "native AES-KW failure must survive the public error chain"
+        );
         assert!(!wrong_output.join("HomeDomain/Library/SMS/sms.db").exists());
         assert!(device.join("Manifest.db").is_file());
         assert!(device.join(&keep_id[..2]).join(&keep_id).is_file());
@@ -2679,6 +2873,316 @@ mod tests {
         patch_backup_directory(&root, "device-id", &filter, None)
             .expect("empty sidecar is harmless");
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn domain_root_and_repeated_readonly_wal_manifest_operations() {
+        let (root, device, _, _) = write_fixture("备份 # % space");
+        let connection = Connection::open(device.join("Manifest.db")).expect("manifest db");
+        connection
+            .execute("ALTER TABLE Files ADD COLUMN flags INTEGER", [])
+            .expect("add real manifest flags column");
+        connection
+            .execute(
+                "INSERT INTO Files (fileID, domain, relativePath, file, flags) VALUES (?1, ?2, ?3, ?4, 2)",
+                params![
+                    "3333333333333333333333333333333333333333",
+                    "HomeDomain",
+                    "",
+                    metadata_archive(MODE_TYPE_DIRECTORY as i64 | 0o755, 0),
+                ],
+            )
+            .expect("insert domain root");
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .expect("set WAL mode");
+        drop(connection);
+        assert!(!device.join("Manifest.db-wal").exists());
+        assert!(!device.join("Manifest.db-shm").exists());
+
+        for _ in 0..2 {
+            let entries = list_backup_entries(&root, "device-id", None).expect("list manifest");
+            assert!(entries.iter().any(|entry| {
+                entry.domain == "HomeDomain"
+                    && entry.relative_path.is_empty()
+                    && entry.mode & MODE_TYPE_MASK == MODE_TYPE_DIRECTORY
+            }));
+        }
+        // The explicit output parent must not be an ancestor of the source
+        // device directory, so put the extracted file in a sibling directory.
+        let destination = root.join("single").join("file");
+        extract_backup_file(
+            &root,
+            "device-id",
+            "HomeDomain",
+            "Library/SMS/sms.db",
+            Some(&destination),
+            None,
+        )
+        .expect("extract after repeated lists");
+        assert_eq!(fs::read(destination).expect("extracted bytes"), b"keep");
+        let expanded = root.join("expanded");
+        unback_backup(&root, "device-id", Some(&expanded), None).expect("expand domain root");
+        assert!(expanded.join("HomeDomain").is_dir());
+        assert_eq!(
+            fs::read(expanded.join("HomeDomain/Library/SMS/sms.db")).unwrap(),
+            b"keep"
+        );
+        assert!(!device.join("Manifest.db-wal").exists());
+        assert!(!device.join("Manifest.db-shm").exists());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn unencrypted_snapshot_uses_stored_bytes_when_manifest_size_differs() {
+        let (root, device, keep_id, drop_id) = write_fixture("snapshot-size");
+        let connection = Connection::open(device.join("Manifest.db")).unwrap();
+        // Exercise both directions: payload longer and shorter than metadata.
+        for (id, size) in [(&keep_id, 2), (&drop_id, 8)] {
+            connection
+                .execute(
+                    "UPDATE Files SET file = ?1 WHERE fileID = ?2",
+                    params![metadata_archive(MODE_TYPE_FILE as i64 | 0o600, size), id],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        for (relative, expected, name) in [
+            ("Library/SMS/sms.db", b"keep".as_slice(), "one"),
+            ("Library/Notes/note.db", b"drop".as_slice(), "two"),
+        ] {
+            let output = root.join("single").join(name);
+            let result = extract_backup_file(
+                &root,
+                "device-id",
+                "HomeDomain",
+                relative,
+                Some(&output),
+                None,
+            )
+            .unwrap();
+            assert_eq!(result.files_extracted, 1);
+            assert_eq!(result.bytes_extracted, 4);
+            assert_eq!(fs::read(output).unwrap(), expected);
+        }
+        let output = root.join("expanded");
+        let result = unback_backup(&root, "device-id", Some(&output), None).unwrap();
+        assert_eq!(result.files_extracted, 2);
+        assert_eq!(result.bytes_extracted, 8);
+        assert_eq!(
+            fs::read(output.join("HomeDomain/Library/SMS/sms.db")).unwrap(),
+            b"keep"
+        );
+        assert_eq!(
+            fs::read(output.join("HomeDomain/Library/Notes/note.db")).unwrap(),
+            b"drop"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_manifest_path_rejects_non_directory_entries() {
+        let (root, device, _, _) = write_fixture("empty-nondirectory");
+        let connection = Connection::open(device.join("Manifest.db")).expect("manifest db");
+        for mode in [MODE_TYPE_FILE, MODE_TYPE_SYMLINK] {
+            connection
+                .execute(
+                    "UPDATE Files SET relativePath = '', file = ?1 WHERE fileID = ?2",
+                    params![
+                        metadata_archive(mode as i64 | 0o600, 0),
+                        "1111111111111111111111111111111111111111"
+                    ],
+                )
+                .expect("set empty non-directory path");
+            let error = list_backup_entries(&root, "device-id", None)
+                .expect_err("empty path must be limited to a directory");
+            assert!(error.to_string().contains("must not be empty"));
+        }
+        drop(connection);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn list_and_extract_actual_mbfile_archive_shape() {
+        let (root, device, keep_id, drop_id) = write_fixture("mbfile-archive");
+        let connection = Connection::open(device.join("Manifest.db")).unwrap();
+        for (id, path, mode) in [
+            (&keep_id, "Library/SMS/sms.db", MODE_TYPE_FILE | 0o640),
+            (&drop_id, "Library/Notes/note.db", MODE_TYPE_FILE | 0o600),
+        ] {
+            connection
+                .execute(
+                    "UPDATE Files SET file = ?1 WHERE fileID = ?2",
+                    params![mbfile_metadata_archive(u64::from(mode), 4, path), id],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        let entries = list_backup_entries(&root, "device-id", None).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.file_id == keep_id)
+            .unwrap();
+        assert_eq!(entry.size, 4);
+        assert_eq!(entry.mode, MODE_TYPE_FILE | 0o640);
+        let output = root.join("single").join("file");
+        extract_backup_file(
+            &root,
+            "device-id",
+            "HomeDomain",
+            "Library/SMS/sms.db",
+            Some(&output),
+            None,
+        )
+        .unwrap();
+        assert_eq!(fs::read(output).unwrap(), b"keep");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn modern_mbfile_symlink_metadata_is_listed_and_extracted_with_existing_limits() {
+        let (root, device, first_id, second_id) = write_fixture("modern-symlink");
+        let connection = Connection::open(device.join("Manifest.db")).unwrap();
+        for (id, path, target) in [
+            (&first_id, "Library/SMS/sms.db", "child"),
+            (&second_id, "Library/Notes/note.db", "/absolute/example"),
+        ] {
+            let metadata = mbfile_metadata_archive_with_target(
+                u64::from(MODE_TYPE_SYMLINK | 0o777),
+                0,
+                path,
+                Some(plist::Value::String(target.into())),
+            );
+            connection
+                .execute(
+                    "UPDATE Files SET file = ?1 WHERE fileID = ?2",
+                    params![metadata, id],
+                )
+                .unwrap();
+            fs::remove_file(device.join(&id[..2]).join(id)).unwrap();
+        }
+        drop(connection);
+        let entries = list_backup_entries(&root, "device-id", None).unwrap();
+        for (id, target) in [(&first_id, "child"), (&second_id, "/absolute/example")] {
+            let entry = entries.iter().find(|entry| entry.file_id == *id).unwrap();
+            assert_eq!(entry.link_target.as_deref(), Some(target));
+        }
+        let output = root.join("single").join("link");
+        let result = extract_backup_file(
+            &root,
+            "device-id",
+            "HomeDomain",
+            "Library/SMS/sms.db",
+            Some(&output),
+            None,
+        );
+        #[cfg(unix)]
+        {
+            assert_eq!(result.unwrap().files_extracted, 1);
+            assert_eq!(fs::read_link(&output).unwrap(), PathBuf::from("child"));
+            let absolute = root.join("absolute").join("link");
+            let error = extract_backup_file(
+                &root,
+                "device-id",
+                "HomeDomain",
+                "Library/Notes/note.db",
+                Some(&absolute),
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("must be relative"));
+        }
+        #[cfg(not(unix))]
+        assert!(result.unwrap_err().to_string().contains("unsupported"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn modern_mbfile_symlink_encryption_key_is_required_only_for_payloads() {
+        let (root, device, link_id, file_id) = write_fixture("modern-symlink-encrypted");
+        let connection = Connection::open(device.join("Manifest.db")).unwrap();
+        let link_archive = |target| {
+            mbfile_metadata_archive_with_target(
+                u64::from(MODE_TYPE_SYMLINK | 0o777),
+                0,
+                "Library/SMS/sms.db",
+                target,
+            )
+        };
+        let (keybag, manifest_key, encryption_key) = test_encrypted_material("0000");
+        connection
+            .execute(
+                "UPDATE Files SET file = ?1 WHERE fileID = ?2",
+                params![link_archive(Some("child".into())), &link_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE Files SET file = ?1 WHERE fileID = ?2",
+                params![
+                    encrypted_metadata_archive(MODE_TYPE_FILE as i64 | 0o600, 4, &encryption_key),
+                    &file_id
+                ],
+            )
+            .unwrap();
+        let workspace = ManifestWorkspace {
+            source_path: device.join("Manifest.db"),
+            original_path: device.join("Manifest.db"),
+            crypto: Some(
+                BackupCrypto::from_manifest(&keybag, &manifest_key, "0000", true).unwrap(),
+            ),
+            modern: true,
+            mbdb: None,
+            _temporary: None,
+        };
+        let entries = load_manifest_entries(&workspace).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.file_id == link_id)
+                .unwrap()
+                .link_target
+                .as_deref(),
+            Some("child")
+        );
+        connection
+            .execute(
+                "UPDATE Files SET file = ?1 WHERE fileID = ?2",
+                params![link_archive(None), &link_id],
+            )
+            .unwrap();
+        assert!(load_manifest_entries(&workspace)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("missing EncryptionKey"));
+        connection
+            .execute(
+                "UPDATE Files SET file = ?1 WHERE fileID = ?2",
+                params![
+                    link_archive(Some(plist::Value::Integer(3.into()))),
+                    &link_id
+                ],
+            )
+            .unwrap();
+        assert!(load_manifest_entries(&workspace)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Target is not a string"));
+        connection
+            .execute(
+                "UPDATE Files SET file = ?1 WHERE fileID = ?2",
+                params![metadata_archive(MODE_TYPE_FILE as i64 | 0o600, 4), &link_id],
+            )
+            .unwrap();
+        assert!(load_manifest_entries(&workspace)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("missing EncryptionKey"));
+        drop(connection);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

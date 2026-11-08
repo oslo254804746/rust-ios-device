@@ -37,7 +37,13 @@ where
     T: Serialize,
 {
     let mut bytes = Vec::new();
-    plist::to_writer_xml(&mut bytes, value).map_err(|e| LockdownError::Protocol(e.to_string()))?;
+    plist::to_writer_xml(&mut bytes, value).map_err(|error| {
+        super::error_context::native(
+            std::io::ErrorKind::InvalidInput,
+            "encode lockdown request plist",
+            error,
+        )
+    })?;
     writer.write_all(&encode_frame(&bytes)).await?;
     writer.flush().await?;
     Ok(())
@@ -49,7 +55,13 @@ where
     T: for<'de> Deserialize<'de>,
 {
     let payload = recv_frame(reader).await?;
-    plist::from_bytes(&payload).map_err(|e| LockdownError::Protocol(e.to_string()))
+    plist::from_bytes(&payload).map_err(|error| {
+        super::error_context::native(
+            std::io::ErrorKind::InvalidData,
+            "decode lockdown response plist",
+            error,
+        )
+    })
 }
 
 // ── Request / Response structs ────────────────────────────

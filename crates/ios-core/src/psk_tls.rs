@@ -1,3 +1,5 @@
+crate::redaction::error_debug!(PskTlsError);
+
 use std::pin::Pin;
 
 use openssl::error::ErrorStack;
@@ -5,7 +7,7 @@ use openssl::ssl::{Error, Ssl, SslContext, SslMethod, SslVerifyMode, SslVersion}
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum PskTlsError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -14,7 +16,7 @@ pub enum PskTlsError {
     #[error(
         "OpenSSL backend cannot select PSK ciphers required for the CoreDevice TCP tunnel; use an OpenSSL build with PSK cipher support: {0}"
     )]
-    PskCipherUnsupported(ErrorStack),
+    PskCipherUnsupported(#[source] ErrorStack),
     #[error("OpenSSL handshake error: {0}")]
     OpensslHandshake(#[from] Error),
 }
@@ -45,10 +47,11 @@ pub async fn connect_psk_tls(
         TcpStream::connect((host, port)),
     )
     .await
-    .map_err(|_| {
-        std::io::Error::new(
+    .map_err(|elapsed| {
+        crate::device::error_context::retained_io(
             std::io::ErrorKind::TimedOut,
-            format!("PSK tunnel dial to {host}:{port} timed out"),
+            "PSK tunnel dial timed out",
+            elapsed,
         )
     })??;
     connect_psk_tls_stream(host, tcp, psk).await

@@ -10,6 +10,14 @@ use ios_core::{connect, ConnectOptions};
 use tokio::time::{sleep, Duration};
 use zeroize::Zeroizing;
 
+mod stdio;
+
+macro_rules! output_line {
+    ($($argument:tt)*) => {
+        stdio::write_line(format_args!($($argument)*))?
+    };
+}
+
 const BACKUP_DOMAIN: &str = "com.apple.mobile.backup";
 const WILL_ENCRYPT_KEY: &str = "WillEncrypt";
 const AFC_SERVICE_NAME: &str = "com.apple.afc";
@@ -78,7 +86,7 @@ enum BackupSubcommand {
         /// Prune Manifest.db/Manifest.mbdb and stored payloads after applying a host-side selection
         #[arg(long)]
         patch_manifest: bool,
-        /// Password used by device-side backup and local post-processing
+        /// Password for local manifest patching or --unback; does not configure device encryption
         #[arg(long)]
         password: Option<String>,
         /// Expand the completed backup (Manifest.db or legacy Manifest.mbdb) into a local domain/path tree
@@ -211,13 +219,17 @@ impl BackupCmd {
                 password,
             } => {
                 let password = password.map(Zeroizing::new);
-                run_unback(
-                    &backup_directory,
-                    source.as_deref().or(udid.as_deref()),
-                    output.as_deref(),
-                    password.as_deref().map(String::as_str),
-                    json,
-                )
+                let source = source.or(udid);
+                host_work(move || {
+                    run_unback(
+                        &backup_directory,
+                        source.as_deref(),
+                        output.as_deref(),
+                        password.as_deref().map(String::as_str),
+                        json,
+                    )
+                })
+                .await
             }
             BackupSubcommand::Extract {
                 backup_directory,
@@ -228,15 +240,19 @@ impl BackupCmd {
                 password,
             } => {
                 let password = password.map(Zeroizing::new);
-                run_extract(
-                    &backup_directory,
-                    source.as_deref().or(udid.as_deref()),
-                    &domain,
-                    &relative_path,
-                    output.as_deref(),
-                    password.as_deref().map(String::as_str),
-                    json,
-                )
+                let source = source.or(udid);
+                host_work(move || {
+                    run_extract(
+                        &backup_directory,
+                        source.as_deref(),
+                        &domain,
+                        &relative_path,
+                        output.as_deref(),
+                        password.as_deref().map(String::as_str),
+                        json,
+                    )
+                })
+                .await
             }
             BackupSubcommand::UnbackDevice {
                 backup_directory,
@@ -326,12 +342,16 @@ impl BackupCmd {
                 password,
             } => {
                 let password = password.map(Zeroizing::new);
-                run_list_local(
-                    &backup_directory,
-                    source.as_deref().or(udid.as_deref()),
-                    password.as_deref().map(String::as_str),
-                    json,
-                )
+                let source = source.or(udid);
+                host_work(move || {
+                    run_list_local(
+                        &backup_directory,
+                        source.as_deref(),
+                        password.as_deref().map(String::as_str),
+                        json,
+                    )
+                })
+                .await
             }
             BackupSubcommand::Restore {
                 backup_directory,
@@ -408,6 +428,16 @@ fn required_udid(udid: Option<String>) -> Result<String> {
     udid.ok_or_else(|| anyhow::anyhow!("--udid required for this backup operation"))
 }
 
+async fn host_work<T, F>(operation: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(anyhow::Error::from)?
+}
+
 async fn run_version(udid: &str, json: bool) -> Result<()> {
     let device = connect(
         udid,
@@ -425,7 +455,7 @@ async fn run_version(udid: &str, json: bool) -> Result<()> {
     let version = client.version_exchange().await?;
 
     if json {
-        println!(
+        output_line!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "device_link_version": version.device_link_version,
@@ -435,10 +465,10 @@ async fn run_version(udid: &str, json: bool) -> Result<()> {
             }))?
         );
     } else {
-        println!("Service: {}", ios_core::backup2::SERVICE_NAME);
-        println!("DeviceLinkVersion: {}", version.device_link_version);
-        println!("ProtocolVersion: {}", version.protocol_version);
-        println!(
+        output_line!("Service: {}", ios_core::backup2::SERVICE_NAME);
+        output_line!("DeviceLinkVersion: {}", version.device_link_version);
+        output_line!("ProtocolVersion: {}", version.protocol_version);
+        output_line!(
             "SupportedProtocolVersions: {}",
             version
                 .local_versions
@@ -464,19 +494,22 @@ async fn run_encryption_status(udid: &str, json: bool) -> Result<()> {
     .await?;
     let will_encrypt = resolve_will_encrypt(
         device
-            .lockdown_get_value_in_domain(Some(BACKUP_DOMAIN), Some(WILL_ENCRYPT_KEY))
+            .lockdown_get_value_in_domain_preserving_errors(
+                Some(BACKUP_DOMAIN),
+                Some(WILL_ENCRYPT_KEY),
+            )
             .await,
     )?;
 
     if json {
-        println!(
+        output_line!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 WILL_ENCRYPT_KEY: will_encrypt,
             }))?
         );
     } else {
-        println!("{will_encrypt}");
+        output_line!("{will_encrypt}");
     }
 
     Ok(())
@@ -500,19 +533,22 @@ async fn run_encryption(
     .await?;
     let current = resolve_will_encrypt(
         device
-            .lockdown_get_value_in_domain(Some(BACKUP_DOMAIN), Some(WILL_ENCRYPT_KEY))
+            .lockdown_get_value_in_domain_preserving_errors(
+                Some(BACKUP_DOMAIN),
+                Some(WILL_ENCRYPT_KEY),
+            )
             .await,
     )?;
     let Some(mode) = mode else {
         if json {
-            println!(
+            output_line!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     WILL_ENCRYPT_KEY: current,
                 }))?
             );
         } else {
-            println!("{current}");
+            output_line!("{current}");
         }
         return Ok(());
     };
@@ -550,7 +586,7 @@ async fn run_encryption(
         }
     }
     if json {
-        println!(
+        output_line!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "changed": true,
@@ -558,7 +594,7 @@ async fn run_encryption(
             }))?
         );
     } else {
-        println!(
+        output_line!(
             "Backup encryption {} request completed.",
             match mode {
                 EncryptionMode::On => "enable",
@@ -609,7 +645,10 @@ async fn run_create(
     if patch_manifest && password.is_none() {
         let will_encrypt = resolve_will_encrypt(
             device
-                .lockdown_get_value_in_domain(Some(BACKUP_DOMAIN), Some(WILL_ENCRYPT_KEY))
+                .lockdown_get_value_in_domain_preserving_errors(
+                    Some(BACKUP_DOMAIN),
+                    Some(WILL_ENCRYPT_KEY),
+                )
                 .await,
         )?;
         ensure_patch_password(patch_manifest, password, will_encrypt)?;
@@ -618,8 +657,10 @@ async fn run_create(
     let info_plist = build_backup_info_plist(&device).await?;
     let (mut afc, mut notification_proxy, lock_handle) = acquire_backup_lock(&device).await?;
     let backup_result: Result<_> = async {
+        let escrow_bag =
+            ios_core::load_pair_record_escrow_bag(&ios_core::default_pair_record_path(udid))?;
         let stream = device
-            .connect_service(ios_core::backup2::SERVICE_NAME)
+            .connect_service_with_escrow_bag(ios_core::backup2::SERVICE_NAME, &escrow_bag)
             .await?;
         let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
         client
@@ -641,20 +682,28 @@ async fn run_create(
     let release_result = release_backup_lock(&mut afc, &mut notification_proxy, lock_handle).await;
     let result = backup_result?;
     release_result?;
-    let full_backup = ios_core::backup2::backup_status_is_full(&result.layout.device_directory)?;
-    let extracted = if unback {
-        Some(ios_core::backup2::unback_backup(
-            Path::new(output_dir),
-            udid,
-            None,
-            password,
-        )?)
-    } else {
-        None
-    };
+    let directory = result.layout.device_directory.clone();
+    let root = std::path::PathBuf::from(output_dir);
+    let identifier = udid.to_owned();
+    let password = password.map(|value| Zeroizing::new(value.to_owned()));
+    let (full_backup, extracted) = host_work(move || {
+        let full_backup = ios_core::backup2::backup_status_is_full(&directory)?;
+        let extracted = if unback {
+            Some(ios_core::backup2::unback_backup(
+                &root,
+                &identifier,
+                None,
+                password.as_deref().map(String::as_str),
+            )?)
+        } else {
+            None
+        };
+        Ok((full_backup, extracted))
+    })
+    .await?;
 
     if json {
-        println!(
+        output_line!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "device_directory": result.layout.device_directory,
@@ -667,18 +716,18 @@ async fn run_create(
             }))?
         );
     } else {
-        println!(
+        output_line!(
             "Backup created at {}",
             result.layout.device_directory.display()
         );
-        println!("DeviceLinkVersion: {}", result.device_link_version);
-        println!(
+        output_line!("DeviceLinkVersion: {}", result.device_link_version);
+        output_line!(
             "ProtocolVersion: {}",
             format_protocol_version(result.protocol_version)
         );
-        println!("FullBackup: {full_backup}");
+        output_line!("FullBackup: {full_backup}");
         if let Some(extracted) = extracted {
-            println!(
+            output_line!(
                 "Unback extracted {} files ({} bytes) to {}",
                 extracted.files_extracted,
                 extracted.bytes_extracted,
@@ -707,9 +756,9 @@ fn run_unback(
         password,
     )?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        output_line!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!(
+        output_line!(
             "Unback extracted {} files ({} bytes) to {}",
             result.files_extracted,
             result.bytes_extracted,
@@ -740,9 +789,9 @@ fn run_extract(
         password,
     )?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        output_line!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!(
+        output_line!(
             "Extracted {} file(s), {} bytes to {}",
             result.files_extracted,
             result.bytes_extracted,
@@ -955,12 +1004,15 @@ fn run_list_local(
     let entries =
         ios_core::backup2::list_backup_entries(Path::new(backup_directory), source, password)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
+        output_line!("{}", serde_json::to_string_pretty(&entries)?);
     } else {
         for entry in entries {
-            println!(
+            output_line!(
                 "{}\t{}\t{} bytes\tmode=0x{:04x}",
-                entry.domain, entry.relative_path, entry.size, entry.mode
+                entry.domain,
+                entry.relative_path,
+                entry.size,
+                entry.mode
             );
         }
     }
@@ -982,9 +1034,20 @@ async fn run_restore(
     json: bool,
 ) -> Result<()> {
     let source_identifier = source.unwrap_or(udid);
-    if ios_core::backup2::backup_is_encrypted(Path::new(backup_directory), source_identifier)?
-        && password.is_none()
-    {
+    let root = std::path::PathBuf::from(backup_directory);
+    let identifier = source_identifier.to_owned();
+    let password_missing = password.is_none();
+    let (encrypted, applications) = host_work(move || {
+        let encrypted = ios_core::backup2::backup_is_encrypted(&root, &identifier)?;
+        let applications = if skip_apps || (encrypted && password_missing) {
+            None
+        } else {
+            ios_core::backup2::load_backup_applications(&root, &identifier)?
+        };
+        Ok((encrypted, applications))
+    })
+    .await?;
+    if encrypted && password.is_none() {
         return Err(anyhow::anyhow!(
             "backup restore requires --password for encrypted backups"
         ));
@@ -1002,13 +1065,8 @@ async fn run_restore(
 
     let (mut afc, mut notification_proxy, lock_handle) = acquire_backup_lock(&device).await?;
     let restore_result: Result<_> = async {
-        if !skip_apps {
-            if let Some(applications) = ios_core::backup2::load_backup_applications(
-                Path::new(backup_directory),
-                source_identifier,
-            )? {
-                write_restore_applications(&mut afc, &applications).await?;
-            }
+        if let Some(applications) = applications {
+            write_restore_applications(&mut afc, &applications).await?;
         }
 
         let stream = device
@@ -1038,7 +1096,7 @@ async fn run_restore(
     release_result?;
 
     if json {
-        println!(
+        output_line!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "restored": true,
@@ -1055,12 +1113,12 @@ async fn run_restore(
             }))?
         );
     } else {
-        println!(
+        output_line!(
             "Restore completed from {}",
             result.layout.device_directory.display()
         );
-        println!("DeviceLinkVersion: {}", result.device_link_version);
-        println!(
+        output_line!("DeviceLinkVersion: {}", result.device_link_version);
+        output_line!(
             "ProtocolVersion: {}",
             format_protocol_version(result.protocol_version)
         );
@@ -1105,7 +1163,7 @@ async fn run_change_password(
         .await?;
 
     if json {
-        println!(
+        output_line!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "changed": true,
@@ -1114,17 +1172,16 @@ async fn run_change_password(
             }))?
         );
     } else {
-        println!("Backup password change request completed.");
+        output_line!("Backup password change request completed.");
     }
 
     Ok(())
 }
 
 async fn build_backup_info_plist(device: &ios_core::ConnectedDevice) -> Result<plist::Dictionary> {
-    let lockdown_values = device
-        .lockdown_get_value(None)
-        .await
-        .map_err(|err| anyhow::anyhow!("read lockdown values for backup metadata: {err}"))?;
+    let lockdown_values = device.lockdown_get_value(None).await.map_err(|err| {
+        anyhow::Error::new(err).context("read lockdown values for backup metadata")
+    })?;
     let values = lockdown_values.as_dictionary().ok_or_else(|| {
         anyhow::anyhow!("lockdown GetValue(None, None) did not return a dictionary")
     })?;
@@ -1175,9 +1232,9 @@ async fn build_backup_info_plist(device: &ios_core::ConnectedDevice) -> Result<p
                     }
                     Err(err) => {
                         tracing::warn!(
-                            "failed to read placeholder icon for {}: {}",
-                            app.bundle_id,
-                            err
+                            app = %ios_core::redaction::diagnostic_id(&app.bundle_id),
+                            error = %ios_core::redaction::diagnostic_error(&err),
+                            "failed to read placeholder icon"
                         );
                     }
                 }
@@ -1197,7 +1254,7 @@ async fn build_backup_info_plist(device: &ios_core::ConnectedDevice) -> Result<p
                 }
                 Err(AfcError::Status(AfcStatusCode::ObjectNotFound)) => {}
                 Err(err) => {
-                    tracing::warn!("failed to read backup metadata file {}: {}", path, err);
+                    tracing::warn!(path = %ios_core::redaction::diagnostic_id(&path), error = %ios_core::redaction::diagnostic_error(&err), "failed to read backup metadata file");
                 }
             }
         }
@@ -1300,7 +1357,7 @@ async fn build_backup_info_plist(device: &ios_core::ConnectedDevice) -> Result<p
             }
             Err(AfcError::Status(AfcStatusCode::ObjectNotFound)) => {}
             Err(err) => {
-                tracing::warn!("failed to read /Books/iBooksData2.plist: {}", err);
+                tracing::warn!(error = %ios_core::redaction::diagnostic_error(&err), "failed to read /Books/iBooksData2.plist");
             }
         }
     }
@@ -1329,11 +1386,11 @@ fn format_protocol_version(version: f64) -> String {
 fn print_process_message_content(content: Option<plist::Value>, json: bool) -> Result<()> {
     let value = content.unwrap_or(plist::Value::Dictionary(plist::Dictionary::new()));
     if json {
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        output_line!("{}", serde_json::to_string_pretty(&value)?);
     } else if let Some(text) = value.as_string() {
-        println!("{text}");
+        output_line!("{text}");
     } else {
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        output_line!("{}", serde_json::to_string_pretty(&value)?);
     }
     Ok(())
 }
@@ -1349,7 +1406,7 @@ fn print_device_operation_content(
         secret,
     );
     if json {
-        println!(
+        output_line!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "operation": operation,
@@ -1358,11 +1415,11 @@ fn print_device_operation_content(
             }))?
         );
     } else {
-        println!("{operation} request completed on device.");
+        output_line!("{operation} request completed on device.");
         if let Some(text) = value.as_string() {
-            println!("{text}");
+            output_line!("{text}");
         } else if !matches!(value, plist::Value::Dictionary(ref dict) if dict.is_empty()) {
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            output_line!("{}", serde_json::to_string_pretty(&value)?);
         }
     }
     Ok(())
@@ -1417,18 +1474,19 @@ fn plist_value_to_bool(value: &plist::Value) -> Option<bool> {
 
 fn resolve_will_encrypt<E>(value: std::result::Result<plist::Value, E>) -> Result<bool>
 where
-    E: std::fmt::Display,
+    E: std::error::Error + Send + Sync + 'static,
 {
     match value {
         Ok(value) => plist_value_to_bool(&value).ok_or_else(|| {
-            anyhow::anyhow!("{WILL_ENCRYPT_KEY} was not a boolean-compatible value: {value:?}")
+            crate::output::received_decision("WillEncrypt was not a boolean-compatible value")
         }),
         Err(err) => {
-            let err = err.to_string();
-            if err.contains("MissingValue") {
+            if ios_core::LockdownResponseError::in_error_chain(&err).is_some_and(|response| {
+                response.operation() == "GetValue" && response.code() == "MissingValue"
+            }) {
                 Ok(false)
             } else {
-                Err(anyhow::anyhow!("failed to read {WILL_ENCRYPT_KEY}: {err}"))
+                Err(anyhow::Error::new(err).context("failed to read WillEncrypt"))
             }
         }
     }
@@ -1464,6 +1522,34 @@ mod tests {
         backup: BackupCmd,
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_host_work_keeps_runtime_live_and_original_error_typed() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let (result, ()) = tokio::join!(
+            super::host_work::<(), _>(move || {
+                if wait
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .is_err()
+                {
+                    return Err(anyhow::anyhow!("synthetic timer did not progress"));
+                }
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())
+            }),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                let _ = release.send(());
+            }
+        );
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+
     #[test]
     fn protocol_version_formatter_preserves_trailing_zero_for_whole_numbers() {
         assert_eq!(format_protocol_version(2.0), "2.0");
@@ -1483,13 +1569,179 @@ mod tests {
     }
 
     #[test]
-    fn resolve_will_encrypt_defaults_to_false_on_lockdown_errors() {
-        let value = resolve_will_encrypt(Err(LockdownError::Protocol(
+    fn resolve_will_encrypt_rejects_legacy_missing_value_text() {
+        let error = resolve_will_encrypt(Err(LockdownError::Protocol(
             "GetValue failed for domain=Some(\"com.apple.mobile.backup\") key=Some(\"WillEncrypt\"): MissingValue".into(),
         )))
-        .expect("lockdown read failures should default to false");
+        .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Protocol
+        );
+        assert!(error.downcast_ref::<LockdownError>().is_some());
+    }
 
-        assert!(!value);
+    #[tokio::test]
+    async fn response_codes_backup_uses_actual_tls_get_value_code() {
+        use crate::access::test_tls_material::{CA, KEY, VALID};
+        use ios_core::{
+            recv_lockdown, send_lockdown, LockdownClient, LockdownResponseError, PairRecord,
+        };
+        use std::{io::Cursor, sync::Arc};
+        let chain = rustls_pemfile::certs(&mut Cursor::new(VALID))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let key = rustls_pemfile::private_key(&mut Cursor::new(KEY))
+            .unwrap()
+            .unwrap();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(chain, key)
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        for code in [
+            "MissingValue",
+            "owned-private-MissingValue",
+            "InvalidService",
+        ] {
+            let record = PairRecord {
+                device_certificate: VALID.to_vec(),
+                host_certificate: VALID.to_vec(),
+                host_private_key: KEY.to_vec().into(),
+                root_certificate: CA.to_vec(),
+                host_id: "owned-host".into(),
+                system_buid: "owned-buid".into(),
+                wifi_mac_address: None,
+            };
+            let (host, mut peer) = tokio::io::duplex(65536);
+            let caller = async {
+                let mut client = LockdownClient::connect_with_stream(host, &record)
+                    .await
+                    .unwrap();
+                let error = client
+                    .get_value_preserving_errors(
+                        Some(super::BACKUP_DOMAIN),
+                        Some(super::WILL_ENCRYPT_KEY),
+                    )
+                    .await
+                    .unwrap_err();
+                drop(client);
+                error
+            };
+            let server = async {
+                for (operation, reply) in [
+                    (
+                        "QueryType",
+                        plist::Dictionary::from_iter([(
+                            "Type".to_owned(),
+                            plist::Value::String("com.apple.mobile.lockdown".into()),
+                        )]),
+                    ),
+                    (
+                        "StartSession",
+                        plist::Dictionary::from_iter([
+                            (
+                                "SessionID".to_owned(),
+                                plist::Value::String("owned-session".into()),
+                            ),
+                            ("EnableSessionSSL".to_owned(), plist::Value::Boolean(true)),
+                        ]),
+                    ),
+                ] {
+                    let request: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+                    assert_eq!(
+                        request.as_dictionary().unwrap()["Request"].as_string(),
+                        Some(operation)
+                    );
+                    send_lockdown(&mut peer, &reply).await.unwrap();
+                }
+                let mut tls = acceptor.accept(peer).await.unwrap();
+                let request: plist::Value = recv_lockdown(&mut tls).await.unwrap();
+                let request = request.as_dictionary().unwrap();
+                assert_eq!(request["Request"].as_string(), Some("GetValue"));
+                assert_eq!(request["Domain"].as_string(), Some(super::BACKUP_DOMAIN));
+                assert_eq!(request["Key"].as_string(), Some(super::WILL_ENCRYPT_KEY));
+                send_lockdown(
+                    &mut tls,
+                    &plist::Dictionary::from_iter([(
+                        "Error".to_owned(),
+                        plist::Value::String(code.into()),
+                    )]),
+                )
+                .await
+                .unwrap();
+            };
+            let (error, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::join!(caller, server)
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                LockdownResponseError::in_error_chain(&error)
+                    .unwrap()
+                    .code(),
+                code
+            );
+            let result = resolve_will_encrypt::<ios_core::CoreError>(Err(error.into()));
+            if code == "MissingValue" {
+                assert!(!result.unwrap());
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    ios_core::classify_error(error.as_ref()),
+                    ios_core::ErrorClass::ServiceFailure
+                );
+                assert_eq!(
+                    LockdownResponseError::in_error_chain(error.as_ref())
+                        .unwrap()
+                        .code(),
+                    code
+                );
+                let envelope = crate::output::operation_failure_message(
+                    crate::output::ErrorFormat::Json,
+                    "backup",
+                    &error,
+                )
+                .unwrap();
+                assert!(!envelope.contains("owned-private"));
+            }
+        }
+    }
+
+    #[test]
+    fn response_codes_backup_does_not_treat_unobserved_not_found_as_missing_value() {
+        let native = std::fs::File::open("").unwrap_err();
+        let os_code = native.raw_os_error();
+        let error = resolve_will_encrypt(Err(native)).unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::NotFound
+        );
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            os_code
+        );
+        for value in [
+            plist::Value::String("MissingValue".into()),
+            plist::Value::Array(vec![]),
+        ] {
+            let error = resolve_will_encrypt::<LockdownError>(Ok(value)).unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Protocol
+            );
+        }
+        assert!(!resolve_will_encrypt::<LockdownError>(Ok(plist::Value::Boolean(false))).unwrap());
+        assert!(
+            resolve_will_encrypt::<LockdownError>(Ok(plist::Value::Integer(7.into()))).unwrap()
+        );
     }
 
     #[test]
@@ -1529,6 +1781,17 @@ mod tests {
         };
         assert_eq!(output_dir, "ios-rs-tmp/backup");
         assert!(full, "backup create should honor --full");
+    }
+
+    #[test]
+    fn backup_create_password_help_describes_local_use() {
+        let help = BackupTestCli::try_parse_from(["backup", "create", "--help"])
+            .err()
+            .expect("help is returned as a clap display result")
+            .to_string();
+        let normalized = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(normalized.contains("Password for local manifest patching or --unback"));
+        assert!(normalized.contains("does not configure device encryption"));
     }
 
     #[test]

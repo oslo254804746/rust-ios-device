@@ -7,15 +7,27 @@
 //!   4. Send central directory header signature as terminator
 //!   5. Poll for DataComplete / progress / error responses
 
+crate::redaction::error_debug!(ZipConduitError);
+
 use std::io::Read;
 use std::path::Path;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+mod error_mapping;
+mod owned_archive;
+
+#[cfg(test)]
+mod input_source_contract_tests;
+#[cfg(test)]
+mod owned_deadline_tests;
+#[cfg(test)]
+mod owned_stream_tests;
+
 pub const SERVICE_NAME: &str = "com.apple.streaming_zip_conduit";
 pub const RSD_SERVICE_NAME: &str = "com.apple.streaming_zip_conduit.shim.remote";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum ZipConduitError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -32,15 +44,190 @@ pub enum ZipConduitError {
 /// Progress callback for installation status.
 pub type ProgressCallback = Box<dyn Fn(u32, &str) + Send>;
 
+/// Progress observer that can stop the operation with its original IO error.
+pub type CheckedProgressCallback = Box<dyn Fn(u32, &str) -> std::io::Result<()> + Send>;
+
+/// Single-use owned install. One cooperative clock covers local preparation,
+/// transfer and every progress reply; the connection is always dropped on
+/// completion, timeout, error or caller cancellation. No mutation is replayed
+/// and closing the connection does not establish device rollback.
+/// Local preparation admits ZIP32 packages under the limits in `owned_archive`
+/// and validates entries in bounded chunks before sending. File system calls
+/// themselves cannot be interrupted if the operating system stalls them.
+pub async fn install_ipa_owned_with_timeout<S>(
+    stream: S,
+    ipa_path: &Path,
+    progress: Option<CheckedProgressCallback>,
+    budget: std::time::Duration,
+) -> Result<(), ZipConduitError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + 'static,
+{
+    if budget.is_zero() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "ZIP install budget is zero",
+        )
+        .into());
+    }
+    let deadline = tokio::time::Instant::now()
+        .checked_add(budget)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "ZIP install deadline overflow",
+            )
+        })?;
+    let mut stream = InstallIo {
+        inner: stream,
+        deadline,
+    };
+    let result = tokio::time::timeout_at(
+        deadline,
+        install_owned(&mut stream, ipa_path, progress, deadline),
+    )
+    .await
+    .map_err(|elapsed| {
+        ZipConduitError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed))
+    })?;
+    match result {
+        Ok(()) if tokio::time::Instant::now() >= deadline => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "late ZIP install completion",
+        )
+        .into()),
+        result => result,
+    }
+}
+
+async fn install_owned<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    path: &Path,
+    progress: Option<CheckedProgressCallback>,
+    deadline: tokio::time::Instant,
+) -> Result<(), ZipConduitError> {
+    let mut archive = owned_archive::PreparedArchive::open(path, deadline).await?;
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("app.ipa");
+    send_plist(stream, &build_init_transfer(filename)).await?;
+    write_zip_dir_entry(stream, "META-INF/").await?;
+    let metadata = build_zip_metadata(archive.record_count(), archive.total_size())?;
+    write_zip_file_entry(
+        stream,
+        "META-INF/com.apple.ZipMetadata.plist",
+        &plist_to_xml_bytes(&metadata)?,
+    )
+    .await?;
+    archive.send(stream).await?;
+    stream.write_all(&[0x50, 0x4b, 0x01, 0x02]).await?;
+    stream.flush().await?;
+    receive_progress(stream, progress).await
+}
+
+struct InstallIo<S> {
+    inner: S,
+    deadline: tokio::time::Instant,
+}
+impl<S: AsyncRead + Unpin> AsyncRead for InstallIo<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return std::task::Poll::Pending;
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(result, std::task::Poll::Ready(Ok(())))
+            && tokio::time::Instant::now() >= self.deadline
+        {
+            std::task::Poll::Pending
+        } else {
+            result
+        }
+    }
+}
+impl<S: AsyncWrite + Unpin> AsyncWrite for InstallIo<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return std::task::Poll::Pending;
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_write(cx, bytes);
+        if matches!(result, std::task::Poll::Ready(Ok(_)))
+            && tokio::time::Instant::now() >= self.deadline
+        {
+            std::task::Poll::Pending
+        } else {
+            result
+        }
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return std::task::Poll::Pending;
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_flush(cx);
+        if matches!(result, std::task::Poll::Ready(Ok(())))
+            && tokio::time::Instant::now() >= self.deadline
+        {
+            std::task::Poll::Pending
+        } else {
+            result
+        }
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 /// Install an IPA via Streaming Zip Conduit.
 ///
 /// `stream` must be an already-connected streaming_zip_conduit service connection.
 /// `ipa_path` is the local path to the IPA file.
 /// `progress` is an optional callback for installation progress updates.
+/// Local ZIP decoder errors use `ZipConduitError::Io` with retained typed
+/// causes and fixed phase context. Known non-IO package errors classify as
+/// invalid input; native IO keeps its kind. Extraction precedes stream writes.
 pub async fn install_ipa<S>(
     stream: &mut S,
     ipa_path: &Path,
     progress: Option<ProgressCallback>,
+) -> Result<(), ZipConduitError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let checked = progress.map(|callback| {
+        Box::new(move |percent, status: &str| {
+            callback(percent, status);
+            Ok(())
+        }) as CheckedProgressCallback
+    });
+    install_ipa_with_checked_progress(stream, ipa_path, checked).await
+}
+
+/// Install using a fallible progress observer, retaining the legacy wire flow.
+///
+/// Observer failure returns immediately as ZipConduitError::Io with its original
+/// source, without reading another reply or reporting success. Payload transfer
+/// precedes progress replies: failure does not imply rollback or no device effects.
+/// Discard the service connection after observer failure; this borrowed-stream
+/// API does not close/join it or establish reuse, cancellation or Apple cleanup.
+/// Completion replies do not invoke the observer, matching the legacy callback.
+pub async fn install_ipa_with_checked_progress<S>(
+    stream: &mut S,
+    ipa_path: &Path,
+    progress: Option<CheckedProgressCallback>,
 ) -> Result<(), ZipConduitError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -57,15 +244,15 @@ where
     // Calculate totals for ZipMetadata
     let total_uncompressed = entries.iter().try_fold(0u64, |acc, entry| {
         let len = u64::try_from(entry.data.len())
-            .map_err(|_| ZipConduitError::Protocol(format!("entry too large: {}", entry.name)))?;
+            .map_err(|error| error_mapping::input_error("encode IPA entry data length", error))?;
         acc.checked_add(len).ok_or_else(|| {
             ZipConduitError::Protocol("total uncompressed ZIP metadata size overflow".to_string())
         })
     })?;
     // RecordCount = META-INF dir + ZipMetadata file + all entries
     let record_count = u64::try_from(entries.len())
-        .ok()
-        .and_then(|len| len.checked_add(2))
+        .map_err(|error| error_mapping::input_error("encode IPA record count", error))?
+        .checked_add(2)
         .ok_or_else(|| {
             ZipConduitError::Protocol("ZIP metadata record count overflow".to_string())
         })?;
@@ -102,6 +289,13 @@ where
     stream.write_all(&[0x50, 0x4b, 0x01, 0x02]).await?;
     stream.flush().await?;
 
+    receive_progress(stream, progress).await
+}
+
+async fn receive_progress<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    progress: Option<CheckedProgressCallback>,
+) -> Result<(), ZipConduitError> {
     // 5. Poll for completion
     loop {
         let resp = recv_plist(stream).await?;
@@ -143,11 +337,17 @@ where
             }
 
             if let Some(ref cb) = progress {
-                cb(percent, status);
+                cb(percent, status)?;
             }
         }
     }
 }
+
+#[cfg(test)]
+mod progress_contract_tests;
+
+#[cfg(test)]
+mod extraction_contract_tests;
 
 // ── ZIP entry types ─────────────────────────────────────────────────────────
 
@@ -160,21 +360,21 @@ struct ZipEntry {
 /// Extract all entries from a ZIP file, decompressing as needed.
 fn extract_zip_entries(data: &[u8]) -> Result<Vec<ZipEntry>, ZipConduitError> {
     let reader = std::io::Cursor::new(data);
-    let mut archive =
-        zip::ZipArchive::new(reader).map_err(|e| ZipConduitError::Zip(e.to_string()))?;
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|error| error_mapping::zip_error("open IPA ZIP archive", error))?;
 
     let mut entries = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
-            .map_err(|e| ZipConduitError::Zip(e.to_string()))?;
+            .map_err(|error| error_mapping::zip_error("open IPA ZIP entry", error))?;
         let name = file.name().to_string();
         let is_dir = file.is_dir();
 
         let mut file_data = Vec::new();
         if !is_dir {
             file.read_to_end(&mut file_data)
-                .map_err(|e| ZipConduitError::Zip(format!("failed to read {name}: {e}")))?;
+                .map_err(error_mapping::entry_read_error)?;
         }
 
         entries.push(ZipEntry {
@@ -262,20 +462,16 @@ async fn write_local_file_header<S: AsyncWrite + Unpin>(
 
 // ── Plist helpers ───────────────────────────────────────────────────────────
 
-fn checked_zip_u32_len(what: &str, len: usize) -> Result<u32, ZipConduitError> {
-    u32::try_from(len)
-        .map_err(|_| ZipConduitError::Protocol(format!("{what} exceeds ZIP u32 range: {len}")))
+fn checked_zip_u32_len(what: &'static str, len: usize) -> Result<u32, ZipConduitError> {
+    u32::try_from(len).map_err(|error| error_mapping::input_error(what, error))
 }
 
-fn checked_zip_u16_len(what: &str, len: usize) -> Result<u16, ZipConduitError> {
-    u16::try_from(len)
-        .map_err(|_| ZipConduitError::Protocol(format!("{what} exceeds ZIP u16 range: {len}")))
+fn checked_zip_u16_len(what: &'static str, len: usize) -> Result<u16, ZipConduitError> {
+    u16::try_from(len).map_err(|error| error_mapping::input_error(what, error))
 }
 
-fn checked_zip_i64(what: &str, value: u64) -> Result<i64, ZipConduitError> {
-    i64::try_from(value).map_err(|_| {
-        ZipConduitError::Protocol(format!("{what} exceeds plist integer range: {value}"))
-    })
+fn checked_zip_i64(what: &'static str, value: u64) -> Result<i64, ZipConduitError> {
+    i64::try_from(value).map_err(|error| error_mapping::input_error(what, error))
 }
 
 fn build_init_transfer(filename: &str) -> plist::Value {

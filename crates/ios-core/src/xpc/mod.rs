@@ -8,6 +8,10 @@
 
 #[cfg(feature = "tunnel")]
 pub mod client;
+#[cfg(all(test, feature = "tunnel"))]
+mod error_contract_tests;
+#[cfg(feature = "tunnel")]
+mod error_mapping;
 #[cfg(any(
     feature = "tunnel",
     feature = "dproxy",
@@ -15,7 +19,17 @@ pub mod client;
     feature = "restore"
 ))]
 pub mod h2_raw;
+#[cfg(feature = "tunnel")]
+pub(crate) mod identity;
 pub mod message;
+#[cfg(any(
+    feature = "tunnel",
+    feature = "dproxy",
+    feature = "fetchsymbols",
+    feature = "restore"
+))]
+mod raw_storage;
+crate::redaction::error_debug!(XpcError);
 pub mod rsd;
 
 #[cfg(feature = "tunnel")]
@@ -39,7 +53,7 @@ pub use client::XpcClient;
 pub(crate) use message::{XpcMessage, XpcValue};
 
 /// Errors from XPC operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum XpcError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -49,4 +63,12 @@ pub enum XpcError {
     ServiceNotFound(String),
     #[error("TLS / protocol error: {0}")]
     Tls(String),
+}
+
+pub(crate) fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> XpcError {
+    XpcError::Io(crate::error::context::retained_io(kind, phase, source))
 }

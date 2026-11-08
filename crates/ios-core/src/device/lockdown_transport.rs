@@ -1,225 +1,33 @@
-pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice, CoreError> {
-    let mut mux = MuxClient::connect().await?;
-    let devices = mux.list_devices().await?;
-    let dev = select_mux_device(devices, udid)
-        .ok_or_else(|| CoreError::DeviceNotFound(udid.to_string()))?;
+//! Lockdown credentials, port dialing and CoreDeviceProxy startup.
 
-    let info = DeviceInfo {
-        udid: dev.serial_number.clone(),
-        device_id: dev.device_id,
-        connection_type: dev.connection_type.clone(),
-        product_id: dev.product_id,
-    };
+use super::activation_policy::ActivationPolicy;
+#[cfg(feature = "tunnel")]
+use super::tunnel_activation::TunnelConnection;
+use super::{
+    ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason, LockdownTransport,
+    ServiceStream,
+};
+use crate::discovery::DeviceInfo;
+use crate::error::CoreError;
+use crate::lockdown::pair_record::PairRecord;
+#[cfg(feature = "tunnel")]
+use crate::lockdown::session::{
+    start_lockdown_session, start_service, wrap_service_tls, CORE_DEVICE_PROXY,
+};
+#[cfg(feature = "tunnel")]
+use crate::lockdown::LOCKDOWN_PORT;
+use crate::mux::MuxClient;
+use std::sync::Arc;
+#[cfg(feature = "tunnel")]
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+#[cfg(feature = "tunnel")]
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpStream;
 
-    let pair_record = load_pair_record(udid, opts.pair_record_path.as_deref())?;
-    connect_via_lockdown_transport(
-        info,
-        pair_record,
-        LockdownTransport::Usbmux {
-            device_id: dev.device_id,
-        },
-        opts,
-    )
-    .await
-}
-
-pub async fn connect_direct_usb_tunnel(
-    udid: &str,
-    rsd_ip: Option<&str>,
-    opts: ConnectOptions,
-) -> Result<ConnectedDevice, CoreError> {
-    let mut mux = MuxClient::connect().await?;
-    let devices = mux.list_devices().await?;
-    let dev = select_mux_device(devices, udid)
-        .ok_or_else(|| CoreError::DeviceNotFound(udid.to_string()))?;
-    let pair_record = try_load_pair_record(udid, opts.pair_record_path.as_deref());
-    let info = DeviceInfo {
-        udid: dev.serial_number.clone(),
-        device_id: dev.device_id,
-        connection_type: dev.connection_type.clone(),
-        product_id: dev.product_id,
-    };
-    let lockdown_transport = LockdownTransport::Usbmux {
-        device_id: dev.device_id,
-    };
-
-    if opts.skip_tunnel {
-        let pair_record =
-            require_pair_record(pair_record, udid, "direct USB lockdown access requires")?;
-        return Ok(ConnectedDevice {
-            info,
-            tunnel: None,
-            rsd: None,
-            pair_record: Some(pair_record),
-            lockdown_transport,
-        });
-    }
-
-    #[cfg(not(all(feature = "tunnel", feature = "mdns")))]
-    {
-        let _ = rsd_ip;
-        Err(CoreError::Unsupported(
-            "direct USB tunnel support requires ios-core features 'tunnel' and 'mdns'".into(),
-        ))
-    }
-
-    #[cfg(all(feature = "tunnel", feature = "mdns"))]
-    {
-        let targets = discover_direct_rsd_targets(udid, rsd_ip).await?;
-        if targets.is_empty() {
-            return Err(CoreError::Unsupported(format!(
-                "no _remoted target matched udid={udid} ip={rsd_ip:?}"
-            )));
-        }
-
-        let mut last_error = None;
-        for target in targets {
-            match connect_via_direct_rsd_target(
-                info.clone(),
-                pair_record.clone(),
-                lockdown_transport.clone(),
-                opts.clone(),
-                target,
-            )
-            .await
-            {
-                Ok(device) => return Ok(device),
-                Err(err) => last_error = Some(err),
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| {
-            CoreError::Unsupported(format!(
-                "no direct RSD target produced a tunnel for udid={udid}"
-            ))
-        }))
-    }
-}
-
-pub async fn connect_remote_pairing_tunnel(
-    udid: &str,
-    host: Option<&str>,
-    opts: ConnectOptions,
-) -> Result<ConnectedDevice, CoreError> {
-    let pair_record = try_load_pair_record(udid, opts.pair_record_path.as_deref());
-    let info = DeviceInfo {
-        udid: udid.to_string(),
-        device_id: 0,
-        connection_type: "Network".into(),
-        product_id: 0,
-    };
-
-    if opts.skip_tunnel {
-        let pair_record =
-            require_pair_record(pair_record, udid, "remote pairing lockdown access requires")?;
-        return Ok(ConnectedDevice {
-            info,
-            tunnel: None,
-            rsd: None,
-            pair_record: Some(pair_record),
-            lockdown_transport: LockdownTransport::Tcp {
-                host: host.unwrap_or_default().to_string(),
-            },
-        });
-    }
-
-    #[cfg(not(all(feature = "tunnel", feature = "mdns")))]
-    {
-        let _ = host;
-        Err(CoreError::Unsupported(
-            "remote pairing tunnel support requires ios-core features 'tunnel' and 'mdns'".into(),
-        ))
-    }
-
-    #[cfg(all(feature = "tunnel", feature = "mdns"))]
-    {
-        let targets = discover_remote_pairing_targets(udid, host).await?;
-        if targets.is_empty() {
-            return Err(CoreError::Unsupported(format!(
-                "no _remotepairing target matched udid={udid} host={host:?}"
-            )));
-        }
-
-        let mut last_error = None;
-        for (remote_host, port) in targets {
-            match connect_via_remote_pairing_target(
-                info.clone(),
-                pair_record.clone(),
-                opts.clone(),
-                udid,
-                &remote_host,
-                port,
-            )
-            .await
-            {
-                Ok(device) => return Ok(device),
-                Err(err) => last_error = Some(err),
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| {
-            CoreError::Unsupported(format!(
-                "no remote pairing target produced a tunnel for udid={udid}"
-            ))
-        }))
-    }
-}
-
-pub async fn connect_tcp_lockdown_tunnel(
-    udid: &str,
-    host: &str,
-    opts: ConnectOptions,
-) -> Result<ConnectedDevice, CoreError> {
-    let pair_record = load_pair_record(udid, opts.pair_record_path.as_deref())?;
-    let info = DeviceInfo {
-        udid: udid.to_string(),
-        device_id: 0,
-        connection_type: "Network".into(),
-        product_id: 0,
-    };
-    connect_via_lockdown_transport(
-        info,
-        pair_record,
-        LockdownTransport::Tcp {
-            host: host.to_string(),
-        },
-        opts,
-    )
-    .await
-}
-
-#[cfg(feature = "mdns")]
-pub async fn discover_paired_mobdev2_devices() -> Result<Vec<PairedMobdev2Device>, CoreError> {
-    let wifi_mac_to_udid = tokio::task::spawn_blocking(load_wifi_mac_pairings)
-        .await
-        .map_err(|e| CoreError::Other(format!("join error: {e}")))??;
-    let services = browse_mobdev2(MOBDEV2_DISCOVERY_TIMEOUT).await?;
-    Ok(match_paired_mobdev2_targets(&services, &wifi_mac_to_udid))
-}
-
-fn select_mux_device(
-    devices: Vec<crate::mux::MuxDevice>,
-    udid: &str,
-) -> Option<crate::mux::MuxDevice> {
-    let mut fallback = None;
-
-    for device in devices {
-        if device.serial_number != udid {
-            continue;
-        }
-
-        let is_usb = device.connection_type.eq_ignore_ascii_case("USB");
-        fallback = Some(device);
-
-        if is_usb {
-            return fallback;
-        }
-    }
-
-    fallback
-}
-
-fn load_pair_record(
+pub(super) fn load_pair_record(
     udid: &str,
     pair_record_path: Option<&std::path::Path>,
 ) -> Result<Arc<PairRecord>, CoreError> {
@@ -230,24 +38,27 @@ fn load_pair_record(
     }))
 }
 
-fn try_load_pair_record(
+pub(super) fn try_load_pair_record(
     udid: &str,
     pair_record_path: Option<&std::path::Path>,
 ) -> Option<Arc<PairRecord>> {
     load_pair_record(udid, pair_record_path).ok()
 }
 
-fn require_pair_record(
+pub(super) fn require_pair_record(
     pair_record: Option<Arc<PairRecord>>,
     udid: &str,
     context: &str,
 ) -> Result<Arc<PairRecord>, CoreError> {
     pair_record.ok_or_else(|| {
-        CoreError::Unsupported(format!("{context} a lockdown pair record for {udid}"))
+        CoreError::Unsupported(format!(
+            "{context} a lockdown pair record for device {}",
+            crate::redaction::diagnostic_id(udid)
+        ))
     })
 }
 
-async fn connect_lockdown_port(
+pub(super) async fn connect_lockdown_port(
     udid: &str,
     transport: &LockdownTransport,
     port: u16,
@@ -268,10 +79,11 @@ async fn connect_lockdown_port(
                 TcpStream::connect((host.as_str(), port)),
             )
             .await
-            .map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    format!("lockdown dial to {host}:{port} timed out"),
+            .map_err(|source| {
+                crate::error::context::deadline_io(
+                    "lockdown TCP dial",
+                    crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+                    source,
                 )
             })??;
             Ok(Box::new(stream))
@@ -279,17 +91,112 @@ async fn connect_lockdown_port(
     }
 }
 
-async fn connect_via_lockdown_transport(
+static TCP_HEARTBEATS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), tokio::task::AbortHandle>>,
+> = std::sync::OnceLock::new();
+
+pub(super) async fn ensure_tcp_heartbeat(
+    udid: &str,
+    transport: &LockdownTransport,
+    pair_record: &Arc<PairRecord>,
+) -> Result<(), CoreError> {
+    let LockdownTransport::Tcp { host } = transport else {
+        return Ok(());
+    };
+    if host.is_empty() || host == "127.0.0.1" || host == "::1" {
+        return Ok(());
+    }
+    let key = (udid.to_string(), host.clone());
+    let map =
+        TCP_HEARTBEATS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(guard) = map.lock() {
+        if let Some(handle) = guard.get(&key) {
+            if !handle.is_finished() {
+                return Ok(());
+            }
+        }
+    }
+
+    let lockdown_stream =
+        connect_lockdown_port(udid, transport, crate::lockdown::LOCKDOWN_PORT, true).await?;
+    let (_session_id, mut tls_reader, mut tls_writer) =
+        crate::lockdown::session::start_lockdown_session(lockdown_stream, pair_record).await?;
+    let (hb_port, enable_ssl) = crate::lockdown::session::start_service(
+        &mut tls_reader,
+        &mut tls_writer,
+        "com.apple.mobile.heartbeat",
+    )
+    .await?;
+    let raw_hb = connect_lockdown_port(udid, transport, hb_port, false).await?;
+    let mut hb_stream: ServiceStream = if enable_ssl {
+        Box::new(crate::lockdown::session::wrap_service_tls(raw_hb, pair_record).await?)
+    } else {
+        raw_hb
+    };
+
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Polo {
+        command: &'static str,
+    }
+
+    let _marco: plist::Value = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::lockdown::protocol::recv_lockdown(&mut hb_stream),
+    )
+    .await
+    .map_err(|source| {
+        crate::error::context::deadline_io(
+            "heartbeat Marco recv",
+            std::time::Duration::from_secs(5),
+            source,
+        )
+    })??;
+    crate::lockdown::protocol::send_lockdown(&mut hb_stream, &Polo { command: "Polo" }).await?;
+
+    let join = tokio::spawn(async move {
+        while crate::lockdown::protocol::recv_lockdown::<_, plist::Value>(&mut hb_stream)
+            .await
+            .is_ok()
+        {
+            if crate::lockdown::protocol::send_lockdown(&mut hb_stream, &Polo { command: "Polo" })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    if let Ok(mut guard) = map.lock() {
+        if let Some(old) = guard.insert(key, join.abort_handle()) {
+            old.abort();
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn connect_via_lockdown_transport<P: ActivationPolicy>(
     info: DeviceInfo,
     pair_record: Arc<PairRecord>,
     lockdown_transport: LockdownTransport,
     opts: ConnectOptions,
-) -> Result<ConnectedDevice, CoreError> {
+    owner: super::tunnel_owner::InitialOwner<'_, P>,
+) -> Result<P::Output, CoreError> {
+    let initial_rsd_bank = owner.bank;
     if opts.skip_tunnel {
-        return Ok(ConnectedDevice {
+        return owner.policy.without_tunnel(ConnectedDevice {
             info,
             tunnel: None,
             rsd: None,
+            #[cfg(feature = "tunnel")]
+            owned_initial_rsd: None,
+            #[cfg(feature = "tunnel")]
+            owned_initial_bank: None,
+            #[cfg(feature = "tunnel")]
+            prepared_rsd: None,
+            #[cfg(feature = "tunnel")]
+            owned_prepared_rsd: None,
+            initial_rsd_probe: InitialRsdProbe::skipped(InitialRsdProbeSkipReason::TunnelSkipped),
             pair_record: Some(pair_record),
             lockdown_transport,
         });
@@ -297,7 +204,13 @@ async fn connect_via_lockdown_transport(
 
     #[cfg(not(feature = "tunnel"))]
     {
-        let _ = (info, pair_record, lockdown_transport);
+        let _ = (
+            info,
+            pair_record,
+            lockdown_transport,
+            owner,
+            initial_rsd_bank,
+        );
         Err(CoreError::Unsupported(
             "CoreDevice tunnel support requires ios-core feature 'tunnel'".into(),
         ))
@@ -305,6 +218,8 @@ async fn connect_via_lockdown_transport(
 
     #[cfg(feature = "tunnel")]
     {
+        let reservation = owner.reserve()?;
+        let _ = ensure_tcp_heartbeat(&info.udid, &lockdown_transport, &pair_record).await;
         let lockdown_stream =
             connect_lockdown_port(&info.udid, &lockdown_transport, LOCKDOWN_PORT, true).await?;
 
@@ -334,21 +249,200 @@ async fn connect_via_lockdown_transport(
         };
         tracing::info!("tunnel connect: CoreDeviceProxy stream ready");
 
-        activate_tunnel(
-            TunnelConnection::new(
-                info,
-                Some(pair_record),
-                lockdown_transport,
-                "lockdown CoreDeviceProxy",
-            ),
-            proxy_stream,
-            opts.tun_mode,
-        )
-        .await
+        owner
+            .policy
+            .activate(
+                TunnelConnection::new(
+                    info,
+                    Some(pair_record),
+                    lockdown_transport,
+                    "lockdown CoreDeviceProxy",
+                )
+                .with_initial_rsd_bank(initial_rsd_bank),
+                proxy_stream,
+                opts.tun_mode,
+                reservation,
+            )
+            .await
     }
 }
 
 #[cfg(not(feature = "tunnel"))]
-fn tunnel_unavailable() -> CoreError {
+pub(super) fn tunnel_unavailable() -> CoreError {
     CoreError::Unsupported("CoreDevice tunnel support requires ios-core feature 'tunnel'".into())
+}
+// ── ProxyStream ───────────────────────────────────────────────────────────────
+
+#[cfg(feature = "tunnel")]
+pub(super) enum ProxyStream {
+    Plain(ServiceStream),
+    Tls(Box<tokio_rustls::client::TlsStream<ServiceStream>>),
+}
+
+#[cfg(feature = "tunnel")]
+impl Unpin for ProxyStream {}
+
+#[cfg(feature = "tunnel")]
+impl AsyncRead for ProxyStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match &mut *self {
+            ProxyStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            ProxyStream::Tls(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+impl AsyncWrite for ProxyStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match &mut *self {
+            ProxyStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            ProxyStream::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match &mut *self {
+            ProxyStream::Plain(s) => Pin::new(s).poll_flush(cx),
+            ProxyStream::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match &mut *self {
+            ProxyStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            ProxyStream::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn actual_skip_tunnel_connection_reports_an_unattempted_initial_probe() {
+        let credentials = Arc::new(PairRecord {
+            device_certificate: vec![],
+            host_certificate: vec![],
+            host_private_key: zeroize::Zeroizing::new(vec![]),
+            root_certificate: vec![],
+            host_id: "owned-unusable-fixture".into(),
+            system_buid: "owned-unusable-fixture".into(),
+            wifi_mac_address: None,
+        });
+        let device = connect_via_lockdown_transport(
+            DeviceInfo {
+                udid: "synthetic-private-skipped-probe-device".into(),
+                device_id: 0,
+                connection_type: "Network".into(),
+                product_id: 0,
+            },
+            credentials,
+            LockdownTransport::Tcp {
+                host: String::new(),
+            },
+            ConnectOptions {
+                skip_tunnel: true,
+                ..Default::default()
+            },
+            super::super::tunnel_owner::InitialOwner::new(None, None),
+        )
+        .await
+        .unwrap();
+        let observation = device.initial_rsd_probe();
+        assert_eq!(
+            observation.state(),
+            super::super::InitialRsdProbeState::NotAttempted
+        );
+        assert_eq!(
+            observation.skip_reason(),
+            Some(InitialRsdProbeSkipReason::TunnelSkipped)
+        );
+        assert!(observation.error().is_none());
+        assert!(device.rsd().is_none());
+        assert!(device.tunnel_handle().is_none());
+        assert!(!format!("{observation:?} {observation:#?}").contains("synthetic-private"));
+        assert!(device.into_rsd().is_none());
+    }
+
+    #[tokio::test]
+    async fn tcp_lockdown_dial_preserves_bytes_without_usbmux_pair_record_reads() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = async {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 7];
+                stream.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"request");
+                stream.write_all(b"reply").await.unwrap();
+            }
+        };
+        let client = async {
+            for read_pair_record in [true, false] {
+                let mut stream = connect_lockdown_port(
+                    "synthetic-unpaired-tcp-device",
+                    &LockdownTransport::Tcp {
+                        host: "127.0.0.1".into(),
+                    },
+                    port,
+                    read_pair_record,
+                )
+                .await
+                .unwrap();
+                stream.write_all(b"request").await.unwrap();
+                let mut reply = [0; 5];
+                stream.read_exact(&mut reply).await.unwrap();
+                assert_eq!(&reply, b"reply");
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(server, client);
+        })
+        .await
+        .expect("owned TCP lockdown fixture must finish");
+    }
+
+    fn temp_test_dir(label: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("ios_core_device_{label}_{unique}"))
+    }
+
+    #[test]
+    fn try_load_pair_record_returns_none_for_missing_pair_record() {
+        let missing_dir = temp_test_dir("missing_pair_record");
+
+        let loaded = try_load_pair_record("missing-udid", Some(&missing_dir));
+
+        assert!(loaded.is_none());
+
+        let _ = std::fs::remove_dir_all(missing_dir);
+    }
+
+    #[test]
+    fn require_pair_record_rejects_missing_lockdown_pair_record() {
+        let err = require_pair_record(None, "test-udid", "remote pairing lockdown access requires")
+            .expect_err("missing pair record should fail");
+
+        assert!(err
+            .to_string()
+            .contains("remote pairing lockdown access requires"));
+        assert!(!err.to_string().contains("test-udid"));
+        assert!(err.to_string().contains("pair record for device id:"));
+        assert!(matches!(err, CoreError::Unsupported(_)));
+    }
 }

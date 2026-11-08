@@ -198,6 +198,8 @@ mod tests {
             skipped_tests: 1,
             logs: vec!["stdout <ok>\u{1}".to_string()],
             debug_logs: vec!["stderr & detail".to_string()],
+            logs_truncated: false,
+            results_truncated: false,
             suites: vec![TestSuiteSummary {
                 name: "Suite <主>&".to_string(),
                 started_at: None,
@@ -258,6 +260,17 @@ mod tests {
     #[test]
     fn junit_xml_preserves_statuses_counts_and_escapes_invalid_text() {
         let xml = junit_fixture_summary().to_junit_xml();
+        let root = xml
+            .split("<testsuites")
+            .nth(1)
+            .unwrap()
+            .split('>')
+            .next()
+            .unwrap();
+        assert!(
+            root.contains("errors=\"1\""),
+            "unknown-status errors must not be duplicated as new diagnostic errors"
+        );
         assert!(xml.contains("tests=\"5\" failures=\"1\" errors=\"1\" skipped=\"2\""));
         assert!(xml.contains("name=\"Suite &lt;主&gt;&amp;\""));
         assert!(xml.contains("bad &lt;value&gt; &amp; &quot;quote&quot;�"));
@@ -303,6 +316,27 @@ mod tests {
             write_junit_xml_atomic_with_diagnostic(&summary, &missing_parent, "not connected")
                 .expect_err("missing parent must not create a partial report");
         assert!(matches!(error.kind(), std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn junit_output_unicode_and_full_length_filename_match_size_and_hash() {
+        use sha2::{Digest, Sha256};
+        let directory = std::env::temp_dir().join(format!("ios-junit-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let summary = junit_fixture_summary();
+        let expected = summary.to_junit_xml();
+        for name in ["报告😀.xml".to_owned(), "a".repeat(255)] {
+            let output = directory.join(name);
+            std::fs::write(&output, b"old report").unwrap();
+            write_junit_xml_atomic(&summary, &output).unwrap();
+            let actual = std::fs::read(&output).unwrap();
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(Sha256::digest(&actual), Sha256::digest(expected.as_bytes()));
+            std::fs::remove_file(output).unwrap();
+        }
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        assert!(write_junit_xml_atomic(&summary, &directory).is_err());
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]
@@ -1009,8 +1043,10 @@ mod tests {
 
     #[tokio::test]
     async fn authorize_test_session_rejects_pid_outside_dtx_integer_range() {
-        let (session_client, _session_server) = duplex(4096);
-        let (control_client, _control_server) = duplex(4096);
+        use std::error::Error;
+        use tokio::io::AsyncReadExt;
+        let (session_client, mut session_server) = duplex(4096);
+        let (control_client, mut control_server) = duplex(4096);
         let mut testmanager =
             TestmanagerClient::from_connections_for_test(session_client, 3, control_client, 4);
 
@@ -1018,10 +1054,28 @@ mod tests {
             .authorize_test_session_with_process_id(u64::MAX)
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            DtxError::Protocol(message)
-                if message.contains("exceeds DTX signed integer range")
-        ));
+        assert_eq!(
+            ios_core::classify_error(&err),
+            ios_core::ErrorClass::InvalidInput
+        );
+        let DtxError::Io(io) = &err else {
+            panic!("original source lost");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(io.source().unwrap().is::<std::num::TryFromIntError>());
+        drop(testmanager);
+        let mut session_wire = Vec::new();
+        let mut control_wire = Vec::new();
+        let (session, control) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(
+                session_server.read_to_end(&mut session_wire),
+                control_server.read_to_end(&mut control_wire),
+            )
+        })
+        .await
+        .unwrap();
+        session.unwrap();
+        control.unwrap();
+        assert!(session_wire.is_empty() && control_wire.is_empty());
     }
 }

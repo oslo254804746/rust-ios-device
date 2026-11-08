@@ -18,7 +18,6 @@
 .t3
 .claude
 .codex
-.venv/
 ios-rs-tmp
 
 # Device credentials and local artifacts
@@ -27,6 +26,7 @@ ios-rs-tmp
 *.pem
 *.key
 *.cer
+!crates/ios-core/src/services/imagemounter/apple-inc-root.cer
 *.der
 pair-record*.plist
 remote_*.plist
@@ -43,5 +43,6 @@ selfIdentity.plist
 
 # Release/build outputs
 /dist/
+__pycache__/
 AGENTS.MD
-raw-projects/
+raw-projcects/

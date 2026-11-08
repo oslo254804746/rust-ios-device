@@ -34,7 +34,7 @@ impl EraseCmd {
         client.erase_device(true, false).await?;
 
         if json {
-            println!(
+            crate::output::outln!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "erased": true,
@@ -43,7 +43,7 @@ impl EraseCmd {
                 }))?
             );
         } else {
-            println!("Erase request sent. The device should reboot shortly.");
+            crate::output::outln!("Erase request sent. The device should reboot shortly.");
         }
 
         Ok(())

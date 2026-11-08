@@ -1,5 +1,6 @@
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 
 use crate::tunnel::tun::TunDevice;
 use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
@@ -8,6 +9,11 @@ use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
 /// forwarding loop before the reader has to wait for the TUN to catch up.
 const STREAM_PACKET_QUEUE: usize = 64;
 
+enum ForwardStep {
+    Continue,
+    End,
+}
+
 /// Bidirectionally forward IPv6 packets between an iOS TCP stream and a TUN device.
 /// Runs until the `cancel` watch receiver fires or an IO error occurs.
 ///
@@ -15,8 +21,14 @@ const STREAM_PACKET_QUEUE: usize = 64;
 /// `read_ipv6_packet` is built on `read_exact`, which is *not* cancellation-safe:
 /// dropping it mid-packet discards both the bytes it consumed and its progress,
 /// which permanently desyncs the IPv6 framing for every packet that follows.
-/// Owning the reader means it is never cancelled mid-packet; the loop instead
-/// awaits an mpsc receive, which is cancellation-safe.
+/// While forwarding is active, the reader is never cancelled mid-packet; the
+/// loop instead awaits an mpsc receive, which is cancellation-safe. Dropping
+/// the forwarding future aborts its owned reader and closes the stream.
+/// Cancellation also covers a selected TUN/stream write or flush wait and is
+/// checked before starting each new forwarding step.
+/// Normal return aborts and joins the local reader, preserving an unexpected
+/// native join failure alongside any forwarding primary. This raw helper has
+/// no separate cleanup deadline; caller-future Drop requests cancellation only.
 #[allow(dead_code)]
 pub async fn forward_packets<S, D>(
     stream: S,
@@ -34,52 +46,178 @@ where
 
 pub(crate) async fn forward_packets_inner<S, D>(
     stream: S,
-    mut tun: D,
+    tun: D,
     mtu: ValidatedMtu,
-    mut cancel: watch::Receiver<()>,
+    cancel: watch::Receiver<()>,
 ) -> Result<(), TunnelError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     D: TunDevice,
 {
     let payload_capacity = mtu.ipv6_payload_capacity()?;
-    let (reader, mut writer) = tokio::io::split(stream);
-    let (packet_tx, mut packet_rx) = mpsc::channel(STREAM_PACKET_QUEUE);
-    let reader_task = tokio::spawn(read_stream_packets(reader, payload_capacity, packet_tx));
+    let (reader, writer) = tokio::io::split(stream);
+    let (packet_tx, packet_rx) = mpsc::channel(STREAM_PACKET_QUEUE);
+    // Keep the reader owned even if the caller drops this future while a TUN
+    // or stream write is pending. Dropping a bare JoinHandle would detach it.
+    let mut reader_tasks = JoinSet::new();
+    reader_tasks.spawn(read_stream_packets(reader, payload_capacity, packet_tx));
 
-    let outcome: Result<(), TunnelError> = async {
-        loop {
-            tokio::select! {
-                _ = cancel.changed() => return Ok(()),
-
-                // iOS stream → TUN: inject a fully-read packet into the TUN
-                packet = packet_rx.recv() => match packet {
-                    Some(Ok(packet)) => tun.write_packet(&packet).await?,
-                    Some(Err(err)) => return Err(err),
-                    // Reader task finished: the device closed its side.
-                    None => return Ok(()),
-                },
-
-                // TUN → iOS stream: read packet from OS, forward to device
-                result = tun.read_packet() => {
-                    let packet = result?;
-                    if packet.len() > mtu.as_usize() {
-                        return Err(TunnelError::Protocol(format!(
-                            "TUN packet length {} exceeds negotiated MTU {}",
-                            packet.len(),
-                            mtu.as_u16()
-                        )));
-                    }
-                    writer.write_all(&packet).await?;
-                    writer.flush().await?;
-                }
+    let outcome = forward_loop(writer, tun, mtu, cancel, packet_rx).await;
+    let mut cleanup = None;
+    // An error from a reader already completed before our abort remains an
+    // unexpected native result, including cancellation from another owner.
+    while let Some(joined) = reader_tasks.try_join_next() {
+        if let Err(error) = joined {
+            if cleanup.is_none() {
+                cleanup = Some(error);
             }
         }
     }
-    .await;
+    reader_tasks.abort_all();
+    while let Some(joined) = reader_tasks.join_next().await {
+        if let Err(error) = joined {
+            if !error.is_cancelled() && cleanup.is_none() {
+                cleanup = Some(error);
+            }
+        }
+    }
+    match (outcome, cleanup) {
+        (outcome, None) => outcome,
+        (Ok(()), Some(cleanup)) => Err(TunnelError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::Other,
+            "join tunnel packet reader",
+            cleanup,
+        ))),
+        (Err(primary), Some(cleanup)) => Err(TunnelError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::Other,
+            "finish tunnel forwarding",
+            ForwardReaderCleanup { primary, cleanup },
+        ))),
+    }
+}
 
-    reader_task.abort();
-    outcome
+/// Both original outcomes when forwarding and its reader cleanup fail.
+pub struct ForwardReaderCleanup {
+    primary: TunnelError,
+    cleanup: tokio::task::JoinError,
+}
+
+impl ForwardReaderCleanup {
+    /// Original forwarding failure; also returned by `Error::source`.
+    pub fn primary(&self) -> &TunnelError {
+        &self.primary
+    }
+    /// Original unexpected reader join failure, including its native flags.
+    pub fn cleanup(&self) -> &tokio::task::JoinError {
+        &self.cleanup
+    }
+}
+
+impl std::fmt::Display for ForwardReaderCleanup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("tunnel forwarding failed; reader cleanup also failed")
+    }
+}
+impl std::fmt::Debug for ForwardReaderCleanup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelForwardReaderCleanup")
+            .field("primary_class", &crate::classify_error(&self.primary))
+            .field("cleanup_class", &crate::classify_error(&self.cleanup))
+            .finish()
+    }
+}
+impl std::error::Error for ForwardReaderCleanup {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.primary)
+    }
+}
+
+#[cfg(feature = "tunnel-kernel")]
+pub(crate) async fn forward_packets_inner_owned<S, D>(
+    stream: S,
+    tun: D,
+    mtu: ValidatedMtu,
+    cancel: watch::Receiver<()>,
+    outcomes: crate::tunnel::owner::Ledger,
+    readers: crate::tunnel::owner::SharedChildTaskSet,
+) -> Result<(), TunnelError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    D: TunDevice,
+{
+    let payload_capacity = mtu.ipv6_payload_capacity()?;
+    let (reader, writer) = tokio::io::split(stream);
+    let (packet_tx, packet_rx) = mpsc::channel(STREAM_PACKET_QUEUE);
+    // Runtime owns the set; this guard aborts children on parent unwind without
+    // dropping the set's original join handles. A later owner can drain them.
+    let mut reader_tasks = readers.lock().await;
+    reader_tasks.spawn(read_stream_packets(reader, payload_capacity, packet_tx));
+    let outcome = forward_loop(writer, tun, mtu, cancel, packet_rx).await;
+    if let Err(primary) = outcome {
+        // Preserve the exact original object before any cleanup await or expiry.
+        outcomes.record_work(0, std::sync::Arc::new(primary));
+    }
+    reader_tasks.abort_all();
+    while reader_tasks.join_next().await.is_some() {}
+    outcomes.work_result()
+}
+
+async fn forward_loop<W, D>(
+    mut writer: W,
+    mut tun: D,
+    mtu: ValidatedMtu,
+    mut cancel: watch::Receiver<()>,
+    mut packet_rx: mpsc::Receiver<Result<Vec<u8>, TunnelError>>,
+) -> Result<(), TunnelError>
+where
+    W: AsyncWrite + Unpin,
+    D: TunDevice,
+{
+    loop {
+        // Cover the selected branch's writes as well as branch selection. A
+        // fresh check each iteration also stops an always-ready forwarding loop.
+        let step: Result<ForwardStep, TunnelError> = tokio::select! {
+            biased;
+            _ = cancel.changed() => Ok(ForwardStep::End),
+            result = async {
+                tokio::select! {
+                    // iOS stream → TUN: inject a fully-read packet into the TUN
+                    packet = packet_rx.recv() => match packet {
+                        Some(Ok(packet)) => {
+                            tun.write_packet(&packet).await?;
+                            Ok(ForwardStep::Continue)
+                        },
+                        Some(Err(err)) => Err(err),
+                        // Reader task finished: the device closed its side.
+                        None => Ok(ForwardStep::End),
+                    },
+
+                    // TUN → iOS stream: read packet from OS, forward to device
+                    result = tun.read_packet() => {
+                        let packet = result?;
+                        if !matches!(packet.first(), Some(b) if (b >> 4) == 6) {
+                            return Ok(ForwardStep::Continue);
+                        }
+                        if packet.len() > mtu.as_usize() {
+                            return Err(TunnelError::Protocol(format!(
+                                "TUN packet length {} exceeds negotiated MTU {}",
+                                packet.len(),
+                                mtu.as_u16()
+                            )));
+                        }
+                        writer.write_all(&packet).await?;
+                        writer.flush().await?;
+                        Ok(ForwardStep::Continue)
+                    }
+                }
+            } => result,
+        };
+        match step {
+            Ok(ForwardStep::Continue) => {}
+            Ok(ForwardStep::End) => break Ok(()),
+            Err(error) => break Err(error),
+        }
+    }
 }
 
 /// Read whole IPv6 packets off `reader` and hand them to the forwarding loop.
@@ -151,6 +289,12 @@ async fn read_ipv6_packet<R: AsyncRead + Unpin>(
     reader.read_exact(&mut payload_buf[..payload_len]).await?;
     Ok(payload_len)
 }
+
+#[cfg(test)]
+mod reader_owner_tests;
+
+#[cfg(test)]
+mod cleanup_outcome_tests;
 
 #[cfg(test)]
 mod tests {
@@ -413,6 +557,23 @@ mod tests {
         let expected = ipv6_packet(b"from-tun");
         let (mut peer, stream) = tokio::io::duplex(4096);
         let tun = MockTun::with_read_packets([expected.clone()]);
+        let (cancel_tx, task) = run_forward_for_packet_test(stream, tun).await;
+
+        let mut received = vec![0u8; expected.len()];
+        peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, expected);
+
+        drop(cancel_tx);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn forward_packets_ignores_non_ipv6_tun_packets() {
+        let mut ipv4 = vec![0u8; 20];
+        ipv4[0] = 0x45;
+        let expected = ipv6_packet(b"from-tun-after-ipv4");
+        let (mut peer, stream) = tokio::io::duplex(4096);
+        let tun = MockTun::with_read_packets([ipv4, expected.clone()]);
         let (cancel_tx, task) = run_forward_for_packet_test(stream, tun).await;
 
         let mut received = vec![0u8; expected.len()];

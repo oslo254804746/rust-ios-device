@@ -7,18 +7,34 @@
 //!
 //! Reference: go-ios/ios/http/http.go
 
-use std::collections::{HashMap, HashSet, VecDeque};
+crate::redaction::error_debug!(H2Error);
 
-use bytes::{Bytes, BytesMut};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+use super::raw_storage::{MutableBytes, OwnerFees, RawBuffer};
+use bytes::Bytes;
+use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::sync::Semaphore;
+use tokio::time::{error::Elapsed, Instant};
 
 use crate::xpc::message::{checked_xpc_body_len, xpc_body_limit_for_flags, WRAPPER_MAGIC};
 
+mod pending;
+use pending::PendingFrames;
+mod windows;
+use windows::WindowMap;
+use windows::WindowMap as StateMap;
+mod state;
+use state::{Arrival, Membership, PeerStateAdmission};
+
 // ── Stream IDs ──────────────────────────────────────────────────────────────
-// Apple's XPC-over-HTTP/2 uses only odd-numbered client-initiated streams.
 // Stream 0 is the HTTP/2 connection control stream (per RFC 9113).
-// Stream 2 is skipped because HTTP/2 even-numbered streams are reserved for
-// server-initiated (push) streams, which this protocol does not use.
+// RemoteXPC uses odd streams 1/3 for control and even streams for peer file
+// transfers, starting at stream 2.
 
 pub const STREAM_INIT: u32 = 0; // HTTP/2 connection-level control stream
 pub const STREAM_CLIENT_SERVER: u32 = 1; // Client → device data stream
@@ -94,14 +110,9 @@ pub(crate) const MAX_TOTAL_BUFFERED_BYTES: usize = 64 * 1024 * 1024;
 /// this unknown-stream flood limit.
 pub(crate) const MAX_UNKNOWN_BUFFERED_STREAMS: usize = 32;
 
-/// RemoteXPC uses even-numbered peer streams for file-transfer side channels.
-/// Their first DATA frame is a body-less XPC FILE_TX_STREAM_REQUEST wrapper;
-/// remoted intentionally leaves those streams open while the corresponding
-/// control response is consumed on stream 1 or 3. Once that preamble has been
-/// validated, keep the stream in a bounded protocol registry instead of
-/// charging it as an unrecognised active stream forever.
-const MAX_ANNOUNCED_FILE_STREAMS: usize = 4096;
-const FILE_STREAM_PREAMBLE_LEN: usize = 24;
+/// Bound file-transfer streams explicitly advertised by a service catalog.
+#[cfg(any(feature = "fetchsymbols", test))]
+pub(crate) const MAX_EXPECTED_FILE_STREAMS: usize = 65_536;
 
 /// DATA frames observed while a writer is waiting for flow-control credit are
 /// retained until the single framer owner asks for them. This count bounds
@@ -127,95 +138,221 @@ pub const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// operations on one framer and must not run an independent reader against its
 /// stream.
 pub struct H2Framer<S> {
-    stream: S,
+    stream: H2Stream<S>,
+    operation_timeout: Option<Duration>,
+    raw_bank: Option<Arc<Semaphore>>,
     // Accumulated data from stream 1 (clientServer)
-    client_server_buf: BytesMut,
+    client_server_buf: RawBuffer,
     // Accumulated data from stream 3 (serverClient)
-    server_client_buf: BytesMut,
+    server_client_buf: RawBuffer,
     // Accumulated data from arbitrary additional streams.
-    stream_bufs: HashMap<u32, BytesMut>,
+    stream_bufs: StateMap<RawBuffer>,
     // Streams for which the client has already sent HEADERS.
-    locally_open_streams: HashSet<u32>,
+    locally_open_streams: Membership,
     // Whether HEADERS have been sent on each stream
     client_server_open: bool,
     server_client_open: bool,
     // Streams for which the peer has sent END_STREAM. This is separate from
     // buffered bytes so a reader cannot wait forever after a clean HTTP/2 EOF.
-    closed_streams: HashSet<u32>,
+    closed_streams: Membership,
     // Unknown-stream EOF tombstones in arrival order. Fixed XPC streams and
     // streams opened by this client are kept in `closed_streams` indefinitely;
     // only this queue is eligible for bounded eviction.
-    closed_unknown_order: VecDeque<u32>,
+    closed_unknown_order: Arrival,
     // Bytes consumed per window (keyed by stream id, `STREAM_INIT` = connection)
     // since the last WINDOW_UPDATE we sent for it.
-    pending_window_updates: HashMap<u32, u32>,
+    pending_window_updates: WindowMap<u32>,
     // Bytes retained in the three primary/auxiliary stream buffers above.
     buffered_bytes: usize,
     // Peer-created streams which have not sent END_STREAM yet. This is kept
     // independently of `stream_bufs` because `read_next_data_frame` returns
     // DATA directly and therefore does not need a per-stream buffer.
-    peer_open_streams: HashSet<u32>,
-    // Even peer streams whose first DATA frame was validated as the
-    // RemoteXPC file-transfer preamble. These streams are deliberately not
-    // required to send H2 END_STREAM; their registry is still bounded.
-    announced_file_streams: HashSet<u32>,
-    // HEADERS on an even peer stream arrive before its XPC preamble. Keep a
-    // small bounded candidate set so idle/malformed peers cannot bypass the
-    // unknown-stream limit by sending headers without data.
-    file_stream_candidates: HashSet<u32>,
-    // A peer is allowed to split the 24-byte side-channel preamble across
-    // DATA frames. Keep only the bounded prefix needed to validate it.
-    file_stream_candidate_data: HashMap<u32, BytesMut>,
+    peer_open_streams: Membership,
+    // Even file streams admitted by a bounded service catalog. This compact
+    // range adds no per-file allocation and leaves unknown-stream limits intact.
+    last_expected_file_stream_id: u32,
     // Flow-control state for DATA frames sent by this client. The connection
     // starts at HTTP/2's default 65535-byte window; peer SETTINGS and
     // WINDOW_UPDATE frames change these values.
     outbound_connection_window: i64,
     peer_initial_window_size: i64,
-    outbound_stream_windows: HashMap<u32, i64>,
+    outbound_stream_windows: WindowMap<i64>,
+    locally_finished_streams: Membership,
     outbound_max_frame_size: usize,
     // DATA frames consumed by the writer's flow-control reader. Keeping the
     // frame boundary and flags here prevents a later read_next_data_frame from
     // losing business DATA that arrived while write_stream was blocked.
-    pending_data_frames: VecDeque<DataFrame>,
+    pending_data_frames: PendingFrames,
     // Stream-local and connection-wide remote shutdown state.
-    reset_streams: HashMap<u32, u32>,
+    reset_streams: StateMap<u32>,
     // Unknown reset tombstones in arrival order. As with clean EOF, known
     // streams are never displaced by an unknown-stream flood.
-    reset_unknown_order: VecDeque<u32>,
+    reset_unknown_order: Arrival,
     // Highest additional stream ID observed from the peer. This prevents an
     // evicted unknown tombstone from being reused as a fresh stream.
     highest_peer_stream_id: u32,
     goaway: Option<GoAwayState>,
     connection_error: Option<String>,
-    // ── Cancel-safety state ──────────────────────────────────────────────────
-    // A reader/writer future can be cancelled between polls. Progress that
-    // has already consumed socket bytes is persisted here so the next
-    // operation resumes the interrupted frame instead of losing bytes and
-    // desyncing the parser.
-    partial_header: [u8; 9],
-    header_filled: usize,
-    // Parsed once the 9-byte header is complete; kept until the payload is.
-    pending_frame_meta: Option<(u8, u8, u32, usize)>,
-    payload_buf: Option<Vec<u8>>,
-    payload_filled: usize,
-    // Unwritten remainder of a frame whose write was cancelled mid-frame; the
-    // next write (or read) finishes it before touching the socket again.
-    pending_write: Option<Vec<u8>>,
-    // Set by the XPC message layer once a message header was consumed from
-    // the stream buffers and before its body finished arriving. A cancelled
-    // body read cannot be realigned, so the marker makes later operations
-    // refuse instead of silently splicing body bytes into the next header.
-    message_read_in_progress: bool,
-    // Opening a stream consists of a HEADERS frame followed by state mutation.
-    // If that future is cancelled before the state mutation, replaying the
-    // HEADERS frame would put a duplicate stream opening on the wire.  Keep a
-    // marker and poison the framer until the caller reconnects instead.
-    open_stream_in_progress: Option<u32>,
-    // WINDOW_UPDATE frames are emitted after receive state is updated.  A
-    // cancellation while writing one of them can leave peer flow-control state
-    // ambiguous, so refuse all later operations rather than continuing with
-    // counters that no longer describe the wire.
-    window_update_in_progress: bool,
+}
+
+// Track progress at the transport boundary, including read_exact/write_all
+// calls whose local partial frame disappears when their future is dropped.
+struct H2Stream<S> {
+    inner: S,
+    progressed: bool,
+    failed: bool,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for H2Stream<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let requested = buf.remaining() > 0;
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        self.progressed |= buf.filled().len() > before;
+        self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (requested && matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() == before);
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for H2Stream<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write(cx, bytes);
+        self.progressed |= matches!(result, Poll::Ready(Ok(n)) if n > 0);
+        self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (!bytes.is_empty() && matches!(result, Poll::Ready(Ok(0))));
+        result
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffers: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write_vectored(cx, buffers);
+        self.progressed |= matches!(result, Poll::Ready(Ok(n)) if n > 0);
+        self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (buffers.iter().any(|buffer| !buffer.is_empty())
+                && matches!(result, Poll::Ready(Ok(0))));
+        result
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let result = Pin::new(&mut self.inner).poll_flush(cx);
+        self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let result = Pin::new(&mut self.inner).poll_shutdown(cx);
+        self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+}
+
+struct H2Operation<'a, S> {
+    framer: &'a mut H2Framer<S>,
+    deadline: Option<Instant>,
+    completed: bool,
+}
+
+impl<S> H2Operation<'_, S> {
+    fn finish<T>(mut self, result: Result<Result<T, H2Error>, Elapsed>) -> Result<T, H2Error> {
+        match result {
+            Ok(result) => {
+                self.completed = true;
+                // An admission failure after a consumed frame header/body is
+                // not a native socket failure, but it leaves framing incomplete.
+                // Preserve the original typed cause while rejecting later IO.
+                let admission_after_progress = self.framer.stream.progressed
+                    && matches!(&result, Err(H2Error::Io(error))
+                        if crate::classify_error(error) == crate::ErrorClass::ResourceLimit);
+                if self.framer.stream.failed || admission_after_progress {
+                    self.framer.invalidate();
+                }
+                result
+            }
+            Err(elapsed) => Err(H2Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                elapsed,
+            ))),
+        }
+    }
+}
+
+impl<S> Drop for H2Operation<'_, S> {
+    fn drop(&mut self) {
+        if !self.completed && (self.framer.stream.progressed || self.framer.stream.failed) {
+            self.framer.invalidate();
+        }
+    }
+}
+
+fn await_operation<T>(
+    deadline: Option<Instant>,
+    bank: Option<&Arc<Semaphore>>,
+    operation: impl Future<Output = Result<T, H2Error>>,
+) -> Result<impl Future<Output = Result<Result<T, H2Error>, Elapsed>>, H2Error> {
+    // Box before constructing the async timeout branches. Keeping a copy of
+    // the inline operation in this future amplifies nested service/bootstrap
+    // futures enough to overflow an ordinary CLI thread's stack.
+    let operation = super::raw_storage::boxed(operation, bank)?;
+    Ok(async move {
+        match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, operation).await,
+            None => Ok(operation.await),
+        }
+    })
+}
+
+impl<S> H2Framer<S> {
+    /// Whether another operation can use this connection's local framing state.
+    /// Stream-local shutdown may still reject an individual stream.
+    pub fn is_usable(&self) -> bool {
+        self.connection_error.is_none()
+    }
+
+    /// Set one absolute budget per public framer operation, including writes,
+    /// flushes and flow-control reads. None keeps legacy unbounded timing.
+    /// This does not cover connect or a sequence of XPC message operations.
+    // The raw framer is crate-internal. Higher-level owner deadline APIs are
+    // separate from this opt-in configuration; current callers keep None.
+    #[allow(dead_code)]
+    pub fn set_operation_timeout(&mut self, budget: Option<Duration>) {
+        self.operation_timeout = budget;
+    }
+
+    pub(crate) fn invalidate(&mut self) {
+        self.connection_error.get_or_insert_with(|| {
+            "H2 connection is unusable; reconnect before another operation".into()
+        });
+        self.client_server_buf.clear();
+        self.server_client_buf.clear();
+        self.stream_bufs.clear();
+        self.pending_data_frames.clear();
+        self.buffered_bytes = 0;
+        self.pending_window_updates.clear();
+        self.peer_open_streams.clear();
+        self.locally_open_streams.clear();
+        self.outbound_stream_windows.clear();
+        self.locally_finished_streams.clear();
+        self.closed_streams.clear();
+        self.closed_unknown_order.clear();
+        self.reset_streams.clear();
+        self.reset_unknown_order.clear();
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -247,45 +384,166 @@ impl DataFrame {
 impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     fn new(stream: S) -> Self {
         Self {
-            stream,
-            client_server_buf: BytesMut::new(),
-            server_client_buf: BytesMut::new(),
-            stream_bufs: HashMap::new(),
-            locally_open_streams: HashSet::new(),
+            stream: H2Stream {
+                inner: stream,
+                progressed: false,
+                failed: false,
+            },
+            operation_timeout: None,
+            raw_bank: None,
+            client_server_buf: RawBuffer::default(),
+            server_client_buf: RawBuffer::default(),
+            stream_bufs: StateMap::new(None),
+            locally_open_streams: Membership::new(None),
             client_server_open: false,
             server_client_open: false,
-            closed_streams: HashSet::new(),
-            closed_unknown_order: VecDeque::new(),
-            pending_window_updates: HashMap::new(),
+            closed_streams: Membership::new(None),
+            closed_unknown_order: Arrival::new(None),
+            pending_window_updates: WindowMap::new(None),
             buffered_bytes: 0,
-            peer_open_streams: HashSet::new(),
-            announced_file_streams: HashSet::new(),
-            file_stream_candidates: HashSet::new(),
-            file_stream_candidate_data: HashMap::new(),
+            peer_open_streams: Membership::new(None),
+            last_expected_file_stream_id: 0,
             outbound_connection_window: DEFAULT_PEER_WINDOW_SIZE,
             peer_initial_window_size: DEFAULT_PEER_WINDOW_SIZE,
-            outbound_stream_windows: HashMap::new(),
+            outbound_stream_windows: WindowMap::new(None),
+            locally_finished_streams: Membership::new(None),
             outbound_max_frame_size: MAX_FRAME_PAYLOAD,
-            pending_data_frames: VecDeque::new(),
-            reset_streams: HashMap::new(),
-            reset_unknown_order: VecDeque::new(),
+            pending_data_frames: PendingFrames::new(None),
+            reset_streams: StateMap::new(None),
+            reset_unknown_order: Arrival::new(None),
             highest_peer_stream_id: 0,
             goaway: None,
             connection_error: None,
-            partial_header: [0u8; 9],
-            header_filled: 0,
-            pending_frame_meta: None,
-            payload_buf: None,
-            payload_filled: 0,
-            pending_write: None,
-            message_read_in_progress: false,
-            open_stream_in_progress: None,
-            window_update_in_progress: false,
         }
     }
 
+    fn begin_operation(&mut self) -> Result<H2Operation<'_, S>, H2Error> {
+        self.ensure_connection_open()?;
+        let deadline = match self.operation_timeout {
+            Some(budget) if budget.is_zero() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "H2 operation budget is zero",
+                )
+                .into());
+            }
+            Some(budget) => Some(Instant::now().checked_add(budget).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "H2 operation deadline is too large",
+                )
+            })?),
+            None => None,
+        };
+        self.stream.progressed = false;
+        self.stream.failed = false;
+        Ok(H2Operation {
+            framer: self,
+            deadline,
+            completed: false,
+        })
+    }
+
+    // Configure a fresh single-owner framer before the first received frame.
+    fn configure_bank(&mut self, bank: Option<&Arc<Semaphore>>) {
+        debug_assert!(
+            self.stream_bufs.is_empty()
+                && self.reset_streams.is_empty()
+                && self.peer_open_streams.is_empty()
+                && self.locally_open_streams.is_empty()
+                && self.closed_streams.is_empty()
+                && self.locally_finished_streams.is_empty()
+                && self.pending_data_frames.is_empty()
+                && self.closed_unknown_order.len() == 0
+                && self.reset_unknown_order.len() == 0
+        );
+        self.raw_bank = bank.cloned();
+        self.client_server_buf = RawBuffer::new(bank.cloned());
+        self.server_client_buf = RawBuffer::new(bank.cloned());
+        self.pending_data_frames = PendingFrames::new(bank);
+        self.pending_window_updates = WindowMap::new(bank);
+        self.outbound_stream_windows = WindowMap::new(bank);
+        self.stream_bufs = StateMap::new(bank);
+        self.reset_streams = StateMap::new(bank);
+        self.locally_open_streams = Membership::new(bank);
+        self.closed_streams = Membership::new(bank);
+        self.peer_open_streams = Membership::new(bank);
+        self.locally_finished_streams = Membership::new(bank);
+        self.closed_unknown_order = Arrival::new(bank);
+        self.reset_unknown_order = Arrival::new(bank);
+    }
+
+    #[cfg(feature = "tunnel")]
+    pub(crate) fn raw_bank(&self) -> Option<Arc<Semaphore>> {
+        self.raw_bank.clone()
+    }
+
+    #[cfg(feature = "tunnel")]
+    pub(crate) async fn begin_connect_with_bank(
+        stream: S,
+        bank: Option<&Arc<Semaphore>>,
+    ) -> Result<Self, H2Error> {
+        let Some(bank) = bank else {
+            return Self::begin_connect(stream).await;
+        };
+        let mut framer = Self::new(stream);
+        framer.configure_bank(Some(bank));
+        // Fixed control frames live in the existing owned future, with no
+        // temporary payload/frame Vec. The original preface order is retained.
+        framer.stream.write_all(H2_PREFACE).await?;
+        let settings = initial_settings_bytes();
+        framer.stream.write_all(&settings).await?;
+        let update = window_update_bytes(STREAM_INIT, INITIAL_WINDOW_INCREMENT);
+        framer.stream.write_all(&update).await?;
+        framer.stream.flush().await?;
+        Ok(framer)
+    }
+
+    #[cfg(feature = "tunnel")]
+    /// Connect the raw H2 transport using the caller's original byte bank for
+    /// admitted buffers and parser storage. `None` preserves the legacy path.
+    pub async fn connect_with_bank(
+        stream: S,
+        bank: Option<&Arc<Semaphore>>,
+    ) -> Result<Self, H2Error> {
+        let mut framer = Self::begin_connect_with_bank(stream, bank).await?;
+        framer.finish_connect().await?;
+        Ok(framer)
+    }
+
     /// Perform the HTTP/2 handshake and return a framer ready for use.
-    pub async fn connect(mut stream: S) -> Result<Self, H2Error> {
+    pub async fn connect(stream: S) -> Result<Self, H2Error> {
+        let mut framer = Self::begin_connect(stream).await?;
+        framer.finish_connect().await?;
+        Ok(framer)
+    }
+
+    /// Perform the HTTP/2 handshake under a shared operation budget.
+    ///
+    /// Zero budget rejects before IO. Timeout during connect drops the stream.
+    pub async fn connect_with_timeout(
+        stream: S,
+        budget: std::time::Duration,
+    ) -> Result<Self, H2Error> {
+        if budget.is_zero() {
+            return Err(H2Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "H2 connect budget is zero",
+            )));
+        }
+        tokio::time::timeout(budget, Self::connect(stream))
+            .await
+            .map_err(|_| {
+                H2Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("H2 connect timed out after {budget:?}"),
+                ))
+            })?
+    }
+
+    /// Send the local HTTP/2 preface. RSD must be able to enqueue its XPC
+    /// bootstrap before waiting for the peer's SETTINGS.
+    pub(crate) async fn begin_connect(mut stream: S) -> Result<Self, H2Error> {
         // 1. Send HTTP/2 connection preface
         stream.write_all(H2_PREFACE).await?;
 
@@ -301,63 +559,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         stream.write_all(&wupdate).await?;
         stream.flush().await?;
 
-        let mut framer = Self::new(stream);
-
-        // 4. Read server SETTINGS, send ACK
-        framer.read_until_settings_ack_needed().await?;
-
-        Ok(framer)
+        Ok(Self::new(stream))
     }
 
-    /// Perform the HTTP/2 handshake bounded by `deadline`.
-    ///
-    /// Every stage (client preface/SETTINGS/WINDOW_UPDATE writes and the wait
-    /// for the server SETTINGS frame) shares the one deadline: each stage only
-    /// gets the remaining time and never restarts a fresh budget. A deadline in
-    /// the past fails immediately.
-    pub async fn connect_with_deadline(
-        mut stream: S,
-        deadline: tokio::time::Instant,
-    ) -> Result<Self, H2Error> {
-        let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
-        tokio::time::timeout(remaining(), async {
-            // 1. Send HTTP/2 connection preface
-            stream.write_all(H2_PREFACE).await?;
-
-            // 2. Send SETTINGS
-            let settings = build_settings_frame(&[
-                (SETTINGS_MAX_CONCURRENT_STREAMS, 100),
-                (SETTINGS_INITIAL_WINDOW_SIZE, INITIAL_WINDOW_SIZE),
-            ]);
-            stream.write_all(&settings).await?;
-
-            // 3. Bring the connection-level window up to match the stream-level setting.
-            let wupdate = build_window_update_frame(STREAM_INIT, INITIAL_WINDOW_INCREMENT);
-            stream.write_all(&wupdate).await?;
-            stream.flush().await?;
-            Ok::<(), H2Error>(())
-        })
-        .await
-        .map_err(|_| {
-            H2Error::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "H2 handshake timed out writing client preface/SETTINGS/WINDOW_UPDATE",
-            ))
-        })??;
-
-        let mut framer = Self::new(stream);
-
-        // 4. Read server SETTINGS, send ACK
-        tokio::time::timeout(remaining(), framer.read_until_settings_ack_needed())
-            .await
-            .map_err(|_| {
-                H2Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "H2 handshake timed out waiting for server SETTINGS",
-                ))
-            })??;
-
-        Ok(framer)
+    /// Receive and acknowledge the peer SETTINGS after the local preface.
+    pub(crate) async fn finish_connect(&mut self) -> Result<(), H2Error> {
+        let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
+        let result = await_operation(
+            operation.deadline,
+            bank.as_ref(),
+            operation.framer.read_until_settings_ack_needed(),
+        )?
+        .await;
+        operation.finish(result)
     }
 
     async fn read_until_settings_ack_needed(&mut self) -> Result<(), H2Error> {
@@ -380,185 +595,51 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     }
 
     /// Read one raw HTTP/2 frame from the stream.
-    ///
-    /// Cancellation-safe: header and payload progress (including the bytes
-    /// already consumed) is persisted on the framer, so a dropped reader
-    /// never loses consumed bytes — the next read resumes the interrupted
-    /// frame instead of desyncing the parser.
     async fn read_raw_frame(&mut self) -> Result<RawFrame, H2Error> {
         self.ensure_connection_open()?;
-        // Finish a frame whose write was cancelled part-way before reading,
-        // so the peer's reply can be interpreted against a complete request.
-        self.finish_pending_write().await?;
+        let mut header = [0u8; 9];
+        self.stream.read_exact(&mut header).await?;
 
-        while self.header_filled < 9 {
-            let n = self
-                .stream
-                .read(&mut self.partial_header[self.header_filled..])
-                .await?;
-            if n == 0 {
-                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
-            }
-            self.header_filled += n;
+        let length =
+            ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | (header[2] as usize);
+        let frame_type = header[3];
+        let flags = header[4];
+        let raw_stream_id = u32::from_be_bytes([header[5], header[6], header[7], header[8]]);
+        // The R bit is reserved and MUST be zero when sending, but RFC 9113
+        // requires receivers to ignore it. Do not turn a peer's non-zero R
+        // bit into a connection error while decoding the 31-bit identifier.
+        let stream_id = raw_stream_id & 0x7FFF_FFFF;
+
+        if length > MAX_FRAME_PAYLOAD {
+            return Err(self.connection_protocol_error(format!(
+                "frame payload {length} exceeds max frame size {MAX_FRAME_PAYLOAD}"
+            )));
         }
 
-        let (frame_type, flags, stream_id, length) = match self.pending_frame_meta {
-            Some(meta) => meta,
-            None => {
-                let header = &self.partial_header;
-                let length = ((header[0] as usize) << 16)
-                    | ((header[1] as usize) << 8)
-                    | (header[2] as usize);
-                let frame_type = header[3];
-                let flags = header[4];
-                let raw_stream_id =
-                    u32::from_be_bytes([header[5], header[6], header[7], header[8]]);
-                // The R bit is reserved and MUST be zero when sending, but RFC 9113
-                // requires receivers to ignore it. Do not turn a peer's non-zero R
-                // bit into a connection error while decoding the 31-bit identifier.
-                let stream_id = raw_stream_id & 0x7FFF_FFFF;
-
-                if length > MAX_FRAME_PAYLOAD {
-                    return Err(self.connection_protocol_error(format!(
-                        "frame payload {length} exceeds max frame size {MAX_FRAME_PAYLOAD}"
-                    )));
-                }
-                let meta = (frame_type, flags, stream_id, length);
-                self.pending_frame_meta = Some(meta);
-                meta
+        let (raw_fees, mut payload) = match &self.raw_bank {
+            Some(bank) => {
+                let owned = MutableBytes::zeroed(bank, length)?;
+                let (fees, bytes) = owned.into_parts();
+                (Some(fees), bytes)
             }
+            None => (None, vec![0u8; length]),
         };
-
-        let payload = if length > 0 {
-            if self.payload_buf.is_none() {
-                self.payload_buf = Some(vec![0u8; length]);
-            }
-            let buf = self.payload_buf.as_mut().expect("payload buffer exists");
-            while self.payload_filled < length {
-                let n = self.stream.read(&mut buf[self.payload_filled..]).await?;
-                if n == 0 {
-                    return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
-                }
-                self.payload_filled += n;
-            }
-            self.payload_buf.take().expect("payload buffer exists")
-        } else {
-            Vec::new()
-        };
-
-        // The frame is complete: clear the resume state.
-        self.header_filled = 0;
-        self.pending_frame_meta = None;
-        self.payload_filled = 0;
+        if length > 0 {
+            self.stream.read_exact(&mut payload).await?;
+        }
 
         Ok(RawFrame {
             frame_type,
             flags,
             stream_id,
             payload,
+            raw_fees,
         })
-    }
-
-    /// Marks that the XPC message layer consumed a message header and is
-    /// still waiting for its body. If that body read is cancelled, the
-    /// consumed header cannot be recovered and every later operation must
-    /// refuse instead of splicing body bytes into the next header.
-    pub(crate) fn begin_message_body(&mut self) {
-        self.message_read_in_progress = true;
-    }
-
-    pub(crate) fn end_message_body(&mut self) {
-        self.message_read_in_progress = false;
-    }
-
-    pub(crate) fn is_message_read_in_progress(&self) -> bool {
-        self.message_read_in_progress
-    }
-
-    /// Write one frame fragment, resumable across cancellation.
-    ///
-    /// If the writer is dropped between polls, the unwritten remainder is
-    /// captured on the framer and flushed by the next write or read, so a
-    /// partial frame is never silently left on the wire.
-    async fn write_all_tracked(&mut self, bytes: &[u8]) -> Result<(), H2Error> {
-        self.finish_pending_write().await?;
-        self.write_frame_bytes(bytes).await
-    }
-
-    async fn finish_pending_write(&mut self) -> Result<(), H2Error> {
-        if let Some(pending) = self.pending_write.take() {
-            self.write_frame_bytes(&pending).await?;
-        }
-        Ok(())
-    }
-
-    async fn write_frame_bytes(&mut self, bytes: &[u8]) -> Result<(), H2Error> {
-        struct PendingWriteGuard<'a> {
-            buf: &'a [u8],
-            written: usize,
-            sink: &'a mut Option<Vec<u8>>,
-            clean: bool,
-        }
-        impl Drop for PendingWriteGuard<'_> {
-            fn drop(&mut self) {
-                // The future may be cancelled before the first poll of
-                // `write` completes.  Preserve the entire frame in that case;
-                // dropping only after some progress would silently lose a
-                // frame that was already committed to the framer's operation.
-                if !self.clean && self.written < self.buf.len() {
-                    *self.sink = Some(self.buf[self.written..].to_vec());
-                }
-            }
-        }
-
-        let mut guard = PendingWriteGuard {
-            buf: bytes,
-            written: 0,
-            sink: &mut self.pending_write,
-            clean: false,
-        };
-        while guard.written < bytes.len() {
-            let n = self.stream.write(&bytes[guard.written..]).await?;
-            if n == 0 {
-                // Preserve the unwritten tail even when the writer reports
-                // WriteZero. The frame may already be partially on the wire;
-                // discarding its remainder would let a later RSD fallback or
-                // read reuse a desynchronised connection. The caller still
-                // observes the WriteZero error, and a subsequent operation
-                // can retry the retained tail if the stream recovers.
-                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
-            }
-            guard.written += n;
-        }
-        guard.clean = true;
-        Ok(())
-    }
-
-    /// Check whether a higher-level XPC operation may reuse this framer.
-    ///
-    /// Some XPC receive paths can return an already-buffered message without
-    /// touching the H2 reader. They still must observe protocol poison left by
-    /// a cancelled stream opening or WINDOW_UPDATE write.
-    #[cfg(feature = "tunnel")]
-    pub(crate) fn ensure_reusable(&self) -> Result<(), H2Error> {
-        self.ensure_connection_open()
-    }
-
-    /// Finish a previously interrupted frame before a higher-level XPC read
-    /// takes a buffered-message fast path. A read that never reaches
-    /// `read_raw_frame` must still honor the same pending-write ordering
-    /// guarantee as a wire read.
-    #[cfg(feature = "tunnel")]
-    pub(crate) async fn finish_pending_write_for_read(&mut self) -> Result<(), H2Error> {
-        self.ensure_connection_open()?;
-        self.finish_pending_write().await
     }
 
     /// Read data from the serverClient stream (device → client).
     /// Blocks until `n` bytes are available.
-    // Kept as a public helper; the XPC layer reads through read_stream now.
     #[cfg(feature = "tunnel")]
-    #[allow(dead_code)]
     pub async fn read_server_client(&mut self, n: usize) -> Result<Bytes, H2Error> {
         self.read_stream(STREAM_SERVER_CLIENT, n).await
     }
@@ -571,10 +652,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
     /// Read data from any stream, blocking until `n` bytes are available.
     pub async fn read_stream(&mut self, stream_id: u32, n: usize) -> Result<Bytes, H2Error> {
+        let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
+        let result = await_operation(
+            operation.deadline,
+            bank.as_ref(),
+            operation.framer.read_stream_inner(stream_id, n),
+        )?
+        .await;
+        operation.finish(result)
+    }
+
+    async fn read_stream_inner(&mut self, stream_id: u32, n: usize) -> Result<Bytes, H2Error> {
         self.ensure_stream_available(stream_id)?;
-        self.finish_pending_write().await?;
         self.ensure_peer_stream_not_reused(stream_id)?;
-        self.drain_pending_data_frames();
+        self.drain_pending_data_frames()?;
         while self.stream_buffer_len(stream_id) < n {
             self.ensure_stream_available(stream_id)?;
             if self.closed_streams.contains(&stream_id) {
@@ -609,17 +701,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         .connection_protocol_error("DATA frame is not valid on stream 0".into()));
                 }
                 self.ensure_incoming_stream_available(frame.stream_id)?;
-                self.observe_peer_data_stream(frame.stream_id, &frame.payload)?;
+                self.track_peer_stream(frame.stream_id)?;
                 self.append_stream_data(frame.stream_id, &frame.payload)?;
-                // Record END_STREAM before the first await below. If the
-                // receive-window update is cancelled, the frame has already
-                // been consumed from the socket and its closure must not be
-                // lost. A window-update cancellation poisons the connection,
-                // so retaining this state cannot expose a half-reusable
-                // stream.
-                self.mark_end_stream(frame.stream_id, frame.flags);
                 self.replenish_receive_window(frame.stream_id, frame.payload.len())
                     .await?;
+                self.mark_end_stream(frame.stream_id, frame.flags)?;
             }
             FRAME_HEADERS => {
                 if frame.stream_id == STREAM_INIT {
@@ -628,8 +714,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     ));
                 }
                 self.ensure_incoming_stream_available(frame.stream_id)?;
-                self.observe_peer_headers(frame.stream_id)?;
-                self.mark_end_stream(frame.stream_id, frame.flags);
+                self.track_peer_stream(frame.stream_id)?;
+                self.mark_end_stream(frame.stream_id, frame.flags)?;
             }
             FRAME_SETTINGS => {
                 if frame.stream_id != STREAM_INIT {
@@ -656,7 +742,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 }
                 if !self.is_known_stream(frame.stream_id)
                     && !self.peer_open_streams.contains(&frame.stream_id)
-                    && !self.file_stream_candidates.contains(&frame.stream_id)
                     && !self.closed_streams.contains(&frame.stream_id)
                     && !self.reset_streams.contains_key(&frame.stream_id)
                 {
@@ -666,9 +751,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     )));
                 }
                 let error_code = u32::from_be_bytes(frame.payload[..4].try_into().unwrap());
-                self.clear_stream_buffer(frame.stream_id);
-                self.outbound_stream_windows.remove(&frame.stream_id);
-                self.record_reset_stream(frame.stream_id, error_code);
+                self.record_reset_stream(frame.stream_id, error_code)
+                    .map_err(|original| {
+                        PeerStateAdmission::reset(frame.stream_id, error_code, original)
+                    })?;
             }
             FRAME_GOAWAY => {
                 self.process_goaway(frame.stream_id, &frame.payload)?;
@@ -679,21 +765,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     }
 
     fn ensure_connection_open(&self) -> Result<(), H2Error> {
-        if let Some(message) = &self.connection_error {
-            return Err(H2Error::Protocol(message.clone()));
+        if self.is_usable() {
+            Ok(())
+        } else {
+            Err(H2Error::Protocol(
+                self.connection_error.as_ref().unwrap().clone(),
+            ))
         }
-        if let Some(stream_id) = self.open_stream_in_progress {
-            return Err(H2Error::Protocol(format!(
-                "opening stream {stream_id} was cancelled; the connection must be re-established"
-            )));
-        }
-        if self.window_update_in_progress {
-            return Err(H2Error::Protocol(
-                "WINDOW_UPDATE was cancelled mid-write; the connection must be re-established"
-                    .into(),
-            ));
-        }
-        Ok(())
     }
 
     fn connection_protocol_error(&mut self, message: String) -> H2Error {
@@ -701,6 +779,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             self.connection_error = Some(message.clone());
         }
         H2Error::Protocol(message)
+    }
+
+    fn connection_protocol_source(
+        &mut self,
+        phase: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> H2Error {
+        if self.connection_error.is_none() {
+            self.connection_error = Some(phase.to_owned());
+        }
+        H2Error::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidData,
+            phase,
+            source,
+        ))
     }
 
     fn ensure_stream_available(&self, stream_id: u32) -> Result<(), H2Error> {
@@ -735,8 +828,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     fn ensure_peer_stream_not_reused(&self, stream_id: u32) -> Result<(), H2Error> {
         if !self.is_known_stream(stream_id)
             && !self.peer_open_streams.contains(&stream_id)
-            && !self.announced_file_streams.contains(&stream_id)
-            && !self.file_stream_candidates.contains(&stream_id)
             && !self.closed_streams.contains(&stream_id)
             && stream_id <= self.highest_peer_stream_id
         {
@@ -747,20 +838,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         Ok(())
     }
 
-    fn record_reset_stream(&mut self, stream_id: u32, error_code: u32) {
-        // A reset stream cannot be reused, so retain enough state for a later
-        // caller to receive the reset instead of reopening it. Keep the
-        // tombstones bounded: a peer can send validly-shaped RST_STREAM frames
-        // for arbitrary stream IDs without allocating DATA buffers.
-        if !self.reset_streams.contains_key(&stream_id) && !self.is_known_stream(stream_id) {
-            if self.reset_unknown_order.len() >= MAX_CLOSED_STREAMS {
+    fn record_reset_stream(&mut self, stream_id: u32, error_code: u32) -> std::io::Result<()> {
+        let unknown =
+            !self.reset_streams.contains_key(&stream_id) && !self.is_known_stream(stream_id);
+        let evict = unknown && self.reset_unknown_order.len() >= MAX_CLOSED_STREAMS;
+        let oldest = if evict {
+            self.reset_unknown_order.front().copied()
+        } else {
+            None
+        };
+        // Preserve the previous records, buffers and eviction order until all
+        // required backing is admitted. Existing vacant slots need no growth.
+        self.reset_streams.prepare_replacing(stream_id, oldest)?;
+        if unknown {
+            self.reset_unknown_order.prepare_push(evict)?;
+        }
+        self.clear_stream_buffer(stream_id);
+        self.outbound_stream_windows.remove(&stream_id);
+        if unknown {
+            if evict {
                 if let Some(oldest) = self.reset_unknown_order.pop_front() {
                     self.reset_streams.remove(&oldest);
                 }
             }
             self.reset_unknown_order.push_back(stream_id);
         }
-        self.reset_streams.insert(stream_id, error_code);
+        self.reset_streams.insert_reserved(stream_id, error_code);
+        Ok(())
     }
 
     async fn process_settings(&mut self, flags: u8, payload: &[u8]) -> Result<(), H2Error> {
@@ -811,8 +915,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
         if let Some(new_initial_window) = initial_window {
             let delta = new_initial_window - self.peer_initial_window_size;
-            let mut updated = Vec::with_capacity(self.outbound_stream_windows.len());
-            for (&stream_id, &window) in &self.outbound_stream_windows {
+            for (&stream_id, &window) in self.outbound_stream_windows.iter() {
                 let Some(value) = window.checked_add(delta) else {
                     return Err(self.connection_protocol_error(format!(
                         "stream {stream_id} outbound window overflow applying SETTINGS_INITIAL_WINDOW_SIZE delta {delta}"
@@ -823,10 +926,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         "stream {stream_id} outbound window {value} is outside flow-control range"
                     )));
                 }
-                updated.push((stream_id, value));
             }
-            for (stream_id, value) in updated {
-                self.outbound_stream_windows.insert(stream_id, value);
+            // All checks precede mutation. Recompute under the same exclusive
+            // borrow instead of allocating an unowned SETTINGS scratch Vec.
+            for window in self.outbound_stream_windows.iter_mut() {
+                *window += delta;
             }
             self.peer_initial_window_size = new_initial_window;
         }
@@ -837,8 +941,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         // A SETTINGS frame is acknowledged only after all values have been
         // validated and applied. This also makes a waiting writer observe the
         // new window/frame limits before it resumes.
-        let ack = build_settings_ack();
-        self.write_all_tracked(&ack).await?;
+        self.write_frame_bytes(FRAME_SETTINGS, FLAG_SETTINGS_ACK, STREAM_INIT, &[])
+            .await?;
         self.stream.flush().await?;
         Ok(())
     }
@@ -897,10 +1001,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     "WINDOW_UPDATE received for closed stream {stream_id}"
                 )));
             }
-            if self.peer_open_streams.contains(&stream_id)
-                || self.announced_file_streams.contains(&stream_id)
-                || self.file_stream_candidates.contains(&stream_id)
-            {
+            if self.peer_open_streams.contains(&stream_id) {
                 // This framer never sends DATA on a peer-created stream, so
                 // there is no outbound counter to update. It is nevertheless
                 // an open stream, and RFC 9113 permits WINDOW_UPDATE in this
@@ -921,7 +1022,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 "stream {stream_id} outbound window {value} exceeds {MAX_FLOW_CONTROL_WINDOW}"
             )));
         }
-        self.outbound_stream_windows.insert(stream_id, value);
+        self.outbound_stream_windows
+            .insert_reserved(stream_id, value);
         Ok(())
     }
 
@@ -978,17 +1080,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         stream_id: u32,
         consumed: usize,
     ) -> Result<(), H2Error> {
-        self.ensure_connection_open()?;
         if consumed == 0 {
             return Ok(());
         }
-        let consumed = u32::try_from(consumed).map_err(|_| {
-            self.connection_protocol_error(format!(
-                "received DATA length {consumed} does not fit in a WINDOW_UPDATE"
-            ))
+        let consumed = u32::try_from(consumed).map_err(|error| {
+            self.connection_protocol_source("convert H2 received DATA count", error)
         })?;
 
-        let mut frames = Vec::new();
         // The connection window is shared by every stream, so it always accrues.
         let connection_pending = self
             .pending_window_updates
@@ -1020,46 +1118,53 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             })?
         };
 
+        self.pending_window_updates
+            .prepare_keys(&[STREAM_INIT, stream_id])?;
+        let mut frames: [Option<[u8; 13]>; 2] = [None, None];
         if connection_total >= WINDOW_UPDATE_THRESHOLD {
-            frames.push(build_window_update_frame(STREAM_INIT, connection_total));
-            self.pending_window_updates.insert(STREAM_INIT, 0);
+            frames[0] = Some(window_update_bytes(STREAM_INIT, connection_total));
+            self.pending_window_updates.insert_reserved(STREAM_INIT, 0);
         } else {
             self.pending_window_updates
-                .insert(STREAM_INIT, connection_total);
+                .insert_reserved(STREAM_INIT, connection_total);
         }
 
         if stream_id != STREAM_INIT {
             if stream_total >= WINDOW_UPDATE_THRESHOLD {
-                frames.push(build_window_update_frame(stream_id, stream_total));
-                self.pending_window_updates.insert(stream_id, 0);
+                frames[1] = Some(window_update_bytes(stream_id, stream_total));
+                self.pending_window_updates.insert_reserved(stream_id, 0);
             } else {
-                self.pending_window_updates.insert(stream_id, stream_total);
+                self.pending_window_updates
+                    .insert_reserved(stream_id, stream_total);
             }
         }
 
-        if frames.is_empty() {
+        if frames.iter().all(Option::is_none) {
             return Ok(());
         }
-        // The counters above are reset before the WINDOW_UPDATE bytes are
-        // emitted. A cancellation in either write would otherwise leave the
-        // in-memory accounting claiming that both updates reached the peer,
-        // even when only the first (or neither) did. Since this is protocol
-        // control state, poison the connection for the whole in-flight batch;
-        // continuing could either stall the peer or over-credit it.
-        self.window_update_in_progress = true;
-        for frame in &frames {
-            self.write_all_tracked(frame).await?;
+        for frame in frames.iter().flatten() {
+            self.stream.write_all(frame).await?;
         }
         self.stream.flush().await?;
-        self.window_update_in_progress = false;
         Ok(())
     }
 
     /// Read the next DATA frame from any stream, skipping non-DATA frames.
     #[allow(dead_code)]
     pub async fn read_next_data_frame(&mut self) -> Result<DataFrame, H2Error> {
+        let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
+        let result = await_operation(
+            operation.deadline,
+            bank.as_ref(),
+            operation.framer.read_next_data_frame_inner(),
+        )?
+        .await;
+        operation.finish(result)
+    }
+
+    async fn read_next_data_frame_inner(&mut self) -> Result<DataFrame, H2Error> {
         self.ensure_connection_open()?;
-        self.finish_pending_write().await?;
         if let Some(frame) = self.pending_data_frames.pop_front() {
             self.buffered_bytes = self.buffered_bytes.saturating_sub(frame.payload.len());
             return Ok(frame);
@@ -1081,19 +1186,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                             "DATA frame is not valid on stream 0".into(),
                         ));
                     }
-                    // Queue before replenishing the receive window. The
-                    // window update itself is an await point, so cancellation
-                    // there must not drop the DATA frame already consumed from
-                    // the socket. A subsequent call can return the queued
-                    // frame (unless the update path conservatively poisoned
-                    // the connection).
-                    self.queue_incoming_data_frame(frame).await?;
-                    let frame = self
-                        .pending_data_frames
-                        .pop_front()
-                        .expect("queued DATA frame must be present");
-                    self.buffered_bytes = self.buffered_bytes.saturating_sub(frame.payload.len());
-                    return Ok(frame);
+                    self.ensure_incoming_stream_available(frame.stream_id)?;
+                    self.track_peer_stream(frame.stream_id)?;
+                    self.replenish_receive_window(frame.stream_id, frame.payload.len())
+                        .await?;
+                    self.mark_end_stream(frame.stream_id, frame.flags)?;
+                    return Ok(DataFrame {
+                        stream_id: frame.stream_id,
+                        flags: frame.flags,
+                        payload: frame.into_payload(),
+                    });
                 }
                 FRAME_GOAWAY => {
                     self.dispatch_frame(frame).await?;
@@ -1141,10 +1243,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// returned once its 24-byte wrapper is buffered so the XPC layer can
     /// consume the body in bounded chunks.
     pub async fn buffer_next_data_stream(&mut self) -> Result<u32, H2Error> {
+        let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
+        let result = await_operation(
+            operation.deadline,
+            bank.as_ref(),
+            operation.framer.buffer_next_data_stream_inner(),
+        )?
+        .await;
+        operation.finish(result)
+    }
+
+    async fn buffer_next_data_stream_inner(&mut self) -> Result<u32, H2Error> {
         self.ensure_connection_open()?;
-        self.finish_pending_write().await?;
         if !self.pending_data_frames.is_empty() {
-            self.drain_pending_data_frames();
+            self.drain_pending_data_frames()?;
         }
         if let Some(stream_id) = self.first_ready_xpc_stream()? {
             return Ok(stream_id);
@@ -1164,22 +1277,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         }
     }
 
-    fn buffered_stream_ids(&self) -> Vec<u32> {
-        let mut stream_ids = Vec::new();
-        if !self.client_server_buf.is_empty() {
-            stream_ids.push(STREAM_CLIENT_SERVER);
-        }
-        if !self.server_client_buf.is_empty() {
-            stream_ids.push(STREAM_SERVER_CLIENT);
-        }
-        stream_ids.extend(
-            self.stream_bufs
-                .iter()
-                .filter(|(_, buffer)| !buffer.is_empty())
-                .map(|(stream_id, _)| *stream_id),
-        );
-        stream_ids.sort_unstable();
-        stream_ids
+    fn next_buffered_stream_id(&self, after: Option<u32>) -> Option<u32> {
+        [STREAM_CLIENT_SERVER, STREAM_SERVER_CLIENT]
+            .into_iter()
+            .chain(self.stream_bufs.iter().map(|(id, _)| *id))
+            .filter(|id| after.map_or(true, |after| *id > after))
+            .filter(|id| {
+                self.stream_buffer(*id)
+                    .is_some_and(|buffer| !buffer.is_empty())
+            })
+            .min()
     }
 
     /// Return whether the stream has enough buffered bytes for one XPC
@@ -1204,7 +1311,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         let flags = u32::from_le_bytes(buffer[4..8].try_into().unwrap());
         let declared_body_len = u64::from_le_bytes(buffer[8..16].try_into().unwrap());
         let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(flags))
-            .map_err(H2Error::Protocol)?;
+            .map_err(H2Error::Io)?;
         let total_len = 24usize.checked_add(body_len).ok_or_else(|| {
             H2Error::Protocol("XPC message length overflow while selecting a stream".into())
         })?;
@@ -1216,7 +1323,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         Ok(buffer.len() >= total_len || total_len > buffered_message_limit)
     }
 
-    fn stream_buffer(&self, stream_id: u32) -> Option<&BytesMut> {
+    fn stream_buffer(&self, stream_id: u32) -> Option<&RawBuffer> {
         match stream_id {
             STREAM_CLIENT_SERVER => Some(&self.client_server_buf),
             STREAM_SERVER_CLIENT => Some(&self.server_client_buf),
@@ -1225,10 +1332,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     }
 
     fn first_ready_xpc_stream(&self) -> Result<Option<u32>, H2Error> {
-        for stream_id in self.buffered_stream_ids() {
+        let mut after = None;
+        while let Some(stream_id) = self.next_buffered_stream_id(after) {
             if self.stream_has_ready_xpc_message(stream_id)? {
                 return Ok(Some(stream_id));
             }
+            after = Some(stream_id);
         }
         Ok(None)
     }
@@ -1237,9 +1346,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// complete message always wins, so an empty END_STREAM marker on one
     /// stream cannot hide a response already buffered on another stream.
     fn first_unfinished_closed_stream(&self) -> Result<Option<u32>, H2Error> {
-        let mut stream_ids: Vec<u32> = self.closed_streams.iter().copied().collect();
-        stream_ids.sort_unstable();
-        for stream_id in stream_ids {
+        let mut after = None;
+        while let Some(stream_id) = self
+            .closed_streams
+            .iter()
+            .copied()
+            .filter(|id| after.map_or(true, |after| *id > after))
+            .min()
+        {
+            after = Some(stream_id);
             // An empty END_STREAM marker is a harmless closed-stream
             // tombstone. It carries no partial XPC message and must not
             // prevent a later response on another stream from being chosen.
@@ -1247,7 +1362,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             // cut short.
             if self
                 .stream_buffer(stream_id)
-                .map_or(true, BytesMut::is_empty)
+                .map_or(true, RawBuffer::is_empty)
             {
                 continue;
             }
@@ -1270,10 +1385,62 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
     /// Write data to any stream, opening it with an empty HEADERS frame first.
     pub async fn write_stream(&mut self, stream_id: u32, data: &[u8]) -> Result<(), H2Error> {
-        self.open_stream(stream_id).await?;
+        let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
+        let result = await_operation(
+            operation.deadline,
+            bank.as_ref(),
+            operation.framer.write_stream_inner(stream_id, data),
+        )?
+        .await;
+        operation.finish(result)
+    }
+
+    async fn write_frame_bytes(
+        &mut self,
+        kind: u8,
+        flags: u8,
+        stream_id: u32,
+        payload: &[u8],
+    ) -> Result<(), H2Error> {
+        if self.raw_bank.is_none() {
+            // Keep the original contiguous write path for legacy callers.
+            return Ok(self
+                .stream
+                .write_all(&build_frame(kind, flags, stream_id, payload))
+                .await?);
+        }
+        let header = frame_header(kind, flags, stream_id, payload.len());
+        let mut header_offset = 0;
+        let mut payload_offset = 0;
+        while header_offset < header.len() || payload_offset < payload.len() {
+            // Give native TCP both borrowed slices in one operation. Generic
+            // writers retain AsyncWrite's first-nonempty-buffer fallback.
+            let buffers = [
+                std::io::IoSlice::new(&header[header_offset..]),
+                std::io::IoSlice::new(&payload[payload_offset..]),
+            ];
+            let written = self.stream.write_vectored(&buffers).await?;
+            if written == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
+            }
+            let remaining_header = header.len() - header_offset;
+            assert!(
+                written <= remaining_header + payload.len() - payload_offset,
+                "AsyncWrite over-reported H2 frame length"
+            );
+            let header_written = written.min(remaining_header);
+            header_offset += header_written;
+            payload_offset += written - header_written;
+        }
+        Ok(())
+    }
+
+    async fn write_stream_inner(&mut self, stream_id: u32, data: &[u8]) -> Result<(), H2Error> {
+        self.open_stream_inner(stream_id).await?;
         self.ensure_stream_available(stream_id)?;
         if data.is_empty() {
-            self.write_all_tracked(&build_data_frame(stream_id, data))
+            self.write_frame_bytes(FRAME_DATA, 0, stream_id, data)
                 .await?;
         } else {
             let mut offset = 0;
@@ -1290,14 +1457,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         self.connection_protocol_error("outbound DATA offset overflow".to_string())
                     })?;
                 let chunk = &data[offset..end];
-                // Reserve peer flow-control credit before the frame can be
-                // partially written.  A cancelled write is resumed from
-                // `pending_write`; accounting after the await would allow the
-                // next operation to send another frame against credit that the
-                // interrupted frame has already consumed.
-                self.consume_outbound_window(stream_id, chunk.len())?;
-                self.write_all_tracked(&build_data_frame(stream_id, chunk))
+                self.write_frame_bytes(FRAME_DATA, 0, stream_id, chunk)
                     .await?;
+                self.consume_outbound_window(stream_id, chunk.len())?;
                 offset = end;
             }
         }
@@ -1307,19 +1469,30 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
     /// Open an arbitrary stream with an empty HEADERS frame if it is not open yet.
     pub async fn open_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
+        let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
+        let result = await_operation(
+            operation.deadline,
+            bank.as_ref(),
+            operation.framer.open_stream_inner(stream_id),
+        )?
+        .await;
+        operation.finish(result)
+    }
+
+    async fn open_stream_inner(&mut self, stream_id: u32) -> Result<(), H2Error> {
         self.ensure_connection_open()?;
-        self.finish_pending_write().await?;
+        if self.locally_finished_streams.contains(&stream_id) {
+            return Err(H2Error::Protocol(format!(
+                "stream {stream_id} is locally finished"
+            )));
+        }
         if stream_id == STREAM_INIT || stream_id > MAX_FLOW_CONTROL_WINDOW as u32 {
             return Err(
                 self.connection_protocol_error(format!("invalid local stream ID {stream_id}"))
             );
         }
         self.ensure_stream_available(stream_id)?;
-        if self.closed_streams.contains(&stream_id) {
-            return Err(H2Error::Protocol(format!(
-                "cannot open stream {stream_id} after peer END_STREAM"
-            )));
-        }
         let already_open = match stream_id {
             STREAM_CLIENT_SERVER => self.client_server_open,
             STREAM_SERVER_CLIENT => self.server_client_open,
@@ -1332,29 +1505,56 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     goaway.last_stream_id, goaway.error_code
                 )));
             }
-            let headers = build_headers_frame(stream_id);
-            // Do not let a cancelled HEADERS write be replayed as a second
-            // stream opening.  The marker remains set on every error or drop;
-            // `ensure_connection_open` then requires a fresh connection.
-            self.open_stream_in_progress = Some(stream_id);
-            self.write_all_tracked(&headers).await?;
+            self.outbound_stream_windows.prepare_keys(&[stream_id])?;
+            if !matches!(stream_id, STREAM_CLIENT_SERVER | STREAM_SERVER_CLIENT) {
+                self.locally_open_streams.prepare(stream_id)?;
+                self.stream_bufs.prepare_keys(&[stream_id])?;
+            }
+            self.write_frame_bytes(FRAME_HEADERS, FLAG_END_HEADERS, stream_id, &[])
+                .await?;
             self.stream.flush().await?;
             self.outbound_stream_windows
-                .insert(stream_id, self.peer_initial_window_size);
+                .insert_reserved(stream_id, self.peer_initial_window_size);
             match stream_id {
                 STREAM_CLIENT_SERVER => self.client_server_open = true,
                 STREAM_SERVER_CLIENT => self.server_client_open = true,
                 _ => {
                     self.locally_open_streams.insert(stream_id);
                     self.peer_open_streams.remove(&stream_id);
-                    self.announced_file_streams.remove(&stream_id);
-                    self.file_stream_candidates.remove(&stream_id);
-                    self.file_stream_candidate_data.remove(&stream_id);
-                    self.stream_bufs.entry(stream_id).or_default();
+                    let bank = self.raw_bank.clone();
+                    if !self.stream_bufs.contains_key(&stream_id) {
+                        self.stream_bufs
+                            .insert_reserved(stream_id, RawBuffer::new(bank));
+                    }
                 }
             }
-            self.open_stream_in_progress = None;
         }
+        Ok(())
+    }
+
+    /// Close the sending half of a stream while allowing its final peer response.
+    /// An empty END_STREAM frame consumes no flow-control credit.
+    #[cfg(any(feature = "cryptex", test))]
+    pub async fn finish_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
+        let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
+        let result = await_operation(
+            operation.deadline,
+            bank.as_ref(),
+            operation.framer.finish_stream_inner(stream_id),
+        )?
+        .await;
+        operation.finish(result)
+    }
+
+    #[cfg(any(feature = "cryptex", test))]
+    async fn finish_stream_inner(&mut self, stream_id: u32) -> Result<(), H2Error> {
+        self.open_stream_inner(stream_id).await?;
+        self.locally_finished_streams.prepare(stream_id)?;
+        self.write_frame_bytes(FRAME_DATA, FLAG_END_STREAM, stream_id, &[])
+            .await?;
+        self.stream.flush().await?;
+        self.locally_finished_streams.insert(stream_id);
         Ok(())
     }
 
@@ -1370,23 +1570,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         if self.outbound_connection_window <= 0 || stream_window <= 0 {
             return Ok(0);
         }
-        let connection = usize::try_from(self.outbound_connection_window).map_err(|_| {
-            H2Error::Protocol(format!(
-                "invalid outbound connection window {}",
-                self.outbound_connection_window
+        let connection = usize::try_from(self.outbound_connection_window).map_err(|error| {
+            H2Error::Io(crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidData,
+                "convert H2 connection window",
+                error,
             ))
         })?;
-        let stream = usize::try_from(stream_window).map_err(|_| {
-            H2Error::Protocol(format!(
-                "invalid outbound stream {stream_id} window {stream_window}"
+        let stream = usize::try_from(stream_window).map_err(|error| {
+            H2Error::Io(crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidData,
+                "convert H2 stream window",
+                error,
             ))
         })?;
         Ok(self.outbound_max_frame_size.min(connection).min(stream))
     }
 
     fn consume_outbound_window(&mut self, stream_id: u32, amount: usize) -> Result<(), H2Error> {
-        let amount = i64::try_from(amount).map_err(|_| {
-            self.connection_protocol_error(format!("outbound DATA length {amount} exceeds i64"))
+        let amount = i64::try_from(amount).map_err(|error| {
+            self.connection_protocol_source("convert H2 outbound DATA count", error)
         })?;
         let stream_window = self
             .outbound_stream_windows
@@ -1424,115 +1627,44 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         }
     }
 
+    /// Admit only the even file streams covered by a validated catalog count.
+    /// This emits no HEADERS or file-transfer acknowledgement. The ordinary
+    /// byte budgets, reset/EOF tracking and unknown-stream ceiling still apply.
+    #[cfg(any(feature = "fetchsymbols", test))]
+    pub(crate) fn expect_peer_file_streams(&mut self, count: usize) -> Result<(), H2Error> {
+        self.ensure_connection_open()?;
+        if count > MAX_EXPECTED_FILE_STREAMS {
+            return Err(H2Error::Protocol(format!(
+                "file stream count {count} exceeds limit {MAX_EXPECTED_FILE_STREAMS}"
+            )));
+        }
+        let last = (count as u32) * 2;
+        self.last_expected_file_stream_id = self.last_expected_file_stream_id.max(last);
+        // A peer can open a stream before the catalog count is consumed.
+        // Reclassify those entries so they no longer spend the unknown quota.
+        for stream_id in (2..=last).step_by(2) {
+            self.peer_open_streams.remove(&stream_id);
+        }
+        let last = self.last_expected_file_stream_id;
+        self.closed_unknown_order
+            .retain(|id| *id % 2 != 0 || *id > last);
+        self.reset_unknown_order
+            .retain(|id| *id % 2 != 0 || *id > last);
+        Ok(())
+    }
+
     fn is_known_stream(&self, stream_id: u32) -> bool {
         matches!(
             stream_id,
             STREAM_INIT | STREAM_CLIENT_SERVER | STREAM_SERVER_CLIENT
         ) || self.locally_open_streams.contains(&stream_id)
-            || self.announced_file_streams.contains(&stream_id)
-    }
-
-    /// Observe a peer HEADERS frame. The only peer-created streams used by
-    /// RemoteXPC are even file-transfer side channels; defer admitting those
-    /// streams to the protocol registry until their first DATA preamble is
-    /// validated. Other streams remain subject to the ordinary unknown-stream
-    /// flood limit immediately.
-    fn observe_peer_headers(&mut self, stream_id: u32) -> Result<(), H2Error> {
-        if self.is_known_stream(stream_id)
-            || self.peer_open_streams.contains(&stream_id)
-            || self.file_stream_candidates.contains(&stream_id)
-        {
-            return Ok(());
-        }
-        if stream_id % 2 == 0 {
-            self.register_file_stream_candidate(stream_id)
-        } else {
-            self.track_peer_stream(stream_id)
-        }
-    }
-
-    /// Observe the first DATA frame for a peer-created stream. A valid
-    /// body-less FILE_TX_STREAM_REQUEST preamble identifies a RemoteXPC
-    /// side-channel; it is moved out of the unknown active set and retained in
-    /// a bounded registry because iOS leaves it open without END_STREAM.
-    fn observe_peer_data_stream(&mut self, stream_id: u32, payload: &[u8]) -> Result<(), H2Error> {
-        if self.is_known_stream(stream_id) || self.peer_open_streams.contains(&stream_id) {
-            return Ok(());
-        }
-
-        if self.file_stream_candidates.contains(&stream_id) {
-            let valid = {
-                let candidate = self
-                    .file_stream_candidate_data
-                    .entry(stream_id)
-                    .or_default();
-                let prefix_len = FILE_STREAM_PREAMBLE_LEN.saturating_sub(candidate.len());
-                if prefix_len != 0 {
-                    candidate.extend_from_slice(&payload[..payload.len().min(prefix_len)]);
-                }
-                if candidate.len() < FILE_STREAM_PREAMBLE_LEN {
-                    return Ok(());
-                }
-                is_file_stream_preamble_prefix(stream_id, candidate)
-            };
-            if !valid {
-                // The first fragment may already be retained in the generic
-                // stream buffer. Clear it before returning the protocol error
-                // so a malformed candidate cannot retain byte-budget state.
-                self.clear_stream_buffer(stream_id);
-                return Err(H2Error::Protocol(format!(
-                    "invalid RemoteXPC file-stream preamble on stream {stream_id}"
-                )));
-            }
-            self.file_stream_candidates.remove(&stream_id);
-            self.file_stream_candidate_data.remove(&stream_id);
-            return self.adopt_file_stream(stream_id);
-        }
-
-        if is_file_stream_preamble(stream_id, payload) {
-            return self.adopt_file_stream(stream_id);
-        }
-
-        self.track_peer_stream(stream_id)
-    }
-
-    fn register_file_stream_candidate(&mut self, stream_id: u32) -> Result<(), H2Error> {
-        if stream_id <= self.highest_peer_stream_id {
-            return Err(H2Error::Protocol(format!(
-                "peer stream {stream_id} was already opened and cannot be reused"
-            )));
-        }
-        if self.unknown_active_stream_count() >= MAX_UNKNOWN_BUFFERED_STREAMS {
-            return Err(H2Error::Protocol(format!(
-                "too many pending RemoteXPC file streams: limit {MAX_UNKNOWN_BUFFERED_STREAMS}"
-            )));
-        }
-        self.highest_peer_stream_id = stream_id;
-        self.file_stream_candidates.insert(stream_id);
-        self.file_stream_candidate_data
-            .insert(stream_id, BytesMut::new());
-        Ok(())
-    }
-
-    fn adopt_file_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
-        if self.announced_file_streams.contains(&stream_id) {
-            return Ok(());
-        }
-        if self.announced_file_streams.len() >= MAX_ANNOUNCED_FILE_STREAMS {
-            return Err(H2Error::Protocol(format!(
-                "too many announced RemoteXPC file streams: limit {MAX_ANNOUNCED_FILE_STREAMS}"
-            )));
-        }
-        self.highest_peer_stream_id = self.highest_peer_stream_id.max(stream_id);
-        self.announced_file_streams.insert(stream_id);
-        Ok(())
+            || (stream_id != 0
+                && stream_id % 2 == 0
+                && stream_id <= self.last_expected_file_stream_id)
     }
 
     fn track_peer_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
-        if self.is_known_stream(stream_id)
-            || self.peer_open_streams.contains(&stream_id)
-            || self.file_stream_candidates.contains(&stream_id)
-        {
+        if self.is_known_stream(stream_id) || self.peer_open_streams.contains(&stream_id) {
             return Ok(());
         }
         if stream_id <= self.highest_peer_stream_id {
@@ -1540,18 +1672,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 "peer stream {stream_id} was already opened and cannot be reused"
             )));
         }
-        if self.unknown_active_stream_count() >= MAX_UNKNOWN_BUFFERED_STREAMS {
+        if self.peer_open_streams.len() >= MAX_UNKNOWN_BUFFERED_STREAMS {
             return Err(H2Error::Protocol(format!(
                 "too many unknown H2 streams: limit {MAX_UNKNOWN_BUFFERED_STREAMS}"
             )));
         }
+        self.peer_open_streams.prepare(stream_id)?;
         self.highest_peer_stream_id = stream_id;
         self.peer_open_streams.insert(stream_id);
         Ok(())
-    }
-
-    fn unknown_active_stream_count(&self) -> usize {
-        self.peer_open_streams.len() + self.file_stream_candidates.len()
     }
 
     fn clear_stream_buffer(&mut self, stream_id: u32) {
@@ -1563,20 +1692,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 .remove(&stream_id)
                 .map_or(0, |buffer| buffer.len()),
         };
-        self.pending_data_frames.retain(|frame| {
-            if frame.stream_id == stream_id {
-                removed = removed.saturating_add(frame.payload.len());
-                false
-            } else {
-                true
-            }
-        });
+        removed = removed.saturating_add(self.pending_data_frames.clear_stream(stream_id));
         self.buffered_bytes = self.buffered_bytes.saturating_sub(removed);
         self.remove_closed_stream_tombstone(stream_id);
         self.peer_open_streams.remove(&stream_id);
-        self.announced_file_streams.remove(&stream_id);
-        self.file_stream_candidates.remove(&stream_id);
-        self.file_stream_candidate_data.remove(&stream_id);
         self.pending_window_updates.remove(&stream_id);
     }
 
@@ -1592,14 +1711,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         }
 
         self.reserve_stream_buffer(stream_id, payload.len())?;
-        match stream_id {
-            STREAM_CLIENT_SERVER => self.client_server_buf.extend_from_slice(payload),
-            STREAM_SERVER_CLIENT => self.server_client_buf.extend_from_slice(payload),
-            other => self
-                .stream_bufs
-                .entry(other)
-                .or_default()
-                .extend_from_slice(payload),
+        if let Err(error) = self.append_admitted_payload(stream_id, payload) {
+            self.buffered_bytes = self.buffered_bytes.saturating_sub(payload.len());
+            return Err(error.into());
         }
         Ok(())
     }
@@ -1678,7 +1792,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             );
         }
         self.ensure_incoming_stream_available(frame.stream_id)?;
-        self.observe_peer_data_stream(frame.stream_id, &frame.payload)?;
+        self.track_peer_stream(frame.stream_id)?;
         if self.pending_data_frames.len() >= MAX_PENDING_DATA_FRAMES {
             return Err(self.connection_protocol_error(format!(
                 "too many pending DATA frames while waiting for outbound capacity: limit {MAX_PENDING_DATA_FRAMES}"
@@ -1688,51 +1802,71 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         let flags = frame.flags;
         let payload_len = frame.payload.len();
         self.reserve_stream_buffer(stream_id, payload_len)?;
+        if let Err(original) = self.pending_data_frames.prepare_push() {
+            self.buffered_bytes = self.buffered_bytes.saturating_sub(payload_len);
+            return Err(original.into());
+        }
         self.pending_data_frames.push_back(DataFrame {
             stream_id,
             flags,
-            payload: Bytes::from(frame.payload),
+            payload: frame.into_payload(),
         });
-        self.mark_end_stream(stream_id, flags);
         self.replenish_receive_window(stream_id, payload_len)
             .await?;
+        self.mark_end_stream(stream_id, flags)?;
         Ok(())
     }
 
-    fn drain_pending_data_frames(&mut self) {
-        while let Some(frame) = self.pending_data_frames.pop_front() {
-            if frame.payload.is_empty() {
-                continue;
-            }
-            match frame.stream_id {
-                STREAM_CLIENT_SERVER => self.client_server_buf.extend_from_slice(&frame.payload),
-                STREAM_SERVER_CLIENT => self.server_client_buf.extend_from_slice(&frame.payload),
-                stream_id => self
-                    .stream_bufs
-                    .entry(stream_id)
-                    .or_default()
-                    .extend_from_slice(&frame.payload),
+    fn append_admitted_payload(&mut self, stream_id: u32, payload: &[u8]) -> std::io::Result<()> {
+        let bank = self.raw_bank.clone();
+        match stream_id {
+            STREAM_CLIENT_SERVER => self.client_server_buf.extend_from_slice(payload),
+            STREAM_SERVER_CLIENT => self.server_client_buf.extend_from_slice(payload),
+            other => {
+                if !self.stream_bufs.contains_key(&other) {
+                    self.stream_bufs.prepare_keys(&[other])?;
+                    self.stream_bufs
+                        .insert_reserved(other, RawBuffer::new(bank));
+                }
+                self.stream_bufs
+                    .get_mut(&other)
+                    .expect("admitted stream buffer")
+                    .extend_from_slice(payload)
             }
         }
     }
 
-    fn mark_end_stream(&mut self, stream_id: u32, flags: u8) {
-        if flags & FLAG_END_STREAM == 0 {
-            return;
+    fn drain_pending_data_frames(&mut self) -> Result<(), H2Error> {
+        while let Some(frame) = self.pending_data_frames.pop_front() {
+            if let Err(error) = self.append_admitted_payload(frame.stream_id, &frame.payload) {
+                // The deque already charged these logical bytes. Preserve
+                // the remaining queue/accounting if exact replacement fails.
+                self.pending_data_frames.push_front(frame);
+                return Err(error.into());
+            }
         }
-        // A side-channel preamble is the protocol-level opening marker, but
-        // an actual END_STREAM still closes it and releases the live registry
-        // entry. Retain the normal bounded tombstone so a later frame cannot
-        // reopen the stream ID.
-        self.announced_file_streams.remove(&stream_id);
-        self.file_stream_candidates.remove(&stream_id);
-        self.file_stream_candidate_data.remove(&stream_id);
-        // Retain EOF for every stream, including an empty unknown stream, so a
-        // reader cannot wait forever after a clean END_STREAM. Keep this set
-        // bounded because an attacker can otherwise send unlimited empty
-        // END_STREAM frames without consuming the byte budget.
-        if !self.closed_streams.contains(&stream_id) && !self.is_known_stream(stream_id) {
-            if self.closed_unknown_order.len() >= MAX_CLOSED_STREAMS {
+        Ok(())
+    }
+
+    fn mark_end_stream(&mut self, stream_id: u32, flags: u8) -> Result<(), H2Error> {
+        if flags & FLAG_END_STREAM == 0 {
+            return Ok(());
+        }
+        let unknown = !self.closed_streams.contains(&stream_id) && !self.is_known_stream(stream_id);
+        let evict = unknown && self.closed_unknown_order.len() >= MAX_CLOSED_STREAMS;
+        let oldest = if evict {
+            self.closed_unknown_order.front().copied()
+        } else {
+            None
+        };
+        self.closed_streams
+            .prepare_replacing(stream_id, oldest)
+            .map_err(|original| PeerStateAdmission::end(stream_id, original))?;
+        if unknown {
+            self.closed_unknown_order
+                .prepare_push(evict)
+                .map_err(|original| PeerStateAdmission::end(stream_id, original))?;
+            if evict {
                 if let Some(oldest) = self.closed_unknown_order.pop_front() {
                     self.closed_streams.remove(&oldest);
                 }
@@ -1742,13 +1876,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         self.closed_streams.insert(stream_id);
         self.peer_open_streams.remove(&stream_id);
         self.pending_window_updates.remove(&stream_id);
+        Ok(())
     }
 
     fn stream_buffer_len(&self, stream_id: u32) -> usize {
         match stream_id {
             STREAM_CLIENT_SERVER => self.client_server_buf.len(),
             STREAM_SERVER_CLIENT => self.server_client_buf.len(),
-            _ => self.stream_bufs.get(&stream_id).map_or(0, BytesMut::len),
+            _ => self.stream_bufs.get(&stream_id).map_or(0, RawBuffer::len),
         }
     }
 
@@ -1759,12 +1894,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             )));
         }
         let bytes = match stream_id {
-            STREAM_CLIENT_SERVER => self.client_server_buf.split_to(n).freeze(),
-            STREAM_SERVER_CLIENT => self.server_client_buf.split_to(n).freeze(),
+            STREAM_CLIENT_SERVER => self.client_server_buf.split_to(n),
+            STREAM_SERVER_CLIENT => self.server_client_buf.split_to(n),
             _ => self
                 .stream_bufs
                 .get_mut(&stream_id)
-                .map(|buf| buf.split_to(n).freeze())
+                .map(|buf| buf.split_to(n))
                 .ok_or_else(|| H2Error::Protocol(format!("stream {stream_id} not open")))?,
         };
         self.buffered_bytes = self.buffered_bytes.saturating_sub(n);
@@ -1773,7 +1908,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             && self
                 .stream_bufs
                 .get(&stream_id)
-                .is_some_and(BytesMut::is_empty)
+                .is_some_and(RawBuffer::is_empty)
             && !self.locally_open_streams.contains(&stream_id)
         {
             self.stream_bufs.remove(&stream_id);
@@ -1794,30 +1929,6 @@ fn frame_type_name(frame_type: u8) -> &'static str {
     }
 }
 
-/// Recognise the one wire shape used by remoted for a device-created file
-/// side-channel. This intentionally validates the complete XPC wrapper rather
-/// than treating every even stream (or every 24-byte payload) as trusted.
-fn is_file_stream_preamble(stream_id: u32, payload: &[u8]) -> bool {
-    if payload.len() != FILE_STREAM_PREAMBLE_LEN {
-        return false;
-    }
-    is_file_stream_preamble_prefix(stream_id, payload)
-}
-
-fn is_file_stream_preamble_prefix(stream_id: u32, payload: &[u8]) -> bool {
-    if stream_id == STREAM_INIT || stream_id % 2 != 0 || payload.len() < FILE_STREAM_PREAMBLE_LEN {
-        return false;
-    }
-    let magic = u32::from_le_bytes(payload[..4].try_into().unwrap());
-    let flags = u32::from_le_bytes(payload[4..8].try_into().unwrap());
-    let body_len = u64::from_le_bytes(payload[8..16].try_into().unwrap());
-    magic == WRAPPER_MAGIC
-        && flags
-            == (crate::xpc::message::flags::ALWAYS_SET
-                | crate::xpc::message::flags::FILE_TX_STREAM_REQUEST)
-        && body_len == 0
-}
-
 // ── RawFrame ─────────────────────────────────────────────────────────────────
 
 struct RawFrame {
@@ -1825,9 +1936,43 @@ struct RawFrame {
     flags: u8,
     stream_id: u32,
     payload: Vec<u8>,
+    raw_fees: Option<OwnerFees>,
+}
+
+impl RawFrame {
+    fn into_payload(self) -> Bytes {
+        super::raw_storage::freeze_parts(self.payload, self.raw_fees)
+    }
 }
 
 // ── Frame builders ────────────────────────────────────────────────────────────
+
+fn frame_header(kind: u8, flags: u8, stream_id: u32, len: usize) -> [u8; 9] {
+    let mut header = [
+        ((len >> 16) & 255) as u8,
+        ((len >> 8) & 255) as u8,
+        (len & 255) as u8,
+        kind,
+        flags,
+        0,
+        0,
+        0,
+        0,
+    ];
+    header[5..].copy_from_slice(&(stream_id & 0x7fff_ffff).to_be_bytes());
+    header
+}
+
+#[cfg(any(feature = "tunnel", test))]
+fn initial_settings_bytes() -> [u8; 21] {
+    let mut bytes = [0; 21];
+    bytes[..9].copy_from_slice(&frame_header(FRAME_SETTINGS, 0, 0, 12));
+    bytes[9..11].copy_from_slice(&SETTINGS_MAX_CONCURRENT_STREAMS.to_be_bytes());
+    bytes[11..15].copy_from_slice(&100u32.to_be_bytes());
+    bytes[15..17].copy_from_slice(&SETTINGS_INITIAL_WINDOW_SIZE.to_be_bytes());
+    bytes[17..21].copy_from_slice(&INITIAL_WINDOW_SIZE.to_be_bytes());
+    bytes
+}
 
 fn build_frame(frame_type: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
     let len = payload.len();
@@ -1851,8 +1996,17 @@ fn build_settings_frame(settings: &[(u16, u32)]) -> Vec<u8> {
     build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &payload)
 }
 
+#[cfg(test)]
 fn build_settings_ack() -> Vec<u8> {
     build_frame(FRAME_SETTINGS, FLAG_SETTINGS_ACK, STREAM_INIT, &[])
+}
+
+fn window_update_bytes(stream_id: u32, increment: u32) -> [u8; 13] {
+    let mut frame = [0u8; 13];
+    frame[..5].copy_from_slice(&[0, 0, 4, FRAME_WINDOW_UPDATE, 0]);
+    frame[5..9].copy_from_slice(&(stream_id & 0x7fff_ffff).to_be_bytes());
+    frame[9..].copy_from_slice(&(increment & 0x7fff_ffff).to_be_bytes());
+    frame
 }
 
 fn build_window_update_frame(stream_id: u32, increment: u32) -> Vec<u8> {
@@ -1864,18 +2018,20 @@ fn build_window_update_frame(stream_id: u32, increment: u32) -> Vec<u8> {
     )
 }
 
+#[cfg(test)]
 fn build_headers_frame(stream_id: u32) -> Vec<u8> {
     // Empty HEADERS frame with END_HEADERS flag (opens the stream)
     build_frame(FRAME_HEADERS, FLAG_END_HEADERS, stream_id, &[])
 }
 
+#[cfg(test)]
 fn build_data_frame(stream_id: u32, data: &[u8]) -> Vec<u8> {
     build_frame(FRAME_DATA, 0, stream_id, data)
 }
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum H2Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -1883,12 +2039,423 @@ pub enum H2Error {
     Protocol(String),
 }
 
+#[cfg(all(test, feature = "tunnel"))]
+#[path = "h2_raw/sending_tests.rs"]
+mod sending_tests;
+
+#[cfg(all(test, feature = "tunnel"))]
+#[path = "h2_raw/vectored_tests.rs"]
+mod vectored_tests;
+
 #[cfg(test)]
 mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::{timeout, Duration};
 
     use super::*;
+
+    #[cfg(feature = "tunnel")]
+    async fn quota_after_progress(target: usize) {
+        let quota = 16 * 1024 * 1024;
+        let bank = Arc::new(Semaphore::new(quota));
+        let held = Arc::new(std::sync::Mutex::new(None));
+        let hold = Arc::clone(&held);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let target_bank = Arc::clone(&bank);
+        crate::xpc::raw_storage::PAYLOAD_ADMISSION.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |len| {
+                if len == 32
+                    && observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == target
+                {
+                    let take = target_bank.available_permits() - (len - 1);
+                    *hold.lock().unwrap() = Some(
+                        Arc::clone(&target_bank)
+                            .try_acquire_many_owned(take.try_into().unwrap())
+                            .unwrap(),
+                    );
+                }
+            }))
+        });
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let mut framer = H2Framer::new(client);
+        framer.configure_bank(Some(&bank));
+        peer.write_all(&build_data_frame(1, &[0x41; 32]))
+            .await
+            .unwrap();
+        let error = framer.read_stream(1, 32).await.unwrap_err();
+        crate::xpc::raw_storage::PAYLOAD_ADMISSION.with(|hook| hook.borrow_mut().take());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), target);
+        let H2Error::Io(original) = &error else {
+            panic!("typed admission cause lost");
+        };
+        assert_eq!(
+            crate::classify_error(original),
+            crate::ErrorClass::ResourceLimit
+        );
+        let original_source =
+            original.get_ref().unwrap() as *const (dyn std::error::Error + Send + Sync);
+        assert!(
+            !framer.is_usable(),
+            "consumed header/payload left a reusable framer after admission refusal"
+        );
+        assert!(framer.read_stream(1, 1).await.is_err());
+        assert!(std::ptr::eq(original.get_ref().unwrap(), original_source));
+        assert_eq!(
+            crate::classify_error(original),
+            crate::ErrorClass::ResourceLimit
+        );
+        let held_bytes = held.lock().unwrap().as_ref().unwrap().num_permits();
+        assert_eq!(bank.available_permits(), quota - held_bytes);
+        drop(framer);
+        drop(held.lock().unwrap().take());
+        assert_eq!(bank.available_permits(), quota);
+        let mut tail = [0; 1024];
+        while peer.read(&mut tail).await.unwrap() != 0 {}
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn quota_after_progress_payload_refusal_invalidates_original_frame_owner() {
+        quota_after_progress(1).await;
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn quota_after_progress_demux_refusal_invalidates_original_frame_owner() {
+        quota_after_progress(2).await;
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "tunnel")]
+    async fn boxed_operation_admission_refusal_keeps_same_framer_and_original_unread_bytes() {
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let bank = Arc::new(Semaphore::new(0));
+        let mut framer = H2Framer::new(client);
+        framer.configure_bank(Some(&bank));
+        peer.write_all(&build_data_frame(1, b"same")).await.unwrap();
+        let error = framer.read_stream(1, 4).await.unwrap_err();
+        assert!(
+            matches!(&error, H2Error::Io(io) if crate::classify_error(io) == crate::ErrorClass::ResourceLimit)
+        );
+        assert!(framer.is_usable());
+        assert!(!framer.stream.progressed && !framer.stream.failed);
+        assert_eq!(bank.available_permits(), 0);
+        let quota = 16 * 1024 * 1024;
+        bank.add_permits(quota);
+        assert_eq!(&framer.read_stream(1, 4).await.unwrap()[..], b"same");
+        drop(framer);
+        assert_eq!(bank.available_permits(), quota);
+        let mut tail = [0; 1024];
+        while peer.read(&mut tail).await.unwrap() != 0 {}
+    }
+
+    #[tokio::test]
+    async fn boxed_operation_expired_original_deadline_drops_payload_before_fee_and_keeps_elapsed()
+    {
+        struct Original(Arc<Semaphore>, Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Original {
+            fn drop(&mut self) {
+                assert_eq!(self.0.available_permits(), 0);
+                self.1.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let bank = Arc::new(Semaphore::new(0));
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let original = Original(Arc::clone(&bank), Arc::clone(&dropped));
+        let future = async move {
+            let _original = original;
+            std::future::pending::<Result<(), H2Error>>().await
+        };
+        let bytes = std::mem::size_of_val(&future);
+        bank.add_permits(bytes);
+        let deadline = Instant::now();
+        let result = await_operation(Some(deadline), Some(&bank), future)
+            .unwrap()
+            .await;
+        assert!(result.is_err());
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(bank.available_permits(), bytes);
+    }
+
+    fn lifecycle_timeout(error: H2Error) {
+        let H2Error::Io(io) = error else {
+            panic!("deadline must preserve the IO variant")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(crate::classify_error(&io), crate::ErrorClass::Timeout);
+        assert!(io.get_ref().unwrap().is::<Elapsed>());
+    }
+
+    async fn lifecycle_rejects_without_io(framer: &mut H2Framer<tokio::io::DuplexStream>) {
+        assert!(!framer.is_usable());
+        assert!(framer.read_stream(1, 0).await.is_err());
+        assert!(framer.read_next_data_frame().await.is_err());
+        assert!(framer.buffer_next_data_stream().await.is_err());
+        assert!(framer.write_stream(1, b"late").await.is_err());
+        assert!(framer.open_stream(5).await.is_err());
+        assert!(framer.finish_stream(1).await.is_err());
+        assert!(framer.finish_connect().await.is_err());
+        assert!(framer.client_server_buf.is_empty());
+        assert!(framer.server_client_buf.is_empty());
+        assert!(framer.stream_bufs.is_empty());
+        assert!(framer.pending_data_frames.is_empty());
+        assert_eq!(framer.buffered_bytes, 0);
+        assert!(framer.outbound_stream_windows.is_empty());
+        assert!(framer.pending_window_updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_zero_large_and_unpolled_operations_preserve_state() {
+        let (client, mut peer) = tokio::io::duplex(128);
+        let mut framer = H2Framer::new(client);
+        framer.set_operation_timeout(Some(Duration::ZERO));
+        for error in [
+            framer.write_stream(1, b"request").await.unwrap_err(),
+            framer.read_stream(1, 1).await.unwrap_err(),
+            framer.open_stream(5).await.unwrap_err(),
+            framer.finish_stream(1).await.unwrap_err(),
+            framer.read_next_data_frame().await.unwrap_err(),
+            framer.buffer_next_data_stream().await.unwrap_err(),
+        ] {
+            let H2Error::Io(io) = error else {
+                panic!("zero budget")
+            };
+            assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+            assert!(io.get_ref().unwrap().source().is_none());
+        }
+        framer.set_operation_timeout(Some(Duration::MAX));
+        let H2Error::Io(io) = framer.open_stream(1).await.unwrap_err() else {
+            panic!("unrepresentable budget")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::InvalidInput);
+        framer.set_operation_timeout(None);
+        drop(framer.write_stream(1, b"unpolled"));
+        assert!(framer.is_usable());
+        assert!(!framer.client_server_open);
+        assert!(framer.outbound_stream_windows.is_empty());
+        let mut byte = [0];
+        assert!(timeout(Duration::from_millis(5), peer.read(&mut byte))
+            .await
+            .is_err());
+        peer.write_all(&build_data_frame(1, b"ok")).await.unwrap();
+        assert_eq!(framer.read_stream(1, 2).await.unwrap().as_ref(), b"ok");
+        assert!(framer.is_usable());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_empty_idle_timeout_and_cancellation_allow_the_next_frame() {
+        let (client, mut peer) = tokio::io::duplex(128);
+        let mut framer = H2Framer::new(client);
+        framer.set_operation_timeout(Some(Duration::from_millis(5)));
+        lifecycle_timeout(framer.read_next_data_frame().await.unwrap_err());
+        assert!(framer.is_usable());
+        framer.set_operation_timeout(None);
+        assert!(timeout(Duration::from_millis(5), framer.read_stream(1, 2))
+            .await
+            .is_err());
+        assert!(framer.is_usable());
+        peer.write_all(&build_data_frame(1, b"ok")).await.unwrap();
+        assert_eq!(framer.read_stream(1, 2).await.unwrap().as_ref(), b"ok");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_partial_header_and_body_reject_late_frames_after_timeout_or_cancel() {
+        for partial_len in [4, 11] {
+            for caller_cancel in [false, true] {
+                let (client, mut peer) = tokio::io::duplex(128);
+                let mut framer = H2Framer::new(client);
+                framer.append_stream_data(3, b"retained").unwrap();
+                let frame = build_data_frame(1, b"owned-body");
+                peer.write_all(&frame[..partial_len]).await.unwrap();
+                if caller_cancel {
+                    assert!(timeout(Duration::from_millis(5), framer.read_stream(1, 10))
+                        .await
+                        .is_err());
+                } else {
+                    framer.set_operation_timeout(Some(Duration::from_millis(5)));
+                    lifecycle_timeout(framer.read_stream(1, 10).await.unwrap_err());
+                }
+                let late = build_data_frame(1, b"late");
+                peer.write_all(&late).await.unwrap();
+                lifecycle_rejects_without_io(&mut framer).await;
+                // Inspect the owned transport only in this fixture: rejection
+                // did not consume a byte of a later peer frame.
+                let mut unread = vec![0; late.len()];
+                framer.stream.inner.read_exact(&mut unread).await.unwrap();
+                assert_eq!(unread, late);
+                let mut byte = [0];
+                assert!(timeout(Duration::from_millis(5), peer.read(&mut byte))
+                    .await
+                    .is_err());
+                drop(framer);
+                assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_native_eof_and_write_failure_invalidate_without_flattening_io() {
+        for write in [false, true] {
+            let (client, peer) = tokio::io::duplex(64);
+            let mut framer = H2Framer::new(client);
+            drop(peer);
+            let error = if write {
+                framer.write_stream(1, b"request").await.unwrap_err()
+            } else {
+                framer.read_next_data_frame().await.unwrap_err()
+            };
+            let H2Error::Io(io) = error else {
+                panic!("native IO")
+            };
+            assert_eq!(
+                io.kind(),
+                if write {
+                    std::io::ErrorKind::BrokenPipe
+                } else {
+                    std::io::ErrorKind::UnexpectedEof
+                }
+            );
+            assert_eq!(io.raw_os_error(), None);
+            lifecycle_rejects_without_io(&mut framer).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_backpressured_headers_and_data_require_new_transport() {
+        for data in [false, true] {
+            let capacity = if data { 16 } else { 4 };
+            let (client, mut peer) = tokio::io::duplex(capacity);
+            let mut framer = H2Framer::new(client);
+            if data {
+                framer.open_stream(1).await.unwrap();
+                assert_eq!(read_wire_frame(&mut peer).await.frame_type, FRAME_HEADERS);
+            }
+            framer.set_operation_timeout(Some(Duration::from_millis(5)));
+            lifecycle_timeout(framer.write_stream(1, &[42; 64]).await.unwrap_err());
+            assert_eq!(framer.outbound_connection_window, DEFAULT_PEER_WINDOW_SIZE);
+            lifecycle_rejects_without_io(&mut framer).await;
+            let expected = if data {
+                build_data_frame(1, &[42; 64])
+            } else {
+                build_headers_frame(1)
+            };
+            let mut prefix = vec![0; capacity];
+            peer.read_exact(&mut prefix).await.unwrap();
+            assert_eq!(prefix, expected[..capacity]);
+            drop(framer);
+            let mut remainder = Vec::new();
+            peer.read_to_end(&mut remainder).await.unwrap();
+            assert!(remainder.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_flow_wait_shares_send_budget_and_clears_queued_business_data() {
+        let (client, mut peer) = tokio::io::duplex(128);
+        let mut framer = H2Framer::new(client);
+        framer.open_stream(1).await.unwrap();
+        read_wire_frame(&mut peer).await;
+        framer.outbound_connection_window = 2;
+        framer.outbound_stream_windows.insert_reserved(1, 2);
+        framer.set_operation_timeout(Some(Duration::from_millis(30)));
+        let (result, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(framer.write_stream(1, b"four"), async {
+                let first = read_wire_frame(&mut peer).await;
+                assert_eq!(first.payload, b"fo");
+                peer.write_all(&build_data_frame(3, b"business"))
+                    .await
+                    .unwrap();
+                peer.write_all(&build_window_update_frame(0, 2)[..4])
+                    .await
+                    .unwrap();
+            })
+        })
+        .await
+        .unwrap();
+        lifecycle_timeout(result.unwrap_err());
+        assert_eq!(framer.outbound_connection_window, 0);
+        lifecycle_rejects_without_io(&mut framer).await;
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_zero_byte_flow_wait_can_resume_with_credit() {
+        let (client, mut peer) = tokio::io::duplex(128);
+        let mut framer = H2Framer::new(client);
+        framer.open_stream(1).await.unwrap();
+        read_wire_frame(&mut peer).await;
+        framer.outbound_connection_window = 0;
+        framer.outbound_stream_windows.insert_reserved(1, 0);
+        framer.set_operation_timeout(Some(Duration::from_millis(5)));
+        lifecycle_timeout(framer.write_stream(1, b"ok").await.unwrap_err());
+        assert!(framer.is_usable());
+        framer.set_operation_timeout(None);
+        peer.write_all(&build_window_update_frame(0, 2))
+            .await
+            .unwrap();
+        peer.write_all(&build_window_update_frame(1, 2))
+            .await
+            .unwrap();
+        framer.write_stream(1, b"ok").await.unwrap();
+        assert_eq!(read_wire_frame(&mut peer).await.payload, b"ok");
+        assert!(framer.is_usable());
+        assert_eq!(framer.outbound_connection_window, 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_complete_stream_shutdown_preserves_other_stream_operations() {
+        let (client, mut peer) = tokio::io::duplex(256);
+        let mut framer = H2Framer::new(client);
+        framer.open_stream(1).await.unwrap();
+        read_wire_frame(&mut peer).await;
+        peer.write_all(&build_frame(FRAME_RST_STREAM, 0, 1, &8u32.to_be_bytes()))
+            .await
+            .unwrap();
+        assert!(framer.read_stream(1, 1).await.is_err());
+        assert!(framer.is_usable());
+        peer.write_all(&build_frame(FRAME_DATA, FLAG_END_STREAM, 3, b"done"))
+            .await
+            .unwrap();
+        assert_eq!(framer.read_stream(3, 4).await.unwrap().as_ref(), b"done");
+        assert!(framer.read_stream(3, 1).await.is_err());
+        assert!(framer.is_usable());
+        framer.write_stream(5, b"new").await.unwrap();
+        assert_eq!(read_wire_frame(&mut peer).await.frame_type, FRAME_HEADERS);
+        assert_eq!(read_wire_frame(&mut peer).await.payload, b"new");
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[tokio::test]
+    async fn actual_h2_count_overflows_keep_native_error_and_poison_without_window_changes() {
+        use std::error::Error;
+        for receive in [true, false] {
+            let (client, _peer) = tokio::io::duplex(64);
+            let mut framer = H2Framer::new(client);
+            let error = if receive {
+                framer
+                    .replenish_receive_window(1, usize::MAX)
+                    .await
+                    .unwrap_err()
+            } else {
+                framer.consume_outbound_window(1, usize::MAX).unwrap_err()
+            };
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            assert!(framer.ensure_connection_open().is_err());
+            assert!(framer.pending_window_updates.is_empty());
+            assert_eq!(framer.outbound_connection_window, DEFAULT_PEER_WINDOW_SIZE);
+            let mut source: Option<&(dyn Error + 'static)> = Some(&error);
+            let mut found = false;
+            for _ in 0..32 {
+                let Some(current) = source else { break };
+                if current.is::<std::num::TryFromIntError>() {
+                    found = true;
+                    break;
+                }
+                source = current.source();
+            }
+            assert!(found, "native integer conversion must remain reachable");
+        }
+    }
 
     #[test]
     fn test_settings_frame_layout() {
@@ -1922,12 +2489,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finish_stream_works_without_credit_and_keeps_receive_half_open() {
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let mut framer = H2Framer::new(client);
+        framer.open_stream(5).await.unwrap();
+        assert_eq!(read_wire_frame(&mut peer).await.frame_type, FRAME_HEADERS);
+        framer.outbound_connection_window = 0;
+        framer.outbound_stream_windows.insert_reserved(5, 0);
+        framer.finish_stream(5).await.unwrap();
+        let end = read_wire_frame(&mut peer).await;
+        assert_eq!(
+            (end.frame_type, end.flags, end.stream_id),
+            (FRAME_DATA, FLAG_END_STREAM, 5)
+        );
+        assert!(end.payload.is_empty());
+        assert!(framer.write_stream(5, b"late bytes").await.is_err());
+        assert!(framer.finish_stream(5).await.is_err());
+        peer.write_all(&build_data_frame(5, b"done")).await.unwrap();
+        assert_eq!(framer.read_stream(5, 4).await.unwrap().as_ref(), b"done");
+    }
+
+    #[tokio::test]
     async fn test_dispatch_frame_acknowledges_settings_immediately() {
         let (client, mut server) = tokio::io::duplex(1024);
         let mut framer = H2Framer::new(client);
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_SETTINGS,
                 flags: 0,
                 stream_id: STREAM_INIT,
@@ -1949,6 +2538,7 @@ mod tests {
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 4,
@@ -1994,6 +2584,7 @@ mod tests {
             stream.read_exact(&mut payload).await.unwrap();
         }
         RawFrame {
+            raw_fees: None,
             frame_type: header[3],
             flags: header[4],
             stream_id: u32::from_be_bytes([header[5] & 0x7F, header[6], header[7], header[8]]),
@@ -2010,18 +2601,6 @@ mod tests {
 
     fn rst_stream_frame(stream_id: u32, error_code: u32) -> Vec<u8> {
         build_frame(FRAME_RST_STREAM, 0, stream_id, &error_code.to_be_bytes())
-    }
-
-    fn file_stream_preamble(msg_id: u64) -> Vec<u8> {
-        let mut payload = vec![0u8; FILE_STREAM_PREAMBLE_LEN];
-        payload[..4].copy_from_slice(&WRAPPER_MAGIC.to_le_bytes());
-        payload[4..8].copy_from_slice(
-            &(crate::xpc::message::flags::ALWAYS_SET
-                | crate::xpc::message::flags::FILE_TX_STREAM_REQUEST)
-                .to_le_bytes(),
-        );
-        payload[16..24].copy_from_slice(&msg_id.to_le_bytes());
-        payload
     }
 
     fn goaway_payload(last_stream_id: u32, error_code: u32) -> Vec<u8> {
@@ -2268,6 +2847,7 @@ mod tests {
         for stream_id in [STREAM_CLIENT_SERVER, STREAM_SERVER_CLIENT] {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_DATA,
                     flags: FLAG_END_STREAM,
                     stream_id,
@@ -2279,6 +2859,7 @@ mod tests {
         framer.open_stream(5).await.unwrap();
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: FLAG_END_STREAM,
                 stream_id: 5,
@@ -2290,6 +2871,7 @@ mod tests {
         for stream_id in 100..100 + MAX_CLOSED_STREAMS as u32 + 1 {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_DATA,
                     flags: FLAG_END_STREAM,
                     stream_id,
@@ -2314,6 +2896,7 @@ mod tests {
         // Eviction never turns an old stream ID into a reusable stream.
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_HEADERS,
                 flags: FLAG_END_HEADERS,
                 stream_id: 100,
@@ -2326,6 +2909,7 @@ mod tests {
         let next_stream = 100 + MAX_CLOSED_STREAMS as u32 + 1;
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_HEADERS,
                 flags: FLAG_END_HEADERS,
                 stream_id: next_stream,
@@ -2344,6 +2928,7 @@ mod tests {
         for stream_id in [STREAM_CLIENT_SERVER, STREAM_SERVER_CLIENT] {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_RST_STREAM,
                     flags: 0,
                     stream_id,
@@ -2355,6 +2940,7 @@ mod tests {
         framer.open_stream(5).await.unwrap();
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_RST_STREAM,
                 flags: 0,
                 stream_id: 5,
@@ -2366,6 +2952,7 @@ mod tests {
         for stream_id in 100..100 + MAX_CLOSED_STREAMS as u32 + 1 {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_HEADERS,
                     flags: FLAG_END_HEADERS,
                     stream_id,
@@ -2375,6 +2962,7 @@ mod tests {
                 .unwrap();
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_RST_STREAM,
                     flags: 0,
                     stream_id,
@@ -2398,6 +2986,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_HEADERS,
                 flags: FLAG_END_HEADERS,
                 stream_id: 100,
@@ -2415,6 +3004,7 @@ mod tests {
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: FLAG_END_STREAM,
                 stream_id: 6,
@@ -2424,6 +3014,7 @@ mod tests {
             .unwrap();
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 6,
@@ -2519,7 +3110,7 @@ mod tests {
         // Exercise min(connection window, stream window, max frame size) and
         // force the writer through several asynchronous update waits.
         framer.outbound_connection_window = 4;
-        framer.outbound_stream_windows.insert(5, 2);
+        framer.outbound_stream_windows.insert_reserved(5, 2);
         let payload: Vec<u8> = (0..10).collect();
         let expected = payload.clone();
         let peer_task = tokio::spawn(async move {
@@ -2575,7 +3166,7 @@ mod tests {
         framer.open_stream(5).await.unwrap();
         assert_eq!(read_wire_frame(&mut peer).await.frame_type, FRAME_HEADERS);
         framer.outbound_connection_window = 0;
-        framer.outbound_stream_windows.insert(5, 0);
+        framer.outbound_stream_windows.insert_reserved(5, 0);
 
         let peer_task = tokio::spawn(async move {
             peer.write_all(&build_frame(
@@ -2663,7 +3254,7 @@ mod tests {
         framer.peer_initial_window_size = 0;
         framer
             .outbound_stream_windows
-            .insert(5, MAX_FLOW_CONTROL_WINDOW);
+            .insert_reserved(5, MAX_FLOW_CONTROL_WINDOW);
 
         let error = framer
             .process_settings(
@@ -2708,7 +3299,7 @@ mod tests {
         let mut framer = test_framer(client);
         framer
             .outbound_stream_windows
-            .insert(5, DEFAULT_PEER_WINDOW_SIZE);
+            .insert_reserved(5, DEFAULT_PEER_WINDOW_SIZE);
 
         let error = framer
             .process_window_update(5, &0u32.to_be_bytes())
@@ -2751,6 +3342,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_RST_STREAM,
                 flags: 0,
                 stream_id: 9,
@@ -2843,6 +3435,7 @@ mod tests {
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 6,
@@ -2852,6 +3445,7 @@ mod tests {
             .unwrap();
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 6,
@@ -2882,6 +3476,7 @@ mod tests {
         for stream_id in 100..100 + MAX_UNKNOWN_BUFFERED_STREAMS as u32 {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_DATA,
                     flags: 0,
                     stream_id,
@@ -2894,6 +3489,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 100 + MAX_UNKNOWN_BUFFERED_STREAMS as u32,
@@ -2906,277 +3502,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validated_file_side_channels_may_exceed_unknown_stream_limit() {
+    async fn expected_file_streams_are_bounded_and_leave_unknown_quota_intact() {
         let (client, _server) = tokio::io::duplex(1024);
         let mut framer = test_framer(client);
-
-        // iOS sends these peer-created even streams without END_STREAM/RST;
-        // each is nevertheless a complete, body-less FILE_TX preamble.
-        for index in 0..(MAX_UNKNOWN_BUFFERED_STREAMS * 2) {
-            let stream_id = 2 * (index as u32 + 1);
-            framer
-                .dispatch_frame(RawFrame {
-                    frame_type: FRAME_HEADERS,
-                    flags: FLAG_END_HEADERS,
-                    stream_id,
-                    payload: Vec::new(),
-                })
-                .await
-                .unwrap();
-            framer
-                .dispatch_frame(RawFrame {
-                    frame_type: FRAME_DATA,
-                    flags: 0,
-                    stream_id,
-                    payload: file_stream_preamble(index as u64 + 1),
-                })
-                .await
-                .unwrap();
-        }
-
-        assert_eq!(
-            framer.announced_file_streams.len(),
-            MAX_UNKNOWN_BUFFERED_STREAMS * 2
-        );
+        framer.track_peer_stream(2).unwrap();
+        assert_eq!(framer.peer_open_streams.len(), 1);
+        framer.expect_peer_file_streams(71).unwrap();
         assert!(framer.peer_open_streams.is_empty());
-        assert!(framer.file_stream_candidates.is_empty());
-    }
-
-    #[tokio::test]
-    async fn unknown_active_stream_budget_is_shared_with_file_candidates() {
-        let (client, _server) = tokio::io::duplex(1024);
-        let mut framer = test_framer(client);
-
-        for index in 0..(MAX_UNKNOWN_BUFFERED_STREAMS / 2) {
-            let candidate_id = 2 + (index as u32) * 4;
-            framer
-                .dispatch_frame(RawFrame {
-                    frame_type: FRAME_HEADERS,
-                    flags: FLAG_END_HEADERS,
-                    stream_id: candidate_id,
-                    payload: Vec::new(),
-                })
-                .await
-                .unwrap();
-            // Stream 3 is the fixed serverClient XPC stream, so use the next
-            // odd ID outside the primary pair for the genuinely unknown
-            // peer-created stream.
-            let unknown_id = candidate_id + 3;
-            framer
-                .dispatch_frame(RawFrame {
-                    frame_type: FRAME_DATA,
-                    flags: 0,
-                    stream_id: unknown_id,
-                    payload: vec![0xAA],
-                })
-                .await
-                .unwrap();
+        for stream_id in (2..=142).step_by(2) {
+            assert!(framer.is_known_stream(stream_id));
+            framer.track_peer_stream(stream_id).unwrap();
         }
-
-        assert_eq!(
-            framer.unknown_active_stream_count(),
-            MAX_UNKNOWN_BUFFERED_STREAMS
-        );
-        let error = framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_HEADERS,
-                flags: FLAG_END_HEADERS,
-                stream_id: 66,
-                payload: Vec::new(),
-            })
-            .await
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("too many pending RemoteXPC file streams"));
-    }
-
-    #[tokio::test]
-    async fn file_side_channel_preamble_can_be_fragmented_and_is_validated() {
-        let (client, _server) = tokio::io::duplex(1024);
-        let mut framer = test_framer(client);
-        let preamble = file_stream_preamble(7);
-
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_HEADERS,
-                flags: FLAG_END_HEADERS,
-                stream_id: 2,
-                payload: Vec::new(),
-            })
-            .await
-            .unwrap();
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_DATA,
-                flags: 0,
-                stream_id: 2,
-                payload: preamble[..10].to_vec(),
-            })
-            .await
-            .unwrap();
-        assert!(framer.file_stream_candidates.contains(&2));
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_DATA,
-                flags: 0,
-                stream_id: 2,
-                payload: preamble[10..].to_vec(),
-            })
-            .await
-            .unwrap();
-        assert!(framer.announced_file_streams.contains(&2));
-        assert!(!framer.file_stream_candidate_data.contains_key(&2));
-    }
-
-    #[tokio::test]
-    async fn end_and_reset_release_file_side_channel_state() {
-        let (client, _server) = tokio::io::duplex(1024);
-        let mut framer = test_framer(client);
-
-        // END_STREAM on a candidate closes it before it is ever adopted.
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_HEADERS,
-                flags: FLAG_END_HEADERS,
-                stream_id: 2,
-                payload: Vec::new(),
-            })
-            .await
-            .unwrap();
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_HEADERS,
-                flags: FLAG_END_STREAM,
-                stream_id: 2,
-                payload: Vec::new(),
-            })
-            .await
-            .unwrap();
-        assert!(!framer.file_stream_candidates.contains(&2));
-        assert!(framer.closed_streams.contains(&2));
-
-        // A validated stream is removed from the live registry on END_STREAM.
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_DATA,
-                flags: 0,
-                stream_id: 4,
-                payload: file_stream_preamble(8),
-            })
-            .await
-            .unwrap();
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_DATA,
-                flags: FLAG_END_STREAM,
-                stream_id: 4,
-                payload: b"tail".to_vec(),
-            })
-            .await
-            .unwrap();
-        assert!(!framer.announced_file_streams.contains(&4));
-        assert!(framer.closed_streams.contains(&4));
-        // END_STREAM makes the bytes eligible for a final read; consuming
-        // them releases the per-stream and connection byte accounting.
-        assert_eq!(
-            framer
-                .take_stream_bytes(4, FILE_STREAM_PREAMBLE_LEN + 4)
-                .unwrap()
-                .len(),
-            28
-        );
-
-        // RST_STREAM clears buffered bytes and the adopted registry entry.
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_DATA,
-                flags: 0,
-                stream_id: 6,
-                payload: file_stream_preamble(9),
-            })
-            .await
-            .unwrap();
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_RST_STREAM,
-                flags: 0,
-                stream_id: 6,
-                payload: 5u32.to_be_bytes().to_vec(),
-            })
-            .await
-            .unwrap();
-        assert!(!framer.announced_file_streams.contains(&6));
-        assert!(!framer.stream_bufs.contains_key(&6));
-        assert_eq!(framer.buffered_bytes, 0);
-        assert_eq!(framer.reset_streams.get(&6), Some(&5));
-    }
-
-    #[tokio::test]
-    async fn invalid_file_side_channel_preamble_is_a_protocol_error() {
-        let (client, _server) = tokio::io::duplex(1024);
-        let mut framer = test_framer(client);
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_HEADERS,
-                flags: FLAG_END_HEADERS,
-                stream_id: 2,
-                payload: Vec::new(),
-            })
-            .await
-            .unwrap();
-        let error = framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_DATA,
-                flags: 0,
-                stream_id: 2,
-                payload: vec![0u8; FILE_STREAM_PREAMBLE_LEN],
-            })
-            .await
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("invalid RemoteXPC file-stream preamble"));
-        assert!(!framer.file_stream_candidates.contains(&2));
-        assert!(!framer.file_stream_candidate_data.contains_key(&2));
-
-        // A malformed fragmented candidate must also release the first
-        // fragment retained before the decoder can reject the full preamble.
-        let (client, _server) = tokio::io::duplex(1024);
-        let mut framer = test_framer(client);
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_HEADERS,
-                flags: FLAG_END_HEADERS,
-                stream_id: 4,
-                payload: Vec::new(),
-            })
-            .await
-            .unwrap();
-        framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_DATA,
-                flags: 0,
-                stream_id: 4,
-                payload: vec![0u8; 10],
-            })
-            .await
-            .unwrap();
-        let error = framer
-            .dispatch_frame(RawFrame {
-                frame_type: FRAME_DATA,
-                flags: 0,
-                stream_id: 4,
-                payload: vec![0u8; 14],
-            })
-            .await
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("invalid RemoteXPC file-stream preamble"));
-        assert_eq!(framer.buffered_bytes, 0);
-        assert!(!framer.stream_bufs.contains_key(&4));
-        assert!(!framer.file_stream_candidates.contains(&4));
+        assert!(!framer.is_known_stream(144));
+        for stream_id in (5..=67).step_by(2) {
+            framer.track_peer_stream(stream_id).unwrap();
+        }
+        assert!(framer.track_peer_stream(69).is_err());
+        assert!(framer.expect_peer_file_streams(usize::MAX).is_err());
+        assert!(!framer.is_known_stream(144));
     }
 
     #[tokio::test]
@@ -3187,6 +3530,7 @@ mod tests {
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 8,
@@ -3198,6 +3542,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 8,
@@ -3219,6 +3564,7 @@ mod tests {
         for stream_id in stream_ids {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_DATA,
                     flags: 0,
                     stream_id,
@@ -3231,6 +3577,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 16,
@@ -3247,639 +3594,5 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(framer.buffered_bytes, 0);
-    }
-
-    // ── Cancel-safety contract (T4) ─────────────────────────────────────────
-    //
-    // These tests observe how many bytes a cancelled reader/writer actually
-    // consumed, then verify the connection's behavior on the wire afterwards.
-
-    use std::io;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-
-    use tokio::io::ReadBuf;
-    use tokio::sync::oneshot;
-
-    /// Wraps a stream and signals once the observed byte count crosses a
-    /// threshold, so a test can cancel a future at an exact consumption point.
-    struct CountingStream<S> {
-        inner: S,
-        read_bytes: usize,
-        written_bytes: usize,
-        read_tx: Option<oneshot::Sender<usize>>,
-        read_threshold: usize,
-        write_tx: Option<oneshot::Sender<usize>>,
-        write_threshold: usize,
-    }
-
-    impl<S> CountingStream<S> {
-        fn new(inner: S) -> Self {
-            Self {
-                inner,
-                read_bytes: 0,
-                written_bytes: 0,
-                read_tx: None,
-                read_threshold: usize::MAX,
-                write_tx: None,
-                write_threshold: usize::MAX,
-            }
-        }
-
-        fn probe_reads(self, threshold: usize) -> (Self, oneshot::Receiver<usize>) {
-            let (tx, rx) = oneshot::channel();
-            (
-                Self {
-                    read_tx: Some(tx),
-                    read_threshold: threshold,
-                    ..self
-                },
-                rx,
-            )
-        }
-
-        fn probe_writes(self, threshold: usize) -> (Self, oneshot::Receiver<usize>) {
-            let (tx, rx) = oneshot::channel();
-            (
-                Self {
-                    write_tx: Some(tx),
-                    write_threshold: threshold,
-                    ..self
-                },
-                rx,
-            )
-        }
-    }
-
-    impl<S: AsyncRead + Unpin> AsyncRead for CountingStream<S> {
-        fn poll_read(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &mut ReadBuf<'_>,
-        ) -> Poll<io::Result<()>> {
-            let before = buf.filled().len();
-            let result = Pin::new(&mut self.inner).poll_read(cx, buf);
-            if let Poll::Ready(Ok(())) = &result {
-                self.read_bytes += buf.filled().len() - before;
-                if self.read_bytes >= self.read_threshold {
-                    if let Some(tx) = self.read_tx.take() {
-                        let _ = tx.send(self.read_bytes);
-                    }
-                }
-            }
-            result
-        }
-    }
-
-    impl<S: AsyncWrite + Unpin> AsyncWrite for CountingStream<S> {
-        fn poll_write(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            let result = Pin::new(&mut self.inner).poll_write(cx, buf);
-            if let Poll::Ready(Ok(n)) = &result {
-                self.written_bytes += n;
-                if self.written_bytes >= self.write_threshold {
-                    if let Some(tx) = self.write_tx.take() {
-                        let _ = tx.send(self.written_bytes);
-                    }
-                }
-            }
-            result
-        }
-        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Pin::new(&mut self.inner).poll_flush(cx)
-        }
-        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Pin::new(&mut self.inner).poll_shutdown(cx)
-        }
-    }
-
-    struct WriteZeroOnceIo {
-        output: Vec<u8>,
-        write_count: usize,
-        return_zero: bool,
-    }
-
-    impl AsyncRead for WriteZeroOnceIo {
-        fn poll_read(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-            _buf: &mut ReadBuf<'_>,
-        ) -> Poll<io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    impl AsyncWrite for WriteZeroOnceIo {
-        fn poll_write(
-            mut self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            if self.return_zero {
-                self.return_zero = false;
-                return Poll::Ready(Ok(0));
-            }
-            let amount = if self.write_count == 0 {
-                3.min(buf.len())
-            } else {
-                buf.len()
-            };
-            self.output.extend_from_slice(&buf[..amount]);
-            self.write_count += 1;
-            if self.write_count == 1 {
-                self.return_zero = true;
-            }
-            Poll::Ready(Ok(amount))
-        }
-
-        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    #[tokio::test]
-    async fn repeated_cancel_while_resuming_write_keeps_original_frame_tail() {
-        let (client, mut peer) = tokio::io::duplex(4);
-        let mut framer = H2Framer::new(client);
-        let first = build_data_frame(STREAM_CLIENT_SERVER, b"original");
-        let second = build_data_frame(STREAM_CLIENT_SERVER, b"next");
-        {
-            let write = framer.write_all_tracked(&first);
-            tokio::pin!(write);
-            assert!(futures_util::poll!(&mut write).is_pending());
-        }
-        // The four-byte peer buffer is still full. The second poll therefore
-        // cannot write any new byte of the saved tail before it is cancelled.
-        assert_eq!(framer.pending_write.as_deref(), Some(&first[4..]));
-        {
-            let resume = framer.finish_pending_write();
-            tokio::pin!(resume);
-            assert!(futures_util::poll!(&mut resume).is_pending());
-        }
-        assert_eq!(framer.pending_write.as_deref(), Some(&first[4..]));
-
-        let expected = [first, second.clone()].concat();
-        let mut received = vec![0u8; expected.len()];
-        timeout(Duration::from_secs(5), async {
-            let (write, read) = tokio::join!(
-                framer.write_all_tracked(&second),
-                peer.read_exact(&mut received),
-            );
-            write.expect("the next operation must finish the original tail");
-            read.expect("both frames must arrive without loss or replay");
-        })
-        .await
-        .expect("repeated cancellation recovery watchdog");
-        assert_eq!(received, expected);
-        assert!(framer.pending_write.is_none());
-    }
-
-    #[tokio::test]
-    async fn write_zero_after_partial_write_retains_frame_tail() {
-        let mut framer = H2Framer::new(WriteZeroOnceIo {
-            output: Vec::new(),
-            write_count: 0,
-            return_zero: false,
-        });
-        let err = framer
-            .write_all_tracked(b"abcdef")
-            .await
-            .expect_err("WriteZero must be surfaced to the caller");
-        assert!(matches!(err, H2Error::Io(ref error) if error.kind() == io::ErrorKind::WriteZero));
-        assert_eq!(framer.pending_write.as_deref(), Some(&b"def"[..]));
-
-        framer
-            .write_all_tracked(b"xyz")
-            .await
-            .expect("the next operation must complete the retained tail first");
-        assert_eq!(framer.stream.output, b"abcdefxyz");
-    }
-
-    #[tokio::test]
-    async fn cancelled_read_mid_frame_header_resumes_without_desync() {
-        for partial in [1usize, 4, 8] {
-            let (client, mut server) = tokio::io::duplex(64 * 1024);
-            let (stream, mut read_rx) = CountingStream::new(client).probe_reads(9 + partial);
-            let (continue_tx, continue_rx) = oneshot::channel::<()>();
-
-            let frame1_payload = vec![0xA5u8; 24];
-            let frame2_payload = vec![0x5Au8; 20];
-            let frame1_payload_clone = frame1_payload.clone();
-            let frame2_payload_clone = frame2_payload.clone();
-            let server_task = tokio::spawn(async move {
-                let mut preface = [0u8; 24];
-                server.read_exact(&mut preface).await.unwrap();
-                let mut settings = [0u8; 21];
-                server.read_exact(&mut settings).await.unwrap();
-                let mut window_update = [0u8; 13];
-                server.read_exact(&mut window_update).await.unwrap();
-                server
-                    .write_all(&build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &[]))
-                    .await
-                    .unwrap();
-                server.flush().await.unwrap();
-                let mut ack = [0u8; 9];
-                server.read_exact(&mut ack).await.unwrap();
-
-                // Leak only `partial` bytes of frame 1's header; the header
-                // declares the 24-byte payload that follows it.
-                let frame1 =
-                    build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, &frame1_payload_clone);
-                server.write_all(&frame1[..partial]).await.unwrap();
-                server.flush().await.unwrap();
-                continue_rx.await.unwrap();
-
-                server.write_all(&frame1[partial..]).await.unwrap();
-                server
-                    .write_all(&build_frame(
-                        FRAME_DATA,
-                        0,
-                        STREAM_SERVER_CLIENT,
-                        &frame2_payload_clone,
-                    ))
-                    .await
-                    .unwrap();
-                server.flush().await.unwrap();
-            });
-
-            let mut framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
-                .await
-                .expect("handshake watchdog")
-                .unwrap();
-
-            let consumed = {
-                let read_fut = framer.read_stream(STREAM_SERVER_CLIENT, 24);
-                tokio::pin!(read_fut);
-                tokio::select! {
-                    biased;
-                    result = &mut read_fut => panic!(
-                        "read completed before the partial header arrived: {result:?}"
-                    ),
-                    consumed = &mut read_rx => consumed.unwrap(),
-                }
-            }; // read_fut is dropped here: the reader is cancelled mid-header.
-            assert_eq!(
-                consumed,
-                9 + partial,
-                "the cancelled reader must have consumed exactly the leaked bytes"
-            );
-            continue_tx.send(()).unwrap();
-
-            let first = timeout(
-                Duration::from_secs(5),
-                framer.read_stream(STREAM_SERVER_CLIENT, 24),
-            )
-            .await
-            .expect("resume watchdog")
-            .expect("the framer must resume the interrupted frame instead of desyncing");
-            assert_eq!(first.as_ref(), frame1_payload.as_slice());
-            let second = timeout(
-                Duration::from_secs(5),
-                framer.read_stream(STREAM_SERVER_CLIENT, 20),
-            )
-            .await
-            .expect("second frame watchdog")
-            .expect("the next frame must parse intact after the resume");
-            assert_eq!(second.as_ref(), frame2_payload.as_slice());
-
-            server_task.await.unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn cancelled_read_mid_frame_payload_resumes_without_desync() {
-        let partial_payload = 5usize;
-        let (client, mut server) = tokio::io::duplex(64 * 1024);
-        // settings(9) + full header(9) + partial payload(5)
-        let (stream, mut read_rx) =
-            CountingStream::new(client).probe_reads(9 + 9 + partial_payload);
-        let (continue_tx, continue_rx) = oneshot::channel::<()>();
-
-        let frame1_payload = vec![0x11u8; 24];
-        let frame2_payload = vec![0x22u8; 20];
-        let frame1_payload_clone = frame1_payload.clone();
-        let frame2_payload_clone = frame2_payload.clone();
-        let server_task = tokio::spawn(async move {
-            let mut preface = [0u8; 24];
-            server.read_exact(&mut preface).await.unwrap();
-            let mut settings = [0u8; 21];
-            server.read_exact(&mut settings).await.unwrap();
-            let mut window_update = [0u8; 13];
-            server.read_exact(&mut window_update).await.unwrap();
-            server
-                .write_all(&build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &[]))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-            let mut ack = [0u8; 9];
-            server.read_exact(&mut ack).await.unwrap();
-
-            // The header (length = 24) arrives whole; only `partial_payload`
-            // body bytes leak before the client is cancelled.
-            let frame1 = build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, &frame1_payload_clone);
-            server.write_all(&frame1[..9]).await.unwrap();
-            server
-                .write_all(&frame1_payload_clone[..partial_payload])
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-            continue_rx.await.unwrap();
-
-            server
-                .write_all(&frame1_payload_clone[partial_payload..])
-                .await
-                .unwrap();
-            server
-                .write_all(&build_frame(
-                    FRAME_DATA,
-                    0,
-                    STREAM_SERVER_CLIENT,
-                    &frame2_payload_clone,
-                ))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-        });
-
-        let mut framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
-            .await
-            .expect("handshake watchdog")
-            .unwrap();
-
-        let consumed = {
-            let read_fut = framer.read_stream(STREAM_SERVER_CLIENT, 24);
-            tokio::pin!(read_fut);
-            tokio::select! {
-                biased;
-                result = &mut read_fut => panic!(
-                    "read completed before the partial payload arrived: {result:?}"
-                ),
-                consumed = &mut read_rx => consumed.unwrap(),
-            }
-        }; // cancelled mid-payload.
-        assert_eq!(consumed, 9 + 9 + partial_payload);
-        continue_tx.send(()).unwrap();
-
-        let first = timeout(
-            Duration::from_secs(5),
-            framer.read_stream(STREAM_SERVER_CLIENT, 24),
-        )
-        .await
-        .expect("resume watchdog")
-        .expect("payload progress must survive the cancelled read");
-        assert_eq!(first.as_ref(), frame1_payload.as_slice());
-        let second = timeout(
-            Duration::from_secs(5),
-            framer.read_stream(STREAM_SERVER_CLIENT, 20),
-        )
-        .await
-        .expect("second frame watchdog")
-        .expect("the next frame must not splice with the resumed payload");
-        assert_eq!(second.as_ref(), frame2_payload.as_slice());
-
-        server_task.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn cancelled_write_mid_frame_is_completed_by_the_next_write() {
-        let (client, mut server) = tokio::io::duplex(32);
-        // Handshake writes 58 bytes, HEADERS 9, and the first DATA poll_write
-        // fills the remaining 32-byte duplex capacity exactly.
-        let (stream, mut write_rx) = CountingStream::new(client).probe_writes(58 + 9 + 23);
-        let big_payload = vec![0x77u8; 60];
-        let small_payload = vec![0x33u8; 12];
-        let big_payload_clone = big_payload.clone();
-        let small_payload_clone = small_payload.clone();
-        let server_task = tokio::spawn(async move {
-            let mut preface = [0u8; 24];
-            server.read_exact(&mut preface).await.unwrap();
-            let mut settings = [0u8; 21];
-            server.read_exact(&mut settings).await.unwrap();
-            let mut window_update = [0u8; 13];
-            server.read_exact(&mut window_update).await.unwrap();
-            server
-                .write_all(&build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &[]))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-            let mut ack = [0u8; 9];
-            server.read_exact(&mut ack).await.unwrap();
-
-            // HEADERS for stream 1, then the DATA frame of the big message.
-            let mut headers = [0u8; 9];
-            server.read_exact(&mut headers).await.unwrap();
-            let mut data_header = [0u8; 9];
-            server.read_exact(&mut data_header).await.unwrap();
-            let len = ((data_header[0] as usize) << 16)
-                | ((data_header[1] as usize) << 8)
-                | (data_header[2] as usize);
-            assert_eq!(
-                len,
-                big_payload_clone.len(),
-                "big frame length must be intact"
-            );
-            let mut received = vec![0u8; len];
-            server.read_exact(&mut received).await.unwrap();
-            assert_eq!(
-                received, big_payload_clone,
-                "big frame payload must not lose bytes"
-            );
-            let mut small_header = [0u8; 9];
-            server.read_exact(&mut small_header).await.unwrap();
-            let small_len = ((small_header[0] as usize) << 16)
-                | ((small_header[1] as usize) << 8)
-                | (small_header[2] as usize);
-            assert_eq!(small_len, small_payload_clone.len());
-            let mut small_received = vec![0u8; small_len];
-            server.read_exact(&mut small_received).await.unwrap();
-            assert_eq!(small_received, small_payload_clone);
-        });
-
-        let mut framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
-            .await
-            .expect("handshake watchdog")
-            .unwrap();
-
-        let consumed = {
-            let write_fut = framer.write_client_server(&big_payload);
-            tokio::pin!(write_fut);
-            tokio::select! {
-                biased;
-                result = &mut write_fut => panic!(
-                    "write completed despite the tiny duplex capacity: {result:?}"
-                ),
-                consumed = &mut write_rx => consumed.unwrap(),
-            }
-        }; // cancelled mid-frame: part of the DATA frame is on the wire.
-        assert_eq!(
-            consumed,
-            58 + 9 + 23,
-            "cancel must land mid-DATA-frame with the capacity exactly full"
-        );
-        assert_eq!(
-            framer.outbound_connection_window,
-            DEFAULT_PEER_WINDOW_SIZE - big_payload.len() as i64,
-            "cancelled DATA must consume peer credit before its partial write"
-        );
-
-        // The next write must first finish the interrupted frame, then send
-        // its own — the server must see both frames intact.
-        timeout(
-            Duration::from_secs(5),
-            framer.write_client_server(&small_payload),
-        )
-        .await
-        .expect("resumed write watchdog")
-        .expect("the next write must complete the interrupted frame first");
-        assert_eq!(
-            framer.outbound_connection_window,
-            DEFAULT_PEER_WINDOW_SIZE - (big_payload.len() + small_payload.len()) as i64,
-            "resumed and subsequent DATA must be charged exactly once"
-        );
-
-        timeout(Duration::from_secs(10), server_task)
-            .await
-            .expect(
-                "server watchdog: the peer must observe both frames intact; \
-                 a hang here means the interrupted frame lost its unwritten bytes",
-            )
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn cancelled_stream_open_poison_prevents_headers_replay() {
-        let (client, mut server) = tokio::io::duplex(4);
-        // H2Framer::connect writes 58 bytes and its SETTINGS ACK adds 9. The
-        // stream-opening HEADERS write then reaches four bytes and blocks while
-        // the peer deliberately does not read it further.
-        let (stream, mut write_rx) = CountingStream::new(client).probe_writes(67 + 4);
-        let (hold_tx, hold_rx) = oneshot::channel::<()>();
-        let server_task = tokio::spawn(async move {
-            let mut preface = [0u8; 24];
-            server.read_exact(&mut preface).await.unwrap();
-            let mut settings = [0u8; 21];
-            server.read_exact(&mut settings).await.unwrap();
-            let mut window_update = [0u8; 13];
-            server.read_exact(&mut window_update).await.unwrap();
-            server
-                .write_all(&build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &[]))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-            let mut ack = [0u8; 9];
-            server.read_exact(&mut ack).await.unwrap();
-            let _ = hold_rx.await;
-        });
-
-        let mut framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
-            .await
-            .expect("handshake watchdog")
-            .unwrap();
-        timeout(Duration::from_secs(5), async {
-            let open_fut = framer.open_stream(5);
-            tokio::pin!(open_fut);
-            tokio::select! {
-                biased;
-                result = &mut open_fut => panic!(
-                    "stream opening completed despite the peer backpressure: {result:?}"
-                ),
-                _ = &mut write_rx => {}
-            }
-        })
-        .await
-        .expect("stream-opening cancellation watchdog");
-
-        let err = framer
-            .write_stream(5, b"retry")
-            .await
-            .expect_err("a cancelled HEADERS write must reject reuse");
-        assert!(err.to_string().contains("opening stream 5"), "{err}");
-        assert!(framer.pending_write.is_some());
-
-        let err = framer
-            .read_next_data_frame()
-            .await
-            .expect_err("reads must observe the cancelled stream-opening poison");
-        assert!(err.to_string().contains("opening stream 5"), "{err}");
-
-        let _ = hold_tx.send(());
-        server_task.abort();
-    }
-
-    #[tokio::test]
-    async fn cancelled_read_next_data_frame_retains_data_when_window_update_blocks() {
-        let (client, mut server) = tokio::io::duplex(16);
-        // H2Framer::connect writes 58 bytes and the SETTINGS ACK adds 9. The
-        // first receive-window update then reaches 80 bytes and signals while
-        // the second 13-byte update is blocked by the tiny duplex capacity.
-        let (stream, mut write_rx) = CountingStream::new(client).probe_writes(80);
-        let (hold_tx, hold_rx) = oneshot::channel::<()>();
-        let server_task = tokio::spawn(async move {
-            let mut preface = [0u8; 24];
-            server.read_exact(&mut preface).await.unwrap();
-            let mut settings = [0u8; 21];
-            server.read_exact(&mut settings).await.unwrap();
-            let mut window_update = [0u8; 13];
-            server.read_exact(&mut window_update).await.unwrap();
-            server
-                .write_all(&build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &[]))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-            let mut ack = [0u8; 9];
-            server.read_exact(&mut ack).await.unwrap();
-            server
-                .write_all(&build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, &[0xA5]))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-            // Do not consume the client's WINDOW_UPDATE frames. The small
-            // duplex capacity makes the second update write remain pending.
-            let _ = hold_rx.await;
-        });
-
-        let mut framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
-            .await
-            .expect("handshake watchdog")
-            .unwrap();
-        framer
-            .pending_window_updates
-            .insert(STREAM_INIT, WINDOW_UPDATE_THRESHOLD - 1);
-        framer
-            .pending_window_updates
-            .insert(STREAM_SERVER_CLIENT, WINDOW_UPDATE_THRESHOLD - 1);
-
-        timeout(Duration::from_secs(5), async {
-            let read_fut = framer.read_next_data_frame();
-            tokio::pin!(read_fut);
-            tokio::select! {
-                biased;
-                result = &mut read_fut => panic!(
-                    "read_next_data_frame completed before the second update blocked: {result:?}"
-                ),
-                _ = &mut write_rx => {}
-            }
-        })
-        .await
-        .expect("window-update cancellation watchdog");
-
-        assert!(framer.window_update_in_progress);
-        assert_eq!(framer.pending_data_frames.len(), 1);
-        assert_eq!(framer.pending_data_frames[0].payload.as_ref(), &[0xA5]);
-        let err = framer
-            .read_next_data_frame()
-            .await
-            .expect_err("an interrupted WINDOW_UPDATE must poison the framer");
-        assert!(err.to_string().contains("WINDOW_UPDATE"), "{err}");
-
-        let _ = hold_tx.send(());
-        server_task.abort();
     }
 }

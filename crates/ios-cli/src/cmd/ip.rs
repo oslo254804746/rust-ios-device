@@ -58,11 +58,11 @@ impl IpCmd {
 
 fn print_network_info(info: &NetworkInfo, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(info)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(info)?);
     } else {
-        println!("MAC:   {}", info.mac);
-        println!("IPv4:  {}", info.ipv4);
-        println!("IPv6:  {}", info.ipv6);
+        crate::output::outln!("MAC:   {}", info.mac);
+        crate::output::outln!("IPv4:  {}", info.ipv4);
+        crate::output::outln!("IPv6:  {}", info.ipv6);
     }
     Ok(())
 }

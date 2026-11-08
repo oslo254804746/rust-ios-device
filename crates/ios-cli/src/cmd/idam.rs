@@ -56,11 +56,11 @@ impl IdamCmd {
 
 fn print_plist_value(value: &plist::Value, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(value)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(value)?);
     } else if let Some(text) = value.as_string() {
-        println!("{text}");
+        crate::output::outln!("{text}");
     } else {
-        println!("{}", serde_json::to_string_pretty(value)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(value)?);
     }
     Ok(())
 }

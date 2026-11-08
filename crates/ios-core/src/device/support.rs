@@ -1,10 +1,20 @@
-fn plist_value_to_string(value: &plist::Value, field: &str) -> Result<String, CoreError> {
+//! Typed lockdown value extraction for international configuration.
+
+use crate::error::CoreError;
+
+pub(super) fn plist_value_to_string(
+    value: &plist::Value,
+    field: &str,
+) -> Result<String, CoreError> {
     value.as_string().map(ToOwned::to_owned).ok_or_else(|| {
         CoreError::Protocol(format!("{field} expected string value, got {:?}", value))
     })
 }
 
-fn plist_value_to_string_vec(value: &plist::Value, field: &str) -> Result<Vec<String>, CoreError> {
+pub(super) fn plist_value_to_string_vec(
+    value: &plist::Value,
+    field: &str,
+) -> Result<Vec<String>, CoreError> {
     let values = value.as_array().ok_or_else(|| {
         CoreError::Protocol(format!(
             "{field} expected string array value, got {:?}",

@@ -12,9 +12,9 @@ impl ListenCmd {
         while let Some(event) = events.next().await {
             let event = event?;
             if json {
-                println!("{}", serde_json::to_string(&event_to_json(&event))?);
+                crate::output::outln!("{}", serde_json::to_string(&event_to_json(&event))?);
             } else {
-                print_event(&event);
+                print_event(&event)?;
             }
         }
 
@@ -39,22 +39,26 @@ fn event_to_json(event: &ios_core::DeviceEvent) -> serde_json::Value {
     }
 }
 
-fn print_event(event: &ios_core::DeviceEvent) {
+fn print_event(event: &ios_core::DeviceEvent) -> Result<()> {
     match event {
         ios_core::DeviceEvent::Attached(device) => {
-            println!(
+            crate::output::outln!(
                 "attached udid={} connection_type={} device_id={} product_id={}",
-                device.udid, device.connection_type, device.device_id, device.product_id
+                device.udid,
+                device.connection_type,
+                device.device_id,
+                device.product_id
             );
         }
         ios_core::DeviceEvent::Detached { udid, device_id } => {
             if udid.is_empty() {
-                println!("detached device_id={device_id}");
+                crate::output::outln!("detached device_id={device_id}");
             } else {
-                println!("detached udid={udid} device_id={device_id}");
+                crate::output::outln!("detached udid={udid} device_id={device_id}");
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

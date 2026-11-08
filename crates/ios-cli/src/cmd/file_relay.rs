@@ -34,7 +34,7 @@ impl FileRelayCmd {
 
         if let Some(output) = self.output {
             std::fs::write(&output, &archive)?;
-            println!(
+            crate::output::outln!(
                 "Wrote {} bytes of file relay data to {}",
                 archive.len(),
                 output.display()

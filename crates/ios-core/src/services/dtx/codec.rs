@@ -9,8 +9,11 @@
 //! - Message type 0 = OK/Ack, type 2 = MethodInvocation, type 3 = Response/Object,
 //!   type 4 = Error, type 5 = Barrier
 
+crate::redaction::error_debug!(DtxError);
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem::size_of;
+use std::time::Duration;
 
 use crate::proto::dtx::DTX_MAGIC;
 use crate::proto::nskeyedarchiver_encode;
@@ -56,7 +59,7 @@ const _MSG_LZ4_COMPRESSED: u32 = 0x0707; // LZ4 compressed payload
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DtxError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -64,6 +67,85 @@ pub enum DtxError {
     BadMagic(u32),
     #[error("protocol error: {0}")]
     Protocol(String),
+}
+
+/// The original decoded peer rejection remains inspectable without exposing
+/// its object contents in automatic diagnostics.
+pub struct DtxRemoteFailure {
+    message: DtxMessage,
+}
+impl DtxRemoteFailure {
+    pub fn message(&self) -> &DtxMessage {
+        &self.message
+    }
+}
+impl std::fmt::Display for DtxRemoteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DTX peer rejected the request")
+    }
+}
+impl std::fmt::Debug for DtxRemoteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+impl std::error::Error for DtxRemoteFailure {}
+
+pub fn checked_reply(message: DtxMessage) -> Result<DtxMessage, DtxError> {
+    if matches!(message.payload, DtxPayload::Error(_)) {
+        return Err(DtxError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            DtxRemoteFailure { message },
+        )));
+    }
+    Ok(message)
+}
+
+pub struct DtxCloseFailure {
+    primary: DtxError,
+    secondary: DtxError,
+}
+impl DtxCloseFailure {
+    pub fn primary(&self) -> &DtxError {
+        &self.primary
+    }
+    pub fn secondary(&self) -> &DtxError {
+        &self.secondary
+    }
+}
+impl std::fmt::Display for DtxCloseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("both DTX transports failed to close")
+    }
+}
+impl std::fmt::Debug for DtxCloseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+impl std::error::Error for DtxCloseFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.primary)
+    }
+}
+pub(crate) fn combine_close_results(
+    first: Result<(), DtxError>,
+    second: Result<(), DtxError>,
+) -> Result<(), DtxError> {
+    match (first, second) {
+        (Err(primary), Err(secondary)) => {
+            let kind = match &primary {
+                DtxError::Io(error) => error.kind(),
+                _ => std::io::ErrorKind::InvalidData,
+            };
+            Err(DtxError::Io(std::io::Error::new(
+                kind,
+                DtxCloseFailure { primary, secondary },
+            )))
+        }
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        _ => Ok(()),
+    }
 }
 
 /// Bytes retained by a connection's receive-side state.
@@ -184,7 +266,7 @@ fn dtx_message_memory_size(message: &DtxMessage) -> Result<usize, DtxError> {
                 checked_size_add(&mut size, ns_object_memory_size(arg)?, "method argument")?;
             }
         }
-        DtxPayload::Response(value) => {
+        DtxPayload::Response(value) | DtxPayload::Error(value) => {
             checked_size_add(&mut size, ns_object_memory_size(value)?, "response")?;
         }
         DtxPayload::Notification { name, object } => {
@@ -267,19 +349,6 @@ pub fn encode_dtx(
 /// Encode a DTX ack message (48 bytes total).
 pub fn encode_ack(msg: &DtxMessage) -> Bytes {
     let mut out = BytesMut::with_capacity(48);
-    let conversation_idx = msg.conversation_idx.saturating_add(1);
-    // Incoming even-conversation messages are exposed to callers with their
-    // logical channel code (the reader negates the wire code).  ACKs are odd
-    // conversation messages, so put that channel back on the wire with the
-    // same parity rule used by the reference sender.  For an incoming odd
-    // conversation message the ACK conversation is even and the logical code
-    // is already the wire code.  `saturating_neg` keeps malformed i32::MIN
-    // input from panicking while preserving all valid channel codes exactly.
-    let wire_channel_code = if conversation_idx % 2 == 0 {
-        msg.channel_code
-    } else {
-        msg.channel_code.saturating_neg()
-    };
     out.put_u32(DTX_MAGIC);
     out.put_u32_le(32);
     out.put_u16_le(0);
@@ -290,8 +359,8 @@ pub fn encode_ack(msg: &DtxMessage) -> Bytes {
     // not let the host panic in debug builds when it happens to be u32::MAX;
     // the saturated value is still preferable to terminating the process while
     // attempting to acknowledge the frame.
-    out.put_u32_le(conversation_idx);
-    out.put_i32_le(wire_channel_code);
+    out.put_u32_le(msg.conversation_idx.saturating_add(1));
+    out.put_u32_le(msg.channel_code as u32);
     out.put_u32_le(0); // expects_reply = false
                        // Payload header: type=0 (OK/Ack)
     out.put_u32_le(MSG_OK);
@@ -476,9 +545,13 @@ pub fn decode_dtx_message_from_bytes(data: &[u8]) -> Result<Option<(DtxMessage, 
         return Ok(None);
     }
 
-    let header_bytes: &[u8; 32] = data[..32]
-        .try_into()
-        .map_err(|_| DtxError::Protocol("DTX header truncated".into()))?;
+    let header_bytes: &[u8; 32] = data[..32].try_into().map_err(|error| {
+        DtxError::Io(crate::error::context::received_io(
+            "decode DTX header",
+            None,
+            error,
+        ))
+    })?;
     let header = parse_dtx_header(header_bytes)?;
     let total_len = header
         .header_len
@@ -583,12 +656,16 @@ fn decode_payload(msg_type: u32, payload: Bytes, aux: Option<Bytes>) -> DtxPaylo
             DtxPayload::MethodInvocation { selector, args }
         }
         MSG_RESPONSE | MSG_ERROR => {
-            if payload.is_empty() {
-                DtxPayload::Response(NSObject::Null)
+            let obj = if payload.is_empty() {
+                NSObject::Null
             } else {
-                let obj = crate::proto::nskeyedarchiver::unarchive(&payload)
+                crate::proto::nskeyedarchiver::unarchive(&payload)
                     .map(archive_to_ns)
-                    .unwrap_or(NSObject::Data(payload));
+                    .unwrap_or(NSObject::Data(payload))
+            };
+            if msg_type == MSG_ERROR {
+                DtxPayload::Error(obj)
+            } else {
                 DtxPayload::Response(obj)
             }
         }
@@ -653,7 +730,8 @@ struct BufferedMessage {
 
 /// A managed DTX connection with channel multiplexing and method call support.
 pub struct DtxConnection<S> {
-    stream: S,
+    stream: DtxStream<S>,
+    usable: bool,
     /// Connection-wide message identifier counter.
     ///
     /// We intentionally keep this global (instead of per-channel) to mirror
@@ -673,7 +751,210 @@ pub struct DtxConnection<S> {
     memory_budget: DtxMemoryBudget,
 }
 
+struct DtxOperation<'a, S> {
+    connection: &'a mut DtxConnection<S>,
+    completed: bool,
+    failed: bool,
+}
+
+struct DtxStream<S> {
+    inner: S,
+    progress: bool,
+    progress_sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// Read-only sequence of transport and message-processing progress.
+#[derive(Clone)]
+pub struct DtxOperationProgress(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl DtxOperationProgress {
+    pub fn sequence(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for DtxStream<S> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let stream = self.get_mut();
+        let before = buffer.filled().len();
+        let result = std::pin::Pin::new(&mut stream.inner).poll_read(cx, buffer);
+        if buffer.filled().len() > before {
+            stream.progress = true;
+            stream
+                .progress_sequence
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for DtxStream<S> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        data: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let stream = self.get_mut();
+        let result = std::pin::Pin::new(&mut stream.inner).poll_write(cx, data);
+        if let std::task::Poll::Ready(Ok(bytes)) = result {
+            if bytes > 0 {
+                stream.progress = true;
+                stream
+                    .progress_sequence
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        result
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+impl<S> DtxOperation<'_, S> {
+    fn finish<T>(mut self, result: Result<T, DtxError>) -> Result<T, DtxError> {
+        self.completed = result.is_ok();
+        self.failed = result.is_err();
+        self.connection.usable = self.completed;
+        result
+    }
+}
+
+impl<S> Drop for DtxOperation<'_, S> {
+    fn drop(&mut self) {
+        if !self.completed {
+            if self.failed || self.connection.stream.progress {
+                self.connection.clear_receive_state();
+            } else {
+                // No bytes were consumed/sent: a cancelled idle read did not
+                // change framing or correlation and may be retried safely.
+                self.connection.usable = true;
+            }
+        }
+    }
+}
+
+impl<S> DtxConnection<S> {
+    fn clear_receive_state(&mut self) {
+        self.pending_replies.clear();
+        self.queued_messages.clear();
+        self.outstanding_reply_ids.clear();
+        self.fragments.clear();
+        self.memory_budget.used = 0;
+    }
+
+    fn begin_operation(&mut self) -> Result<DtxOperation<'_, S>, DtxError> {
+        if !self.usable {
+            return Err(DtxError::Protocol(
+                "DTX connection is unusable after an interrupted operation; reconnect required"
+                    .into(),
+            ));
+        }
+        // Set before the first I/O await. Dropping the future must not allow
+        // a later operation to consume a late reply or a partial frame.
+        self.usable = false;
+        self.stream.progress = false;
+        Ok(DtxOperation {
+            connection: self,
+            completed: false,
+            failed: false,
+        })
+    }
+
+    /// Shared sequence for detecting progress while an operation is pending.
+    pub fn operation_progress(&self) -> DtxOperationProgress {
+        DtxOperationProgress(self.stream.progress_sequence.clone())
+    }
+
+    pub(crate) fn mark_message_progress(&self) {
+        self.stream
+            .progress_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether another operation may use this connection. An I/O/protocol
+    /// failure, or cancellation after any bytes are read/written, requires a
+    /// new connection. A cancelled zero-byte idle wait remains usable. This
+    /// records local framing state, not remote cleanup acknowledgement.
+    pub fn is_usable(&self) -> bool {
+        self.usable
+    }
+}
+
+async fn operation_with_timeout<T>(
+    budget: Duration,
+    operation: impl std::future::Future<Output = Result<T, DtxError>>,
+) -> Result<T, DtxError> {
+    let deadline = tokio::time::Instant::now()
+        .checked_add(budget)
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "DTX timeout is too large")
+        })?;
+    // Do not poll the operation, arm its guard or send bytes for zero budget.
+    if budget.is_zero() {
+        return Err(
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "DTX operation timed out").into(),
+        );
+    }
+    tokio::time::timeout_at(deadline, operation)
+        .await
+        .map_err(|elapsed| std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed))?
+}
+
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
+    /// Terminal write shutdown and bounded raw drain. This also works after a
+    /// partial/error reply; no buffered reply is offered to another request.
+    pub async fn close(&mut self, budget: Duration) -> Result<(), DtxError> {
+        self.usable = false;
+        self.clear_receive_state();
+        if budget.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "DTX close has zero remaining budget",
+            )
+            .into());
+        }
+        let operation = async {
+            self.stream.shutdown().await?;
+            let mut bytes = [0u8; 4096];
+            let mut drained = 0usize;
+            loop {
+                let read = self.stream.read(&mut bytes).await?;
+                if read == 0 {
+                    return Ok(());
+                }
+                drained = drained
+                    .checked_add(read)
+                    .filter(|count| *count <= 1024 * 1024)
+                    .ok_or_else(|| DtxError::Protocol("DTX close drain byte limit".into()))?;
+            }
+        };
+        tokio::time::timeout(budget, operation)
+            .await
+            .map_err(|source| {
+                DtxError::Io(crate::error::context::retained_io(
+                    std::io::ErrorKind::TimedOut,
+                    "DTX transport close deadline",
+                    source,
+                ))
+            })?
+    }
+
     pub fn new(stream: S) -> Self {
         Self::with_memory_limit(stream, DEFAULT_DTX_MEMORY_BUDGET)
     }
@@ -686,7 +967,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
     pub fn with_memory_limit(stream: S, memory_limit: usize) -> Self {
         // Start identifier at 5 to match go-ios global channel messageIdentifier initial value
         Self {
-            stream,
+            stream: DtxStream {
+                inner: stream,
+                progress: false,
+                progress_sequence: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            },
+            usable: true,
             identifier: 5,
             channel_counter: 1,
             pending_replies: HashMap::new(),
@@ -726,6 +1012,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
     }
 
     pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), DtxError> {
+        let operation = self.begin_operation()?;
+        let result = operation.connection.send_raw_active(data).await;
+        operation.finish(result)
+    }
+
+    async fn send_raw_active(&mut self, data: &[u8]) -> Result<(), DtxError> {
         self.stream.write_all(data).await?;
         self.stream.flush().await?;
         Ok(())
@@ -1156,7 +1448,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
             }
 
             if msg.expects_reply {
-                self.send_ack(&msg).await?;
+                self.send_raw_active(&encode_ack(&msg)).await?;
             }
             self.queue_message(msg)?;
         }
@@ -1164,6 +1456,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
 
     /// Receive the next fully-assembled DTX message, transparently reassembling fragments.
     pub async fn recv(&mut self) -> Result<DtxMessage, DtxError> {
+        let operation = self.begin_operation()?;
+        let result = operation.connection.recv_active().await;
+        operation.finish(result)
+    }
+
+    /// Bound the entire read/reassembly/notification wait. Expiry after wire
+    /// progress invalidates the connection; an empty idle wait remains usable.
+    /// Zero budget leaves it untouched and sends no bytes.
+    pub async fn recv_with_timeout(&mut self, budget: Duration) -> Result<DtxMessage, DtxError> {
+        operation_with_timeout(budget, self.recv()).await
+    }
+
+    async fn recv_active(&mut self) -> Result<DtxMessage, DtxError> {
         if let Some(msg) = self.pop_queued_message() {
             return Ok(msg);
         }
@@ -1181,6 +1486,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
     /// Request a DTX channel by service name.
     /// Returns the assigned channel code.
     pub async fn request_channel(&mut self, service_name: &str) -> Result<i32, DtxError> {
+        let operation = self.begin_operation()?;
+        let result = operation
+            .connection
+            .request_channel_active(service_name)
+            .await;
+        operation.finish(result)
+    }
+
+    /// Share one total budget across channel-request send and reply/ACK waits.
+    /// Expiry after wire progress requires reconnecting; zero budget performs no I/O.
+    pub async fn request_channel_with_timeout(
+        &mut self,
+        service_name: &str,
+        budget: Duration,
+    ) -> Result<i32, DtxError> {
+        operation_with_timeout(budget, self.request_channel(service_name)).await
+    }
+
+    async fn request_channel_active(&mut self, service_name: &str) -> Result<i32, DtxError> {
         let channel_code = self.next_channel_code()?;
         let id = self.next_id()?;
 
@@ -1195,7 +1519,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         ]);
 
         let frame = encode_dtx(id, 0, 0, true, MSG_METHOD_INVOCATION, &selector, &aux);
-        self.send_raw(&frame).await?;
+        self.send_raw_active(&frame).await?;
         self.outstanding_reply_ids.insert(id);
 
         // Read reply (skip unrelated notifications)
@@ -1203,7 +1527,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         if result.is_err() {
             self.outstanding_reply_ids.remove(&id);
         }
-        let msg = result?;
+        let msg = checked_reply(result?)?;
         tracing::debug!(
             "request_channel recv: id={} conv_idx={} ch={} expects_reply={}",
             msg.identifier,
@@ -1216,6 +1540,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
 
     /// Call a method on a channel and wait for the response.
     pub async fn method_call(
+        &mut self,
+        channel_code: i32,
+        selector: &str,
+        args: &[PrimArg],
+    ) -> Result<DtxMessage, DtxError> {
+        let operation = self.begin_operation()?;
+        let result = operation
+            .connection
+            .method_call_active(channel_code, selector, args)
+            .await;
+        operation.finish(result)
+    }
+
+    /// Share one total budget across request send, unrelated messages, ACKs
+    /// and the correlated reply. Cancellation/expiry after wire progress requires reconnecting.
+    pub async fn method_call_with_timeout(
+        &mut self,
+        channel_code: i32,
+        selector: &str,
+        args: &[PrimArg],
+        budget: Duration,
+    ) -> Result<DtxMessage, DtxError> {
+        operation_with_timeout(budget, self.method_call(channel_code, selector, args)).await
+    }
+
+    async fn method_call_active(
         &mut self,
         channel_code: i32,
         selector: &str,
@@ -1237,9 +1587,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
             &sel_bytes,
             &aux,
         );
-        self.send_raw(&frame).await?;
+        self.send_raw_active(&frame).await?;
         self.outstanding_reply_ids.insert(id);
-        tracing::debug!("method_call '{selector}' id={id} ch={channel_code}");
+        tracing::debug!(selector = %crate::redaction::diagnostic_id(selector), id, channel = channel_code, "method_call");
 
         let result = self.wait_for_reply(id).await;
         if result.is_err() {
@@ -1262,6 +1612,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         selector: &str,
         args: &[PrimArg],
     ) -> Result<(), DtxError> {
+        let operation = self.begin_operation()?;
+        let result = operation
+            .connection
+            .method_call_async_active(channel_code, selector, args)
+            .await;
+        operation.finish(result)
+    }
+
+    async fn method_call_async_active(
+        &mut self,
+        channel_code: i32,
+        selector: &str,
+        args: &[PrimArg],
+    ) -> Result<(), DtxError> {
         let id = self.next_id()?;
         let sel_bytes = nskeyedarchiver_encode::archive_string(selector);
         let aux = if args.is_empty() {
@@ -1278,7 +1642,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
             &sel_bytes,
             &aux,
         );
-        self.send_raw(&frame).await
+        self.send_raw_active(&frame).await
     }
 }
 
@@ -1287,11 +1651,7 @@ impl<S> Drop for DtxConnection<S> {
         // The containers would release their allocations automatically. Clear
         // them explicitly as the final accounting checkpoint so the budget's
         // invariant also holds while a connection is being torn down.
-        self.pending_replies.clear();
-        self.queued_messages.clear();
-        self.outstanding_reply_ids.clear();
-        self.fragments.clear();
-        self.memory_budget.used = 0;
+        self.clear_receive_state();
     }
 }
 
@@ -1312,6 +1672,308 @@ fn normalize_incoming_channel_code(
 
 #[cfg(test)]
 mod tests {
+    fn assert_interrupted_state<S>(connection: &DtxConnection<S>) {
+        assert!(!connection.is_usable());
+        assert_eq!(connection.memory_budget.used, 0);
+        assert!(connection.pending_replies.is_empty());
+        assert!(connection.outstanding_reply_ids.is_empty());
+        assert!(connection.queued_messages.is_empty());
+        assert!(connection.fragments.is_empty());
+    }
+
+    fn assert_actual_timeout(error: &DtxError) {
+        let DtxError::Io(io) = error else {
+            panic!("actual timeout was lost")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert!(io.get_ref().unwrap().is::<tokio::time::error::Elapsed>());
+        assert_eq!(crate::classify_error(error), crate::ErrorClass::Timeout);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_dtx_zero_overflow_and_unpolled_operations_leave_connection_usable() {
+        let (stream, mut peer) = tokio::io::duplex(512);
+        let mut connection = DtxConnection::new(stream);
+        drop(connection.method_call(1, "owned operation", &[]));
+        assert!(connection.is_usable());
+        for error in [
+            connection
+                .request_channel_with_timeout("owned service", Duration::ZERO)
+                .await
+                .unwrap_err(),
+            connection
+                .method_call_with_timeout(1, "owned operation", &[], Duration::ZERO)
+                .await
+                .unwrap_err(),
+            connection
+                .recv_with_timeout(Duration::ZERO)
+                .await
+                .unwrap_err(),
+        ] {
+            let DtxError::Io(io) = error else {
+                panic!("zero budget was not typed")
+            };
+            assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+            assert!(io.raw_os_error().is_none());
+            assert!(io.get_ref().unwrap().source().is_none());
+            assert!(!io.get_ref().unwrap().is::<tokio::time::error::Elapsed>());
+        }
+        let error = connection
+            .recv_with_timeout(Duration::MAX)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::InvalidInput
+        );
+        assert!(connection.is_usable());
+        assert_eq!(connection.identifier, 5);
+        assert_eq!(connection.channel_counter, 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), peer.read_u8())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_dtx_idle_timeout_remains_usable_for_a_later_complete_frame() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut connection = DtxConnection::new(stream);
+        let error = connection
+            .recv_with_timeout(Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert_actual_timeout(&error);
+        assert!(connection.is_usable());
+        peer.write_all(&encode_dtx(91, 0, 1, false, MSG_OK, &[], &[]))
+            .await
+            .unwrap();
+        assert_eq!(
+            connection
+                .recv_with_timeout(Duration::from_secs(1))
+                .await
+                .unwrap()
+                .identifier,
+            91
+        );
+        assert!(connection.is_usable());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_dtx_success_keeps_correlated_calls_and_channel_reusable() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut connection = DtxConnection::new(stream);
+        let caller = async {
+            let channel = connection
+                .request_channel_with_timeout("owned service", Duration::from_secs(1))
+                .await
+                .unwrap();
+            assert_eq!(channel, 1);
+            assert!(connection.is_usable());
+            for _ in 0..2 {
+                let message = connection
+                    .method_call_with_timeout(
+                        channel,
+                        "owned operation",
+                        &[],
+                        Duration::from_secs(1),
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(message.payload, DtxPayload::Response(NSObject::String(ref value)) if value == "owned response")
+                );
+                assert!(connection.is_usable());
+            }
+        };
+        let server = async {
+            for index in 0..3 {
+                let request = read_dtx_frame(&mut peer).await.unwrap();
+                assert_eq!(request.identifier, 5 + index);
+                assert!(request.expects_reply);
+                let payload = nskeyedarchiver_encode::archive_string("owned response");
+                peer.write_all(&encode_dtx(
+                    request.identifier,
+                    1,
+                    request.channel_code,
+                    false,
+                    MSG_RESPONSE,
+                    &payload,
+                    &[],
+                ))
+                .await
+                .unwrap();
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lifecycle_dtx_cancelled_legacy_call_rejects_late_reply_and_all_followup_io() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut connection = DtxConnection::new(stream);
+        let caller = async {
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                connection.method_call(1, "owned operation", &[]),
+            )
+            .await
+            .unwrap_err();
+        };
+        let server = async {
+            let request = read_dtx_frame(&mut peer).await.unwrap();
+            peer.write_all(&encode_dtx(91, 0, 1, false, MSG_OK, &[], &[]))
+                .await
+                .unwrap();
+            request.identifier
+        };
+        let (_, identifier) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        assert_interrupted_state(&connection);
+        peer.write_all(&encode_dtx(identifier, 1, 1, false, MSG_OK, &[], &[]))
+            .await
+            .unwrap();
+        for result in [
+            connection.recv().await.map(|_| ()),
+            connection
+                .method_call(1, "next operation", &[])
+                .await
+                .map(|_| ()),
+            connection.request_channel("next service").await.map(|_| ()),
+            connection
+                .method_call_async(1, "next async operation", &[])
+                .await,
+            connection.send_raw(b"next write").await,
+        ] {
+            assert!(matches!(result, Err(DtxError::Protocol(_))));
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), peer.read_u8())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_dtx_partial_header_and_fragment_timeout_release_state() {
+        for fragment in [false, true] {
+            let (stream, mut peer) = tokio::io::duplex(4096);
+            let mut connection = DtxConnection::new(stream);
+            if fragment {
+                peer.write_all(&encode_fragment(91, 0, 2, 1, false, 16, &[]))
+                    .await
+                    .unwrap();
+                peer.write_all(&encode_fragment(91, 1, 2, 1, false, 16, &[0; 8]))
+                    .await
+                    .unwrap();
+            } else {
+                let frame = encode_dtx(91, 0, 1, false, MSG_OK, &[], &[]);
+                peer.write_all(&frame[..8]).await.unwrap();
+            }
+            let error = connection
+                .recv_with_timeout(Duration::from_millis(20))
+                .await
+                .unwrap_err();
+            assert_actual_timeout(&error);
+            assert_interrupted_state(&connection);
+            assert!(matches!(
+                connection.recv().await,
+                Err(DtxError::Protocol(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_dtx_blocked_partial_send_uses_total_budget_and_cannot_retry() {
+        let (stream, mut peer) = tokio::io::duplex(16);
+        let mut connection = DtxConnection::new(stream);
+        let error = connection
+            .method_call_with_timeout(1, "owned operation", &[], Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert_actual_timeout(&error);
+        assert_interrupted_state(&connection);
+        let mut prefix = [0; 16];
+        peer.read_exact(&mut prefix).await.unwrap();
+        assert_eq!(&prefix[..4], &DTX_MAGIC.to_be_bytes());
+        assert!(matches!(
+            connection.send_raw(b"retry").await,
+            Err(DtxError::Protocol(_))
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), peer.read_u8())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_dtx_ack_write_wait_shares_request_deadline() {
+        let (stream, mut peer) = tokio::io::duplex(16);
+        let mut connection = DtxConnection::new(stream);
+        let caller = async {
+            connection
+                .method_call_with_timeout(1, "owned operation", &[], Duration::from_millis(50))
+                .await
+                .unwrap_err()
+        };
+        let server = async {
+            read_dtx_frame(&mut peer).await.unwrap();
+            let selector = nskeyedarchiver_encode::archive_string("owned notification");
+            peer.write_all(&encode_dtx(
+                91,
+                0,
+                1,
+                true,
+                MSG_METHOD_INVOCATION,
+                &selector,
+                &[],
+            ))
+            .await
+            .unwrap();
+            peer
+        };
+        let (error, mut peer) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        assert_actual_timeout(&error);
+        assert_interrupted_state(&connection);
+        let mut ack_prefix = [0; 16];
+        peer.read_exact(&mut ack_prefix).await.unwrap();
+        assert_eq!(&ack_prefix[..4], &DTX_MAGIC.to_be_bytes());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_dtx_native_eof_and_decode_errors_poison_without_replacing_cause() {
+        for malformed in [false, true] {
+            let (stream, mut peer) = tokio::io::duplex(128);
+            if malformed {
+                peer.write_all(&[0; 32]).await.unwrap();
+            }
+            drop(peer);
+            let mut connection = DtxConnection::new(stream);
+            let error = connection.recv().await.unwrap_err();
+            if malformed {
+                assert!(matches!(error, DtxError::BadMagic(0)));
+            } else {
+                assert!(
+                    matches!(error, DtxError::Io(ref io) if io.kind() == std::io::ErrorKind::UnexpectedEof)
+                );
+            }
+            assert_interrupted_state(&connection);
+        }
+    }
+
     use bytes::BufMut;
 
     use super::*;
@@ -1609,15 +2271,115 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_error_reply_decodes_like_response_object() {
+    async fn test_error_reply_preserves_wire_type_and_original_object() {
         let payload = nskeyedarchiver_encode::archive_string("selector failed");
         let frame = encode_dtx(24, 1, 4, false, MSG_ERROR, &payload, &[]);
         let mut cur = std::io::Cursor::new(frame);
         let msg = read_dtx_frame(&mut cur).await.unwrap();
         assert!(matches!(
             msg.payload,
-            DtxPayload::Response(NSObject::String(ref value)) if value == "selector failed"
+            DtxPayload::Error(NSObject::String(ref value)) if value == "selector failed"
         ));
+        let error = checked_reply(msg).unwrap_err();
+        let DtxError::Io(error) = error else {
+            panic!("retained peer error")
+        };
+        let original = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<DtxRemoteFailure>()
+            .unwrap();
+        assert!(
+            matches!(&original.message().payload, DtxPayload::Error(NSObject::String(value)) if value == "selector failed")
+        );
+        assert!(!format!("{original:?}").contains("selector failed"));
+    }
+
+    #[tokio::test]
+    async fn native_close_after_partial_reply_drains_original_socket_to_strict_eof() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let (stream, accepted) = tokio::try_join!(
+            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept()
+        )
+        .unwrap();
+        let mut peer = accepted.0;
+        let (ready, observed) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let original = tokio::spawn(async move {
+            let request = read_dtx_frame(&mut peer).await.unwrap();
+            let payload = nskeyedarchiver_encode::archive_string("owned reply");
+            let reply = encode_dtx(
+                request.identifier,
+                1,
+                request.channel_code,
+                false,
+                MSG_RESPONSE,
+                &payload,
+                &[],
+            );
+            peer.write_all(&reply[..16]).await.unwrap();
+            ready.send(()).unwrap();
+            released.await.unwrap();
+            peer.write_all(&reply[16..]).await.unwrap();
+            assert_eq!(
+                peer.read(&mut [0]).await.unwrap(),
+                0,
+                "original peer did not receive EOF"
+            );
+            peer.shutdown().await.unwrap();
+        });
+        let mut client = DtxConnection::new(stream);
+        let operation =
+            client.method_call_with_timeout(1, "owned selector", &[], Duration::from_millis(50));
+        let (result, ()) = tokio::join!(operation, async {
+            observed.await.unwrap();
+        });
+        let error = result.unwrap_err();
+        let unusable_after_partial_read = !client.is_usable();
+        release.send(()).unwrap();
+        client.close(Duration::from_secs(2)).await.unwrap();
+        original.await.unwrap();
+        // std::io::Error::source skips a directly boxed Elapsed; get_ref retains
+        // the actual issuer object. Judge it after original join/strict EOF.
+        let DtxError::Io(error) = error else {
+            panic!("original deadline IO")
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error.get_ref().unwrap().is::<tokio::time::error::Elapsed>());
+        assert!(unusable_after_partial_read);
+        assert!(!client.is_usable());
+    }
+
+    #[test]
+    fn close_dual_failure_keeps_both_original_io_objects() {
+        let primary = DtxError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "private-primary",
+        ));
+        let secondary = DtxError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "private-secondary",
+        ));
+        let error = combine_close_results(Err(primary), Err(secondary)).unwrap_err();
+        let DtxError::Io(error) = error else {
+            unreachable!()
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        let original = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<DtxCloseFailure>()
+            .unwrap();
+        assert!(
+            matches!(original.primary(), DtxError::Io(error) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(
+            matches!(original.secondary(), DtxError::Io(error) if error.kind() == std::io::ErrorKind::ConnectionReset)
+        );
+        assert!(!format!("{original:?}").contains("private-"));
     }
 
     fn encode_fragment(
@@ -2083,73 +2845,6 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(ack[20..24].try_into().unwrap()),
             u32::MAX
-        );
-    }
-
-    #[test]
-    fn test_ack_reverses_even_conversation_channel_normalization() {
-        // A device DATA/dispatch frame on conv=0 may carry wire channel -2.
-        // recv_from_stream exposes the logical channel +2, so the conv=1 ACK
-        // must put -2 back on the wire.
-        let wire_channel = -2;
-        let logical_channel = normalize_incoming_channel_code(wire_channel, 0).unwrap();
-        assert_eq!(logical_channel, 2);
-
-        let ack = encode_ack(&DtxMessage {
-            identifier: 17,
-            conversation_idx: 0,
-            channel_code: logical_channel,
-            expects_reply: true,
-            payload: DtxPayload::Empty,
-        });
-
-        assert_eq!(
-            u32::from_le_bytes(ack[20..24].try_into().unwrap()),
-            1,
-            "ACK must advance the conversation index"
-        );
-        assert_eq!(
-            i32::from_le_bytes(ack[24..28].try_into().unwrap()),
-            wire_channel,
-            "ACK must preserve the original wire channel sign"
-        );
-    }
-
-    #[test]
-    fn test_ack_keeps_odd_conversation_channel_unchanged() {
-        // For an incoming odd-conversation frame the reader leaves the wire
-        // channel untouched; its conv=2 ACK therefore does not negate it.
-        let ack = encode_ack(&DtxMessage {
-            identifier: 18,
-            conversation_idx: 1,
-            channel_code: -2,
-            expects_reply: true,
-            payload: DtxPayload::Empty,
-        });
-
-        assert_eq!(
-            u32::from_le_bytes(ack[20..24].try_into().unwrap()),
-            2,
-            "ACK must advance the conversation index"
-        );
-        assert_eq!(i32::from_le_bytes(ack[24..28].try_into().unwrap()), -2);
-    }
-
-    #[test]
-    fn test_ack_saturates_min_channel_when_negating() {
-        // i32::MIN has no positive counterpart.  The malformed edge must not
-        // panic in a debug build while all valid channel codes remain exact.
-        let ack = encode_ack(&DtxMessage {
-            identifier: 19,
-            conversation_idx: 0,
-            channel_code: i32::MIN,
-            expects_reply: true,
-            payload: DtxPayload::Empty,
-        });
-
-        assert_eq!(
-            i32::from_le_bytes(ack[24..28].try_into().unwrap()),
-            i32::MAX
         );
     }
 

@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ios_core::crashreport::{
     prepare_reports, CRASHREPORT_COPY_MOBILE_SERVICE, CRASHREPORT_MOVER_SERVICE,
 };
@@ -128,6 +127,48 @@ enum FileSub {
     DeviceInfo,
     /// Show file/directory info
     Stat { path: String },
+    /// Show AFC connection info attributes (GetConnectionInfo)
+    ConnectionInfo,
+    /// Compute SHA-1 file hash or byte-range hash on the device (GetFileHash / GetFileHashWithRange)
+    Hash {
+        path: String,
+        #[arg(long)]
+        offset: Option<u64>,
+        #[arg(long)]
+        length: Option<u64>,
+    },
+    /// Positional read at an explicit offset (FileRefReadWithOffset / pread + FileRefTell)
+    Pread {
+        path: String,
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        #[arg(long)]
+        length: u64,
+    },
+    /// Positional write at an explicit offset (FileRefWriteWithOffset / pwrite + FileRefTell)
+    Pwrite {
+        path: String,
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        #[arg(long)]
+        data: String,
+    },
+    /// Truncate or extend a file (TruncateFile or FileRefSetFileSize with --by-fd)
+    Truncate {
+        path: String,
+        #[arg(long)]
+        size: u64,
+        #[arg(long)]
+        by_fd: bool,
+    },
+    /// Set file modification time in nanoseconds since epoch (SetFileTime)
+    SetTime {
+        path: String,
+        #[arg(long)]
+        mtime_ns: u64,
+    },
+    /// Compute recursive size and block count of directory contents (GetSizeOfPathContents)
+    DirSize { path: String },
     /// Show a recursive tree view
     Tree {
         #[arg(default_value = "/")]
@@ -179,33 +220,46 @@ impl FileCmd {
 
     fn run_afc(self, udid: String, json_output: bool) -> Pin<Box<dyn Future<Output = Result<()>>>> {
         Box::pin(async move {
-            let opts = ios_core::device::ConnectOptions {
-                tun_mode: ios_core::TunMode::Userspace,
-                pair_record_path: None,
-                skip_tunnel: true,
+            let service = if self.crash {
+                CRASHREPORT_MOVER_SERVICE
+            } else if self.app.is_some() {
+                ios_core::afc::house_arrest::SERVICE_NAME
+            } else {
+                "com.apple.afc"
             };
-            let device = ios_core::connect(&udid, opts).await?;
+            let (device, stream) = crate::cmd::connect::connect_lockdown_service(
+                &udid,
+                service,
+                std::time::Duration::from_secs(30),
+            )
+            .await?;
             let mut afc = if self.crash {
-                let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
-                prepare_reports(&mut mover).await?;
+                let mut mover = stream;
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    prepare_reports(&mut mover),
+                )
+                .await
+                .context("crash mover setup deadline")??;
                 let stream = device
-                    .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
+                    .connect_service_with_timeout(
+                        CRASHREPORT_COPY_MOBILE_SERVICE,
+                        std::time::Duration::from_secs(30),
+                    )
                     .await?;
                 ios_core::afc::AfcClient::new(stream)
             } else if let Some(bundle_id) = self.app.as_deref() {
-                let stream = device
-                    .connect_service(ios_core::afc::house_arrest::SERVICE_NAME)
-                    .await?;
-                let house_arrest = ios_core::afc::house_arrest::HouseArrestClient::new(stream);
+                let house_arrest = ios_core::afc::house_arrest::HouseArrestClient::new(stream)
+                    .with_operation_timeout(Some(std::time::Duration::from_secs(30)));
                 if self.documents {
                     house_arrest.vend_documents(bundle_id).await?
                 } else {
                     house_arrest.vend_container(bundle_id).await?
                 }
             } else {
-                let stream = device.connect_service("com.apple.afc").await?;
                 ios_core::afc::AfcClient::new(stream)
             };
+            afc.set_request_timeout(Some(std::time::Duration::from_secs(30)));
 
             match self.sub {
                 FileSub::Ls { path, long } => {
@@ -222,13 +276,13 @@ impl FileCmd {
                                     Err(_) => list.push(file_info_to_json(name, &full, None)),
                                 }
                             }
-                            println!("{}", serde_json::to_string_pretty(&list)?);
+                            crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                         } else {
                             let list: Vec<_> = entries
                             .iter()
                             .map(|name| json!({ "name": name, "path": join_device_path(&path, name) }))
                             .collect();
-                            println!("{}", serde_json::to_string_pretty(&list)?);
+                            crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                         }
                     } else if long {
                         for name in &entries {
@@ -237,14 +291,14 @@ impl FileCmd {
                                 Ok(info) => {
                                     let kind = info.file_type.as_deref().unwrap_or("?");
                                     let size = info.size.map(|n| n.to_string()).unwrap_or_default();
-                                    println!("{:<10} {:>12}  {name}", kind, size);
+                                    crate::output::outln!("{:<10} {:>12}  {name}", kind, size);
                                 }
-                                Err(_) => println!("?              {name}"),
+                                Err(_) => crate::output::outln!("?              {name}"),
                             }
                         }
                     } else {
                         for name in &entries {
-                            println!("{name}");
+                            crate::output::outln!("{name}");
                         }
                     }
                 }
@@ -255,17 +309,25 @@ impl FileCmd {
                 } => {
                     // Checked before the transfer so a doomed pull costs nothing.
                     ensure_local_overwrite_allowed(Path::new(&local), force)?;
-                    eprintln!("Downloading {remote} → {local}");
+                    crate::output::write_error_line(format_args!(
+                        "Downloading {} → {}",
+                        ios_core::redaction::diagnostic_id(&remote),
+                        ios_core::redaction::diagnostic_id(&local)
+                    ))?;
                     let data = afc.read_file_follow_links(&remote).await?;
-                    fs::write(&local, &data).await?;
-                    eprintln!("Done ({} bytes)", data.len());
+                    write_local_bytes_atomic(Path::new(&local), &data, force).await?;
+                    crate::output::write_error_line(format_args!("Done ({} bytes)", data.len()))?;
                 }
                 FileSub::Push { local, remote } => {
-                    eprintln!("Uploading {local} → {remote}");
+                    crate::output::write_error_line(format_args!(
+                        "Uploading {} → {}",
+                        ios_core::redaction::diagnostic_id(&local),
+                        ios_core::redaction::diagnostic_id(&remote)
+                    ))?;
                     let data = fs::read(&local).await?;
                     let len = data.len();
                     afc.write_file(&remote, &data).await?;
-                    eprintln!("Done ({len} bytes)");
+                    crate::output::write_error_line(format_args!("Done ({len} bytes)"))?;
                 }
                 FileSub::Rm { path, recursive } => {
                     if recursive {
@@ -273,33 +335,43 @@ impl FileCmd {
                     } else {
                         afc.remove(&path).await?;
                     }
-                    eprintln!("Removed {path}");
+                    crate::output::write_error_line(format_args!(
+                        "Removed {}",
+                        ios_core::redaction::diagnostic_id(&path)
+                    ))?;
                 }
                 FileSub::Mkdir { path } => {
                     afc.make_dir(&path).await?;
-                    eprintln!("Created {path}");
+                    crate::output::write_error_line(format_args!(
+                        "Created {}",
+                        ios_core::redaction::diagnostic_id(&path)
+                    ))?;
                 }
                 FileSub::Mv { from, to } => {
                     afc.rename(&from, &to).await?;
-                    eprintln!("Moved {from} -> {to}");
+                    crate::output::write_error_line(format_args!(
+                        "Moved {} -> {}",
+                        ios_core::redaction::diagnostic_id(&from),
+                        ios_core::redaction::diagnostic_id(&to)
+                    ))?;
                 }
                 FileSub::DeviceInfo => {
                     let info = afc.device_info().await?;
                     if json_output {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::to_string_pretty(&afc_device_info_to_json(&info))?
                         );
                     } else {
                         for line in afc_device_info_lines(&info) {
-                            println!("{line}");
+                            crate::output::outln!("{line}");
                         }
                     }
                 }
                 FileSub::Stat { path } => {
                     let info = afc.stat_info(&path).await?;
                     if json_output {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::to_string_pretty(&file_info_to_json(
                                 path.rsplit('/').next().unwrap_or(&path),
@@ -312,19 +384,126 @@ impl FileCmd {
                             if k == "st_mode" {
                                 continue;
                             }
-                            println!("{k}: {v}");
+                            crate::output::outln!("{k}: {v}");
                         }
                         if let Some(mode) = info.mode {
-                            println!("st_mode: {mode:#o}");
+                            crate::output::outln!("st_mode: {mode:#o}");
                         }
                     }
+                }
+                FileSub::ConnectionInfo => {
+                    let info = afc.get_connection_info().await?;
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&info)?);
+                }
+                FileSub::Hash {
+                    path,
+                    offset,
+                    length,
+                } => {
+                    let digest = match (offset, length) {
+                        (Some(start), Some(len)) => {
+                            afc.get_file_hash_with_range(&path, start, len).await?
+                        }
+                        (None, None) => afc.get_file_hash(&path).await?,
+                        _ => anyhow::bail!("--offset and --length must be provided together"),
+                    };
+                    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "offset": offset,
+                            "length": length,
+                            "sha1": hex,
+                            "bytes": digest.len(),
+                        }))?
+                    );
+                }
+                FileSub::Pread {
+                    path,
+                    offset,
+                    length,
+                } => {
+                    let fd = afc.open_file(&path, 1).await?;
+                    let data = afc.pread(fd, length, offset).await;
+                    let tell = afc.file_tell(fd).await;
+                    let close = afc.close_file(fd).await;
+                    let data = data?;
+                    let tell = tell?;
+                    close?;
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "offset": offset,
+                            "requested": length,
+                            "read_bytes": data.len(),
+                            "utf8": String::from_utf8_lossy(&data),
+                            "file_tell": tell,
+                        }))?
+                    );
+                }
+                FileSub::Pwrite { path, offset, data } => {
+                    let fd = afc.open_file(&path, 2).await?;
+                    let write_res = afc.pwrite(fd, data.as_bytes(), offset).await;
+                    let tell = afc.file_tell(fd).await;
+                    let close = afc.close_file(fd).await;
+                    write_res?;
+                    let tell = tell?;
+                    close?;
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "offset": offset,
+                            "written_bytes": data.len(),
+                            "file_tell": tell,
+                        }))?
+                    );
+                }
+                FileSub::Truncate { path, size, by_fd } => {
+                    if by_fd {
+                        let fd = afc.open_file(&path, 2).await?;
+                        let res = afc.file_set_size(fd, size).await;
+                        let close = afc.close_file(fd).await;
+                        res?;
+                        close?;
+                    } else {
+                        afc.truncate_path(&path, size).await?;
+                    }
+                    let st = afc.stat_info(&path).await?;
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "requested_size": size,
+                            "by_fd": by_fd,
+                            "actual_size": st.size,
+                        }))?
+                    );
+                }
+                FileSub::SetTime { path, mtime_ns } => {
+                    afc.set_file_time(&path, mtime_ns).await?;
+                    let st = afc.stat_info(&path).await?;
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "requested_mtime_ns": mtime_ns,
+                            "st_mtime": st.raw.get("st_mtime"),
+                        }))?
+                    );
+                }
+                FileSub::DirSize { path } => {
+                    let counts = afc.get_size_of_path_contents(&path).await?;
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&counts)?);
                 }
                 FileSub::Tree { path } => {
                     let tree = build_file_tree(&mut afc, &path).await?;
                     if json_output {
-                        println!("{}", serde_json::to_string_pretty(&tree)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&tree)?);
                     } else {
-                        print!("{}", render_tree(&tree));
+                        crate::output::out!("{}", render_tree(&tree));
                     }
                 }
             }
@@ -365,9 +544,18 @@ impl FileCmd {
                 device.rsd(),
                 ios_core::fileservice::CONTROL_SERVICE_NAME,
             )?;
+            ensure_coredevice_fileservice_subcommand_supported(device.rsd(), &sub)?;
             let mut fileservice =
                 open_coredevice_file_session(&device, domain, &identifier).await?;
-            run_coredevice_subcommand(&device, &mut fileservice, sub, json_output).await?;
+            let result =
+                run_coredevice_subcommand(&device, &mut fileservice, sub, json_output).await;
+            drop(fileservice);
+            // Allow the userspace TCP stack to transmit the TCP FIN for the XPC session
+            // before tearing down the ephemeral userspace tunnel; otherwise dtfileserviced
+            // keeps the orphaned session open and blocks subsequent sessions.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(device);
+            result?;
 
             Ok(())
         })
@@ -420,66 +608,117 @@ fn local_path_entry_missing(error: &std::io::Error) -> bool {
 
 /// Write device bytes with a private temporary file and atomic replacement.
 ///
-/// This is used by CoreDevice image commands. The temporary is always 0600;
+/// This is used by file pulls and image commands. The temporary is always 0600;
 /// the destination is replaced only after the complete payload is flushed.
 pub(crate) async fn write_local_bytes_atomic(path: &Path, data: &[u8], force: bool) -> Result<()> {
-    ensure_local_overwrite_allowed(path, force)?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("output path must name a file"))?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = std::process::id();
+    let mut output = LocalOutput::create(path, force).await?;
+    output.file.write_all(data).await?;
+    output.commit().await
+}
 
-    for attempt in 0..16u32 {
-        let temporary = parent.join(format!(
-            ".{}.ios-image-{pid}-{nonce}-{attempt}.tmp",
-            file_name.to_string_lossy()
-        ));
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            options.mode(0o600);
+/// Owns the temporary entry even if a transfer future is dropped. The Tokio
+/// file is declared first so its handle drops before the cleanup guard.
+struct LocalOutput {
+    file: fs::File,
+    temporary: LocalTemporary,
+    destination: PathBuf,
+    force: bool,
+}
+
+struct LocalTemporary {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl Drop for LocalTemporary {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
         }
-        let mut file = match options.open(&temporary).await {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        };
-        let result = async {
-            file.write_all(data).await?;
-            file.sync_all().await
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(kind = ?error.kind(), "temporary output cleanup failed");
+            }
         }
-        .await;
-        drop(file);
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temporary).await;
-            return Err(error.into());
-        }
-        let result = replace_local_file(&temporary, path).await;
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary).await;
-        }
-        return result;
+    }
+}
+
+impl LocalOutput {
+    async fn create(path: &Path, force: bool) -> Result<Self> {
+        let destination = path.to_owned();
+        let (file, temporary) = tokio::task::spawn_blocking(move || {
+            ensure_local_overwrite_allowed(&destination, force)?;
+            destination
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("output path must name a file"))?;
+            let parent = destination
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            // Do not extend the user's filename: a valid 255-byte component
+            // must not fail just because staging appends a suffix to it.
+            for _ in 0..16 {
+                let temporary = parent.join(format!(".ios-image-{}.tmp", uuid::Uuid::new_v4()));
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                match options.open(&temporary) {
+                    Ok(file) => {
+                        return Ok::<_, anyhow::Error>((
+                            file,
+                            LocalTemporary {
+                                path: temporary,
+                                armed: true,
+                            },
+                        ))
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(anyhow::anyhow!(
+                "could not allocate a unique temporary output path"
+            ))
+        })
+        .await??;
+        Ok(Self {
+            file: fs::File::from_std(file),
+            temporary,
+            destination: path.to_owned(),
+            force,
+        })
     }
 
-    Err(anyhow::anyhow!(
-        "could not allocate a unique temporary image output path"
-    ))
+    async fn commit(mut self) -> Result<()> {
+        self.file.flush().await?;
+        self.file.sync_all().await?;
+        drop(self.file);
+        // The worker owns the guard once publication starts. Dropping the
+        // awaiting future cannot delete its source while a move is pending.
+        // A started filesystem commit cannot be rolled back by cancellation.
+        tokio::task::spawn_blocking(move || {
+            let mut temporary = self.temporary;
+            if self.force {
+                replace_local_file(&temporary.path, &self.destination)?;
+            } else {
+                // Unlike precheck + rename, hard-link creation cannot overwrite
+                // a destination created concurrently after the precheck. A
+                // filesystem without hard links fails explicitly.
+                std::fs::hard_link(&temporary.path, &self.destination)?;
+                std::fs::remove_file(&temporary.path)?;
+            }
+            temporary.armed = false;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?
+    }
 }
 
-#[cfg(not(windows))]
-async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
-    fs::rename(temporary, destination).await?;
-    Ok(())
-}
-
-#[cfg(windows)]
-async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
+fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
     // Refuse symlinks and non-files before replacing.  The replacement itself
     // is MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH) via the shared helper:
     // ReplaceFileW was evaluated and removed because its
@@ -537,10 +776,72 @@ fn open_coredevice_file_session<'a>(
             .connect_xpc_service(ios_core::fileservice::CONTROL_SERVICE_NAME)
             .await?;
         let fileservice =
-            ios_core::fileservice::FileServiceClient::connect(control, domain.into(), identifier)
+            connect_coredevice_fileservice_session(device, control, domain.into(), identifier)
                 .await?;
         Ok(fileservice)
     })
+}
+
+async fn connect_coredevice_fileservice_session(
+    device: &ios_core::ConnectedDevice,
+    control: ios_core::XpcClient,
+    domain: ios_core::fileservice::Domain,
+    identifier: &str,
+) -> Result<ios_core::fileservice::FileServiceClient> {
+    let client = if let Some(features) = device
+        .rsd()
+        .and_then(|rsd| {
+            rsd.get_resolved_service_features(ios_core::fileservice::CONTROL_SERVICE_NAME)
+        })
+        .map(|slice| slice.to_vec())
+    {
+        ios_core::fileservice::FileServiceClient::connect_with_features(
+            control, domain, identifier, features,
+        )
+        .await?
+    } else {
+        ios_core::fileservice::FileServiceClient::connect(control, domain, identifier).await?
+    };
+    Ok(client)
+}
+
+fn ensure_coredevice_fileservice_subcommand_supported(
+    rsd: Option<&ios_core::RsdHandshake>,
+    sub: &FileSub,
+) -> Result<()> {
+    let required_feature = match sub {
+        FileSub::Ls { .. } => Some(ios_core::fileservice::FEATURE_LIST_FILES),
+        FileSub::Pull { .. } | FileSub::Push { .. } => {
+            Some(ios_core::fileservice::FEATURE_TRANSFER_FILES)
+        }
+        FileSub::Rm { .. } | FileSub::Mkdir { .. } | FileSub::Mv { .. } => {
+            Some(ios_core::fileservice::FEATURE_FILE_SYSTEM_OPERATION)
+        }
+        FileSub::DeviceInfo
+        | FileSub::Stat { .. }
+        | FileSub::Tree { .. }
+        | FileSub::ConnectionInfo
+        | FileSub::Hash { .. }
+        | FileSub::Pread { .. }
+        | FileSub::Pwrite { .. }
+        | FileSub::Truncate { .. }
+        | FileSub::SetTime { .. }
+        | FileSub::DirSize { .. } => None,
+    };
+    let Some(feature) = required_feature else {
+        return Ok(());
+    };
+    if let Some(features) = rsd
+        .and_then(|r| r.get_resolved_service_features(ios_core::fileservice::CONTROL_SERVICE_NAME))
+    {
+        if !features.is_empty() && !features.iter().any(|item| item == feature) {
+            return Err(anyhow::anyhow!(
+                "CoreDevice feature {feature} is not advertised by RSD for '{}'",
+                ios_core::fileservice::CONTROL_SERVICE_NAME
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn run_coredevice_subcommand<'a>(
@@ -562,10 +863,10 @@ fn run_coredevice_subcommand<'a>(
                     .iter()
                     .map(|name| json!({ "name": name, "path": join_device_path(&path, name) }))
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&list)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
             } else {
                 for name in entries {
-                    println!("{name}");
+                    crate::output::outln!("{name}");
                 }
             }
             Ok(())
@@ -576,19 +877,25 @@ fn run_coredevice_subcommand<'a>(
             force,
         } => Box::pin(async move {
             ensure_local_overwrite_allowed(Path::new(&local), force)?;
-            eprintln!("Downloading {remote} -> {local}");
+            crate::output::write_error_line(format_args!(
+                "Downloading {} -> {}",
+                ios_core::redaction::diagnostic_id(&remote),
+                ios_core::redaction::diagnostic_id(&local)
+            ))?;
             ensure_coredevice_rsd_service_available(
                 device.rsd(),
                 ios_core::fileservice::DATA_SERVICE_NAME,
             )?;
+            let mut output = LocalOutput::create(Path::new(&local), force).await?;
+            let ticket = fileservice.retrieve_file_ticket(&remote).await?;
             let mut data_stream = device
                 .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
                 .await?;
-            let mut output = fs::File::create(&local).await?;
             let bytes = fileservice
-                .download_file_to_writer(&remote, &mut data_stream, &mut output)
+                .download_file_data_to_writer(&mut data_stream, &ticket, &mut output.file)
                 .await?;
-            eprintln!("Done ({bytes} bytes)");
+            output.commit().await?;
+            crate::output::write_error_line(format_args!("Done ({bytes} bytes)"))?;
             Ok(())
         }),
         FileSub::Push { local, remote } => Box::pin(async move {
@@ -601,7 +908,11 @@ fn run_coredevice_subcommand<'a>(
 
             let file_size = metadata.len();
             let options = ios_core::fileservice::FileWriteOptions::mobile_defaults_now();
-            eprintln!("Uploading {local} -> {remote}");
+            crate::output::write_error_line(format_args!(
+                "Uploading {} -> {}",
+                ios_core::redaction::diagnostic_id(&local),
+                ios_core::redaction::diagnostic_id(&remote)
+            ))?;
             if file_size == 0 {
                 fileservice.propose_empty_file(&remote, options).await?;
             } else if file_size <= ios_core::fileservice::MAX_INLINE_DATA_SIZE {
@@ -625,12 +936,15 @@ fn run_coredevice_subcommand<'a>(
                     .upload_file_data(&mut data_stream, &ticket, &mut input, file_size)
                     .await?;
             }
-            eprintln!("Done ({file_size} bytes)");
+            crate::output::write_error_line(format_args!("Done ({file_size} bytes)"))?;
             Ok(())
         }),
         FileSub::Rm { path, recursive } => Box::pin(async move {
             fileservice.remove_item(&path, recursive).await?;
-            eprintln!("Removed {path}");
+            crate::output::write_error_line(format_args!(
+                "Removed {}",
+                ios_core::redaction::diagnostic_id(&path)
+            ))?;
             Ok(())
         }),
         FileSub::Mkdir { path } => Box::pin(async move {
@@ -639,19 +953,33 @@ fn run_coredevice_subcommand<'a>(
                 ..ios_core::fileservice::FileWriteOptions::mobile_defaults_now()
             };
             fileservice.create_directory(&path, options).await?;
-            eprintln!("Created {path}");
+            crate::output::write_error_line(format_args!(
+                "Created {}",
+                ios_core::redaction::diagnostic_id(&path)
+            ))?;
             Ok(())
         }),
         FileSub::Mv { from, to } => Box::pin(async move {
             fileservice.rename_item(&from, &to).await?;
-            eprintln!("Moved {from} -> {to}");
+            crate::output::write_error_line(format_args!(
+                "Moved {} -> {}",
+                ios_core::redaction::diagnostic_id(&from),
+                ios_core::redaction::diagnostic_id(&to)
+            ))?;
             Ok(())
         }),
-        FileSub::DeviceInfo | FileSub::Stat { .. } | FileSub::Tree { .. } => {
-            Box::pin(std::future::ready(Err(anyhow::anyhow!(
-                "CoreDevice fileservice currently supports ls, pull, push, rm, mkdir, and mv"
-            ))))
-        }
+        FileSub::DeviceInfo
+        | FileSub::Stat { .. }
+        | FileSub::Tree { .. }
+        | FileSub::ConnectionInfo
+        | FileSub::Hash { .. }
+        | FileSub::Pread { .. }
+        | FileSub::Pwrite { .. }
+        | FileSub::Truncate { .. }
+        | FileSub::SetTime { .. }
+        | FileSub::DirSize { .. } => Box::pin(std::future::ready(Err(anyhow::anyhow!(
+            "CoreDevice fileservice currently supports ls, pull, push, rm, mkdir, and mv"
+        )))),
     }
 }
 
@@ -855,6 +1183,7 @@ fn render_tree_label(entry: &FileTreeEntry) -> String {
 mod tests {
     use clap::Parser;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
@@ -927,6 +1256,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn staged_pull_cancellation_keeps_old_bytes_and_only_cleans_its_own_file() {
+        let directory = unique_output_directory("cancel");
+        let destination = directory.join("下载😀.bin");
+        let unrelated = directory.join(".ios-image-other-operation.tmp");
+        std::fs::write(&destination, b"old complete file").unwrap();
+        std::fs::write(&unrelated, b"another operation").unwrap();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let task_path = destination.clone();
+        let task = tokio::spawn(async move {
+            let mut output = LocalOutput::create(&task_path, true).await.unwrap();
+            output.file.write_all(b"partial transfer").await.unwrap();
+            output.file.flush().await.unwrap();
+            ready_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+            output.commit().await.unwrap();
+        });
+        ready_rx.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"old complete file");
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"another operation");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_pull_does_not_clobber_a_concurrently_created_destination() {
+        let directory = unique_output_directory("no-clobber");
+        let destination = directory.join("out.bin");
+        let mut output = LocalOutput::create(&destination, false).await.unwrap();
+        output.file.write_all(b"device bytes").await.unwrap();
+        // Another producer creates the target after our existence check.
+        std::fs::write(&destination, b"other producer").unwrap();
+        assert!(output.commit().await.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"other producer");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_pull_unicode_and_full_length_component_match_size_and_hash() {
+        use sha2::{Digest, Sha256};
+        let directory = unique_output_directory("unicode");
+        let data = b"synthetic payload\0with binary bytes\xff";
+        for name in ["截图😀.bin".to_owned(), "a".repeat(255)] {
+            let destination = directory.join(name);
+            write_local_bytes_atomic(&destination, data, false)
+                .await
+                .unwrap();
+            let actual = std::fs::read(&destination).unwrap();
+            assert_eq!(actual.len(), data.len());
+            assert_eq!(Sha256::digest(&actual), Sha256::digest(data));
+            std::fs::remove_file(destination).unwrap();
+        }
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_pull_rejects_nul_without_writing_the_path_prefix() {
+        let directory = unique_output_directory("nul");
+        let destination = directory.join("out.bin");
+        std::fs::write(&destination, b"old").unwrap();
+        let malformed = directory.join("out.bin\0ignored");
+        assert!(write_local_bytes_atomic(&malformed, b"new", true)
+            .await
+            .is_err());
+        assert_eq!(std::fs::read(destination).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn staged_pull_refuses_symlink_and_replaces_readonly_file_with_private_output() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let directory = unique_output_directory("readonly-symlink");
+        let destination = directory.join("out.bin");
+        let linked = directory.join("link.bin");
+        std::fs::write(&destination, b"old").unwrap();
+        symlink(&destination, &linked).unwrap();
+        assert!(write_local_bytes_atomic(&linked, b"new", true)
+            .await
+            .is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"old");
+        assert!(std::fs::symlink_metadata(&linked)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o400)).unwrap();
+        // Unix replacement permissions belong to the parent directory. A
+        // read-only destination does not imply that rename must be denied.
+        write_local_bytes_atomic(&destination, b"new", true)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
     async fn atomic_image_write_failure_keeps_old_destination_and_cleans_temporaries() {
         let directory = unique_output_directory("failure");
         let destination = directory.join("out.bin");
@@ -996,7 +1434,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn atomic_image_write_creates_missing_parent_only_when_requested_target_exists() {
+    async fn atomic_image_write_rejects_missing_parent_without_creating_it() {
         let directory = unique_output_directory("missing-parent");
         let nested = directory.join("nested");
         let destination = nested.join("out.bin");

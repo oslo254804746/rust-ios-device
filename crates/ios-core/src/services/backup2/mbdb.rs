@@ -90,27 +90,34 @@ impl Drop for MbdbRecord {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MbdbError(pub(crate) &'static str);
-
-impl fmt::Display for MbdbError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
-    }
+#[derive(Clone, thiserror::Error)]
+pub(crate) enum MbdbError {
+    #[error("{0}")]
+    Invalid(&'static str),
+    #[error("Manifest.mbdb contains invalid UTF-8 text: {0}")]
+    Utf8(#[source] std::string::FromUtf8Error),
+    #[error("Manifest.mbdb has too many properties in one record: {0}")]
+    Properties(#[source] std::num::TryFromIntError),
+    #[error("Manifest.mbdb field is too large to serialize: {0}")]
+    Length(#[source] std::num::TryFromIntError),
 }
 
-impl std::error::Error for MbdbError {}
+crate::redaction::error_debug!(MbdbError);
 
 impl MbdbManifest {
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, MbdbError> {
         if bytes.len() < MAGIC.len() || &bytes[..MAGIC.len()] != MAGIC {
-            return Err(MbdbError("Manifest.mbdb has an invalid magic/version"));
+            return Err(MbdbError::Invalid(
+                "Manifest.mbdb has an invalid magic/version",
+            ));
         }
         let mut reader = Reader::new(&bytes[MAGIC.len()..]);
         let mut records = Vec::new();
         while !reader.is_empty() {
             if records.len() >= MAX_RECORDS {
-                return Err(MbdbError("Manifest.mbdb exceeds the record safety limit"));
+                return Err(MbdbError::Invalid(
+                    "Manifest.mbdb exceeds the record safety limit",
+                ));
             }
             records.push(reader.record()?);
         }
@@ -122,7 +129,9 @@ impl MbdbManifest {
         retain: Option<&std::collections::HashSet<String>>,
     ) -> Result<Vec<u8>, MbdbError> {
         if self.records.len() > MAX_RECORDS {
-            return Err(MbdbError("Manifest.mbdb exceeds the record safety limit"));
+            return Err(MbdbError::Invalid(
+                "Manifest.mbdb exceeds the record safety limit",
+            ));
         }
         let mut output = Vec::with_capacity(MAGIC.len());
         output.extend_from_slice(MAGIC);
@@ -144,11 +153,10 @@ impl MbdbRecord {
         let domain = self
             .domain
             .as_deref()
-            .ok_or(MbdbError("Manifest.mbdb record has no domain"))?;
-        let relative_path = self
-            .relative_path
-            .as_deref()
-            .ok_or(MbdbError("Manifest.mbdb record has no relative path"))?;
+            .ok_or(MbdbError::Invalid("Manifest.mbdb record has no domain"))?;
+        let relative_path = self.relative_path.as_deref().ok_or(MbdbError::Invalid(
+            "Manifest.mbdb record has no relative path",
+        ))?;
         let mut input = Vec::with_capacity(domain.len() + 1 + relative_path.len());
         input.extend_from_slice(domain.as_bytes());
         input.push(b'-');
@@ -175,8 +183,7 @@ impl MbdbRecord {
         output.extend_from_slice(&self.ctime.to_be_bytes());
         output.extend_from_slice(&self.size.to_be_bytes());
         output.push(self.flags);
-        let property_count = u8::try_from(self.properties.len())
-            .map_err(|_| MbdbError("Manifest.mbdb has too many properties in one record"))?;
+        let property_count = u8::try_from(self.properties.len()).map_err(MbdbError::Properties)?;
         output.push(property_count);
         for (name, value) in &self.properties {
             put_string(output, name.as_deref())?;
@@ -236,11 +243,7 @@ impl<'a> Reader<'a> {
     fn string(&mut self, field: &'static str) -> Result<Option<String>, MbdbError> {
         let bytes = self.bytes(field)?;
         bytes
-            .map(|bytes| {
-                String::from_utf8(bytes)
-                    .map(Some)
-                    .map_err(|_| MbdbError("Manifest.mbdb contains invalid UTF-8 text"))
-            })
+            .map(|bytes| String::from_utf8(bytes).map(Some).map_err(MbdbError::Utf8))
             .transpose()
             .map(|value| value.flatten())
     }
@@ -252,14 +255,14 @@ impl<'a> Reader<'a> {
         }
         let length = usize::from(length);
         if length > MAX_FIELD_BYTES {
-            return Err(MbdbError("Manifest.mbdb field is too large"));
+            return Err(MbdbError::Invalid("Manifest.mbdb field is too large"));
         }
         let end = self
             .offset
             .checked_add(length)
-            .ok_or(MbdbError("Manifest.mbdb field offset overflow"))?;
+            .ok_or(MbdbError::Invalid("Manifest.mbdb field offset overflow"))?;
         if end > self.bytes.len() {
-            return Err(MbdbError("Manifest.mbdb field is truncated"));
+            return Err(MbdbError::Invalid("Manifest.mbdb field is truncated"));
         }
         let value = self.bytes[self.offset..end].to_vec();
         self.offset = end;
@@ -267,11 +270,14 @@ impl<'a> Reader<'a> {
     }
 
     fn byte(&mut self, field: &'static str) -> Result<u8, MbdbError> {
-        let byte = *self.bytes.get(self.offset).ok_or(MbdbError(field))?;
+        let byte = *self
+            .bytes
+            .get(self.offset)
+            .ok_or(MbdbError::Invalid(field))?;
         self.offset = self
             .offset
             .checked_add(1)
-            .ok_or(MbdbError("Manifest.mbdb offset overflow"))?;
+            .ok_or(MbdbError::Invalid("Manifest.mbdb offset overflow"))?;
         Ok(byte)
     }
 
@@ -279,8 +285,11 @@ impl<'a> Reader<'a> {
         let end = self
             .offset
             .checked_add(2)
-            .ok_or(MbdbError("Manifest.mbdb offset overflow"))?;
-        let bytes = self.bytes.get(self.offset..end).ok_or(MbdbError(field))?;
+            .ok_or(MbdbError::Invalid("Manifest.mbdb offset overflow"))?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(MbdbError::Invalid(field))?;
         self.offset = end;
         Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
     }
@@ -289,8 +298,11 @@ impl<'a> Reader<'a> {
         let end = self
             .offset
             .checked_add(4)
-            .ok_or(MbdbError("Manifest.mbdb offset overflow"))?;
-        let bytes = self.bytes.get(self.offset..end).ok_or(MbdbError(field))?;
+            .ok_or(MbdbError::Invalid("Manifest.mbdb offset overflow"))?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(MbdbError::Invalid(field))?;
         self.offset = end;
         Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
@@ -299,8 +311,11 @@ impl<'a> Reader<'a> {
         let end = self
             .offset
             .checked_add(8)
-            .ok_or(MbdbError("Manifest.mbdb offset overflow"))?;
-        let bytes = self.bytes.get(self.offset..end).ok_or(MbdbError(field))?;
+            .ok_or(MbdbError::Invalid("Manifest.mbdb offset overflow"))?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(MbdbError::Invalid(field))?;
         self.offset = end;
         Ok(u64::from_be_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
@@ -317,10 +332,12 @@ fn put_bytes(output: &mut Vec<u8>, value: Option<&[u8]>) -> Result<(), MbdbError
         output.extend_from_slice(&NULL_LENGTH.to_be_bytes());
         return Ok(());
     };
-    let length = u16::try_from(value.len())
-        .ok()
-        .filter(|length| *length != NULL_LENGTH)
-        .ok_or(MbdbError("Manifest.mbdb field is too large to serialize"))?;
+    let length = u16::try_from(value.len()).map_err(MbdbError::Length)?;
+    if length == NULL_LENGTH {
+        return Err(MbdbError::Invalid(
+            "Manifest.mbdb field is too large to serialize",
+        ));
+    }
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(value);
     Ok(())
@@ -331,6 +348,47 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn actual_mbdb_utf8_failure_retains_native_bytes_and_safe_debug() {
+        use std::error::Error;
+        let bytes = [
+            b"mbdb\x05\x00".as_slice(),
+            b"\x00\x0eowned-private\xff".as_slice(),
+        ]
+        .concat();
+        let error = MbdbManifest::parse(&bytes).unwrap_err();
+        let original = error
+            .source()
+            .unwrap()
+            .downcast_ref::<std::string::FromUtf8Error>()
+            .unwrap();
+        assert_eq!(original.as_bytes(), b"owned-private\xff");
+        assert!(!format!("{error:?}").contains("owned-private"));
+    }
+
+    #[test]
+    fn actual_mbdb_property_overflow_retains_native_conversion_error() {
+        use std::error::Error;
+        let mut manifest = MbdbManifest::parse(PYIOSBACKUP_RECORD).unwrap();
+        manifest.records[0].properties = vec![(None, None); 256];
+        let error = manifest.serialize(None).unwrap_err();
+        assert!(error.source().unwrap().is::<std::num::TryFromIntError>());
+    }
+
+    #[test]
+    fn actual_mbdb_field_overflow_keeps_native_error_and_null_sentinel_guard() {
+        use std::error::Error;
+        let mut output = Vec::new();
+        let error = put_bytes(&mut output, Some(&vec![0; 65_536])).unwrap_err();
+        assert!(error.source().unwrap().is::<std::num::TryFromIntError>());
+        assert!(output.is_empty());
+        let error = put_bytes(&mut output, Some(&vec![0; 65_535])).unwrap_err();
+        assert!(error.source().is_none());
+        assert!(output.is_empty());
+        put_bytes(&mut output, None).unwrap();
+        assert_eq!(output, [0xff, 0xff]);
+    }
 
     // Exact bytes from pyiosbackup 0.2.4 tests/test_backup.py::example_mbdb.
     const PYIOSBACKUP_RECORD: &[u8] = &[

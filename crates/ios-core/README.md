@@ -1,8 +1,8 @@
 # ios-core
 
 High-level Rust API for discovering, pairing, connecting to, and controlling
-iOS devices over usbmuxd, lockdown, CoreDevice/RemoteXPC, and the common
-Apple device services.
+iOS devices over usbmuxd, lockdown, CoreDevice/RemoteXPC, and Apple device
+services across **iOS 15.x – iOS 27.2**.
 
 This is the library crate at the center of the
 [`rust-ios-device`](https://github.com/oslo254804746/rust-ios-device)
@@ -11,39 +11,53 @@ top of it.
 
 ## Highlights
 
-- Device discovery and event watching across usbmuxd and Bonjour/mDNS.
-- Lockdown client, TLS sessions, pair records, SRP pairing, and supervised
-  pairing helpers.
-- iOS 17+ CoreDevice support: CDTunnel (userspace and kernel TUN modes),
-  Remote Service Discovery (RSD), HTTP/2 RemoteXPC transport, appservice,
-  iconservice, screencapture, fileservice, diagnosticsservice, deviceinfo,
-  InstallCoordinationProxy, Instruments, and TestManager.
-- 30+ feature-gated service modules covering AFC, syslog, screenshots,
-  configuration/provisioning profiles, crash reports, Instruments, debugserver,
-  WebInspector, ImageMounter, pcap, and more.
-- High-level connection API used by the CLI, Python, and FFI consumers.
+- **Device discovery and event watching** across usbmuxd and Bonjour/mDNS.
+- **Lockdown client, TLS sessions, pair records, SRP pairing**, supervised
+  pairing helpers, and bounded existing-trust `ExistingTrustDevice` /
+  `SessionOwner` APIs.
+- **iOS 17–27+ CoreDevice support**:
+  - `CDTunnel` (userspace `smoltcp` with **20ms ICMPv6 Echo Request Nudge** and
+    **IPv6 UDP datagram forwarding**, plus kernel TUN mode).
+  - Remote Service Discovery (RSD) and HTTP/2 RemoteXPC transport.
+  - CoreDevice services: `appservice`, `iconservice`, `screencapture` (including
+    Pro Max 16-bit Display P3 PNG decoding), `fileservice` (`ls`, `mkdir`,
+    `push`, `pull`, `mv`, `rm`), `diagnosticsservice`, `deviceinfo`,
+    `configuration` (including iOS 26/27 `liquid-glass-opacity` and
+    `increase-contrast`), `orientation`, `display` (`dtremotedisplayd` H.265/HEVC
+    and AAC RTP access-unit streaming), `hid` (button, tap, swipe, phased touch,
+    5-finger multitouch, keyboard with Shift modifier sequences), `pasteboard`
+    (Darwin notification watch, fresh PULLs, and binary UTI payloads),
+    `InstallCoordinationProxy`, `Instruments`, and `TestManager`.
+- **30+ feature-gated service modules** covering AFC (including extended opcodes
+  `GetConnectionInfo`, `GetFileHash` / `GetFileHashWithRange`, `pread`, `pwrite`,
+  `truncate`, `SetFileTime`, `GetSizeOfPathContents`), House Arrest, syslog,
+  screenshots, configuration/provisioning profiles, crash reports, Instruments,
+  CoreProfileSession Stackshot (`sharedCache` UUID extraction), debugserver
+  (with iOS 17+ RSD `debugproxy` fallback), WebInspector (CDP & W3C WebDriver),
+  ImageMounter / Personalized Cryptex DDI, pcap, btlogger, restore, and more.
+- **High-level connection API** used by the CLI, Python, and FFI consumers.
 
 ## Install
 
 ```toml
 [dependencies]
-ios-core = "0.1.15"
+ios-core = "0.1.16"
 ```
 
 The crate ships **no default service features**. Pick the services you need,
 or use a grouped flag:
 
 ```toml
-ios-core = { version = "0.1.15", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.16", features = ["afc", "syslog"] }
 ```
 
 | Group        | Includes                                                                                              |
 | ------------ | ----------------------------------------------------------------------------------------------------- |
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
-| `developer`  | accessibility_audit, amfi, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
+| `developer`  | accessibility_audit, amfi, btlogger, cryptex, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, iconservice, installcoordination, instruments, orientation, pasteboard, screencapture, testmanager, mdns, tunnel-userspace |
-| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
+| `ios17`      | apps, configuration, cryptex, deviceinfo, diagnosticsservice, dproxy, fileservice, iconservice, installcoordination, instruments, orientation, hid, display, pasteboard, screencapture, testmanager, mdns, tunnel-userspace |
+| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel + backup2-manifest |
 
 CoreDevice service availability is **service-surface dependent**: a device can
 expose USB, lockdown, tunnel, and RSD while still omitting a specific
@@ -87,21 +101,33 @@ if let Some(device) = devices.first() {
 # }
 ```
 
-For lower-level access, use the modules re-exported at the crate root:
-`ios_core::mux`, `ios_core::lockdown`, `ios_core::xpc`, plus the gated service
-modules (`ios_core::afc`, `ios_core::apps`, `ios_core::syslog`, etc.) that
-become available with the matching feature.
+For lower-level access, use `ios_core::MuxClient`, `ios_core::LockdownClient`,
+`ios_core::RsdHandshake`, and `ios_core::XpcClient` (requires `tunnel`).
+The transport modules themselves are private. Service modules such as
+`ios_core::afc`, `ios_core::apps`, and `ios_core::syslog` become available with
+the matching feature.
 
 ## Requirements
 
 - Rust **1.80+**.
-- usbmux on the host (usbmuxd on Linux, Apple Mobile Device Support on
+- usbmux on the host (`usbmuxd` on Linux, Apple Mobile Device Support on
   Windows, Apple device support on macOS).
 - A trusted iOS device for most real-device operations.
-- iOS 17+ device with the CoreDevice tunnel surface for RSD/RemoteXPC features.
+- iOS 17–27+ device with the CoreDevice tunnel surface for RSD/RemoteXPC features.
 
 ## Documentation
 
+- [Finite existing-trust device queries](../../docs/owned-device-query.md) expose
+  explicit device selection, caller-loaded credentials, owned information, and
+  checked total/cancellation/reply budgets without implicit pairing or retry.
+- [Error and RSD evidence contracts](../../docs/error-contract.md) describe
+  additive typed classification, caller-observed cancellation, and successful
+  directory capability evidence across Rust, CLI, HTTP, C FFI, and Python.
+- [Plist/JSON policies](../../docs/plist-json-contract.md) document explicit
+  borrowed/owned conversion profiles and their input/output budget boundary.
+- [Public compatibility rules](../../docs/public-contract.md) describe maintained
+  candidate root paths, public fields/enums, and feature aliases; device maturity
+  remains in the capability catalog.
 - Repository: <https://github.com/oslo254804746/rust-ios-device>
 - API docs: <https://docs.rs/ios-core>
 - Feature flags: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/features.md>

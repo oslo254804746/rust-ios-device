@@ -9,13 +9,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use ios_core::testmanager::workflow::{RunXcTestPlan, RunXcTestPlanError, TestLaunchPlan};
+use ios_core::testmanager::workflow::RunXcTestPlan;
 use tokio::time::Instant;
 
-use crate::cmd::runtest::{
-    incomplete_summary, lookup_installed_app, start_test_plan_session_until,
-    write_junit_diagnostic, write_junit_summary,
-};
+use crate::cmd::runtest::lookup_installed_app;
 
 #[derive(clap::Args)]
 pub struct RunXcTestCmd {
@@ -63,6 +60,9 @@ pub struct RunXcTestCmd {
     /// Write the completed result (or a diagnostic on failure) as JUnit XML.
     #[arg(long, value_name = "PATH")]
     pub junit_output: Option<PathBuf>,
+    /// Composable test execution workflow options (installation, logging, cleanup, rerun).
+    #[command(flatten)]
+    pub workflow: crate::cmd::test_workflow::TestWorkflowArgs,
 }
 
 impl RunXcTestCmd {
@@ -98,19 +98,41 @@ impl RunXcTestCmd {
                 .ok_or_else(|| anyhow::anyhow!("--env expects KEY=VALUE, got {entry:?}"))?;
             builder = builder.env(key, value);
         }
-        builder
-            .build()
-            .map_err(|error: RunXcTestPlanError| anyhow::anyhow!("{error}"))
+        builder.build().map_err(anyhow::Error::new)
     }
 
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
         if self.timeout_secs == 0 {
-            return Err(anyhow::anyhow!("--timeout must be greater than zero"));
+            return Err(crate::output::input_decision(
+                "--timeout must be greater than zero",
+            ));
         }
         if self.junit_output.is_some() && !self.wait {
             return Err(anyhow::anyhow!(
                 "--junit-output requires --wait because startup alone is not a complete XCTest report"
             ));
+        }
+
+        self.workflow.preflight()?;
+        anyhow::ensure!(
+            self.wait
+                || (!self.workflow.uninstall_on_finish
+                    && self.workflow.rerun_failed == 0
+                    && self.workflow.crash_output.is_none()),
+            "workflow cleanup and reruns require --wait"
+        );
+        if let Some(path) = &self.workflow.install_runner {
+            anyhow::ensure!(
+                crate::cmd::test_workflow::package_bundle_id(path)? == self.test_runner_bundle_id,
+                "installed runner package identifier does not match the selected test runner"
+            );
+        }
+        if let Some(path) = &self.workflow.install_app {
+            anyhow::ensure!(
+                Some(crate::cmd::test_workflow::package_bundle_id(path)?.as_str())
+                    == self.bundle_id.as_deref(),
+                "installed application package identifier does not match the selected target"
+            );
         }
 
         // Build and validate every user-controlled field before opening a
@@ -120,147 +142,156 @@ impl RunXcTestCmd {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for runxctest"))?;
         let deadline = Instant::now()
             .checked_add(Duration::from_secs(self.timeout_secs))
-            .ok_or_else(|| anyhow::anyhow!("--timeout is too large"))?;
-        let junit_output = self.junit_output.as_deref();
+            .ok_or_else(|| crate::output::input_decision("--timeout is too large"))?;
+        let monitored_bundle_ids = std::iter::once(direct_plan.test_runner_bundle_id.clone())
+            .chain(direct_plan.bundle_id.clone())
+            .collect();
 
-        let device = match until(
+        let engine = crate::cmd::test_workflow::TestWorkflowEngine::new(
+            &udid,
+            &self.workflow,
             deadline,
-            "connecting to testmanagerd",
-            crate::cmd::runtest::connect_testmanager_device(&udid),
-        )
-        .await
-        {
-            Ok(device) => device,
-            Err(error) => {
-                write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-                return Err(error);
-            }
+            self.wait,
+            self.junit_output.as_deref(),
+        );
+
+        let timeout = Duration::from_secs(self.timeout_secs);
+        let options = crate::cmd::test_workflow::TestWorkflowRunOptions {
+            startup_timeout: timeout,
+            result_timeout: timeout,
+            json_output,
+            untested_banner: false,
+            untested_receipt: false,
+            monitored_bundle_ids,
         };
-        let runner = match until(
-            deadline,
-            "looking up the XCTest runner",
-            lookup_installed_app(&device, &direct_plan.test_runner_bundle_id),
-        )
-        .await
-        {
-            Ok(runner) => runner,
-            Err(error) => {
-                write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-                return Err(error);
-            }
-        };
-        let target = match direct_plan.bundle_id.as_deref() {
-            Some(bundle_id) => match until(
-                deadline,
-                "looking up the application under test",
-                lookup_installed_app(&device, bundle_id),
-            )
+
+        engine
+            .run(options, |device| {
+                Box::pin(async move {
+                    let runner =
+                        lookup_installed_app(device, &direct_plan.test_runner_bundle_id).await?;
+                    let target = match direct_plan.bundle_id.as_deref() {
+                        Some(bundle_id) => Some(lookup_installed_app(device, bundle_id).await?),
+                        None => None,
+                    };
+                    let launch_plan = direct_plan.into_test_launch_plan(runner, target);
+                    let configuration_name = launch_plan.xctest_bundle_name.clone();
+                    Ok((configuration_name, launch_plan))
+                })
+            })
             .await
-            {
-                Ok(target) => Some(target),
-                Err(error) => {
-                    write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-                    return Err(error);
-                }
-            },
-            None => None,
-        };
-        let launch_plan: TestLaunchPlan = direct_plan.into_test_launch_plan(runner, target);
-        let configuration_name = launch_plan.xctest_bundle_name.clone();
-
-        let mut session = match start_test_plan_session_until(&udid, launch_plan, deadline).await {
-            Ok(session) => session,
-            Err(error) => {
-                write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-                return Err(error);
-            }
-        };
-        let startup = session.startup_result().clone();
-
-        if self.wait {
-            let summary = match until(
-                deadline,
-                "waiting for XCTest results",
-                session.wait_for_results(),
-            )
-            .await
-            {
-                Ok(summary) => summary,
-                Err(error) => {
-                    // Dropping the active DTX connections stops result
-                    // delivery. The process is killed by the bounded cleanup
-                    // in ActiveTestPlan when a deadline/cancellation occurs.
-                    session.terminate().await;
-                    write_junit_diagnostic(junit_output, &incomplete_summary(true), &error)?;
-                    return Err(error);
-                }
-            };
-            // XCTest normally exits after the finish event, but some runner
-            // bundles keep their host process alive. Release the device-side
-            // process explicitly so a completed direct run cannot leak a
-            // runner into the next invocation; a race with normal process
-            // exit is harmless and intentionally ignored by terminate().
-            session.terminate().await;
-            write_junit_summary(junit_output, &summary)?;
-            print_result(
-                json_output,
-                serde_json::json!({
-                    "status": "finished",
-                    "configuration": configuration_name,
-                    "runner_bundle_id": startup.runner_bundle_id,
-                    "target_bundle_id": startup.target_bundle_id,
-                    "pid": startup.pid,
-                    "protocol_version": startup.protocol_version,
-                    "minimum_version": startup.minimum_version,
-                    "summary": summary,
-                }),
-            )?;
-        } else {
-            print_result(
-                json_output,
-                serde_json::json!({
-                    "status": "started",
-                    "configuration": configuration_name,
-                    "runner_bundle_id": startup.runner_bundle_id,
-                    "target_bundle_id": startup.target_bundle_id,
-                    "pid": startup.pid,
-                    "protocol_version": startup.protocol_version,
-                    "minimum_version": startup.minimum_version,
-                    "note": "The runner was started; use --wait to collect XCTest result events.",
-                }),
-            )?;
-        }
-
-        Ok(())
     }
 }
 
-fn print_result(json_output: bool, value: serde_json::Value) -> Result<()> {
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&value)?);
-    } else if let Some(status) = value.get("status").and_then(serde_json::Value::as_str) {
-        let pid = value
-            .get("pid")
-            .and_then(serde_json::Value::as_u64)
-            .map(|pid| format!(" (pid {pid})"))
-            .unwrap_or_default();
-        println!("XCTest {status}{pid}");
-    }
-    Ok(())
-}
-
-async fn until<T, F>(deadline: Instant, operation: &str, future: F) -> Result<T>
+#[allow(dead_code)]
+fn until<'a, T: 'a, F>(
+    deadline: Instant,
+    operation: &'a str,
+    future: F,
+) -> impl Future<Output = Result<T>> + 'a
 where
-    F: Future<Output = Result<T>>,
+    F: Future<Output = Result<T>> + 'a,
 {
-    tokio::time::timeout_at(deadline, future)
-        .await
-        .map_err(|_| anyhow::anyhow!("XCTest deadline expired while {operation}"))?
-        .with_context(|| format!("XCTest {operation} failed"))
+    let future = Box::pin(future);
+    async move {
+        tokio::time::timeout_at(deadline, future)
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(error)
+                    .context(format!("XCTest deadline expired while {operation}"))
+            })?
+            .with_context(|| format!("XCTest {operation} failed"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workflow_future_retains_only_bounded_outer_state_before_first_poll() {
+        let command = TestCli::parse_from([
+            "runxctest",
+            "--xctest",
+            "--test-runner-bundle-id",
+            "com.example.Runner",
+            "--xctest-config",
+            "DemoTests.xctest",
+            "--wait",
+        ])
+        .command;
+        let future = command.run(Some("owned-size-fixture".into()), true);
+        assert!(
+            std::mem::size_of_val(&future) <= 256 * 1024,
+            "the public future embeds large startup/service futures"
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_guards_xctest_invalid_timeout_precedes_connection() {
+        for timeout in ["0", "18446744073709551615"] {
+            let command = TestCli::parse_from([
+                "runxctest",
+                "--xctest",
+                "--test-runner-bundle-id",
+                "com.example.Runner",
+                "--xctest-config",
+                "DemoTests.xctest",
+                "--timeout",
+                timeout,
+            ])
+            .command;
+            let error = command
+                .run(Some("owned-private-device".to_owned()), true)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
+            let io = error.downcast_ref::<std::io::Error>().unwrap();
+            assert!(io.raw_os_error().is_none());
+            assert!(io.get_ref().unwrap().source().is_none());
+        }
+    }
+
+    #[test]
+    fn cli_native_sources_xctest_plan_keeps_original_typed_input_error() {
+        let mut command = TestCli::parse_from([
+            "runxctest",
+            "--xctest",
+            "--test-runner-bundle-id",
+            "com.example.Runner",
+            "--xctest-config",
+            "DemoTests.xctest",
+        ])
+        .command;
+        command.test_runner_bundle_id.clear();
+        let error = command.build_plan().unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ios_core::RunXcTestPlanError>(),
+            Some(ios_core::RunXcTestPlanError::MissingRunnerBundleId)
+        ));
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+    }
+    #[tokio::test]
+    async fn cli_native_sources_xctest_deadline_retains_actual_elapsed() {
+        let error = super::until(
+            tokio::time::Instant::now(),
+            "owned-private-operation",
+            std::future::pending::<anyhow::Result<()>>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    }
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -402,5 +433,55 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("deadline expired"));
+    }
+
+    #[test]
+    fn parses_workflow_options_in_runxctest() {
+        let cmd = TestCli::parse_from([
+            "runxctest",
+            "--xctest",
+            "--test-runner-bundle-id",
+            "com.example.Runner",
+            "--xctest-config",
+            "DemoTests.xctest",
+            "--install-app",
+            "app.ipa",
+            "--install-runner",
+            "runner.ipa",
+            "--log-output",
+            "device.log",
+            "--uninstall-on-finish",
+            "--rerun-failed",
+            "2",
+        ])
+        .command;
+        assert_eq!(cmd.workflow.install_app, Some(PathBuf::from("app.ipa")));
+        assert_eq!(
+            cmd.workflow.install_runner,
+            Some(PathBuf::from("runner.ipa"))
+        );
+        assert_eq!(cmd.workflow.log_output, Some(PathBuf::from("device.log")));
+        assert!(cmd.workflow.uninstall_on_finish);
+        assert_eq!(cmd.workflow.rerun_failed, 2);
+    }
+
+    #[tokio::test]
+    async fn preflight_rejects_missing_package_in_runxctest() {
+        let cmd = TestCli::parse_from([
+            "runxctest",
+            "--xctest",
+            "--test-runner-bundle-id",
+            "com.example.Runner",
+            "--xctest-config",
+            "DemoTests.xctest",
+            "--install-app",
+            "nonexistent_package_for_test.ipa",
+        ])
+        .command;
+        let err = cmd
+            .run(Some("test-device".to_string()), true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
     }
 }

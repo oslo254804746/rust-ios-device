@@ -44,7 +44,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DeviceInfoClient<S> {
             .conn
             .method_call(self.channel_code, "runningProcesses", &[])
             .await?;
-        tracing::debug!("runningProcesses response: {:?}", msg.payload);
+        tracing::debug!(
+            identifier = msg.identifier,
+            "runningProcesses response received"
+        );
 
         let arr = match &msg.payload {
             DtxPayload::Response(NSObject::Array(a)) => a.clone(),
@@ -79,7 +82,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DeviceInfoClient<S> {
             .conn
             .method_call(self.channel_code, method, &[])
             .await?;
-        tracing::debug!("{method} response: {:?}", msg.payload);
+        tracing::debug!(
+            identifier = msg.identifier,
+            method,
+            "deviceinfo response received"
+        );
         match &msg.payload {
             DtxPayload::Response(NSObject::Array(arr)) => Ok(arr
                 .iter()

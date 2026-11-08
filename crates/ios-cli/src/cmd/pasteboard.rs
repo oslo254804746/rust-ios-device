@@ -13,6 +13,9 @@ use tokio::io::AsyncReadExt;
 
 const MAX_CLI_DATA_BYTES: usize = 64 * 1024 * 1024;
 
+mod connection_error;
+mod reconnect;
+
 #[derive(clap::Args)]
 pub struct PasteboardCmd {
     #[command(subcommand)]
@@ -33,7 +36,7 @@ enum PasteboardSub {
         raw: bool,
         #[arg(
             long,
-            default_value = "resolved",
+            default_value = "promisesecondary",
             value_name = "POLICY",
             help = "Data policy: resolved, promised, matchsource, promisesecondary, threshold:N"
         )]
@@ -116,7 +119,7 @@ enum PasteboardSub {
         )]
         experimental: bool,
     },
-    /// Subscribe to AUTONOTIFY/PUSH pasteboard changes
+    /// Watch pasteboard changes through Darwin notifications and fresh PULLs
     Watch {
         #[arg(
             long,
@@ -126,18 +129,23 @@ enum PasteboardSub {
         pasteboard: String,
         #[arg(
             long,
-            default_value = "resolved",
+            default_value = "promisesecondary",
             value_name = "POLICY",
-            help = "Push data policy: resolved, promised, matchsource, promisesecondary, threshold:N"
+            help = "Read policy: resolved, promised, matchsource, promisesecondary, threshold:N"
         )]
         policy: String,
         #[arg(long, help = "Include inline bytes as base64 in JSON/human output")]
         show_data: bool,
+        #[arg(long, help = "Allow the experimental --autonotify transport")]
+        experimental: bool,
         #[arg(
             long,
-            help = "Enable experimental AUTONOTIFY/PUSH support (not implemented by go-ios/pymobiledevice3)"
+            requires = "experimental",
+            help = "Use experimental AUTONOTIFY/PUSH instead of Darwin notifications"
         )]
-        experimental: bool,
+        autonotify: bool,
+        #[command(flatten)]
+        recovery: reconnect::WatchOptions,
     },
     /// Resolve and export one item (an explicit alias for `resolve --out`)
     Export {
@@ -172,6 +180,59 @@ impl PasteboardCmd {
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
         self.sub.validate_experimental()?;
         let udid = udid.ok_or_else(|| anyhow!("--udid required for pasteboard"))?;
+        if let PasteboardSub::Watch {
+            pasteboard,
+            policy,
+            show_data,
+            autonotify,
+            recovery,
+            ..
+        } = &self.sub
+        {
+            recovery.validate(!*autonotify)?;
+            if !*autonotify {
+                let policy = parse_policy(policy)?;
+                reconnect::selectors(&udid, pasteboard, policy)?;
+                return reconnect::run(
+                    &reconnect::DeviceSource,
+                    &udid,
+                    pasteboard,
+                    policy,
+                    recovery,
+                    tokio::signal::ctrl_c(),
+                    |event| match event {
+                        reconnect::WatchEvent::Snapshot(snapshot) => render_event(
+                            &PasteboardEvent::Push(pasteboard::PasteboardPush {
+                                snapshot: snapshot.clone(),
+                            }),
+                            *show_data,
+                            json_output,
+                        ),
+                        reconnect::WatchEvent::State(state) if recovery.reconnect => {
+                            let record = if json_output {
+                                serde_json::to_string(&state)?
+                            } else {
+                                format!(
+                                    "Pasteboard watch: {} (attempt {}, reclaimed={}, class={}){}",
+                                    state.state,
+                                    state.attempt,
+                                    state.native_reclaimed,
+                                    state.error_class.map_or("none", |class| class.as_str()),
+                                    state.gap.map_or("", |_| {
+                                        "; changes during disconnect are not replayed"
+                                    })
+                                )
+                            };
+                            crate::output::write_error_line(format_args!("{record}"))?;
+                            Ok(())
+                        }
+                        reconnect::WatchEvent::State(_) => Ok(()),
+                    },
+                )
+                .await
+                .map(|_| ());
+            }
+        }
         let device = connect(
             &udid,
             ConnectOptions {
@@ -199,12 +260,12 @@ impl PasteboardCmd {
                     // representation.
                     let reply = client.get_named_with_policy(&pasteboard, policy).await?;
                     if show_data {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::to_string_pretty(&xpc_value_to_json(&reply))?
                         );
                     } else {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::to_string_pretty(&xpc_value_to_redacted_json(&reply))?
                         );
@@ -227,7 +288,7 @@ impl PasteboardCmd {
                 let representations = item.data.len();
                 client.set_items(&pasteboard, &[item], None).await?;
                 if json_output {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "operation": "set",
@@ -237,7 +298,9 @@ impl PasteboardCmd {
                         }))?
                     );
                 } else {
-                    println!("Set {bytes} byte(s) across one item on pasteboard '{pasteboard}'");
+                    crate::output::outln!(
+                        "Set {bytes} byte(s) across one item on pasteboard '{pasteboard}'"
+                    );
                 }
             }
             PasteboardSub::Resolve {
@@ -290,6 +353,8 @@ impl PasteboardCmd {
                 policy,
                 show_data,
                 experimental: _,
+                autonotify: _,
+                recovery: _,
             } => {
                 let policy = parse_policy(&policy)?;
                 let mut subscription = client.subscribe(&pasteboard, Some(policy)).await?;
@@ -322,17 +387,34 @@ impl PasteboardSub {
     fn validate_experimental(&self) -> Result<()> {
         let (name, experimental) = match self {
             Self::Resolve { experimental, .. } => ("resolve", *experimental),
-            Self::Watch { experimental, .. } => ("watch", *experimental),
+            Self::Watch {
+                experimental,
+                autonotify: true,
+                ..
+            } => ("watch --autonotify", *experimental),
             Self::Export { experimental, .. } => ("export", *experimental),
-            Self::Get { .. } | Self::Set { .. } => return Ok(()),
+            Self::Get { .. }
+            | Self::Set { .. }
+            | Self::Watch {
+                autonotify: false, ..
+            } => return Ok(()),
         };
         if !experimental {
             bail!(
-                "pasteboard {name} is experimental: upstream go-ios/pymobiledevice3 do not implement this verb; pass --experimental to continue"
+                "pasteboard {name} uses an experimental protocol; pass --experimental to continue"
             );
         }
         Ok(())
     }
+}
+
+async fn read_notification_snapshot(
+    connect: impl std::future::Future<Output = Result<ios_core::XpcClient, ios_core::CoreError>>,
+    name: &str,
+    policy: DataInclusionPolicy,
+) -> Result<PasteboardSnapshot, pasteboard::PasteboardError> {
+    let xpc = connect.await.map_err(connection_error::retain)?;
+    PasteboardClient::new(xpc).get_snapshot(name, policy).await
 }
 
 async fn build_cli_item(
@@ -550,9 +632,9 @@ async fn resolve_and_render(
         "data_base64": show_data.then(|| base64::engine::general_purpose::STANDARD.encode(bytes.as_ref())),
     });
     if json_output || out.is_some() || show_data {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
-        println!(
+        crate::output::outln!(
             "{uti}: {} byte(s), sha256={}",
             bytes.len(),
             sha256_hex(bytes.as_ref())
@@ -568,24 +650,24 @@ fn render_get(
     show_data: bool,
 ) -> Result<()> {
     if json_output {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&snapshot_to_json(snapshot, show_data))?
         );
     } else if let Some(text) = snapshot.text() {
-        print!("{text}");
+        crate::output::out!("{text}");
     } else if let Some(bytes) = snapshot.data_for_uti(pasteboard::UTI_URL) {
         if let Ok(url) = std::str::from_utf8(bytes.as_ref()) {
-            println!("{url}");
+            crate::output::outln!("{url}");
         } else {
-            println!(
+            crate::output::outln!(
                 "Pasteboard '{pasteboard}' contains {} byte(s) of non-UTF-8 URL data (sha256={})",
                 bytes.len(),
                 sha256_hex(bytes.as_ref())
             );
         }
     } else {
-        println!("{}", human_snapshot_summary(snapshot, show_data));
+        crate::output::outln!("{}", human_snapshot_summary(snapshot, show_data));
     }
     Ok(())
 }
@@ -594,12 +676,12 @@ fn render_event(event: &PasteboardEvent, show_data: bool, json_output: bool) -> 
     match event {
         PasteboardEvent::Push(push) => {
             if json_output {
-                println!(
+                crate::output::outln!(
                     "{}",
                     serde_json::to_string(&snapshot_to_json(&push.snapshot, show_data))?
                 );
             } else {
-                println!("{}", human_snapshot_summary(&push.snapshot, show_data));
+                crate::output::outln!("{}", human_snapshot_summary(&push.snapshot, show_data));
             }
         }
         PasteboardEvent::Data(data) => {
@@ -610,12 +692,12 @@ fn render_event(event: &PasteboardEvent, show_data: bool, json_output: bool) -> 
                 "size": data.data.as_ref().map(|bytes| bytes.len()),
                 "sha256": data.data.as_ref().map(|bytes| sha256_hex(bytes.as_ref())),
                 "data_base64": show_data.then(|| data.data.as_ref().map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes.as_ref()))).flatten(),
-                "error": data.error,
+                "error": data.error.as_ref().map(|error| format!("promise failed: {}", ios_core::redaction::diagnostic_id(error))),
             });
             if json_output {
-                println!("{}", serde_json::to_string(&value)?);
+                crate::output::outln!("{}", serde_json::to_string(&value)?);
             } else {
-                println!("{value}");
+                crate::output::outln!("{value}");
             }
         }
     }
@@ -643,7 +725,7 @@ fn snapshot_to_json(snapshot: &PasteboardSnapshot, show_data: bool) -> serde_jso
                         }),
                         PasteboardPayload::Error(error) => serde_json::json!({
                             "state": "error",
-                            "error": error,
+                            "error": format!("promise failed: {}", ios_core::redaction::diagnostic_id(error)),
                         }),
                     };
                     if show_data {
@@ -722,7 +804,12 @@ fn human_snapshot_summary(snapshot: &PasteboardSnapshot, show_data: bool) -> Str
                     )
                 }
                 PasteboardPayload::Error(error) => {
-                    format!("[{}] {}: error: {error}", item.index, entry.uti)
+                    format!(
+                        "[{}] {}: promise failed: {}",
+                        item.index,
+                        entry.uti,
+                        ios_core::redaction::diagnostic_id(error)
+                    )
                 }
             };
             lines.push(line);
@@ -861,6 +948,98 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn notification_baseline_keeps_connection_causes_and_closes_local_monitor_on_failure() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        for (source, class) in [
+            (
+                ios_core::CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "owned-private-connect",
+                )),
+                "timeout",
+            ),
+            (
+                ios_core::CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "owned-private-connect",
+                )),
+                "permission_denied",
+            ),
+            (
+                ios_core::CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "owned-private-connect",
+                )),
+                "disconnected",
+            ),
+            (
+                ios_core::CoreError::Xpc(ios_core::XpcError::ServiceNotFound(
+                    "owned-private-service".into(),
+                )),
+                "service_missing",
+            ),
+            (
+                ios_core::CoreError::Unsupported("owned-private-condition".into()),
+                "unsupported",
+            ),
+        ] {
+            let original = std::mem::discriminant(&source);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&calls);
+            let mut source = Some(source);
+            let (stream, mut peer) = tokio::io::duplex(1024);
+            let error = pasteboard::PasteboardMonitor::start(
+                stream,
+                move |policy| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(policy, DataInclusionPolicy::AllPromised);
+                    read_notification_snapshot(
+                        std::future::ready(Err(source.take().expect("extra snapshot attempt"))),
+                        "general",
+                        policy,
+                    )
+                },
+                DataInclusionPolicy::PromiseSecondary,
+            )
+            .await
+            .err()
+            .expect("connection fault accepted");
+            assert!(matches!(error, pasteboard::PasteboardError::Xpc(_)));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let error = anyhow::Error::new(error).context("watch pasteboard notifications");
+            let retained = error
+                .chain()
+                .find_map(|source| source.downcast_ref::<ios_core::CoreError>())
+                .unwrap();
+            assert_eq!(std::mem::discriminant(retained), original);
+            let message = crate::output::operation_failure_message(
+                crate::output::ErrorFormat::Json,
+                "pasteboard",
+                &error,
+            )
+            .unwrap();
+            let json: serde_json::Value = serde_json::from_str(&message).unwrap();
+            assert_eq!(json["error"]["class"], class);
+            assert_eq!(json["error"]["phase"], "pasteboard");
+            assert_eq!(json["error"]["exit_code"], 1);
+            assert_eq!(json["error"]["effects"], "unknown");
+            assert!(!message.contains("owned-private"));
+            let mut registration = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                peer.read_to_end(&mut registration),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(!registration.is_empty());
+        }
+    }
+
     #[derive(Parser)]
     struct TestCli {
         #[command(subcommand)]
@@ -947,6 +1126,18 @@ mod tests {
         ));
         assert!(watch.validate_experimental().is_ok());
 
+        let watch = TestCli::parse_from(["pasteboard", "watch"]).command;
+        assert!(watch.validate_experimental().is_ok());
+        assert!(
+            matches!(watch, PasteboardSub::Watch { policy, autonotify: false, .. }
+            if policy == "promisesecondary")
+        );
+        assert!(TestCli::try_parse_from(["pasteboard", "watch", "--autonotify"]).is_err());
+        assert!(
+            TestCli::try_parse_from(["pasteboard", "watch", "--autonotify", "--experimental"])
+                .is_ok()
+        );
+
         let resolve =
             TestCli::parse_from(["pasteboard", "resolve", "2", "public.png", "--show-data"])
                 .command;
@@ -981,13 +1172,13 @@ mod tests {
 
     #[tokio::test]
     async fn experimental_commands_are_rejected_before_connection() {
-        let command = TestCli::parse_from(["pasteboard", "watch"]).command;
+        let command = TestCli::parse_from(["pasteboard", "resolve", "0", "public.png"]).command;
         let error = PasteboardCmd { sub: command }
             .run(None, true)
             .await
-            .expect_err("watch without opt-in must stop before device access");
+            .expect_err("resolve without opt-in must stop before device access");
         assert!(error.to_string().contains("--experimental"));
-        assert!(error.to_string().contains("watch"));
+        assert!(error.to_string().contains("resolve"));
     }
 
     #[test]
@@ -1141,5 +1332,38 @@ mod tests {
         assert!(redacted.contains("sha256"));
         let shown = snapshot_to_json(&snapshot, true).to_string();
         assert!(shown.contains("c2VjcmV0"));
+    }
+
+    #[test]
+    fn snapshot_promise_failures_hide_device_error_text_in_json_and_human_output() {
+        let secret = "synthetic-private-credential-device-data";
+        let snapshot = PasteboardSnapshot {
+            command: None,
+            pasteboard_name: None,
+            change_count: None,
+            uuid: None,
+            metadata: None,
+            source_metadata: None,
+            items: vec![pasteboard::PasteboardSnapshotItem {
+                index: 0,
+                types: vec![pasteboard::UTI_TEXT.into()],
+                data: vec![pasteboard::PasteboardEntry {
+                    uti: pasteboard::UTI_TEXT.into(),
+                    payload: PasteboardPayload::Error(secret.into()),
+                }],
+            }],
+        };
+        assert!(
+            format!("{snapshot:?}").contains(secret),
+            "the API data fixture contains the original promise diagnostic"
+        );
+        for show_data in [false, true] {
+            let json = snapshot_to_json(&snapshot, show_data).to_string();
+            let human = human_snapshot_summary(&snapshot, show_data);
+            assert!(!json.contains(secret));
+            assert!(!human.contains(secret));
+            assert!(json.contains("promise failed: id:"));
+            assert!(human.contains("promise failed: id:"));
+        }
     }
 }

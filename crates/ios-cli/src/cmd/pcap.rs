@@ -30,6 +30,10 @@ pub struct PcapCmd {
         help = "Only capture packets whose process name starts with this prefix"
     )]
     process: Option<String>,
+
+    /// Only include packets matching an interface name (e.g. en0, pdp_ip0, en)
+    #[arg(short, long)]
+    interface: Option<String>,
     #[arg(long, help = "Output pcap path", default_value = "capture.pcap")]
     output: PathBuf,
     #[arg(
@@ -67,6 +71,9 @@ impl PcapCmd {
         };
         let mut written = 0usize;
         let mut capture_metadata = PcapSummaryCaptureMetadataBuilder::new(&filter);
+        if self.interface.is_some() && capture_metadata.filter_hit.is_none() {
+            capture_metadata.filter_hit = Some(false);
+        }
 
         loop {
             if let Some(limit) = self.count {
@@ -80,9 +87,14 @@ impl PcapCmd {
             }
 
             let remaining = deadline.saturating_duration_since(now);
-            match timeout(remaining, client.next_packet()).await {
-                Ok(Ok(packet)) => {
-                    if filter.matches(&packet) {
+            match next_capture_packet(&mut client, remaining).await? {
+                Some(packet) => {
+                    if filter.matches(&packet)
+                        && self
+                            .interface
+                            .as_deref()
+                            .map_or(true, |iface| packet.matches_interface(iface))
+                    {
                         record.clear();
                         write_packet_record(&mut record, &packet)?;
                         file.write_all(&record).await?;
@@ -90,8 +102,7 @@ impl PcapCmd {
                         capture_metadata.record(&packet);
                     }
                 }
-                Ok(Err(err)) => return Err(anyhow::anyhow!("pcap: {err}")),
-                Err(_) => break,
+                None => break,
             }
         }
         file.flush().await?;
@@ -99,14 +110,29 @@ impl PcapCmd {
         if self.json {
             let summary =
                 PcapSummary::new(&self.output, written, &filter, capture_metadata.finish());
-            println!("{}", serde_json::to_string_pretty(&summary)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&summary)?);
         } else {
-            println!(
+            crate::output::outln!(
                 "Saved {written} packet(s) to {}",
                 self.output.to_string_lossy()
             );
         }
         Ok(())
+    }
+}
+
+async fn next_capture_packet<S>(
+    client: &mut PcapClient<S>,
+    remaining: Duration,
+) -> Result<Option<CapturedPacket>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match timeout(remaining, client.next_packet()).await {
+        Ok(Ok(packet)) => Ok(Some(packet)),
+        Ok(Err(error)) => Err(anyhow::Error::new(error).context("pcap")),
+        // This is the caller-selected capture window, not a reader failure.
+        Err(_) => Ok(None),
     }
 }
 
@@ -233,6 +259,33 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[tokio::test]
+    async fn stream_contract_pcap_window_and_native_eof_are_distinct() {
+        let (stream, peer) = tokio::io::duplex(64);
+        let mut client = PcapClient::new(stream);
+        assert!(next_capture_packet(&mut client, Duration::ZERO)
+            .await
+            .unwrap()
+            .is_none());
+        drop(peer);
+        let error = next_capture_packet(&mut client, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Io
+        );
+        assert!(error
+            .chain()
+            .any(|cause| cause.is::<ios_core::pcap::PcapError>()));
+        let native = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .unwrap();
+        assert_eq!(native.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(error.to_string(), "pcap");
+    }
 
     #[derive(Parser)]
     struct TestCli {

@@ -10,6 +10,10 @@ use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
+mod error_mapping;
+#[cfg(test)]
+mod source_contract_tests;
+
 pub const SERVICE_NAME: &str = "com.apple.dt.fetchsymbols";
 pub const REMOTE_SERVICE_NAME: &str = "com.apple.dt.remoteFetchSymbols";
 const CMD_LIST_FILES: u32 = 0x3030_3030;
@@ -19,7 +23,7 @@ const MAX_H2_STREAM_ID: u32 = 0x7fff_ffff;
 /// A dyld shared-cache catalog is small (normally a handful of entries). Keep
 /// a generous protocol ceiling so a malformed count cannot drive an enormous
 /// receive loop while leaving ample room for future device catalogs.
-const MAX_CATALOG_FILES: usize = 65_536;
+const MAX_CATALOG_FILES: usize = crate::xpc::h2_raw::MAX_EXPECTED_FILE_STREAMS;
 
 service_error!(FetchSymbolsError);
 
@@ -107,7 +111,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
     pub async fn connect(stream: S) -> Result<Self, FetchSymbolsError> {
         let mut framer = crate::xpc::h2_raw::H2Framer::connect(stream)
             .await
-            .map_err(|err| FetchSymbolsError::Protocol(format!("H2 error: {err}")))?;
+            .map_err(|err| error_mapping::h2_error("H2 error", err))?;
         bootstrap_remote_xpc(&mut framer).await?;
         Ok(Self {
             framer,
@@ -120,6 +124,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
         self.send_catalog_request().await?;
 
         let count = self.recv_catalog_count().await?;
+        self.framer
+            .expect_peer_file_streams(count)
+            .map_err(|err| error_mapping::h2_error("catalog file streams", err))?;
         let mut files = Vec::with_capacity(count.min(128));
         for _ in 0..count {
             files.push(self.recv_catalog_entry().await?);
@@ -158,14 +165,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                     msg_id: 0,
                     body: None,
                 })
-                .map_err(|err| {
-                    FetchSymbolsError::Protocol(format!("file stream encode failed: {err}"))
-                })?,
+                .map_err(|err| error_mapping::xpc_error("file stream encode failed", err))?,
             )
             .await
-            .map_err(|err| {
-                FetchSymbolsError::Protocol(format!("file stream open failed: {err}"))
-            })?;
+            .map_err(|err| error_mapping::h2_error("file stream open failed", err))?;
 
         let limit = max_bytes.map_or(file.size, |limit| limit.min(file.size));
         let mut remaining = limit;
@@ -179,9 +182,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                 .framer
                 .read_stream(stream_id, chunk_len)
                 .await
-                .map_err(|err| {
-                    FetchSymbolsError::Protocol(format!("file stream read failed: {err}"))
-                })?;
+                .map_err(|err| error_mapping::h2_error("file stream read failed", err))?;
             buf[..chunk_len].copy_from_slice(&chunk);
             writer.write_all(&buf[..chunk_len])?;
             written += chunk_len as u64;
@@ -211,12 +212,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                     msg_id: self.next_msg_id,
                     body: Some(crate::xpc::XpcValue::Dictionary(request)),
                 })
-                .map_err(|err| {
-                    FetchSymbolsError::Protocol(format!("catalog request encode failed: {err}"))
-                })?,
+                .map_err(|err| error_mapping::xpc_error("catalog request encode failed", err))?,
             )
             .await
-            .map_err(|err| FetchSymbolsError::Protocol(format!("catalog request failed: {err}")))?;
+            .map_err(|err| error_mapping::h2_error("catalog request failed", err))?;
         self.next_msg_id += 1;
         Ok(())
     }
@@ -230,18 +229,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                 return Ok(message);
             }
 
-            let frame = self.framer.read_next_data_frame().await.map_err(|err| {
-                FetchSymbolsError::Protocol(format!("control frame read failed: {err}"))
-            })?;
+            let frame = self
+                .framer
+                .read_next_data_frame()
+                .await
+                .map_err(|err| error_mapping::h2_error("control frame read failed", err))?;
             if frame.is_end_stream() && frame.payload.is_empty() {
                 continue;
             }
             if !frame.is_remote_xpc_control_stream() {
                 continue;
             }
-            self.control_messages.push(&frame.payload).map_err(|err| {
-                FetchSymbolsError::Protocol(format!("control response buffer failed: {err}"))
-            })?;
+            self.control_messages
+                .push(&frame.payload)
+                .map_err(|err| error_mapping::xpc_error("control response buffer failed", err))?;
         }
     }
 
@@ -268,8 +269,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                 Some(Ok(entry)) => return Ok(entry),
                 Some(Err(err)) => {
                     tracing::trace!(
-                        "remote fetchsymbols catalog entry parse failed: err={err}; body={:?}",
-                        message.body
+                        error = %crate::redaction::diagnostic_error(&err),
+                        "remote fetchsymbols catalog entry parse failed"
                     );
                     last_error = Some(err);
                 }
@@ -305,7 +306,7 @@ impl<S> RemoteFetchSymbolsClient<S> {
     ) -> Result<Option<crate::xpc::XpcMessage>, FetchSymbolsError> {
         self.control_messages
             .try_next()
-            .map_err(|err| FetchSymbolsError::Protocol(format!("control decode failed: {err}")))
+            .map_err(|err| error_mapping::xpc_error("control decode failed", err))
     }
 }
 
@@ -336,8 +337,12 @@ fn parse_catalog_count(value: &crate::xpc::XpcValue) -> Result<usize, FetchSymbo
     let declared = as_u64(value).ok_or_else(|| {
         FetchSymbolsError::Protocol("catalog response missing DSCFilePaths count".into())
     })?;
-    let count = usize::try_from(declared).map_err(|_| {
-        FetchSymbolsError::Protocol(format!("catalog file count {declared} exceeds usize::MAX"))
+    let count = usize::try_from(declared).map_err(|error| {
+        FetchSymbolsError::Io(crate::error::context::received_io(
+            "convert remote symbol count",
+            Some(declared),
+            error,
+        ))
     })?;
     if count > MAX_CATALOG_FILES {
         return Err(FetchSymbolsError::Protocol(format!(
@@ -432,22 +437,16 @@ where
                 body: Some(crate::xpc::XpcValue::Dictionary(IndexMap::new())),
             })
             .map_err(|err| {
-                FetchSymbolsError::Protocol(format!(
-                    "remote XPC bootstrap encode step 1 failed: {err}"
-                ))
+                error_mapping::xpc_error("remote XPC bootstrap encode step 1 failed", err)
             })?,
         )
         .await
-        .map_err(|err| {
-            FetchSymbolsError::Protocol(format!("remote XPC bootstrap step 1 failed: {err}"))
-        })?;
+        .map_err(|err| error_mapping::h2_error("remote XPC bootstrap step 1 failed", err))?;
 
     framer
         .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
         .await
-        .map_err(|err| {
-            FetchSymbolsError::Protocol(format!("remote XPC bootstrap open stream 3 failed: {err}"))
-        })?;
+        .map_err(|err| error_mapping::h2_error("remote XPC bootstrap open stream 3 failed", err))?;
 
     framer
         .write_client_server(
@@ -457,15 +456,11 @@ where
                 body: None,
             })
             .map_err(|err| {
-                FetchSymbolsError::Protocol(format!(
-                    "remote XPC bootstrap encode step 2 failed: {err}"
-                ))
+                error_mapping::xpc_error("remote XPC bootstrap encode step 2 failed", err)
             })?,
         )
         .await
-        .map_err(|err| {
-            FetchSymbolsError::Protocol(format!("remote XPC bootstrap step 2 failed: {err}"))
-        })?;
+        .map_err(|err| error_mapping::h2_error("remote XPC bootstrap step 2 failed", err))?;
 
     framer
         .write_server_client(
@@ -476,26 +471,56 @@ where
                 body: None,
             })
             .map_err(|err| {
-                FetchSymbolsError::Protocol(format!(
-                    "remote XPC bootstrap encode step 3 failed: {err}"
-                ))
+                error_mapping::xpc_error("remote XPC bootstrap encode step 3 failed", err)
             })?,
         )
         .await
-        .map_err(|err| {
-            FetchSymbolsError::Protocol(format!("remote XPC bootstrap step 3 failed: {err}"))
-        })?;
+        .map_err(|err| error_mapping::h2_error("remote XPC bootstrap step 3 failed", err))?;
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guarded_sources_symbol_count_reaches_host_specific_rejection() {
+        use std::error::Error;
+        let error = parse_catalog_count(&crate::xpc::XpcValue::Uint64(u64::MAX)).unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        if usize::BITS < 64 {
+            let FetchSymbolsError::Io(io) = &error else {
+                panic!("native conversion lost")
+            };
+            assert!(io.source().unwrap().is::<std::num::TryFromIntError>());
+        } else {
+            assert!(matches!(error, FetchSymbolsError::Protocol(_)));
+            assert!(error.to_string().contains("exceeds limit"));
+        }
+    }
     use std::path::Path;
 
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
     use super::*;
+
+    #[tokio::test]
+    async fn remote_connect_retains_native_h2_write_failure() {
+        let (stream, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let error = RemoteFetchSymbolsClient::connect(stream)
+            .await
+            .err()
+            .expect("closed stream accepted");
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::Disconnected
+        );
+        let mut current: &(dyn std::error::Error + 'static) = &error;
+        let mut retained = false;
+        while let Some(source) = current.source() {
+            retained |= source.is::<crate::xpc::h2_raw::H2Error>();
+            current = source;
+        }
+        assert!(retained, "original H2 error discarded");
+    }
 
     #[test]
     fn file_stream_id_rejects_overflow_and_reserved_ids() {
@@ -555,158 +580,5 @@ mod tests {
             remote_symbol_output_path(root, "../private/var"),
             root.join("private").join("var")
         );
-    }
-
-    fn h2_frame(frame_type: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
-        let length = payload.len();
-        let mut frame = Vec::with_capacity(9 + length);
-        frame.extend_from_slice(&[
-            (length >> 16) as u8,
-            (length >> 8) as u8,
-            length as u8,
-            frame_type,
-            flags,
-        ]);
-        frame.extend_from_slice(&(stream_id & 0x7fff_ffff).to_be_bytes());
-        frame.extend_from_slice(payload);
-        frame
-    }
-
-    async fn read_h2_frame(stream: &mut tokio::io::DuplexStream) -> (u8, u32, Vec<u8>) {
-        let mut header = [0u8; 9];
-        stream.read_exact(&mut header).await.unwrap();
-        let length =
-            ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | header[2] as usize;
-        let mut payload = vec![0u8; length];
-        stream.read_exact(&mut payload).await.unwrap();
-        (
-            header[3],
-            u32::from_be_bytes([header[5] & 0x7f, header[6], header[7], header[8]]),
-            payload,
-        )
-    }
-
-    fn catalog_message(body: crate::xpc::XpcValue, msg_id: u64) -> Vec<u8> {
-        crate::xpc::message::encode_message(&crate::xpc::XpcMessage {
-            flags: crate::xpc::message::flags::ALWAYS_SET,
-            msg_id,
-            body: Some(body),
-        })
-        .unwrap()
-        .to_vec()
-    }
-
-    fn catalog_entry(path: &str, size: u64) -> crate::xpc::XpcValue {
-        crate::xpc::XpcValue::Dictionary(IndexMap::from([(
-            "DSCFilePaths".into(),
-            crate::xpc::XpcValue::Dictionary(IndexMap::from([
-                ("filePath".into(), crate::xpc::XpcValue::String(path.into())),
-                (
-                    "fileTransfer".into(),
-                    crate::xpc::XpcValue::Dictionary(IndexMap::from([(
-                        "expectedLength".into(),
-                        crate::xpc::XpcValue::Uint64(size),
-                    )])),
-                ),
-            ])),
-        )]))
-    }
-
-    fn side_channel_preamble(msg_id: u64) -> Vec<u8> {
-        crate::xpc::message::encode_message(&crate::xpc::XpcMessage {
-            flags: crate::xpc::message::flags::ALWAYS_SET
-                | crate::xpc::message::flags::FILE_TX_STREAM_REQUEST,
-            msg_id,
-            body: None,
-        })
-        .unwrap()
-        .to_vec()
-    }
-
-    #[tokio::test]
-    async fn remote_list_reads_multiple_catalog_entries_while_side_channels_are_open() {
-        let (client, mut server) = tokio::io::duplex(64 * 1024);
-        let server_task = tokio::spawn(async move {
-            let mut preface = vec![0u8; crate::xpc::h2_raw::H2_PREFACE.len()];
-            server.read_exact(&mut preface).await.unwrap();
-            assert_eq!(preface, crate::xpc::h2_raw::H2_PREFACE);
-            let _ = read_h2_frame(&mut server).await; // client SETTINGS
-            let _ = read_h2_frame(&mut server).await; // connection WINDOW_UPDATE
-            server.write_all(&h2_frame(0x04, 0, 0, &[])).await.unwrap();
-
-            // SETTINGS ACK, then bootstrap: HEADERS#1, DATA#1, HEADERS#3,
-            // DATA#1, DATA#3.
-            for _ in 0..6 {
-                let _ = read_h2_frame(&mut server).await;
-            }
-
-            let count = catalog_message(
-                crate::xpc::XpcValue::Dictionary(IndexMap::from([(
-                    "DSCFilePaths".into(),
-                    crate::xpc::XpcValue::Uint64(3),
-                )])),
-                1,
-            );
-            server
-                .write_all(&h2_frame(0x01, 0x04, 2, &[]))
-                .await
-                .unwrap();
-            server
-                .write_all(&h2_frame(0x00, 0, 1, &count))
-                .await
-                .unwrap();
-
-            for (index, (path, size)) in [
-                ("/System/Library/Cache0", 10),
-                ("/System/Library/Cache1", 11),
-                ("/System/Library/Cache2", 12),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let stream_id = 2 * (index as u32 + 1);
-                let entry = catalog_message(catalog_entry(path, size), index as u64 + 2);
-                server
-                    .write_all(&h2_frame(
-                        0x00,
-                        0,
-                        stream_id,
-                        &side_channel_preamble(index as u64 + 1),
-                    ))
-                    .await
-                    .unwrap();
-                if index + 1 < 3 {
-                    server
-                        .write_all(&h2_frame(0x01, 0x04, stream_id + 2, &[]))
-                        .await
-                        .unwrap();
-                }
-                server
-                    .write_all(&h2_frame(0x00, 0, 1, &entry))
-                    .await
-                    .unwrap();
-            }
-        });
-
-        let mut client = RemoteFetchSymbolsClient::connect(client).await.unwrap();
-        let files = client.list_files().await.unwrap();
-        assert_eq!(
-            files,
-            vec![
-                RemoteSymbolFile {
-                    path: "/System/Library/Cache0".into(),
-                    size: 10,
-                },
-                RemoteSymbolFile {
-                    path: "/System/Library/Cache1".into(),
-                    size: 11,
-                },
-                RemoteSymbolFile {
-                    path: "/System/Library/Cache2".into(),
-                    size: 12,
-                },
-            ]
-        );
-        server_task.await.unwrap();
     }
 }

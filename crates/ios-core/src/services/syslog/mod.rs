@@ -21,6 +21,7 @@ const MAX_SYSLOG_MESSAGE: usize = 1024 * 1024;
 pub struct SyslogStream<S> {
     stream: BufReader<S>,
     buf: Vec<u8>,
+    usable: bool,
 }
 
 impl<S: AsyncRead + Unpin> SyslogStream<S> {
@@ -28,36 +29,66 @@ impl<S: AsyncRead + Unpin> SyslogStream<S> {
         Self {
             stream: BufReader::new(stream),
             buf: Vec::with_capacity(4096),
+            usable: true,
         }
     }
 
+    /// Whether local framing still permits another message read.
+    /// This does not establish peer liveness or safe retry on another stream.
+    pub fn is_usable(&self) -> bool {
+        self.usable
+    }
+
     /// Read one null-terminated log message (blocking until available).
+    ///
+    /// Cancelling this future retains bytes already consumed from the stream;
+    /// the next call resumes the same message. Only a successfully completed
+    /// message clears the accumulated raw bytes. Idle waiting has no fixed
+    /// request deadline.
+    ///
+    /// A raw-message limit refusal, native I/O error, or EOF makes this stream
+    /// terminal. The first failure retains its original I/O error; subsequent
+    /// calls reject locally with InvalidData without consuming a cached tail or
+    /// polling the transport. Drop the stream and open a fresh connection.
     pub async fn next_message(&mut self) -> Result<String, std::io::Error> {
-        self.buf.clear();
+        if !self.usable {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "syslog stream is unusable; reconnect before reading another message",
+            ));
+        }
         loop {
-            let available = self.stream.fill_buf().await?;
+            let available = match self.stream.fill_buf().await {
+                Ok(available) => available,
+                Err(error) => {
+                    self.usable = false;
+                    return Err(error);
+                }
+            };
             if available.is_empty() {
+                self.usable = false;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "syslog stream closed",
                 ));
             }
 
-            if let Some(terminator) = available.iter().position(|&b| b == 0) {
-                self.buf.extend_from_slice(&available[..terminator]);
-                self.stream.consume(terminator + 1);
-                return Ok(decode_vis(&String::from_utf8_lossy(&self.buf)));
-            }
-
-            // No terminator in this chunk: it is all message body.
-            let len = available.len();
+            let terminator = available.iter().position(|&b| b == 0);
+            let len = terminator.unwrap_or(available.len());
             if self.buf.len() + len > MAX_SYSLOG_MESSAGE {
+                self.usable = false;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("syslog message exceeds {MAX_SYSLOG_MESSAGE} bytes"),
                 ));
             }
-            self.buf.extend_from_slice(available);
+            self.buf.extend_from_slice(&available[..len]);
+            if terminator.is_some() {
+                self.stream.consume(len + 1);
+                let message = decode_vis(&String::from_utf8_lossy(&self.buf));
+                self.buf.clear();
+                return Ok(message);
+            }
             self.stream.consume(len);
         }
     }
@@ -275,6 +306,9 @@ fn extract_message(s: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+mod cancellation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -295,6 +329,33 @@ mod tests {
         let mut syslog = SyslogStream::new(&mut stream);
 
         assert_eq!(syslog.next_message().await.unwrap(), "message 或");
+    }
+
+    #[tokio::test]
+    async fn message_limit_applies_to_terminated_and_unterminated_final_chunks() {
+        for terminated in [false, true] {
+            let mut input = vec![b'x'; MAX_SYSLOG_MESSAGE + 1];
+            if terminated {
+                input.push(0);
+            }
+            let mut stream = SyslogStream::new(std::io::Cursor::new(input));
+            let result = stream.next_message().await;
+            assert!(
+                result.is_err(),
+                "oversized terminated={terminated} message accepted"
+            );
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(stream.buf.len() <= MAX_SYSLOG_MESSAGE);
+        }
+        let mut input = vec![b'x'; MAX_SYSLOG_MESSAGE];
+        input.extend_from_slice(b"\0next\0");
+        let mut stream = SyslogStream::new(std::io::Cursor::new(input));
+        assert_eq!(
+            stream.next_message().await.unwrap().len(),
+            MAX_SYSLOG_MESSAGE
+        );
+        assert_eq!(stream.next_message().await.unwrap(), "next");
     }
 
     #[test]

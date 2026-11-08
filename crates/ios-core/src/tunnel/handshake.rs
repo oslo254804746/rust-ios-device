@@ -29,7 +29,7 @@ const HEADER_LEN: usize = 10;
 const MAX_BODY_LEN: usize = u8::MAX as usize;
 
 /// Information returned by the CDTunnel handshake.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TunnelInfo {
     pub server_address: String,
     pub server_rsd_port: u16,
@@ -37,33 +37,61 @@ pub struct TunnelInfo {
     pub client_mtu: u32,
 }
 
+impl std::fmt::Debug for TunnelInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelInfo")
+            .field(
+                "server",
+                &crate::redaction::diagnostic_id(&self.server_address),
+            )
+            .field("rsd_port", &self.server_rsd_port)
+            .field(
+                "client",
+                &crate::redaction::diagnostic_id(&self.client_address),
+            )
+            .field("mtu", &self.client_mtu)
+            .finish()
+    }
+}
+
 fn parse_nonzero_u16(raw: &serde_json::Value, field: &str) -> Result<u16, TunnelError> {
     let value = raw
         .as_u64()
         .ok_or_else(|| TunnelError::Protocol(format!("missing {field}")))?;
-    u16::try_from(value)
-        .ok()
-        .filter(|value| *value != 0)
-        .ok_or_else(|| {
-            TunnelError::Protocol(format!(
-                "invalid {field}: expected integer in 1..={}",
-                u16::MAX
-            ))
-        })
+    let port = u16::try_from(value).map_err(|source| {
+        TunnelError::Io(crate::error::context::received_io(
+            "decode CDTunnel port",
+            Some(value),
+            source,
+        ))
+    })?;
+    if port == 0 {
+        return Err(TunnelError::Protocol(format!(
+            "invalid {field}: expected integer in 1..={}",
+            u16::MAX,
+        )));
+    }
+    Ok(port)
 }
 
 fn parse_supported_mtu(raw: &serde_json::Value, field: &str) -> Result<u32, TunnelError> {
     let raw_value = raw
         .as_u64()
         .ok_or_else(|| TunnelError::Protocol(format!("missing or invalid {field}")))?;
-    let value = u32::try_from(raw_value).map_err(|_| {
-        TunnelError::Protocol(format!(
-            "invalid {field}: value {raw_value} exceeds {}",
-            u32::MAX
+    let value = u32::try_from(raw_value).map_err(|source| {
+        TunnelError::Io(crate::error::context::received_io(
+            "decode CDTunnel MTU",
+            Some(raw_value),
+            source,
         ))
     })?;
-    ValidatedMtu::new(value)
-        .map_err(|error| TunnelError::Protocol(format!("invalid {field}: {error}")))?;
+    ValidatedMtu::new(value).map_err(|source| {
+        TunnelError::Io(crate::error::context::received_io(
+            "validate received CDTunnel MTU",
+            Some(raw_value),
+            source,
+        ))
+    })?;
     Ok(value)
 }
 
@@ -73,8 +101,13 @@ pub fn encode_handshake_request(mtu: u32) -> Result<Vec<u8>, TunnelError> {
         "type": "clientHandshakeRequest",
         "mtu": mtu.as_u16(),
     });
-    let json_bytes = serde_json::to_vec(&json)
-        .map_err(|e| TunnelError::Protocol(format!("failed to serialize handshake: {e}")))?;
+    let json_bytes = serde_json::to_vec(&json).map_err(|source| {
+        TunnelError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidInput,
+            "encode CDTunnel request",
+            source,
+        ))
+    })?;
     if json_bytes.len() > MAX_BODY_LEN {
         return Err(TunnelError::Protocol(format!(
             "handshake JSON exceeds {MAX_BODY_LEN} bytes"
@@ -82,10 +115,11 @@ pub fn encode_handshake_request(mtu: u32) -> Result<Vec<u8>, TunnelError> {
     }
     let mut buf = Vec::new();
     buf.extend_from_slice(MAGIC);
-    let body_len = u16::try_from(json_bytes.len()).map_err(|_| {
-        TunnelError::Protocol(format!(
-            "handshake JSON length {} exceeds u16::MAX",
-            json_bytes.len()
+    let body_len = u16::try_from(json_bytes.len()).map_err(|source| {
+        TunnelError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidInput,
+            "encode CDTunnel body length",
+            source,
         ))
     })?;
     buf.extend_from_slice(&body_len.to_be_bytes());
@@ -102,10 +136,11 @@ where
 {
     tokio::time::timeout(timeout, exchange_tunnel_parameters_inner(stream))
         .await
-        .map_err(|_| {
-            TunnelError::Protocol(format!(
-                "CDTunnel handshake timed out after {} ms",
-                timeout.as_millis()
+        .map_err(|source| {
+            TunnelError::Io(crate::error::context::deadline_io(
+                "CDTunnel handshake",
+                timeout,
+                source,
             ))
         })?
 }
@@ -134,8 +169,13 @@ where
     let mut body = vec![0u8; body_len];
     stream.read_exact(&mut body).await?;
 
-    let raw: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|e| TunnelError::Protocol(format!("invalid CDTunnel JSON: {e}")))?;
+    let raw: serde_json::Value = serde_json::from_slice(&body).map_err(|source| {
+        TunnelError::Io(crate::error::context::received_io(
+            "decode CDTunnel response",
+            None,
+            source,
+        ))
+    })?;
 
     Ok(TunnelInfo {
         server_address: raw["serverAddress"]
@@ -154,6 +194,139 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn connection_native_local_mtu_has_input_role_and_only_real_overflow_source() {
+        use std::error::Error;
+        for value in [0, 1279, 65536, u32::MAX] {
+            let error = encode_handshake_request(value).unwrap_err();
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            let TunnelError::Io(io) = &error else {
+                panic!("MTU role lost")
+            };
+            assert_eq!(io.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(io.source().is_some(), value > u16::MAX as u32);
+            if let Some(source) = io.source() {
+                assert!(source.is::<std::num::TryFromIntError>());
+            }
+            assert!(error.to_string().contains(&value.to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_native_received_handshake_keeps_original_json_and_integer_chains() {
+        use std::error::Error;
+        let cases = [
+            b"owned-private-invalid-json".to_vec(),
+            br#"{"serverAddress":"owned-private","serverRSDPort":65536,"clientParameters":{"address":"owned-private","mtu":1280}}"#.to_vec(),
+            br#"{"serverAddress":"owned-private","serverRSDPort":1234,"clientParameters":{"address":"owned-private","mtu":18446744073709551615}}"#.to_vec(),
+            br#"{"serverAddress":"owned-private","serverRSDPort":1234,"clientParameters":{"address":"owned-private","mtu":65536}}"#.to_vec(),
+            br#"{"serverAddress":"owned-private","serverRSDPort":1234,"clientParameters":{"address":"owned-private","mtu":0}}"#.to_vec(),
+        ];
+        for (index, body) in cases.into_iter().enumerate() {
+            let (mut client, mut peer) = tokio::io::duplex(512);
+            let caller = async move {
+                let error =
+                    exchange_tunnel_parameters_with_timeout(&mut client, Duration::from_secs(1))
+                        .await
+                        .unwrap_err();
+                assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+                assert!(!format!("{error:?}").contains("owned-private"));
+                let TunnelError::Io(io) = &error else {
+                    panic!("received source lost")
+                };
+                assert_eq!(io.kind(), std::io::ErrorKind::InvalidData);
+                assert!(!format!("{:?}", io.get_ref()).contains("owned-private"));
+                let mut source = Some(&error as &(dyn Error + 'static));
+                let mut json = false;
+                let mut integer = false;
+                let mut inner_input = false;
+                for _ in 0..8 {
+                    let Some(current) = source else { break };
+                    json |= current.is::<serde_json::Error>();
+                    integer |= current.is::<std::num::TryFromIntError>();
+                    if let Some(io) = current.downcast_ref::<std::io::Error>() {
+                        inner_input |= io.kind() == std::io::ErrorKind::InvalidInput;
+                    }
+                    source = current.source();
+                }
+                assert_eq!(json, index == 0);
+                assert_eq!(integer, (1..=3).contains(&index));
+                assert_eq!(inner_input, index >= 3);
+                drop(client);
+            };
+            let server = async move {
+                peer.write_all(b"CDTunnel").await.unwrap();
+                peer.write_all(&(body.len() as u16).to_be_bytes())
+                    .await
+                    .unwrap();
+                peer.write_all(&body).await.unwrap();
+                peer.shutdown().await.unwrap();
+                let mut request = Vec::new();
+                peer.read_to_end(&mut request).await.unwrap();
+                assert_eq!(request, encode_handshake_request(1280).unwrap());
+            };
+            tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::join!(caller, server);
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_native_handshake_timeout_keeps_issued_elapsed() {
+        use std::error::Error;
+        let (mut stream, mut peer) = tokio::io::duplex(512);
+        let error = exchange_tunnel_parameters_with_timeout(&mut stream, Duration::ZERO)
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        let TunnelError::Io(io) = &error else {
+            panic!("timer lost")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert!(io.source().unwrap().is::<tokio::time::error::Elapsed>());
+        assert!(error.to_string().contains("budget=0ns"));
+        drop(stream);
+        let mut request = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut request))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(request, encode_handshake_request(1280).unwrap());
+    }
+
+    #[test]
+    fn tunnel_info_debug_hides_both_address_types_without_changing_selectors() {
+        let secret = "synthetic-private-tunnel-address";
+        let info = TunnelInfo {
+            server_address: secret.into(),
+            server_rsd_port: 1234,
+            client_address: secret.into(),
+            client_mtu: 1280,
+        };
+        let public_info = crate::tunnel::TunnelInfo {
+            server_address: secret.into(),
+            server_rsd_port: 1234,
+            client_address: secret.into(),
+            client_mtu: 1280,
+        };
+        for output in [
+            format!("{info:?} {info:#?}"),
+            format!("{public_info:?} {public_info:#?}"),
+        ] {
+            assert!(!output.contains(secret));
+            assert!(output.contains("id:"));
+            assert!(output.contains("1280"));
+        }
+        assert_eq!(info.server_address, secret);
+        assert_eq!(public_info.client_address, secret);
+    }
 
     async fn exchange_with_response_json(
         response_json: serde_json::Value,
@@ -215,16 +388,18 @@ mod tests {
 
     #[test]
     fn test_validate_mtu_boundaries() {
-        assert!(matches!(
-            ValidatedMtu::new(0),
-            Err(TunnelError::Protocol(message))
-                if message.contains("IPv6 requires at least 1280 bytes")
-        ));
-        assert!(matches!(
-            ValidatedMtu::new(1279),
-            Err(TunnelError::Protocol(message))
-                if message.contains("IPv6 requires at least 1280 bytes")
-        ));
+        for value in [0, 1279] {
+            let error = ValidatedMtu::new(value).unwrap_err();
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            let TunnelError::Io(io) = error else {
+                panic!("MTU input role lost")
+            };
+            assert!(io.to_string().contains("IPv6 requires at least 1280 bytes"));
+            assert!(io.source().is_none());
+        }
 
         assert_eq!(ValidatedMtu::new(1280).unwrap().as_u16(), 1280);
         assert_eq!(ValidatedMtu::new(1500).unwrap().as_u16(), 1500);
@@ -235,11 +410,18 @@ mod tests {
         );
 
         for value in [u16::MAX as u32 + 1, u32::MAX] {
-            assert!(matches!(
-                ValidatedMtu::new(value),
-                Err(TunnelError::Protocol(message))
-                    if message.contains("exceeds the supported maximum 65535 bytes")
-            ));
+            let error = ValidatedMtu::new(value).unwrap_err();
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            let TunnelError::Io(io) = error else {
+                panic!("MTU overflow lost")
+            };
+            assert!(io
+                .to_string()
+                .contains("exceeds the supported maximum 65535 bytes"));
+            assert!(io.source().unwrap().is::<std::num::TryFromIntError>());
         }
     }
 
@@ -303,15 +485,12 @@ mod tests {
         .await
         .unwrap_err();
 
-        match err {
-            TunnelError::Protocol(message) => {
-                assert!(
-                    message.contains("invalid serverRSDPort"),
-                    "unexpected error: {message}"
-                );
-            }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        let TunnelError::Io(io) = err else {
+            panic!("received port source lost")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::InvalidData);
+        assert!(io.source().unwrap().is::<std::num::TryFromIntError>());
     }
 
     #[tokio::test]
@@ -327,15 +506,20 @@ mod tests {
         .await
         .unwrap_err();
 
-        match err {
-            TunnelError::Protocol(message) => {
-                assert!(
-                    message.contains("invalid clientParameters.mtu"),
-                    "unexpected error: {message}"
-                );
-            }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        let TunnelError::Io(io) = err else {
+            panic!("received MTU source lost")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::InvalidData);
+        let source = io.source().unwrap().downcast_ref::<TunnelError>().unwrap();
+        assert_eq!(
+            crate::classify_error(source),
+            crate::ErrorClass::InvalidInput
+        );
+        let TunnelError::Io(inner) = source else {
+            panic!("MTU input role lost")
+        };
+        assert!(inner.source().is_none());
     }
 
     #[tokio::test]
@@ -351,15 +535,15 @@ mod tests {
         .await
         .unwrap_err();
 
-        match err {
-            TunnelError::Protocol(message) => {
-                assert!(
-                    message.contains("invalid clientParameters.mtu"),
-                    "unexpected error: {message}"
-                );
-            }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        let TunnelError::Io(io) = err else {
+            panic!("received MTU source lost")
+        };
+        let source = io.source().unwrap().downcast_ref::<TunnelError>().unwrap();
+        let TunnelError::Io(inner) = source else {
+            panic!("MTU integer source lost")
+        };
+        assert!(inner.source().unwrap().is::<std::num::TryFromIntError>());
     }
 
     #[tokio::test]
@@ -375,15 +559,18 @@ mod tests {
         .await
         .unwrap_err();
 
-        match err {
-            TunnelError::Protocol(message) => {
-                assert!(
-                    message.contains("exceeds the supported maximum 65535 bytes"),
-                    "unexpected error: {message}"
-                );
-            }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        let TunnelError::Io(io) = err else {
+            panic!("received MTU source lost")
+        };
+        let source = io.source().unwrap().downcast_ref::<TunnelError>().unwrap();
+        let TunnelError::Io(inner) = source else {
+            panic!("MTU integer source lost")
+        };
+        assert!(inner
+            .to_string()
+            .contains("exceeds the supported maximum 65535 bytes"));
+        assert!(inner.source().unwrap().is::<std::num::TryFromIntError>());
     }
 
     #[tokio::test]
@@ -392,11 +579,11 @@ mod tests {
         let err = exchange_tunnel_parameters_with_timeout(&mut client, Duration::from_millis(20))
             .await
             .unwrap_err();
-        match err {
-            TunnelError::Protocol(message) => {
-                assert!(message.contains("timed out"), "unexpected error: {message}");
-            }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        let TunnelError::Io(io) = err else {
+            panic!("timer source lost")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert!(io.source().unwrap().is::<tokio::time::error::Elapsed>());
     }
 }

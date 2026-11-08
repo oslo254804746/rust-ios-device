@@ -26,8 +26,9 @@ pub enum OpackValue {
 /// The per-level element cap bounds width, not depth: ~1 MB of repeated `0xD1`
 /// or `0xE1` bytes would otherwise recurse until the stack overflows.
 const MAX_OPACK_DEPTH: usize = 64;
+crate::redaction::error_debug!(OpackError);
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum OpackError {
     #[error("unexpected end of buffer")]
     UnexpectedEof,
@@ -36,7 +37,7 @@ pub enum OpackError {
     #[error("opack nesting exceeds {0} levels")]
     TooDeep(usize),
     #[error("invalid UTF-8 in string")]
-    InvalidUtf8,
+    InvalidUtf8(#[source] std::str::Utf8Error),
     #[error("opack encode error: {0}")]
     Encode(String),
 }
@@ -189,7 +190,7 @@ fn decode_at(buf: &[u8], pos: usize, depth: usize) -> Result<(OpackValue, usize)
                 return Err(OpackError::UnexpectedEof);
             }
             let s = std::str::from_utf8(&buf[pos + 1..pos + 1 + len])
-                .map_err(|_| OpackError::InvalidUtf8)?;
+                .map_err(OpackError::InvalidUtf8)?;
             Ok((OpackValue::String(s.to_string()), pos + 1 + len))
         }
         0x61 => {
@@ -201,7 +202,7 @@ fn decode_at(buf: &[u8], pos: usize, depth: usize) -> Result<(OpackValue, usize)
                 return Err(OpackError::UnexpectedEof);
             }
             let s = std::str::from_utf8(&buf[pos + 2..pos + 2 + len])
-                .map_err(|_| OpackError::InvalidUtf8)?;
+                .map_err(OpackError::InvalidUtf8)?;
             Ok((OpackValue::String(s.to_string()), pos + 2 + len))
         }
         0x62 => {
@@ -213,7 +214,7 @@ fn decode_at(buf: &[u8], pos: usize, depth: usize) -> Result<(OpackValue, usize)
                 return Err(OpackError::UnexpectedEof);
             }
             let s = std::str::from_utf8(&buf[pos + 3..pos + 3 + len])
-                .map_err(|_| OpackError::InvalidUtf8)?;
+                .map_err(OpackError::InvalidUtf8)?;
             Ok((OpackValue::String(s.to_string()), pos + 3 + len))
         }
         // Immediate byte strings of length 0..=32.
@@ -271,6 +272,29 @@ fn decode_at(buf: &[u8], pos: usize, depth: usize) -> Result<(OpackValue, usize)
 #[cfg(test)]
 mod tests {
     use super::{decode, encode, OpackError, OpackValue};
+
+    #[test]
+    fn actual_opack_utf8_faults_retain_native_positions_in_all_string_forms() {
+        use std::error::Error;
+        let raw = b"owned-private\xff";
+        for mut bytes in [
+            vec![0x40 | raw.len() as u8],
+            vec![0x61, raw.len() as u8],
+            vec![0x62, raw.len() as u8, 0],
+        ] {
+            bytes.extend_from_slice(raw);
+            let error = decode(&bytes).unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            let native = error
+                .source()
+                .unwrap()
+                .downcast_ref::<std::str::Utf8Error>()
+                .unwrap();
+            assert_eq!(native.valid_up_to(), raw.len() - 1);
+            assert_eq!(native.error_len(), Some(1));
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+    }
 
     fn roundtrip(value: OpackValue) -> OpackValue {
         let encoded = encode(&value).expect("encode should succeed");

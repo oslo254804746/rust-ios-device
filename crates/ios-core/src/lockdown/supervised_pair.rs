@@ -31,13 +31,17 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::lockdown::protocol::{recv_lockdown, send_lockdown, GetValueRequest};
 use crate::lockdown::LockdownError;
 
+fn backend_error(phase: &'static str, error: openssl::error::ErrorStack) -> LockdownError {
+    super::error_context::native(std::io::ErrorKind::Other, phase, error)
+}
+
 // ── Serializable pair record for the Pair request ────────────────────────────
 
 /// Full pair record data sent inside the lockdown Pair request.
 ///
 /// All certificate and key fields are PEM-encoded, matching the format
 /// that `PairRecord::load()` expects on disk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct FullPairRecord {
     #[serde(with = "serde_bytes")]
@@ -56,6 +60,12 @@ pub struct FullPairRecord {
     pub system_buid: String,
 }
 
+impl std::fmt::Debug for FullPairRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FullPairRecord").finish_non_exhaustive()
+    }
+}
+
 // ── Certificate generation ───────────────────────────────────────────────────
 
 /// Generate the full certificate chain for lockdown pairing.
@@ -71,20 +81,25 @@ pub fn generate_pair_certs(
     system_buid: &str,
 ) -> Result<FullPairRecord, LockdownError> {
     // 1. Parse device public key from PEM
-    let device_pkey = PKey::public_key_from_pem(device_public_key_pem)
-        .map_err(|e| LockdownError::Protocol(format!("failed to parse device public key: {e}")))?;
+    let device_pkey = PKey::public_key_from_pem(device_public_key_pem).map_err(|error| {
+        super::error_context::native(
+            std::io::ErrorKind::InvalidData,
+            "parse supervised device public key",
+            error,
+        )
+    })?;
 
     // 2. Generate root RSA key pair (2048-bit, matching go-ios)
-    let root_rsa = Rsa::generate(2048)
-        .map_err(|e| LockdownError::Protocol(format!("RSA key generation failed: {e}")))?;
-    let root_pkey = PKey::from_rsa(root_rsa)
-        .map_err(|e| LockdownError::Protocol(format!("PKey from RSA failed: {e}")))?;
+    let root_rsa =
+        Rsa::generate(2048).map_err(|error| backend_error("RSA key generation failed", error))?;
+    let root_pkey =
+        PKey::from_rsa(root_rsa).map_err(|error| backend_error("PKey from RSA failed", error))?;
 
     // 3. Generate host RSA key pair
-    let host_rsa = Rsa::generate(2048)
-        .map_err(|e| LockdownError::Protocol(format!("RSA key generation failed: {e}")))?;
-    let host_pkey = PKey::from_rsa(host_rsa)
-        .map_err(|e| LockdownError::Protocol(format!("PKey from RSA failed: {e}")))?;
+    let host_rsa =
+        Rsa::generate(2048).map_err(|error| backend_error("RSA key generation failed", error))?;
+    let host_pkey =
+        PKey::from_rsa(host_rsa).map_err(|error| backend_error("PKey from RSA failed", error))?;
 
     // 4. Create root certificate (self-signed CA)
     let root_cert = build_root_cert(&root_pkey)?;
@@ -101,19 +116,19 @@ pub fn generate_pair_certs(
     Ok(FullPairRecord {
         device_certificate: device_cert
             .to_pem()
-            .map_err(|e| LockdownError::Protocol(format!("cert to PEM failed: {e}")))?,
+            .map_err(|error| backend_error("cert to PEM failed", error))?,
         host_certificate: host_cert
             .to_pem()
-            .map_err(|e| LockdownError::Protocol(format!("cert to PEM failed: {e}")))?,
+            .map_err(|error| backend_error("cert to PEM failed", error))?,
         host_private_key: host_pkey
             .private_key_to_pem_pkcs8()
-            .map_err(|e| LockdownError::Protocol(format!("key to PEM failed: {e}")))?,
+            .map_err(|error| backend_error("key to PEM failed", error))?,
         root_certificate: root_cert
             .to_pem()
-            .map_err(|e| LockdownError::Protocol(format!("cert to PEM failed: {e}")))?,
+            .map_err(|error| backend_error("cert to PEM failed", error))?,
         root_private_key: root_pkey
             .private_key_to_pem_pkcs8()
-            .map_err(|e| LockdownError::Protocol(format!("key to PEM failed: {e}")))?,
+            .map_err(|error| backend_error("key to PEM failed", error))?,
         host_id,
         system_buid: system_buid.to_string(),
     })
@@ -127,72 +142,72 @@ pub fn generate_pair_certs(
 /// - SubjectKeyIdentifier (SHA1 of public key)
 /// - SHA1WithRSA signature
 fn build_root_cert(pkey: &PKey<Private>) -> Result<X509, LockdownError> {
-    let mut builder = X509Builder::new()
-        .map_err(|e| LockdownError::Protocol(format!("X509Builder::new failed: {e}")))?;
+    let mut builder =
+        X509Builder::new().map_err(|error| backend_error("X509Builder::new failed", error))?;
 
     // X.509 v3
     builder
         .set_version(2)
-        .map_err(|e| LockdownError::Protocol(format!("set_version failed: {e}")))?;
+        .map_err(|error| backend_error("set_version failed", error))?;
 
     // Serial number = 0
     let serial = BigNum::from_u32(0)
         .and_then(|bn| bn.to_asn1_integer())
-        .map_err(|e| LockdownError::Protocol(format!("serial number failed: {e}")))?;
+        .map_err(|error| backend_error("serial number failed", error))?;
     builder
         .set_serial_number(&serial)
-        .map_err(|e| LockdownError::Protocol(format!("set_serial_number failed: {e}")))?;
+        .map_err(|error| backend_error("set_serial_number failed", error))?;
 
     // Empty subject name (matching go-ios pkix.Name{})
     let name = X509NameBuilder::new()
         .map(|b| b.build())
-        .map_err(|e| LockdownError::Protocol(format!("X509Name build failed: {e}")))?;
+        .map_err(|error| backend_error("X509Name build failed", error))?;
     builder
         .set_subject_name(&name)
-        .map_err(|e| LockdownError::Protocol(format!("set_subject_name failed: {e}")))?;
+        .map_err(|error| backend_error("set_subject_name failed", error))?;
     builder
         .set_issuer_name(&name)
-        .map_err(|e| LockdownError::Protocol(format!("set_issuer_name failed: {e}")))?;
+        .map_err(|error| backend_error("set_issuer_name failed", error))?;
 
     // 10-year validity
-    let not_before = Asn1Time::days_from_now(0)
-        .map_err(|e| LockdownError::Protocol(format!("Asn1Time failed: {e}")))?;
-    let not_after = Asn1Time::days_from_now(3650)
-        .map_err(|e| LockdownError::Protocol(format!("Asn1Time failed: {e}")))?;
+    let not_before =
+        Asn1Time::days_from_now(0).map_err(|error| backend_error("Asn1Time failed", error))?;
+    let not_after =
+        Asn1Time::days_from_now(3650).map_err(|error| backend_error("Asn1Time failed", error))?;
     builder
         .set_not_before(&not_before)
-        .map_err(|e| LockdownError::Protocol(format!("set_not_before failed: {e}")))?;
+        .map_err(|error| backend_error("set_not_before failed", error))?;
     builder
         .set_not_after(&not_after)
-        .map_err(|e| LockdownError::Protocol(format!("set_not_after failed: {e}")))?;
+        .map_err(|error| backend_error("set_not_after failed", error))?;
 
     builder
         .set_pubkey(pkey)
-        .map_err(|e| LockdownError::Protocol(format!("set_pubkey failed: {e}")))?;
+        .map_err(|error| backend_error("set_pubkey failed", error))?;
 
     // BasicConstraints: CA=true, critical
     let basic = BasicConstraints::new()
         .critical()
         .ca()
         .build()
-        .map_err(|e| LockdownError::Protocol(format!("BasicConstraints build failed: {e}")))?;
+        .map_err(|error| backend_error("BasicConstraints build failed", error))?;
     builder
         .append_extension(basic)
-        .map_err(|e| LockdownError::Protocol(format!("append_extension failed: {e}")))?;
+        .map_err(|error| backend_error("append_extension failed", error))?;
 
     // SubjectKeyIdentifier — SHA1 hash of the public key
     // We need to build this from the context of the builder itself
     let ski = SubjectKeyIdentifier::new()
         .build(&builder.x509v3_context(None, None))
-        .map_err(|e| LockdownError::Protocol(format!("SKI build failed: {e}")))?;
+        .map_err(|error| backend_error("SKI build failed", error))?;
     builder
         .append_extension(ski)
-        .map_err(|e| LockdownError::Protocol(format!("append SKI failed: {e}")))?;
+        .map_err(|error| backend_error("append SKI failed", error))?;
 
     // Sign with SHA1 (matching go-ios SHA1WithRSA)
     builder
         .sign(pkey, MessageDigest::sha1())
-        .map_err(|e| LockdownError::Protocol(format!("sign failed: {e}")))?;
+        .map_err(|error| backend_error("sign failed", error))?;
 
     Ok(builder.build())
 }
@@ -211,82 +226,82 @@ fn build_signed_cert(
     issuer_cert: &X509,
     issuer_pkey: &PKey<Private>,
 ) -> Result<X509, LockdownError> {
-    let mut builder = X509Builder::new()
-        .map_err(|e| LockdownError::Protocol(format!("X509Builder::new failed: {e}")))?;
+    let mut builder =
+        X509Builder::new().map_err(|error| backend_error("X509Builder::new failed", error))?;
 
     // X.509 v3
     builder
         .set_version(2)
-        .map_err(|e| LockdownError::Protocol(format!("set_version failed: {e}")))?;
+        .map_err(|error| backend_error("set_version failed", error))?;
 
     // Serial number = 0
     let serial = BigNum::from_u32(0)
         .and_then(|bn| bn.to_asn1_integer())
-        .map_err(|e| LockdownError::Protocol(format!("serial number failed: {e}")))?;
+        .map_err(|error| backend_error("serial number failed", error))?;
     builder
         .set_serial_number(&serial)
-        .map_err(|e| LockdownError::Protocol(format!("set_serial_number failed: {e}")))?;
+        .map_err(|error| backend_error("set_serial_number failed", error))?;
 
     // Empty subject name
     let name = X509NameBuilder::new()
         .map(|b| b.build())
-        .map_err(|e| LockdownError::Protocol(format!("X509Name build failed: {e}")))?;
+        .map_err(|error| backend_error("X509Name build failed", error))?;
     builder
         .set_subject_name(&name)
-        .map_err(|e| LockdownError::Protocol(format!("set_subject_name failed: {e}")))?;
+        .map_err(|error| backend_error("set_subject_name failed", error))?;
 
     // Issuer = root cert's subject
     builder
         .set_issuer_name(issuer_cert.subject_name())
-        .map_err(|e| LockdownError::Protocol(format!("set_issuer_name failed: {e}")))?;
+        .map_err(|error| backend_error("set_issuer_name failed", error))?;
 
     // 10-year validity
-    let not_before = Asn1Time::days_from_now(0)
-        .map_err(|e| LockdownError::Protocol(format!("Asn1Time failed: {e}")))?;
-    let not_after = Asn1Time::days_from_now(3650)
-        .map_err(|e| LockdownError::Protocol(format!("Asn1Time failed: {e}")))?;
+    let not_before =
+        Asn1Time::days_from_now(0).map_err(|error| backend_error("Asn1Time failed", error))?;
+    let not_after =
+        Asn1Time::days_from_now(3650).map_err(|error| backend_error("Asn1Time failed", error))?;
     builder
         .set_not_before(&not_before)
-        .map_err(|e| LockdownError::Protocol(format!("set_not_before failed: {e}")))?;
+        .map_err(|error| backend_error("set_not_before failed", error))?;
     builder
         .set_not_after(&not_after)
-        .map_err(|e| LockdownError::Protocol(format!("set_not_after failed: {e}")))?;
+        .map_err(|error| backend_error("set_not_after failed", error))?;
 
     builder
         .set_pubkey(subject_pkey)
-        .map_err(|e| LockdownError::Protocol(format!("set_pubkey failed: {e}")))?;
+        .map_err(|error| backend_error("set_pubkey failed", error))?;
 
     // BasicConstraints: CA=false
     let basic = BasicConstraints::new()
         .critical()
         .build()
-        .map_err(|e| LockdownError::Protocol(format!("BasicConstraints build failed: {e}")))?;
+        .map_err(|error| backend_error("BasicConstraints build failed", error))?;
     builder
         .append_extension(basic)
-        .map_err(|e| LockdownError::Protocol(format!("append_extension failed: {e}")))?;
+        .map_err(|error| backend_error("append_extension failed", error))?;
 
     // KeyUsage: digitalSignature | keyEncipherment (matching go-ios)
     let key_usage = KeyUsage::new()
         .digital_signature()
         .key_encipherment()
         .build()
-        .map_err(|e| LockdownError::Protocol(format!("KeyUsage build failed: {e}")))?;
+        .map_err(|error| backend_error("KeyUsage build failed", error))?;
     builder
         .append_extension(key_usage)
-        .map_err(|e| LockdownError::Protocol(format!("append KeyUsage failed: {e}")))?;
+        .map_err(|error| backend_error("append KeyUsage failed", error))?;
 
     // SubjectKeyIdentifier
     let ski = SubjectKeyIdentifier::new()
         .build(&builder.x509v3_context(Some(issuer_cert), None))
-        .map_err(|e| LockdownError::Protocol(format!("SKI build failed: {e}")))?;
+        .map_err(|error| backend_error("SKI build failed", error))?;
     builder
         .append_extension(ski)
-        .map_err(|e| LockdownError::Protocol(format!("append SKI failed: {e}")))?;
+        .map_err(|error| backend_error("append SKI failed", error))?;
 
     // Sign with SHA1 by issuer's private key
     builder
         .sign(issuer_pkey, MessageDigest::sha1())
-        .map_err(|e| LockdownError::Protocol(format!("sign failed: {e}")))?;
+        .map_err(|error| backend_error("sign failed", error))?;
 
     Ok(builder.build())
 }
@@ -396,11 +411,32 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     // 1. Parse P12 to extract supervisor cert and private key
-    let pkcs12 = Pkcs12::from_der(p12_bytes)
-        .map_err(|e| LockdownError::Protocol(format!("P12 parse failed: {e}")))?;
-    let parsed = pkcs12
-        .parse2(p12_password)
-        .map_err(|e| LockdownError::Protocol(format!("P12 parse2 failed: {e}")))?;
+    let pkcs12 = Pkcs12::from_der(p12_bytes).map_err(|error| {
+        super::error_context::native(
+            std::io::ErrorKind::InvalidInput,
+            "parse supervisor PKCS12 DER",
+            error,
+        )
+    })?;
+    // OpenSSL's Rust wrapper unwraps CString construction in parse2. Reject
+    // its invalid input with the native cause before it can panic. Valid
+    // passwords take the existing path without allocating another copy.
+    if p12_password.as_bytes().contains(&0) {
+        std::ffi::CString::new(p12_password).map_err(|error| {
+            super::error_context::native(
+                std::io::ErrorKind::InvalidInput,
+                "validate supervisor PKCS12 password",
+                error,
+            )
+        })?;
+    }
+    let parsed = pkcs12.parse2(p12_password).map_err(|error| {
+        super::error_context::native(
+            std::io::ErrorKind::InvalidInput,
+            "unlock supervisor PKCS12",
+            error,
+        )
+    })?;
     let supervisor_cert = parsed
         .cert
         .ok_or_else(|| LockdownError::Protocol("P12 missing certificate".into()))?;
@@ -417,7 +453,7 @@ where
     // 4. Send first Pair request with SupervisorCertificate (DER-encoded)
     let supervisor_cert_der = supervisor_cert
         .to_der()
-        .map_err(|e| LockdownError::Protocol(format!("supervisor cert to DER failed: {e}")))?;
+        .map_err(|error| backend_error("supervisor cert to DER failed", error))?;
 
     let payload = pair_record_payload(&pair_record);
     let first_request = PairRequestFirst {
@@ -436,8 +472,7 @@ where
     let challenge = recv_pairing_challenge(stream).await?;
 
     // 6. Sign challenge with PKCS7 using supervisor's private key
-    let certs =
-        Stack::new().map_err(|e| LockdownError::Protocol(format!("Stack::new failed: {e}")))?;
+    let certs = Stack::new().map_err(|error| backend_error("Stack::new failed", error))?;
     let signed = Pkcs7::sign(
         &supervisor_cert,
         &supervisor_pkey,
@@ -446,7 +481,7 @@ where
         Pkcs7Flags::BINARY,
     )
     .and_then(|p7| p7.to_der())
-    .map_err(|e| LockdownError::Protocol(format!("PKCS7 sign failed: {e}")))?;
+    .map_err(|error| backend_error("PKCS7 sign failed", error))?;
 
     // 7. Send second Pair request with ChallengeResponse
     let payload2 = pair_record_payload(&pair_record);
@@ -608,23 +643,49 @@ pub fn save_pair_record(
 
     let plist_value = Value::Dictionary(dict);
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, &plist_value)
-        .map_err(|e| LockdownError::Protocol(format!("plist serialization failed: {e}")))?;
+    plist::to_writer_xml(&mut buf, &plist_value).map_err(|error| {
+        super::error_context::native(
+            std::io::ErrorKind::Other,
+            "serialize supervised pairing record plist",
+            error,
+        )
+    })?;
     // Carries HostPrivateKey and RootPrivateKey; owner-only, like Apple's own
     // /var/db/lockdown records.
-    crate::secret_file::write_secret(path, &buf).map_err(|e| {
-        LockdownError::Protocol(format!(
-            "failed to write pair record to {}: {e}",
-            path.display()
-        ))
+    crate::secret_file::write_secret(path, &buf).map_err(|error| {
+        super::error_context::native(error.kind(), "write supervised pairing record", error)
     })?;
 
     Ok(())
 }
 
 #[cfg(test)]
+mod source_contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_pair_record_debug_omits_all_credential_bytes_and_identifiers() {
+        let secret = "synthetic-private-credential-device-data";
+        let bytes = secret.as_bytes().to_vec();
+        let record = FullPairRecord {
+            device_certificate: bytes.clone(),
+            host_certificate: bytes.clone(),
+            host_private_key: bytes.clone(),
+            root_certificate: bytes.clone(),
+            root_private_key: bytes.clone(),
+            host_id: secret.into(),
+            system_buid: secret.into(),
+        };
+        let output = format!("{record:?} {record:#?}");
+        assert!(!output.contains(secret));
+        assert!(!output.contains(&format!("{bytes:?}")));
+        assert!(!output.contains(&hex::encode(&bytes)));
+        assert!(output.contains("FullPairRecord"));
+        assert_eq!(record.host_private_key, bytes);
+    }
 
     #[test]
     fn test_generate_pair_certs_structure() {

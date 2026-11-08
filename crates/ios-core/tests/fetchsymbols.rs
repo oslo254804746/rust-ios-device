@@ -118,6 +118,73 @@ async fn remote_list_files_bootstraps_xpc_and_decodes_catalog() {
 }
 
 #[tokio::test]
+async fn remote_list_accepts_71_advertised_file_transfer_streams() {
+    let (client, mut server) = tokio::io::duplex(64 * 1024);
+    let server_task = tokio::spawn(async move {
+        perform_h2_handshake(&mut server).await;
+        perform_remote_xpc_bootstrap(&mut server).await;
+        let _ = read_xpc_request(&mut server, 1).await;
+        write_xpc_response(
+            &mut server,
+            3,
+            XpcValue::Dictionary(IndexMap::from([(
+                "DSCFilePaths".into(),
+                XpcValue::Uint64(71),
+            )])),
+        )
+        .await;
+        for index in 0..71 {
+            let stream_id = (index + 1) * 2;
+            write_headers_only(&mut server, stream_id).await;
+            write_file_transfer_request(&mut server, stream_id).await;
+            write_xpc_response(
+                &mut server,
+                1,
+                remote_catalog_entry(&format!("/dyld/cache-{index}"), index as u64),
+            )
+            .await;
+        }
+    });
+    let mut client = ios_core::fetchsymbols::RemoteFetchSymbolsClient::connect(client)
+        .await
+        .unwrap();
+    let files = client.list_files().await.unwrap();
+    assert_eq!(files.len(), 71);
+    assert_eq!(files[70].path, "/dyld/cache-70");
+    assert_eq!(files[70].size, 70);
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn remote_list_still_rejects_unadvertised_stream_flood() {
+    let (client, mut server) = tokio::io::duplex(64 * 1024);
+    let server_task = tokio::spawn(async move {
+        perform_h2_handshake(&mut server).await;
+        perform_remote_xpc_bootstrap(&mut server).await;
+        let _ = read_xpc_request(&mut server, 1).await;
+        write_xpc_response(
+            &mut server,
+            3,
+            XpcValue::Dictionary(IndexMap::from([(
+                "DSCFilePaths".into(),
+                XpcValue::Uint64(71),
+            )])),
+        )
+        .await;
+        // Even streams beyond the advertised catalog remain unknown.
+        for stream_id in (144..=208).step_by(2) {
+            write_headers_only(&mut server, stream_id).await;
+        }
+    });
+    let mut client = ios_core::fetchsymbols::RemoteFetchSymbolsClient::connect(client)
+        .await
+        .unwrap();
+    let error = client.list_files().await.unwrap_err();
+    assert!(error.to_string().contains("too many unknown H2 streams"));
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn remote_download_opens_file_stream_and_copies_bytes() {
     let (client, mut server) = tokio::io::duplex(16 * 1024);
 

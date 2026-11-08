@@ -1,7 +1,9 @@
+crate::redaction::error_debug!(PlistFrameError);
+
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub(crate) enum PlistFrameError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -54,13 +56,21 @@ where
             payload.len()
         )));
     }
-    let len = u32::try_from(payload.len()).map_err(|_| {
-        PlistFrameError::Protocol(format!("plist frame too large: {}", payload.len()))
-    })?;
+    let len = checked_payload_len(payload.len())?;
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(payload).await?;
     writer.flush().await?;
     Ok(())
+}
+
+fn checked_payload_len(len: usize) -> Result<u32, PlistFrameError> {
+    u32::try_from(len).map_err(|error| {
+        PlistFrameError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidInput,
+            "encode plist frame length",
+            error,
+        ))
+    })
 }
 
 pub(crate) async fn read_plist_frame<R, T>(
@@ -89,6 +99,20 @@ mod tests {
     use super::*;
     use plist::Value;
     use tokio::io::AsyncReadExt;
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn native_plist_length_conversion_retains_input_source() {
+        let error = checked_payload_len(u32::MAX as usize + 1).unwrap_err();
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::InvalidInput
+        );
+        assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+            &error
+        ));
+        assert_eq!(checked_payload_len(u32::MAX as usize).unwrap(), u32::MAX);
+    }
 
     #[tokio::test]
     async fn write_xml_plist_frame_writes_big_endian_len_and_payload() {

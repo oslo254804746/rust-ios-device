@@ -3,21 +3,112 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-#[derive(Debug, thiserror::Error)]
+pub(crate) const MAX_PAIR_RECORD_BYTES: u64 = 1024 * 1024;
+#[cfg(feature = "mdns")]
+pub(crate) const MAX_DISCOVERY_PAIR_RECORDS: usize = 128;
+
+/// Shared bounded reader for local pairing stores. The original serialized
+/// private keys are wiped when parsing finishes.
+///
+/// Only regular files are read; existing links to regular files remain valid.
+/// Unix nonblocking open also protects the interval between the path and handle
+/// checks from a FIFO replacement. This does not make filesystem metadata or
+/// regular-file reads cancellable on a stalled filesystem.
+pub(crate) fn read_pair_record_bytes(
+    path: &std::path::Path,
+) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(non_regular_pair_record());
+    }
+    let file = open_pair_record_file(path)?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(MAX_PAIR_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_PAIR_RECORD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "pair record exceeds size limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn non_regular_pair_record() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "pair record path must be a regular file",
+    )
+}
+
+fn open_pair_record_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(non_regular_pair_record());
+    }
+    Ok(file)
+}
+
+#[cfg(feature = "mdns")]
+pub(crate) fn discovery_pair_record_paths(dir: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    // Bound directory work as well as parsed records. Skip links so enumeration
+    // never expands the configured credential directory into other locations.
+    let mut paths: Vec<_> = entries
+        .take(4096)
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "plist"))
+        .collect();
+    paths.sort();
+    paths.truncate(MAX_DISCOVERY_PAIR_RECORDS);
+    paths
+}
+
+#[derive(thiserror::Error)]
 pub enum PairRecordError {
-    #[error("pair record not found for UDID: {0}")]
+    #[error("pair record not found for device: {}", crate::redaction::diagnostic_id(.0))]
     NotFound(String),
-    #[error("failed to read pair record {path}: {source}")]
+    #[error("failed to read pair record ({:?})", .source.kind())]
     Read {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to parse pair record: {0}")]
+    #[error("failed to parse pair record (invalid credential file)")]
     Parse(String),
 }
 
+impl std::fmt::Debug for PairRecordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(identifier) => f
+                .debug_tuple("PairRecordError::NotFound")
+                .field(&crate::redaction::diagnostic_id(identifier))
+                .finish(),
+            Self::Read { source, .. } => f
+                .debug_struct("PairRecordError::Read")
+                .field("kind", &source.kind())
+                .field("os_code", &source.raw_os_error())
+                .finish_non_exhaustive(),
+            Self::Parse(_) => f
+                .debug_struct("PairRecordError::Parse")
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
 /// iOS device pair record, loaded from the platform-specific lockdown directory.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct PairRecord {
     /// DER/PEM-encoded device certificate
@@ -53,6 +144,12 @@ pub struct PairRecord {
     pub wifi_mac_address: Option<String>,
 }
 
+impl std::fmt::Debug for PairRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairRecord").finish_non_exhaustive()
+    }
+}
+
 /// Plists store key material as `<data>`, which only `serde_bytes` decodes into
 /// a byte vector; wrapping happens here so the bytes are never held anywhere but
 /// inside the guard.
@@ -63,7 +160,57 @@ where
     Ok(Zeroizing::new(serde_bytes::deserialize(deserializer)?))
 }
 
+/// Read the escrow bag from the explicitly selected pairing record.
+/// The bag and the serialized record are zeroized when dropped.
+pub fn load_pair_record_escrow_bag(
+    path: &std::path::Path,
+) -> Result<Zeroizing<Vec<u8>>, PairRecordError> {
+    #[derive(Deserialize)]
+    struct EscrowRecord {
+        #[serde(rename = "EscrowBag", deserialize_with = "deserialize_secret_bytes")]
+        escrow_bag: Zeroizing<Vec<u8>>,
+    }
+
+    let data = read_pair_record_bytes(path).map_err(|source| PairRecordError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let record: EscrowRecord =
+        plist::from_bytes(data.as_slice()).map_err(|error| PairRecordError::Read {
+            path: path.to_path_buf(),
+            source: crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidInput,
+                "parse pairing record escrow bag",
+                error,
+            ),
+        })?;
+    Ok(record.escrow_bag)
+}
+
 impl PairRecord {
+    /// Decode an already loaded pairing record without filesystem or device IO.
+    ///
+    /// Empty inputs and inputs above the existing 1MiB serialized-record limit
+    /// are rejected as InvalidInput before decoding. Parse failures retain the
+    /// original plist error behind safe diagnostics. The parsed private key is
+    /// zeroized on drop; callers retain ownership of their input bytes. Ordinary
+    /// plist decoding does not provide a CPU or temporary-allocation bound.
+    pub fn from_bytes(data: &[u8]) -> Result<Self, std::io::Error> {
+        if data.is_empty() || data.len() as u64 > MAX_PAIR_RECORD_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid serialized pairing record length",
+            ));
+        }
+        plist::from_bytes(data).map_err(|error| {
+            crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidInput,
+                "parse provided pairing record plist",
+                error,
+            )
+        })
+    }
+
     /// Load from the platform default path.
     pub fn load(udid: &str) -> Result<Self, PairRecordError> {
         let path = default_pair_record_path(udid);
@@ -71,22 +218,25 @@ impl PairRecord {
     }
 
     /// Load from an explicit path.
-    pub fn load_from_path(path: &std::path::Path, udid: &str) -> Result<Self, PairRecordError> {
+    ///
+    /// Read/parse failures retain their native source in `PairRecordError::Read`.
+    /// The identifier argument remains for compatibility; the explicit path
+    /// determines which record is loaded. Diagnostics omit both path and data.
+    pub fn load_from_path(path: &std::path::Path, _udid: &str) -> Result<Self, PairRecordError> {
         // The raw plist carries the private key too, so the read buffer gets the
         // same protection as the parsed field.
-        let data = match std::fs::read(path) {
-            Ok(data) => Zeroizing::new(data),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Err(PairRecordError::NotFound(udid.to_string()));
-            }
-            Err(source) => {
-                return Err(PairRecordError::Read {
-                    path: path.to_path_buf(),
-                    source,
-                });
-            }
-        };
-        plist::from_bytes(data.as_slice()).map_err(|e| PairRecordError::Parse(e.to_string()))
+        let data = read_pair_record_bytes(path).map_err(|source| PairRecordError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        plist::from_bytes(data.as_slice()).map_err(|error| PairRecordError::Read {
+            path: path.to_path_buf(),
+            source: crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidInput,
+                "parse local pairing record plist",
+                error,
+            ),
+        })
     }
 }
 
@@ -130,8 +280,92 @@ fn pair_record_dir_for_platform(
 }
 
 #[cfg(test)]
+mod read_admission_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_escrow_bag_preserves_data_and_rejects_missing_or_wrong_type() {
+        use std::error::Error;
+        let path =
+            std::env::temp_dir().join(format!("ios-escrow-test-{}.plist", uuid::Uuid::new_v4()));
+        let write_record = |value: Option<plist::Value>| {
+            let mut record = plist::Dictionary::new();
+            if let Some(value) = value {
+                record.insert("EscrowBag".into(), value);
+            }
+            plist::to_file_xml(&path, &plist::Value::Dictionary(record)).unwrap();
+        };
+        write_record(Some(plist::Value::Data(b"synthetic-escrow".to_vec())));
+        let bag = load_pair_record_escrow_bag(&path).unwrap();
+        assert_eq!(bag.as_slice(), b"synthetic-escrow");
+        for value in [None, Some(plist::Value::Integer(42u64.into()))] {
+            write_record(value);
+            let error = load_pair_record_escrow_bag(&path).unwrap_err();
+            assert!(error.source().is_some());
+            assert!(!format!("{error} {error:?}").contains("synthetic-escrow"));
+        }
+        std::fs::remove_file(&path).unwrap();
+        let error = load_pair_record_escrow_bag(&path).unwrap_err();
+        assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn pair_record_error_diagnostics_hide_paths_identifiers_and_parser_data() {
+        let secret = "synthetic-pair-record-private-material";
+        let errors = [
+            PairRecordError::NotFound(secret.into()),
+            PairRecordError::Read {
+                path: PathBuf::from(format!("/synthetic/{secret}.plist")),
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, secret),
+            },
+            PairRecordError::Parse(secret.into()),
+        ];
+        for error in errors {
+            let output = format!("{error} {error:?} {error:#?}");
+            assert!(!output.contains(secret));
+            assert!(output.contains("pair record"));
+        }
+        let read = PairRecordError::Read {
+            path: PathBuf::from("synthetic-path"),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        };
+        assert!(read.to_string().contains("PermissionDenied"));
+        assert!(std::error::Error::source(&read).is_some());
+    }
+
+    #[test]
+    fn pair_record_debug_hides_certificates_keys_and_identifiers() {
+        let record = PairRecord {
+            device_certificate: b"synthetic-device-certificate".to_vec(),
+            host_certificate: b"synthetic-host-certificate".to_vec(),
+            host_private_key: Zeroizing::new(b"synthetic-host-private-key".to_vec()),
+            root_certificate: b"synthetic-root-certificate".to_vec(),
+            host_id: "synthetic-host-identifier".into(),
+            system_buid: "synthetic-system-identifier".into(),
+            wifi_mac_address: Some("synthetic-mac-address".into()),
+        };
+        let output = format!("{record:?} {record:#?}");
+        for secret in [
+            "synthetic-host-identifier",
+            "synthetic-system-identifier",
+            "synthetic-mac-address",
+        ] {
+            assert!(!output.contains(secret));
+        }
+        for secret in [
+            &record.device_certificate,
+            &record.host_certificate,
+            &*record.host_private_key,
+            &record.root_certificate,
+        ] {
+            assert!(!output.contains(&format!("{secret:?}")));
+            assert!(!output.contains(std::str::from_utf8(secret).unwrap()));
+        }
+        assert!(output.contains("PairRecord"));
+    }
 
     #[test]
     fn test_pair_record_path_macos() {
@@ -172,6 +406,43 @@ mod tests {
     <key>SystemBUID</key><string>BUID</string>
 </dict>
 </plist>"#;
+
+    #[test]
+    fn provided_pair_record_bytes_admit_exact_limit_and_reject_empty_or_oversized() {
+        let record = PairRecord::from_bytes(PAIR_RECORD_PLIST).unwrap();
+        assert_eq!(record.host_private_key.as_slice(), &[7, 8, 9]);
+        assert_eq!(record.host_id, "HOST-ID");
+        let mut exact = PAIR_RECORD_PLIST.to_vec();
+        exact.resize(MAX_PAIR_RECORD_BYTES as usize, b' ');
+        assert!(PairRecord::from_bytes(&exact).is_ok());
+        exact.push(b' ');
+        for data in [&[][..], exact.as_slice()] {
+            let error = PairRecord::from_bytes(data).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(std::error::Error::source(&error).is_none());
+        }
+    }
+
+    #[test]
+    fn provided_pair_record_parse_failure_retains_original_cause_with_safe_diagnostics() {
+        let input = b"synthetic-private-pair-record-input";
+        let error = PairRecord::from_bytes(input).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        let mut cause = std::error::Error::source(&error);
+        let mut found = false;
+        while let Some(error) = cause {
+            found |= error.downcast_ref::<plist::Error>().is_some();
+            cause = error.source();
+        }
+        assert!(found);
+        for output in [
+            error.to_string(),
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            assert!(!output.contains(std::str::from_utf8(input).unwrap()));
+        }
+    }
 
     #[test]
     fn load_from_path_decodes_plist_data_into_the_secret_wrapper() {

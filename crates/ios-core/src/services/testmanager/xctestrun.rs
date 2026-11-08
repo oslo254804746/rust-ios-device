@@ -1,10 +1,12 @@
+crate::redaction::error_debug!(XctestRunError);
+
 use std::collections::HashMap;
 use std::path::Path;
 
 use plist::Value;
 use serde::Deserialize;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum XctestRunError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

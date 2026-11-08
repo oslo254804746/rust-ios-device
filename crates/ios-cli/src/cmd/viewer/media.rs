@@ -1,0 +1,1076 @@
+//! Bounded video media pipeline for Viewer (F05).
+//!
+//! Production accepts HEVC video access units over Display/RTP as well as PNG screenshots,
+//! decoding them through a probed HEVC decoder engine (FFmpeg backend) and bounded frame queues,
+//! and publishing shared frames to Web and VNC consumers.
+use std::collections::VecDeque;
+use std::io::Cursor;
+use std::sync::Arc;
+
+use anyhow::{ensure, Context, Result};
+use bytes::Bytes;
+#[cfg(test)]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::watch;
+mod transport;
+
+pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_PIXEL_BYTES: usize = 16 * 1024 * 1024;
+// A full screenshot can exceed the video access-unit budget, even at native
+// phone dimensions. Bound its pixels and allow bounded PNG container overhead.
+pub const MAX_PNG_BYTES: usize = MAX_PIXEL_BYTES + 64 * 1024;
+
+/// HEVC NAL Unit types according to ITU-T H.265 / ISO/IEC 23008-2.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HevcNalType {
+    CodedSliceTrail,
+    CodedSliceTsa,
+    CodedSliceStsa,
+    CodedSliceRadl,
+    CodedSliceRasl,
+    IdrKeyframe,
+    CraKeyframe,
+    Vps,
+    Sps,
+    Pps,
+    AccessUnitDelimiter,
+    Sei,
+    Other(u8),
+}
+
+#[allow(dead_code)]
+impl HevcNalType {
+    pub fn from_header(byte0: u8) -> Self {
+        let nal_type = (byte0 >> 1) & 0x3F;
+        match nal_type {
+            0 | 1 => Self::CodedSliceTrail,
+            2 | 3 => Self::CodedSliceTsa,
+            4 | 5 => Self::CodedSliceStsa,
+            6 | 7 => Self::CodedSliceRadl,
+            8 | 9 => Self::CodedSliceRasl,
+            19 | 20 => Self::IdrKeyframe,
+            21 => Self::CraKeyframe,
+            32 => Self::Vps,
+            33 => Self::Sps,
+            34 => Self::Pps,
+            35 => Self::AccessUnitDelimiter,
+            39 | 40 => Self::Sei,
+            other => Self::Other(other),
+        }
+    }
+
+    pub fn is_keyframe(&self) -> bool {
+        matches!(self, Self::IdrKeyframe | Self::CraKeyframe)
+    }
+
+    pub fn is_parameter_set(&self) -> bool {
+        matches!(self, Self::Vps | Self::Sps | Self::Pps)
+    }
+}
+
+/// Parse an Annex-B byte stream into identified HEVC NAL units.
+#[allow(dead_code)]
+pub fn parse_hevc_annex_b_nals(data: &[u8]) -> Vec<(HevcNalType, &[u8])> {
+    let mut nals = Vec::new();
+    let mut i = 0;
+    let mut start_indices = Vec::new();
+
+    while i + 3 <= data.len() {
+        if data[i] == 0 && data[i + 1] == 0 {
+            if data[i + 2] == 1 {
+                start_indices.push((i, i + 3));
+                i += 3;
+                continue;
+            } else if i + 4 <= data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
+                start_indices.push((i, i + 4));
+                i += 4;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    for (idx, &(_code_start, nal_start)) in start_indices.iter().enumerate() {
+        let nal_end = if idx + 1 < start_indices.len() {
+            start_indices[idx + 1].0
+        } else {
+            data.len()
+        };
+        if nal_start < nal_end {
+            let nal_data = &data[nal_start..nal_end];
+            let nal_type = HevcNalType::from_header(nal_data[0]);
+            nals.push((nal_type, nal_data));
+        }
+    }
+
+    nals
+}
+
+/// Bounded queue for video frames enforcing bounded memory and backpressure for slow consumers.
+#[allow(dead_code)]
+pub struct BoundedFrameQueue<T> {
+    queue: VecDeque<T>,
+    capacity: usize,
+    dropped_frames: u64,
+}
+
+#[allow(dead_code)]
+impl<T> BoundedFrameQueue<T> {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            queue: VecDeque::with_capacity(capacity),
+            capacity: capacity.max(1),
+            dropped_frames: 0,
+        }
+    }
+
+    pub fn push(&mut self, item: T) {
+        if self.queue.len() >= self.capacity {
+            self.queue.pop_front();
+            self.dropped_frames += 1;
+        }
+        self.queue.push_back(item);
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        self.queue.pop_front()
+    }
+
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped_frames
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct DecoderProbe {
+    pub available: bool,
+    pub backend: &'static str,
+    pub version: String,
+}
+
+impl DecoderProbe {
+    pub fn probe() -> Self {
+        let output = std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output();
+        match output {
+            Ok(out) if out.status.success() => {
+                let first_line = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                Self {
+                    available: true,
+                    backend: "ffmpeg",
+                    version: first_line,
+                }
+            }
+            _ => Self {
+                available: false,
+                backend: "none",
+                version: "unavailable".into(),
+            },
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub struct HevcDecoder {
+    cached_vps: Option<Vec<u8>>,
+    cached_sps: Option<Vec<u8>>,
+    cached_pps: Option<Vec<u8>>,
+    pub last_width: u16,
+    pub last_height: u16,
+    pub probe: DecoderProbe,
+}
+
+#[allow(dead_code)]
+impl HevcDecoder {
+    pub fn new() -> Result<Self> {
+        let probe = DecoderProbe::probe();
+        ensure!(
+            probe.available,
+            "HEVC video decoder requires ffmpeg in PATH (probe failed)"
+        );
+        Ok(Self {
+            cached_vps: None,
+            cached_sps: None,
+            cached_pps: None,
+            last_width: 0,
+            last_height: 0,
+            probe,
+        })
+    }
+
+    /// Cache parameter sets (VPS, SPS, PPS) so standalone slices or keyframes
+    /// that omit in-band parameter sets can still be reconstructed and decoded.
+    pub fn update_parameter_sets(&mut self, data: &[u8]) {
+        let nals = parse_hevc_annex_b_nals(data);
+        for (nal_type, nal_bytes) in nals {
+            let mut full_nal = Vec::with_capacity(4 + nal_bytes.len());
+            full_nal.extend_from_slice(&[0, 0, 0, 1]);
+            full_nal.extend_from_slice(nal_bytes);
+            match nal_type {
+                HevcNalType::Vps => self.cached_vps = Some(full_nal),
+                HevcNalType::Sps => self.cached_sps = Some(full_nal),
+                HevcNalType::Pps => self.cached_pps = Some(full_nal),
+                _ => {}
+            }
+        }
+    }
+
+    /// Decode an Annex-B HEVC Access Unit into a DecodedFrame.
+    pub fn decode_access_unit(&mut self, data: &[u8], timestamp_ms: u64) -> Result<DecodedFrame> {
+        ensure!(
+            data.len() <= MAX_ENCODED_BYTES,
+            "encoded HEVC access unit exceeds budget"
+        );
+        self.update_parameter_sets(data);
+
+        // Build self-contained Annex-B stream with parameter sets if missing
+        let has_sps = parse_hevc_annex_b_nals(data)
+            .iter()
+            .any(|(t, _)| *t == HevcNalType::Sps);
+
+        let mut payload = Vec::new();
+        if !has_sps {
+            if let Some(vps) = &self.cached_vps {
+                payload.extend_from_slice(vps);
+            }
+            if let Some(sps) = &self.cached_sps {
+                payload.extend_from_slice(sps);
+            }
+            if let Some(pps) = &self.cached_pps {
+                payload.extend_from_slice(pps);
+            }
+        }
+        payload.extend_from_slice(data);
+
+        let mut child = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "hevc",
+                "-i",
+                "pipe:0",
+                "-frames:v",
+                "1",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "png",
+                "pipe:1",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("spawn ffmpeg HEVC decoder")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            std::io::Write::write_all(&mut stdin, &payload)
+                .context("write HEVC payload to decoder stdin")?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .context("await ffmpeg HEVC decoder output")?;
+
+        ensure!(
+            output.status.success(),
+            "ffmpeg decoder failed with status: {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let png_bytes = Bytes::from(output.stdout);
+        ensure!(
+            png_bytes.len() >= 8 && &png_bytes[..8] == b"\x89PNG\r\n\x1a\n",
+            "ffmpeg output is not a valid PNG image"
+        );
+
+        let frame = decode_png(png_bytes, timestamp_ms)?;
+        self.last_width = frame.width;
+        self.last_height = frame.height;
+        Ok(frame)
+    }
+}
+
+#[allow(dead_code)]
+pub struct HevcPipeline {
+    pub decoder: HevcDecoder,
+    pub queue: BoundedFrameQueue<DecodedFrame>,
+}
+
+#[allow(dead_code)]
+impl HevcPipeline {
+    pub fn new(capacity: usize) -> Result<Self> {
+        Ok(Self {
+            decoder: HevcDecoder::new()?,
+            queue: BoundedFrameQueue::new(capacity),
+        })
+    }
+
+    pub fn push_access_unit(&mut self, data: &[u8], timestamp_ms: u64) -> Result<DecodedFrame> {
+        let frame = self.decoder.decode_access_unit(data, timestamp_ms)?;
+        self.queue.push(frame.clone());
+        Ok(frame)
+    }
+
+    pub fn pop_frame(&mut self) -> Option<DecodedFrame> {
+        self.queue.pop()
+    }
+
+    pub fn dropped_count(&self) -> u64 {
+        self.queue.dropped_count()
+    }
+}
+
+#[derive(Clone)]
+pub struct DecodedFrame {
+    pub png: Bytes,
+    pub bgra: Arc<Vec<u8>>,
+    pub width: u16,
+    pub height: u16,
+    pub timestamp_ms: u64,
+    pub timestamp_clock: &'static str,
+}
+
+pub fn decode_png(data: Bytes, timestamp_ms: u64) -> Result<DecodedFrame> {
+    ensure!(data.len() <= MAX_PNG_BYTES, "encoded frame exceeds budget");
+    let mut decoder = png::Decoder::new(Cursor::new(data.clone()));
+    decoder.set_limits(png::Limits {
+        bytes: MAX_PIXEL_BYTES * 2,
+    });
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .context("decode screenshot PNG header")?;
+    let (width, height) = (reader.info().width, reader.info().height);
+    ensure!(
+        width > 0 && height > 0 && width <= u16::MAX as u32 && height <= u16::MAX as u32,
+        "PNG dimensions cannot be represented by RFB"
+    );
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .context("PNG dimensions overflow")?;
+    let output_size = pixels.checked_mul(4).context("PNG pixel size overflow")?;
+    ensure!(
+        output_size <= MAX_PIXEL_BYTES && reader.output_buffer_size() <= MAX_PIXEL_BYTES,
+        "decoded frame exceeds pixel budget"
+    );
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut decoded)
+        .context("decode screenshot PNG pixels")?;
+    ensure!(
+        info.bit_depth == png::BitDepth::Eight,
+        "unsupported PNG bit depth"
+    );
+    decoded.truncate(info.buffer_size());
+    let channels = match info.color_type {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Grayscale => 1,
+        png::ColorType::Indexed => anyhow::bail!("unexpanded indexed PNG"),
+    };
+    ensure!(
+        decoded.len() == pixels * channels,
+        "invalid PNG pixel length"
+    );
+    // Expand in place, backwards, so old and new full pixel buffers are never retained.
+    decoded.resize(output_size, 0);
+    for index in (0..pixels).rev() {
+        let source = index * channels;
+        let (r, g, b, a) = match channels {
+            4 => (
+                decoded[source],
+                decoded[source + 1],
+                decoded[source + 2],
+                decoded[source + 3],
+            ),
+            3 => (
+                decoded[source],
+                decoded[source + 1],
+                decoded[source + 2],
+                255,
+            ),
+            2 => (
+                decoded[source],
+                decoded[source],
+                decoded[source],
+                decoded[source + 1],
+            ),
+            _ => (decoded[source], decoded[source], decoded[source], 255),
+        };
+        decoded[index * 4..index * 4 + 4].copy_from_slice(&[b, g, r, a]);
+    }
+    Ok(DecodedFrame {
+        png: data,
+        bgra: Arc::new(decoded),
+        width: width as u16,
+        height: height as u16,
+        timestamp_ms,
+        timestamp_clock: "host-unix-ms",
+    })
+}
+
+pub async fn capture_frame(
+    udid: &str,
+    native: &crate::cmd::tunnel::NativeScope,
+    coredevice_supported: bool,
+) -> Result<DecodedFrame> {
+    let data = if !coredevice_supported {
+        // Match the screenshot command's product-version gate. Older iOS
+        // releases use Instruments/legacy screenshot services and may fail
+        // during tunnel setup with a Lockdown error that is not a fallback
+        // class. Avoid starting the unsupported CoreDevice path at all.
+        Box::pin(crate::cmd::screenshot::capture_fallback_scoped(
+            udid, native,
+        ))
+        .await?
+        .data
+    } else {
+        let result = Box::pin(async {
+            let device = Box::pin(native.connect(udid, ios_core::TunMode::Userspace)).await?;
+            let (xpc, meta) = Box::pin(
+                device.connect_xpc_service_with_metadata(ios_core::screencapture::SERVICE_NAME),
+            )
+            .await?;
+            let mut client = ios_core::screencapture::ScreenCaptureServiceClient::new_with_features(
+                xpc,
+                meta.features,
+            );
+            let image = Box::pin(client.capture_screenshot(None, "png")).await?;
+            Ok(image.data)
+        })
+        .await;
+        match result {
+            Ok(data) => super::finish(
+                Ok(data),
+                native.collect(super::device::CLEANUP_TIMEOUT).await,
+            )?,
+            Err(error) => {
+                // Preserve cleanup failures before considering another service.
+                let error = super::finish::<()>(
+                    Err(error),
+                    native.collect(super::device::CLEANUP_TIMEOUT).await,
+                )
+                .unwrap_err();
+                if error
+                    .chain()
+                    .any(|cause| cause.is::<super::ViewerCleanupFailure>())
+                    || !crate::cmd::screenshot::coredevice_fallback_allowed(&error)
+                {
+                    return Err(error);
+                }
+                tracing::debug!(
+                    "viewer CoreDevice screenshot unavailable; trying DTX/legacy capture"
+                );
+                Box::pin(crate::cmd::screenshot::capture_fallback_scoped(
+                    udid, native,
+                ))
+                .await?
+                .data
+            }
+        }
+    };
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64;
+    decode_png(data, timestamp_ms)
+}
+
+#[cfg(test)]
+fn spawn_stream_decoder() -> Result<tokio::process::Child> {
+    use std::process::Stdio;
+    tokio::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
+            "-f",
+            "hevc",
+            "-i",
+            "pipe:0",
+            "-threads",
+            "1",
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "-flush_packets",
+            "1",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("start persistent FFmpeg HEVC decoder")
+}
+
+#[cfg(test)]
+async fn read_stream_png(stdout: &mut (impl tokio::io::AsyncRead + Unpin)) -> Result<Bytes> {
+    let mut png = vec![0; 8];
+    stdout
+        .read_exact(&mut png)
+        .await
+        .context("read FFmpeg PNG signature")?;
+    ensure!(png == b"\x89PNG\r\n\x1a\n", "invalid FFmpeg PNG signature");
+    loop {
+        let mut header = [0; 8];
+        stdout.read_exact(&mut header).await?;
+        let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        ensure!(
+            size <= MAX_PNG_BYTES.saturating_sub(png.len() + 12),
+            "FFmpeg PNG exceeds frame budget"
+        );
+        png.extend_from_slice(&header);
+        let offset = png.len();
+        png.resize(offset + size + 4, 0); // chunk payload and CRC
+        stdout.read_exact(&mut png[offset..]).await?;
+        if &header[4..] == b"IEND" {
+            return Ok(Bytes::from(png));
+        }
+    }
+}
+
+async fn stop_stream_decoder(child: &mut tokio::process::Child) -> Result<()> {
+    if child.try_wait()?.is_none() {
+        child.start_kill()?;
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+        .await
+        .context("FFmpeg shutdown deadline")??;
+    Ok(())
+}
+
+fn publish_frame(frames: &watch::Sender<Option<DecodedFrame>>, frame: DecodedFrame) {
+    frames.send_replace(Some(frame));
+}
+
+#[cfg(test)]
+fn publish_decoded_png(
+    frames: &watch::Sender<Option<DecodedFrame>>,
+    png: Bytes,
+    timestamp_ms: u64,
+    timestamp_clock: &'static str,
+) -> Result<()> {
+    let mut frame = decode_png(png, timestamp_ms)?;
+    frame.timestamp_clock = timestamp_clock;
+    publish_frame(frames, frame);
+    Ok(())
+}
+
+async fn produce_hevc(
+    udid: &str,
+    frames: watch::Sender<Option<DecodedFrame>>,
+    mut stop: watch::Receiver<bool>,
+    native: &crate::cmd::tunnel::NativeScope,
+) -> Result<()> {
+    // The user explicitly selects this kernel/UDP path with --hevc.
+    let device = tokio::select! {
+        _ = stop.changed() => return Ok(()),
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), native.connect(udid, ios_core::TunMode::Kernel)) => result.context("Display connection deadline")??,
+    };
+    let mut starting_display = None;
+    let startup = async {
+        let sender_ip = device
+            .server_address()
+            .context("missing Display sender address")?
+            .to_owned();
+        let receiver_ip = device
+            .client_address()
+            .context("missing Display receiver address")?
+            .to_owned();
+        let (xpc, metadata) = device
+            .connect_xpc_service_with_metadata(ios_core::display::SERVICE_NAME)
+            .await?;
+        starting_display =
+            Some(ios_core::display::DisplayServiceClient::from_resolved_metadata(xpc, &metadata)?);
+        let session = ios_core::display::MediaStreamSession::start_video_retained(
+            &mut starting_display,
+            ios_core::display::MediaStreamOptions {
+                sender_ip,
+                receiver_ip,
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok::<_, anyhow::Error>(Some(session))
+    };
+    let started = tokio::select! {
+        biased;
+        _ = stop.changed() => Ok(None),
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), startup) => result.context("Display startup deadline").and_then(|value| value),
+    };
+    let mut session = match started {
+        Ok(Some(session)) => session,
+        result => {
+            let mut primary = result.map(|_| ());
+            if let Some(mut display) = starting_display.take() {
+                if display.request_may_have_executed() {
+                    let cleanup = tokio::time::timeout(
+                        super::device::CLEANUP_TIMEOUT,
+                        display.stop_media_streams_strict(true, &[]),
+                    )
+                    .await
+                    .map_err(anyhow::Error::new)
+                    .and_then(|value| value.map(|_| ()).map_err(Into::into));
+                    primary = super::finish(primary, cleanup);
+                }
+            }
+            drop(device);
+            return super::finish(
+                primary,
+                native.collect(super::device::CLEANUP_TIMEOUT).await,
+            );
+        }
+    };
+    let mut child = match transport::spawn_decoder() {
+        Ok(child) => child,
+        Err(error) => {
+            return super::finish(
+                Err(error),
+                session
+                    .stop_strict(std::time::Duration::from_secs(3), true, &[])
+                    .await
+                    .map(|_| ())
+                    .map_err(Into::into),
+            )
+        }
+    };
+    let mut stdin = child.stdin.take().context("FFmpeg stdin missing")?;
+    let mut stdout = child.stdout.take().context("FFmpeg stdout missing")?;
+    let mut stderr =
+        tokio::io::BufReader::new(child.stderr.take().context("FFmpeg stderr missing")?);
+    let mut mux = transport::HevcTs::default();
+    let operation = async {
+        let input = async {
+            loop {
+                if let Some(au) = session
+                    .recv_access_unit(std::time::Duration::from_secs(5))
+                    .await?
+                {
+                    ensure!(
+                        au.data.len() <= MAX_ENCODED_BYTES,
+                        "HEVC access unit exceeds budget"
+                    );
+                    // One process retains parameter sets and all reference pictures.
+                    mux.write_access_unit(&mut stdin, &au.data, au.timestamp)
+                        .await
+                        .context(MediaDecodeFailure)?;
+                }
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+        let output = async {
+            loop {
+                publish_frame(
+                    &frames,
+                    transport::read_frame(&mut stdout, &mut stderr)
+                        .await
+                        .context(MediaDecodeFailure)?,
+                );
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+        tokio::select! {
+            biased;
+            _ = stop.changed() => Ok(()),
+            result = input => result,
+            result = output => result,
+        }
+    };
+    let result = operation.await;
+    drop((stdin, stdout, stderr));
+    let result = super::finish(result, stop_stream_decoder(&mut child).await);
+    let result = super::finish(
+        result,
+        session
+            .stop_strict(std::time::Duration::from_secs(3), true, &[])
+            .await
+            .map(|_| ())
+            .map_err(Into::into),
+    );
+    drop((session, device));
+    super::finish(result, native.collect(super::device::CLEANUP_TIMEOUT).await)
+}
+
+pub async fn produce(
+    udid: String,
+    frames: watch::Sender<Option<DecodedFrame>>,
+    mut stop: watch::Receiver<bool>,
+    native: crate::cmd::tunnel::NativeScope,
+    hevc: bool,
+    reconnect_attempts: u32,
+    reconnect_delay: std::time::Duration,
+) -> Result<()> {
+    if hevc {
+        for attempt in 0..=reconnect_attempts {
+            let result = produce_hevc(&udid, frames.clone(), stop.clone(), &native).await;
+            let result = retire_failed_capture(result, &native).await;
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if attempt < reconnect_attempts
+                        && !*stop.borrow()
+                        && media_reconnectable(&error) =>
+                {
+                    tracing::warn!(attempt=attempt+1,error_class=%ios_core::classify_error(error.as_ref()),"viewer media disconnected; reconnecting after original cleanup");
+                    frames.send_replace(None);
+                    if wait_reconnect(
+                        &mut stop,
+                        reconnect_delay.saturating_mul(1 << attempt.min(4)),
+                    )
+                    .await
+                    {
+                        return Ok(());
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!();
+    }
+    let coredevice_supported = tokio::select! {
+        biased;
+        _ = stop.changed() => return Ok(()),
+        version = Box::pin(crate::cmd::connect::probe_product_version(&udid)) =>
+            version.map(|version| coredevice_capture_supported(version.major))?,
+    };
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut failures = 0;
+    loop {
+        tokio::select! {
+            biased;
+            changed = stop.changed() => { if changed.is_err() || *stop.borrow() { return Ok(()); } }
+            _ = interval.tick() => {}
+        }
+        let result = tokio::select! {
+            biased;
+            _ = stop.changed() => return Ok(()),
+            // Keep the legacy DTX/Lockdown future chain off the Tokio worker stack.
+            frame = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Box::pin(capture_frame(&udid, &native, coredevice_supported)),
+            ) => frame.context("viewer capture deadline").and_then(|frame|frame),
+        };
+        let result = match result {
+            Ok(frame) => Ok(frame),
+            Err(error) => Err(retire_failed_capture(Err(error), &native)
+                .await
+                .unwrap_err()),
+        };
+        match result {
+            Ok(frame) => {
+                failures = 0;
+                publish_frame(&frames, frame);
+            }
+            Err(error) if failures < reconnect_attempts && media_reconnectable(&error) => {
+                failures += 1;
+                frames.send_replace(None);
+                tracing::warn!(
+                    attempt = failures,
+                    "viewer screenshot disconnected; refreshing selected device service"
+                );
+                if wait_reconnect(
+                    &mut stop,
+                    reconnect_delay.saturating_mul(1 << (failures - 1).min(4)),
+                )
+                .await
+                {
+                    return Ok(());
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+pub(super) fn coredevice_capture_supported(ios_major: u64) -> bool {
+    ios_major >= 17
+}
+
+async fn retire_failed_capture(
+    result: Result<()>,
+    native: &crate::cmd::tunnel::NativeScope,
+) -> Result<()> {
+    match result {
+        Err(error)
+            if !error
+                .chain()
+                .any(|cause| cause.is::<super::ViewerCleanupFailure>()) =>
+        {
+            super::finish(
+                Err(error),
+                native.collect(super::device::CLEANUP_TIMEOUT).await,
+            )
+        }
+        result => result,
+    }
+}
+
+fn media_reconnectable(error: &anyhow::Error) -> bool {
+    !error.is::<MediaDecodeFailure>()
+        && !error.is::<super::ViewerCleanupOnlyFailure>()
+        && !error
+            .chain()
+            .any(|cause| cause.is::<super::ViewerCleanupFailure>())
+        && matches!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Disconnected
+                | ios_core::ErrorClass::Timeout
+                | ios_core::ErrorClass::DeviceNotFound
+        )
+}
+#[derive(Debug)]
+struct MediaDecodeFailure;
+impl std::fmt::Display for MediaDecodeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HEVC decoder input or output failed")
+    }
+}
+impl std::error::Error for MediaDecodeFailure {}
+async fn wait_reconnect(stop: &mut watch::Receiver<bool>, delay: std::time::Duration) -> bool {
+    if *stop.borrow() {
+        return true;
+    }
+    tokio::select! {biased;
+        _=stop.changed()=>true,
+        _=tokio::time::sleep(delay)=>false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn media_reconnect_backoff_is_cancellable_and_never_retries_uncertain_cleanup() {
+        let (signal, mut stop) = watch::channel(false);
+        let started = tokio::time::Instant::now();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            signal.send_replace(true);
+        });
+        assert!(wait_reconnect(&mut stop, std::time::Duration::from_secs(5)).await);
+        assert_eq!(started.elapsed(), std::time::Duration::from_millis(20));
+        let disconnected =
+            || anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        assert!(media_reconnectable(&disconnected()));
+        let failure = super::super::finish::<()>(
+            Err(disconnected()),
+            Err(anyhow::anyhow!("stop reply missing")),
+        )
+        .unwrap_err();
+        assert!(!media_reconnectable(&failure));
+        for kind in [
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let failure =
+                super::super::finish::<()>(Ok(()), Err(std::io::Error::from(kind).into()))
+                    .unwrap_err();
+            assert!(
+                !media_reconnectable(&failure),
+                "cleanup alone cannot permit retry"
+            );
+            assert_eq!(
+                failure.downcast_ref::<std::io::Error>().unwrap().kind(),
+                kind
+            );
+        }
+        assert!(!media_reconnectable(&anyhow::anyhow!("decoder failed")));
+        assert!(
+            !media_reconnectable(&disconnected().context(MediaDecodeFailure)),
+            "a dead local decoder must not restart the device media service"
+        );
+    }
+    #[tokio::test]
+    #[ignore = "requires FFmpeg; actual production publisher with stalled subscribers"]
+    async fn production_decoder_publisher_retains_only_latest_for_slow_web_and_vnc() {
+        let mut child = spawn_stream_decoder().expect("explicit FFmpeg gate requires decoder");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let (frames, web) = watch::channel(None);
+        let vnc = web.clone();
+        let writer = async {
+            stdin
+                .write_all(include_bytes!("hevc_inter_sample.bin"))
+                .await
+                .unwrap();
+            drop(stdin);
+        };
+        let reader = async {
+            let mut first = None;
+            for timestamp in 0..6 {
+                let png = read_stream_png(&mut stdout).await.unwrap();
+                publish_decoded_png(&frames, png, timestamp, "host-unix-ms").unwrap();
+                if timestamp == 0 {
+                    first = Some(Arc::downgrade(&frames.borrow().as_ref().unwrap().bgra));
+                }
+            }
+            assert!(
+                first.unwrap().upgrade().is_none(),
+                "slow receivers must not retain old pixel buffers"
+            );
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(writer, reader);
+        })
+        .await
+        .unwrap();
+        assert!(child.wait().await.unwrap().success());
+        let web = web.borrow();
+        let vnc = vnc.borrow();
+        let (web, vnc) = (web.as_ref().unwrap(), vnc.as_ref().unwrap());
+        assert_eq!(web.timestamp_ms, 5);
+        assert!(Arc::ptr_eq(&web.bgra, &vnc.bgra));
+    }
+    #[tokio::test]
+    #[ignore = "requires FFmpeg HEVC/PNG codecs; explicit offline media gate"]
+    async fn review_regression_persistent_decoder_keeps_reference_frames_and_reaps_child() {
+        let sample = include_bytes!("hevc_inter_sample.bin");
+        assert!(parse_hevc_annex_b_nals(sample)
+            .iter()
+            .any(|(nal, _)| *nal == HevcNalType::CodedSliceTrail));
+        let mut child =
+            spawn_stream_decoder().expect("FFmpeg is required for this explicit HEVC gate");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let (first_frame, saw_first_frame) = tokio::sync::oneshot::channel();
+        let ((), decoded) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(
+                async {
+                    stdin.write_all(sample).await.unwrap();
+                    saw_first_frame.await.unwrap(); // a live stream must yield before EOF
+                    drop(stdin); // flush the offline fixture's final parser-delayed frame
+                },
+                async {
+                    let mut decoded = Vec::new();
+                    let mut first_frame = Some(first_frame);
+                    for timestamp in 0..6 {
+                        decoded.push(
+                            decode_png(read_stream_png(&mut stdout).await.unwrap(), timestamp)
+                                .unwrap(),
+                        );
+                        if let Some(sender) = first_frame.take() {
+                            sender.send(()).unwrap();
+                        }
+                    }
+                    decoded
+                }
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(decoded.len(), 6);
+        assert!(decoded.iter().all(|f| f.width == 32 && f.height == 32));
+        assert_ne!(
+            decoded[0].bgra, decoded[5].bgra,
+            "inter frames must update pixels"
+        );
+        assert!(child.wait().await.unwrap().success());
+        assert!(child.id().is_none());
+        let mut stalled = spawn_stream_decoder().unwrap();
+        stop_stream_decoder(&mut stalled).await.unwrap();
+        assert!(
+            stalled.id().is_none(),
+            "stop must wait for the original decoder process"
+        );
+    }
+
+    #[test]
+    fn actual_png_pixels_are_converted_and_oversized_headers_are_rejected() {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255, 0, 0, 255, 0, 255, 0, 64])
+                .unwrap();
+        }
+        let frame = decode_png(Bytes::from(encoded), 42).unwrap();
+        assert_eq!((frame.width, frame.height, frame.timestamp_ms), (2, 1, 42));
+        assert_eq!(frame.bgra.as_slice(), &[0, 0, 255, 255, 0, 255, 0, 64]);
+        let mut header = Vec::new();
+        png::Encoder::new(&mut header, 65535, 65535)
+            .write_header()
+            .unwrap()
+            .finish()
+            .unwrap();
+        assert!(decode_png(Bytes::from(header), 0).is_err());
+        assert!(decode_png(Bytes::from_static(b"not a png"), 0).is_err());
+    }
+
+    #[test]
+    fn hevc_nal_parsing_and_frame_queue_bounded_drop() {
+        // Synthesize an Annex-B stream containing VPS (type 32), SPS (type 33), PPS (type 34), and IDR (type 19)
+        let vps_header = (32 << 1) as u8;
+        let sps_header = (33 << 1) as u8;
+        let pps_header = (34 << 1) as u8;
+        let idr_header = (19 << 1) as u8;
+
+        let mut stream = Vec::new();
+        // 4-byte start code + VPS
+        stream.extend_from_slice(&[0, 0, 0, 1, vps_header, 0x01, 0x02]);
+        // 3-byte start code + SPS
+        stream.extend_from_slice(&[0, 0, 1, sps_header, 0x03, 0x04]);
+        // 4-byte start code + PPS
+        stream.extend_from_slice(&[0, 0, 0, 1, pps_header, 0x05]);
+        // 4-byte start code + IDR Keyframe
+        stream.extend_from_slice(&[0, 0, 0, 1, idr_header, 0x06, 0x07]);
+
+        let nals = parse_hevc_annex_b_nals(&stream);
+        assert_eq!(nals.len(), 4);
+        assert_eq!(nals[0].0, HevcNalType::Vps);
+        assert!(nals[0].0.is_parameter_set());
+        assert_eq!(nals[1].0, HevcNalType::Sps);
+        assert_eq!(nals[2].0, HevcNalType::Pps);
+        assert_eq!(nals[3].0, HevcNalType::IdrKeyframe);
+        assert!(nals[3].0.is_keyframe());
+
+        // Test bounded queue drops oldest on overflow to protect slow consumers
+        let mut queue = BoundedFrameQueue::new(2);
+        assert!(queue.is_empty());
+        queue.push(101);
+        queue.push(102);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.dropped_count(), 0);
+
+        queue.push(103); // Drops 101
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.dropped_count(), 1);
+        assert_eq!(queue.pop(), Some(102));
+        assert_eq!(queue.pop(), Some(103));
+        assert_eq!(queue.pop(), None);
+    }
+}

@@ -1,5 +1,10 @@
 # Usage
 
+Historical plist/JSON encodings and failed-stdout exits are documented in the
+[result contract](plist-json-contract.md). Result/help/version output failure
+returns exit 1; successful formats stay compatible. An output error can follow
+completed side effects and does not promise rollback or a safe retry.
+
 The binary is named `ios`. Most commands print JSON by default so they can be
 used from scripts. Pass `--no-json` for a more human-readable table or text
 format where a command supports it.
@@ -27,6 +32,9 @@ ios apps --help
 ios backup --help
 ios tunnel --help
 ios instruments --help
+ios hid --help
+ios device-control --help
+ios viewer --help
 ```
 
 ## Device discovery and pairing
@@ -110,7 +118,8 @@ higher-level commands when you want a narrower, typed view of common data.
 
 ## Files, app containers, and crash reports
 
-The `file` command uses AFC by default:
+The `file` command uses AFC by default and supports both standard filesystem
+operations and extended AFC opcodes:
 
 ```sh
 ios -u <UDID> file ls /
@@ -118,8 +127,29 @@ ios -u <UDID> file tree /
 ios -u <UDID> file pull /DCIM ./dcim
 ios -u <UDID> file push local.txt /Downloads/local.txt
 ios -u <UDID> file stat /Downloads/local.txt
-ios -u <UDID> file rm /Downloads/local.txt
+ios -u <UDID> file mkdir /Downloads/subdir
+ios -u <UDID> file mv /Downloads/local.txt /Downloads/renamed.txt
+ios -u <UDID> file device-info
+ios -u <UDID> file connection-info
+ios -u <UDID> file hash /Downloads/renamed.txt
+ios -u <UDID> file hash /Downloads/renamed.txt --offset 0 --length 64
+ios -u <UDID> file pread /Downloads/renamed.txt --offset 0 --length 16
+ios -u <UDID> file pwrite /Downloads/renamed.txt --offset 4 --data "test"
+ios -u <UDID> file truncate /Downloads/renamed.txt --size 32
+ios -u <UDID> file truncate /Downloads/renamed.txt --size 16 --by-fd
+ios -u <UDID> file set-time /Downloads/renamed.txt --mtime-ns 1700000000000000000
+ios -u <UDID> file dir-size /Downloads
+ios -u <UDID> file rm /Downloads/renamed.txt
+ios -u <UDID> file rm /Downloads/subdir --recursive
 ```
+
+Extended AFC subcommands map directly to the device's AFC protocol opcodes:
+- `connection-info`: queries AFC connection attributes (`GetConnectionInfo`).
+- `hash [--offset <N>] [--length <N>]`: computes a SHA-1 digest of the full file (`GetFileHash`) or a byte range (`GetFileHashWithRange`) on the device.
+- `pread --offset <N> --length <N>` and `pwrite --offset <N> --data <STRING>`: perform positional handle reads/writes (`FileRefReadWithOffset` / `FileRefWriteWithOffset`) and report the resulting cursor position (`FileRefTell`).
+- `truncate --size <N> [--by-fd]`: truncates or extends a file by path (`TruncateFile`) or through an open file handle (`FileRefSetFileSize` when `--by-fd` is passed).
+- `set-time --mtime-ns <N>`: updates the file modification timestamp in nanoseconds since the Unix epoch (`SetFileTime`).
+- `dir-size <PATH>`: computes recursive total bytes and block count of directory contents (`GetSizeOfPathContents`).
 
 Use House Arrest for an app container:
 
@@ -154,26 +184,28 @@ implement sysdiagnose collection. `ios diagnostics sysdiagnose` is a separate
 iOS 17+ CoreDevice metadata probe in this release (dry-run only); it does not
 download the archive.
 
-CoreDevice fileservice (iOS 17+ devices that expose the service):
+CoreDevice FileService (`ios file --coredevice`, also referred to as `ios fileservice` workflows on iOS 17+ devices that expose `com.apple.coredevice.fileservice.control` and `.data`):
 
 ```sh
 ios -u <UDID> file --coredevice --domain temporary ls /
 ios -u <UDID> file --coredevice --domain app-data-container --identifier com.example.app ls /
-ios -u <UDID> file --coredevice --domain temporary push local.txt remote.txt
-ios -u <UDID> file --coredevice --domain temporary pull remote.txt local.txt
 ios -u <UDID> file --coredevice --domain temporary mkdir new-dir
-ios -u <UDID> file --coredevice --domain temporary mv old.txt new.txt
-ios -u <UDID> file --coredevice --domain temporary rm old.txt
+ios -u <UDID> file --coredevice --domain temporary push local.txt new-dir/remote.txt
+ios -u <UDID> file --coredevice --domain temporary pull new-dir/remote.txt ./downloaded.txt
+ios -u <UDID> file --coredevice --domain temporary mv new-dir/remote.txt new-dir/renamed.txt
+ios -u <UDID> file --coredevice --domain temporary rm new-dir --recursive
 ```
 
 Not all devices expose `com.apple.coredevice.fileservice.control` / `.data` in
 their RSD directory. Use `ios rsd check com.apple.coredevice.fileservice.control`
-to verify availability before using `--coredevice`.
+(and ensure Developer Mode and DDI are active) to verify availability before
+using `--coredevice`.
 
 Comparable upstream workflows:
 
 - go-ios: `ios fsync ...`, `ios crash ls`, `ios crash cp`.
 - pymobiledevice3: `pymobiledevice3 afc ...`,
+  `pymobiledevice3 developer core-device file-service ...`,
   `pymobiledevice3 crash pull ...`.
 
 ## Applications and test automation
@@ -188,6 +220,7 @@ ios -u <UDID> apps uninstall com.example.app
 ios -u <UDID> apps launch com.example.app
 ios -u <UDID> apps processes
 ios -u <UDID> apps kill <PID>
+ios -u <UDID> apps pkill Example
 ios -u <UDID> apps roots
 ios -u <UDID> apps spawn /usr/bin/log -- stream --style json
 ios -u <UDID> apps icons com.example.app --output-dir ./icons
@@ -198,10 +231,26 @@ ios -u <UDID> runtest ./Build/Products/Example.xctestrun --configuration UITests
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun --wait --junit-output ./test-results.xml
 ios -u <UDID> runxctest --test-runner-bundle-id com.example.Runner --xctest-config ExampleTests.xctest --bundle-id com.example.App --test LoginTests/testHappyPath --wait --junit-output ./test-results.xml
 ios -u <UDID> runwda --help
+ios -u <UDID> runwda com.facebook.WebDriverAgentRunner.xctrunner --host-port 18100 --once
 ios wda status --base-url http://127.0.0.1:8100
 ios -u <UDID> wda --device-port 8100 status
 ios -u <UDID> wda --device-port 8100 session --bundle-id com.example.Aut
 ```
+
+Application mutations honor global JSON mode: install, upgrade, archive, restore,
+kill, signal, launch and uninstall return compact version-1 result objects.
+Use `--no-json` to retain their human status messages. `apps pkill PATTERN`
+returns NDJSON progress after each successful signal request, then a record with
+`complete: true`. A failure keeps prior records and has exit 1; incomplete
+progress does not authorize retrying signals. No matches returns a complete
+zero-count summary. The [error/partial-result contract](error-contract.md)
+documents the fields and output/cleanup limits.
+
+Streaming install progress remains safe stderr text. Startup/progress write or
+flush failures return exit 1 without a success stdout result, preserving
+earlier progress where written. Progress failure can happen after IPA transfer;
+absence of a result does not prove that installation had no device effects.
+See the [error contract](error-contract.md) before retrying or reusing a service.
 
 `apps list --coredevice`, `apps processes`, `apps launch`, `apps roots`,
 `apps spawn`, and `apps monitor` use newer app service paths. `apps icons` uses
@@ -222,6 +271,14 @@ Service Discovery, iOS 14-16 uses the secure lockdown testmanager service, and
 older versions use the legacy lockdown service. `wda --device-port` talks to a
 WDA listener directly through usbmux, so it does not require a local `forward`
 process when the runner is already listening on the device.
+
+`runwda` shares one startup deadline across metadata, runner startup and the
+device port probe. Readiness establishes that the device TCP port accepts a
+connection. `--once` stops after one forwarded connection ends, submits cleanup
+for the original runner PID, closes its services and waits for owned tasks.
+Without `--once`, forwarding continues until Ctrl-C. See the
+[capability inventory](capabilities.md) for host and physical-device test
+workflow records.
 
 `--junit-output` requires `--wait` and writes the complete result event summary
 as standard JUnit XML using an atomic same-directory temporary file and rename.
@@ -265,7 +322,9 @@ ios -u <UDID> pasteboard get --raw
 ios -u <UDID> pasteboard get --policy promised
 ios -u <UDID> pasteboard set --data public.data=AP8= --data public.url=aHR0cHM6Ly9leGFtcGxlLnRlc3Q=
 ios -u <UDID> pasteboard resolve 0 public.data --out ./payload.bin --experimental
-ios -u <UDID> pasteboard watch --policy promisesecondary --experimental
+ios -u <UDID> pasteboard watch
+# Explicitly request all secondary representations (may stall on rich copies):
+ios -u <UDID> pasteboard get --policy resolved
 ```
 
 `set` with no text argument reads UTF-8 from stdin; an explicit empty argument
@@ -280,12 +339,18 @@ reports only UTI, byte count, and SHA-256. Add `--show-data` to emit
 inline/resolved bytes as base64. `get --raw --show-data` retains the complete
 direct XPC dictionary; `--raw` without `--show-data` is still redacted.
 
-`resolve`, `export`, and `watch` use the additional RESOLVE/DATA and
-AUTONOTIFY/PUSH verbs. Those verbs are only enumerated or scaffolded by the
-pinned upstream clients and are therefore experimental; each command must be
-passed `--experimental` and requires real-device validation. `watch` stops
-with Ctrl-C; the library's explicit `close`/`unsubscribe` (and a dropped
-session) performs a bounded best-effort unsubscribe. The client enforces
+`get` and `watch` default to `promisesecondary`. `watch` observes Darwin pasteboard
+notifications through the RSD notification-proxy shim, then reads each snapshot
+on a fresh XPC connection. It suppresses the initial contents and duplicate
+`(nonce, changeCount)` values, waits indefinitely while idle, and stops with
+Ctrl-C. Transport/read errors exit; rerun to reconnect. It reports device changes
+only and does not synchronize the host clipboard.
+
+`resolve` and `export` still require `--experimental`. The old AUTONOTIFY/PUSH
+path remains available as `watch --autonotify --experimental`; it can stall the
+daemon on rich copies and has a bounded per-event wait. Its explicit
+`close`/`unsubscribe` and dropped sessions perform a best-effort unsubscribe.
+The client enforces
 bounded item, representation, metadata, event, and data budgets. It skips empty
 control frames, closes a timed-out connection rather than reusing a partial
 frame, and rejects unknown events. Pasteboard service availability is device
@@ -334,8 +399,15 @@ ios -u <UDID> device-control configuration get style
 ios -u <UDID> device-control configuration set style dark
 ios -u <UDID> device-control configuration get color-filter
 ios -u <UDID> device-control configuration set color-filter true --filter-type Protanopia --intensity 0.5
+ios -u <UDID> device-control configuration get text-size
+ios -u <UDID> device-control configuration get reduce-motion
 ios -u <UDID> device-control configuration set reduce-motion false
+ios -u <UDID> device-control configuration get show-borders
+ios -u <UDID> device-control configuration get reduce-transparency
+ios -u <UDID> device-control configuration set increase-contrast false
+ios -u <UDID> device-control configuration set liquid-glass-opacity default
 ios -u <UDID> device-control orientation left
+ios -u <UDID> device-control orientation right
 ```
 
 JSON is the default output (`--no-json` selects stable human-readable lines).
@@ -343,31 +415,48 @@ The color-filter JSON value uses a flat `filterType` string even though the
 CoreDevice wire dictionary is `filterType: {"name": "..."}`. Unknown style,
 filter, text-size, and orientation strings from a newer device are preserved
 in JSON; setters still reject unknown values until their semantics are known.
-The daemon does not expose getters for `increase-contrast` or
-`liquid-glass-opacity`; attempting `configuration get` for either returns a
-clear local error. Devices that only expose a legacy or `.shim.remote` route
-are rejected before the XPC request because these operations require the
-modern CoreDevice envelope.
+The daemon exposes write-only setters for `increase-contrast` (`true`/`false`)
+and `liquid-glass-opacity` (`default`, `less-transparent`, `more-opaque`, etc.),
+but does not expose getters for either; attempting `configuration get` for
+`increase-contrast` or `liquid-glass-opacity` returns a clear local error.
+Devices that only expose a legacy or `.shim.remote` route are rejected before
+the XPC request because these operations require the modern CoreDevice envelope.
 
-Display media and Universal HID authorization
----------------------------------------------
+## Display media and Universal HID authorization
 
 ```sh
 ios -u <UDID> device-control display status
 ios -u <UDID> device-control display video --max-units 10 --timeout 10 --output screen.hevc
 ios -u <UDID> device-control display audio --max-units 10 --timeout 10 --output audio.aac
+ios -u <UDID> hid --confirm button --usage-page 12 --usage-code 64 --state down
+ios -u <UDID> hid --confirm button --usage-page 12 --usage-code 64 --state up
 ios -u <UDID> hid --confirm tap --x 0.5 --y 0.5
+ios -u <UDID> hid --confirm swipe --from-x 0.5 --from-y 0.75 --to-x 0.5 --to-y 0.25 --steps 12
+ios -u <UDID> hid --confirm touch down --contact-id 0 --x 0.5 --y 0.5
+ios -u <UDID> hid --confirm touch up --contact-id 0 --x 0.5 --y 0.5
+ios -u <UDID> hid --confirm multitouch --points 0:0.2:0.5,1:0.3:0.5,2:0.4:0.5 --hold-ms 60
 ios -u <UDID> hid --confirm text 'hello'
+ios -u <UDID> hid --confirm key 4 --shift
 ```
 
-`video` and `audio` return bounded metadata JSON lines (or a human summary)
-and optionally save concatenated encoded access units through an atomic 0600
-staging file. The output is raw encoded Annex-B HEVC or AAC-ELD payload data,
-not decoded pixels/PCM; a VNC/viewer pipeline is not included. Capture and
-Universal HID use the kernel tunnel so device-initiated RTP can reach the host
-UDP socket. If kernel TUN support or a concrete CDTunnel client address is not
-available, the command fails with a diagnostic instead of advertising `::1` or
-claiming that input/capture succeeded.
+`device-control display video` and `audio` return bounded metadata JSON lines
+(or a human summary) and optionally save concatenated encoded access units
+through an atomic 0600 staging file. The output is raw encoded Annex-B HEVC or
+AAC-ELD payload data, not decoded pixels/PCM; for decoded Web/VNC viewing and
+clipboard integration, use `ios viewer` (see [viewer.md](viewer.md)).
+
+Both `device-control display video|audio` and Universal HID (`tap`, `swipe`,
+`touch`, `multitouch`, `text`, `key`) try the kernel TUN path first and
+**automatically fall back to the Userspace Tunnel** on iOS 17–27.2, using
+userspace IPv6 UDP datagram forwarding to receive the device's RTP media stream
+without requiring elevated kernel TUN privileges. Universal HID opens an
+authenticated Display/RTP media stream before sending reports, waits **500ms**
+(`TOUCH_SURFACE_AUTH_SETTLE`) for `backboardd` to authenticate the touch
+surfaces, and waits **300ms** (`KEYBOARD_ATTACH_SETTLE`) after registering a
+virtual keyboard (with a Shift lead-in/lead-out report sequence when typing
+uppercase characters or passing `--shift`). `multitouch --points <id:x:y,...>
+[--hold-ms <MS>]` sends up to 5 simultaneous normalized contacts (`0.0..=1.0`)
+in a single `mainTouchscreen` report.
 
 ## Logs, diagnostics, and packet capture
 
@@ -383,9 +472,19 @@ ios -u <UDID> os-trace live --pid 42 --subsystem com.example --match timeout
 ios -u <UDID> os-trace archive ./diagnostics.tar --size-limit 1073741824
 ios -u <UDID> os-trace collect ./diagnostics.logarchive --age-limit 7
 ios -u <UDID> pcap --output device.pcap
+ios -u <UDID> pcap --interface en0 --count 10 --duration 10 --output wifi.pcap --json
+ios -u <UDID> pcap -i pdp_ip0 --duration 10 --output cellular.pcap
 ios -u <UDID> ip --json
 ios -u <UDID> notify wait com.apple.mobile.lockdown.host_attached
 ```
+
+`ios pcap` supports `--interface` / `-i <INTERFACE>` filtering in addition to
+`--pid` and `--process`. On iOS 27.2, `pcapd` frame headers store the bare
+interface family prefix (`en`, `pdp_ip`, `lo`, `awdl`, `utun`) alongside a
+separate numeric `unit` field in the binary frame header; `ios pcap`
+reconstructs the canonical unit-suffixed BSD interface name (`en0`, `pdp_ip0`,
+`lo0`) and matches both exact unit-suffixed names (`-i en0`) and prefix
+families (`-i en`).
 
 `ios ip` reads `WiFiAddress` only as the packet-source selector, then
 discovers IPv4 and IPv6 addresses from matching `pcapd` Ethernet frames. It
@@ -421,6 +520,21 @@ common `Name(Library)` sender annotation; an exact annotated name remains
 accepted. `--filter`, regex, PID, count, timeout, parsed text, and JSON output
 continue to apply after decoding and parsing.
 
+JSON syslog output is one compact object per matching message followed by a
+newline. Use `--no-json` for raw logs or add `--parse` for formatted text.
+`--count N` stops at the matching-record cap; `--timeout SECONDS` is a chosen
+capture window after connection/service setup, and expiry is successful. A relay
+read error or EOF exits 1 while retaining earlier stdout records. Output or
+flush failure also exits 1 and may leave an incomplete final JSON record.
+`--error-format=json` places the safe final failure on stderr; the streaming
+progress line is still stderr text. See the [error/partial-result
+contract](error-contract.md) before treating a partial stream as complete.
+
+Each incoming syslog message is limited to 1 MiB before NUL termination and
+decoding. Over-limit messages fail as protocol errors, including a final chunk
+that contains NUL; earlier complete records remain available. This input budget
+is separate from the size of decoded/escaped JSON output.
+
 `os-trace stream` (also available as `os-trace live`) performs the binary
 `StartActivity` handshake and emits one structured record per line. Filters
 for PID, process, level, subsystem, category, message inclusion, message
@@ -447,8 +561,17 @@ collect destination is refused. Both commands use the classic
 `com.apple.os_trace_relay.shim.remote` RSD service on iOS 17+, and `--timeout`
 covers connection, transfer, validation, and extraction. Device-side
 `SizeLimit`, `AgeLimit`, and Unix-timestamp `StartTime` are sent unchanged;
-the core API also enforces bounded host-side archive, entry, and extracted-byte
-budgets. Ctrl+C removes incomplete temporary output.
+`--size-limit` requests the device's archive size and also sets the host
+transfer cap for compatibility. Use `--max-bytes` to set a separate hard host
+transfer cap, for example `--size-limit 1048576 --max-bytes 33554432`.
+When neither option is given the host transfer cap is 4 GiB. Both size options
+must be nonzero unsigned 64-bit values. The device may ignore its size hint; the
+host rejects an entire announced chunk before reading it if that chunk would
+exceed the transfer cap. Independently, archive validation and collection limit
+each extracted file to 1 GiB, total extracted bytes to 4 GiB, and entries to
+100,000; `--max-bytes` does not increase these limits. Limit errors identify
+the budget category without exposing paths or daemon text. Ctrl+C removes
+incomplete temporary output.
 
 ## Backups
 
@@ -490,6 +613,11 @@ without inventing an encrypted manifest; encrypted legacy operations require
 Manifest.db WAL/SHM/journal sidecars are also rejected because they cannot be
 decrypted safely as an isolated completed backup.
 
+For `backup create`, `--password` is used for local `--patch-manifest` or
+`--unback` processing; it does not enable or change device backup encryption.
+Creating a backup requires a trusted pairing record with an escrow bag; unlock
+the device and respond to any device prompt during the operation.
+
 `unback` and `extract` are retained compatibility names for local operations
 over a completed backup. They preserve regular-file bytes, basic Unix
 permission bits, and safe relative symlinks. The `list-local` command lists
@@ -524,25 +652,75 @@ returns a failure and does not delete arbitrary host files.
 
 ```sh
 ios -u <UDID> ddi status
-ios -u <UDID> ddi mount --path /path/to/DeveloperDiskImage.dmg
+ios -u <UDID> ddi auto
+ios -u <UDID> ddi mount --path /path/to/DDI-directory
 ios -u <UDID> instruments ps
 ios -u <UDID> instruments cpu
 ios -u <UDID> instruments sysmon-process <PID>
 ios -u <UDID> instruments launch com.example.app
 ios -u <UDID> instruments kill <PID>
-ios -u <UDID> debugserver --help
-ios -u <UDID> debug --help
+ios -u <UDID> debugserver send qSupported
+ios -u <UDID> debug com.example.app --local-app /path/to/local/application.app
 ios -u <UDID> symbols list
 ios -u <UDID> accessibility-audit capabilities
+ios -u <UDID> viewer web --port 8080 --local-unauthenticated --share-clipboard
+ios -u <UDID> viewer vnc --port 5900 --local-unauthenticated --share-clipboard
 ios -u <UDID> webinspector opened-tabs
 ios -u <UDID> webinspector launch https://example.com
 ios -u <UDID> webinspector launch https://example.com --bundle-id com.example.app
 ios -u <UDID> webinspector js-shell --bundle-id com.apple.mobilesafari
 printf 'document.title\n1 + 1\n.exit\n' | ios -u <UDID> webinspector js-shell --page-id 1
+ios -u <UDID> webinspector cdp --host 127.0.0.1 --port 9222 --auth-config PRIVATE_POLICY_FILE
+ios -u <UDID> webinspector selenium --auth-config PRIVATE_POLICY_FILE
 ```
+
+For iOS 17–26, the DDI directory may be a `Restore` directory or its parent;
+`Restore` must contain `PersonalizedDMG.dmg`, `PersonalizedDMG.trustcache`, and
+`BuildManifest.plist`. The selected local files are used for personalization;
+an absent or unreadable file fails without downloading an alternative. Apple
+TSS is still required. If an image is already mounted, the command returns
+without loading the supplied path. For older iOS versions, the directory
+contains `DeveloperDiskImage.dmg` and its `.signature`; iOS 27+ uses the
+[Cryptex Restore directory](cryptex-ddi.md) (where `ios -u <UDID> ddi auto`
+automatically downloads and installs Cryptex DDI `v27.1.5228.8`).
+
+`ios debug <bundle_id> [--local-app <PATH>]` connects to the iOS 17–27.2
+CoreDevice RSD `com.apple.internal.dt.remote.debugproxy` over the userspace
+tunnel and prints the LLDB attach/launch script. `ios debugserver send <packet>`
+tries the classic Lockdown debugserver service first and automatically falls
+back to CoreDevice RSD `com.apple.internal.dt.remote.debugproxy` on iOS 17–27.2
+when Lockdown returns `ServiceMissing`. See [debug.md](debug.md) for details.
 
 Many developer services require Developer Mode, a mounted Developer Disk Image,
 or the CoreDevice tunnel path on newer iOS versions.
+
+### Simulated location
+
+```sh
+ios -u <UDID> location set 48.856614 2.3522219
+ios -u <UDID> location gpx route.gpx
+ios -u <UDID> location reset
+```
+
+On iOS 17 and later, these commands use the Instruments location simulation
+service; earlier versions use the legacy location simulation service. Developer
+services and their device prerequisites must be available. GPX replay sends
+track points in order using their timestamp intervals. Cancelling a replay can
+leave the last simulated location active; use `location reset` to return to
+the device's location.
+
+WebInspector CLI/CDP/WebDriver startup retains IO and timeout errors through
+safe diagnostics. A startup timeout or closed stream alone does not prove that
+Web Inspector is disabled. Existing failure exits/statuses and successful
+output remain unchanged; Rust callers can opt into `start_preserving_errors`
+while the old `start` retains its legacy mapping. See the
+[error contract](error-contract.md) for typed classification and partial writes.
+
+Use `ios --error-format=json <command>` for a versioned final failure on stderr;
+normal stdout remains command-specific. Put the format option before invalid
+arguments. The object reports a typed class, phase and the original exit 1/2;
+operation effects remain unknown. Default human diagnostics are unchanged.
+This option does not yet convert progress or stream callbacks into JSON.
 
 `webinspector launch` uses Remote Automation to launch the selected bundle,
 create one browsing context, optionally navigate to the positional URL, and
@@ -561,6 +739,30 @@ stdout and evaluation errors on stderr. `--timeout` bounds connection and
 initial page setup, and each individual evaluation; it does not expire an
 otherwise idle interactive shell. Ctrl+C or EOF exits the shell.
 
+`webinspector cdp` serves `/json/list`, `/json/version`, page WebSockets, and
+the browser WebSocket advertised by `/json/version`. The browser endpoint
+implements Target discovery, attachment, detachment, and flat `sessionId`
+routing to inspectable WebKit pages and JavaScript contexts. Unsupported
+browser methods return a CDP error.
+The per-domain status, supported Playwright/Puppeteer/Selenium workflows, and
+startup probes are documented in [CDP compatibility](cdp-compatibility.md).
+
+Both debug servers require a private policy with `debug` for the exact selected
+device, or explicit loopback `--local-unauthenticated`. Native clients supply the
+private token in a bearer header for HTTP and WebSocket requests. Missing or
+denied credentials fail before device access. Expiry or an authorized policy
+reload revokes pending requests, connections and stored automation sessions.
+These listeners require explicit global UDID selection without first-device
+discovery, and validate actual listener Host and allowed Origin for HTTP/WS.
+Local metadata is adapter information, not device readiness. See
+[management access](management-access.md) for migration, reload, resource and
+transport boundaries. See [HTTP boundaries](http-boundary.md) for exact settings
+and POST management migration. Controlled CDP browser clients use scoped
+single-use handshake tickets; Selenium browser HTTP uses the bearer header.
+Manager federation uses independently configured credentials and verified
+HTTPS/WSS, or a separately protected literal-loopback host forward; see
+[protected federation](protected-federation.md).
+
 Comparable upstream workflows:
 
 - go-ios: `ios image ...`, `ios instruments ...`, `ios debug ...`, `ios ax ...`.
@@ -571,15 +773,22 @@ Comparable upstream workflows:
 
 ```sh
 ios -u <UDID> tunnel start --userspace
-ios tunnel serve --userspace --host 127.0.0.1 --port 49151
-ios tunnel list
+ios tunnel serve --userspace --host 127.0.0.1 --port 49151 --auth-config PRIVATE_POLICY_FILE
+ios tunnel list --token-file PRIVATE_CLIENT_TOKEN_FILE
 ios -u <UDID> rsd services
 ios -u <UDID> rsd services --all --features
 ios -u <UDID> forward 1234 62078 --once
 ```
 
-Userspace tunnels expose a local TCP proxy. Kernel TUN mode may require
-administrator or root privileges. See [tunnel.md](tunnel.md) for details.
+Userspace tunnels expose a local TCP proxy plus userspace IPv6 UDP datagram
+forwarding and a 20ms ICMPv6 Echo Request Nudge. Kernel TUN mode may require
+administrator or root privileges. Manager admission is scoped and authenticated;
+plain HTTP requires loopback. See [management-access.md](management-access.md)
+for policy creation, explicit local trust and reload, and [tunnel.md](tunnel.md)
+for the raw proxy boundary.
+Forward, WDA proxy, dproxy and the current raw screenshot stream accept only a
+literal loopback address or localhost; nonloopback is rejected before device
+operations. Remote native clients require a protected host transport.
 
 TCP dials and initial protocol setup on the tunnel/RSD/XPC paths are bounded by
 15 seconds; TCP-backed remote pairing and lockdown setup use the same bound. A
@@ -630,6 +839,16 @@ previous log, or restored-crash notifications; it does not start a restore by
 itself. Data request events include an `async` flag so later restore-loop work
 can distinguish `DataRequestMsg` from `AsyncDataRequestMsg`.
 
+The `ios_core::restore` Rust API also builds device-side preflight payloads
+from a caller-selected IPSW build identity and firmware reader. Open a fresh
+`RestoreServiceClient` for each updater, then call the consuming
+`get_device_side_preflight_info` method. `restore::tss` extracts the resulting
+device-generated requests and batches peripheral tickets, falling back to
+individual signing when needed. Use `PrefetchedTicket::for_nonce` against the
+live runtime nonce before using a cached ticket. The CLI does not select live
+IPSW build identities for physical flashing; `restore simulate-restore` runs
+only against explicit offline IPSW/TSS simulation fixtures.
+
 ## Rust API
 
 Use `ios-core` for a high-level entry point:
@@ -667,4 +886,6 @@ prefer the constructor and accessors over struct literals.
   pymobiledevice3 command families.
 - [features.md](features.md) explains feature flags for library users.
 - [tunnel.md](tunnel.md) covers CoreDevice tunnel setup in more detail.
+- [viewer.md](viewer.md) covers the Web/VNC viewer and clipboard synchronization.
+- [debug.md](debug.md) covers LLDB and debugserver workflows.
 - [troubleshooting.md](troubleshooting.md) covers common host and device issues.

@@ -1,14 +1,36 @@
 use anyhow::{Context, Result};
 use ios_core::error::CoreError;
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
-use crate::cmd::connect::{connect_by_ios_major, userspace_options};
+use crate::cmd::connect::{
+    connect_lockdown_only, finite_service_operation, probe_product_version, CommandDevice,
+};
+
+mod install_observer;
+mod mutation_output;
+#[cfg(test)]
+mod staged_tests;
+mod streaming_install;
+use mutation_output::Mutation;
 
 #[derive(clap::Args)]
 pub struct AppsCmd {
     #[command(subcommand)]
     sub: AppsSub,
+}
+
+impl AppsCmd {
+    pub fn needs_default_udid(&self) -> bool {
+        !matches!(
+            self.sub,
+            AppsSub::InstallRecord {
+                observe_zero_budget_recovery: true,
+                ..
+            }
+        )
+    }
 }
 
 #[derive(clap::Subcommand)]
@@ -66,6 +88,20 @@ enum AppsSub {
         bundle_id: String,
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
+        #[arg(
+            long,
+            requires = "rsd_address",
+            help = "Observe original integer wire type and recovery after a zero-budget query on the same client"
+        )]
+        observe_zero_budget_recovery: bool,
+        #[arg(
+            long,
+            requires = "observe_zero_budget_recovery",
+            help = "Explicit already established RSD endpoint for the read-only observer"
+        )]
+        rsd_address: Option<std::net::SocketAddrV6>,
+        #[arg(long, requires = "rsd_address")]
+        rsd_proxy_port: Option<u16>,
     },
     /// List running app processes (iOS 17+ appservice)
     Processes {
@@ -159,25 +195,106 @@ enum AppsSub {
 }
 
 impl AppsCmd {
+    #[cfg(test)]
+    pub(crate) fn connected_async_state_bytes() -> usize {
+        fn measure<F>(
+            _: impl FnOnce(AppsSub, CommandDevice, Option<u64>, String, bool) -> F,
+        ) -> usize {
+            std::mem::size_of::<F>()
+        }
+        measure(Self::run_connected)
+    }
+
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for apps commands"))?;
 
-        let (device, ios_major) = if apps_subcommand_requires_version_probe(&self.sub) {
-            let (device, version) = connect_by_ios_major(&udid, |major| {
-                apps_subcommand_prefers_tunnel(&self.sub, major)
-            })
-            .await
-            .context("failed to connect device for apps command")?;
-            (device, Some(version.major))
-        } else {
-            (
-                ios_core::connect(&udid, userspace_options(true)).await?,
-                None,
+        if let AppsSub::InstallRecord {
+            bundle_id,
+            timeout_secs,
+            observe_zero_budget_recovery: true,
+            rsd_address: Some(address),
+            rsd_proxy_port,
+        } = &self.sub
+        {
+            return Box::pin(install_observer::run(
+                &udid,
+                bundle_id,
+                *address,
+                *rsd_proxy_port,
+                *timeout_secs,
+                json,
+            ))
+            .await;
+        }
+
+        let staged_install = matches!(
+            &self.sub,
+            AppsSub::Install {
+                streaming: false,
+                ..
+            } | AppsSub::Upgrade { .. }
+        );
+        let budget = apps_operation_budget(&self.sub);
+        let scope = crate::cmd::tunnel::NativeScope::new()?;
+        let operation = Box::pin(async {
+            let (device, ios_major) = cancellable_apps_operation(
+                Some(Duration::from_secs(30)),
+                tokio::signal::ctrl_c(),
+                async {
+                    let connected = if apps_subcommand_requires_version_probe(&self.sub) {
+                        let version = Box::pin(probe_product_version(&udid)).await?;
+                        let device = if apps_subcommand_prefers_tunnel(&self.sub, version.major) {
+                            let connected = tokio::time::timeout(
+                                Duration::from_secs(30),
+                                Box::pin(scope.connect(&udid, ios_core::TunMode::Userspace)),
+                            )
+                            .await
+                            .context("apps native setup deadline")??;
+                            CommandDevice::Scoped(Box::new(connected))
+                        } else {
+                            CommandDevice::Plain(Box::new(
+                                Box::pin(connect_lockdown_only(&udid)).await?,
+                            ))
+                        };
+                        (device, Some(version.major))
+                    } else {
+                        (
+                            CommandDevice::Plain(Box::new(
+                                Box::pin(connect_lockdown_only(&udid)).await?,
+                            )),
+                            None,
+                        )
+                    };
+                    Ok(connected)
+                },
             )
+            .await?;
+            // Preserve the existing heap-backed boundary for the large match.
+            Box::pin(Self::run_connected(self.sub, device, ios_major, udid, json)).await
+        });
+        // Staged installs own their cancellation and deadline through cleanup.
+        let result = if staged_install {
+            operation.await
+        } else {
+            cancellable_apps_operation(budget, tokio::signal::ctrl_c(), operation).await
         };
+        crate::cmd::test_workflow::combine_results(
+            result,
+            scope.close(Duration::from_secs(15)).await,
+            "apps original native retirement failed",
+        )
+    }
+
+    async fn run_connected(
+        sub: AppsSub,
+        device: CommandDevice,
+        ios_major: Option<u64>,
+        udid: String,
+        json: bool,
+    ) -> Result<()> {
         let skip_tunnel = device.tunnel_handle().is_none();
 
-        match self.sub {
+        match sub {
             AppsSub::List {
                 app_type,
                 coredevice,
@@ -190,10 +307,10 @@ impl AppsCmd {
 
                     if json {
                         let list: Vec<_> = apps.iter().map(coredevice_app_to_json).collect();
-                        println!("{}", serde_json::to_string_pretty(&list)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                     } else {
                         for app in &apps {
-                            println!(
+                            crate::output::outln!(
                                 "{:<45} {} ({})",
                                 app.bundle_id,
                                 app.name.as_deref().unwrap_or("-"),
@@ -229,10 +346,15 @@ impl AppsCmd {
                             })
                         })
                         .collect();
-                    println!("{}", serde_json::to_string_pretty(&list)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                 } else {
                     for a in &apps {
-                        println!("{:<45} {} ({})", a.bundle_id, a.display_name, a.version);
+                        crate::output::outln!(
+                            "{:<45} {} ({})",
+                            a.bundle_id,
+                            a.display_name,
+                            a.version
+                        );
                     }
                 }
             }
@@ -257,139 +379,72 @@ impl AppsCmd {
                         ios_core::apps::zipconduit::RSD_SERVICE_NAME
                     };
 
-                    let mut stream = if skip_tunnel {
-                        device
-                            .connect_service(svc_name)
+                    let operation = async {
+                        let stream = if skip_tunnel {
+                            device
+                                .connect_service_with_timeout(svc_name, Duration::from_secs(30))
+                                .await
+                                .context("failed to connect streaming_zip_conduit service")?
+                        } else {
+                            tokio::time::timeout(
+                                Duration::from_secs(30),
+                                device.connect_rsd_service(svc_name),
+                            )
                             .await
-                            .context("failed to connect streaming_zip_conduit service")?
-                    } else {
-                        device
-                            .connect_rsd_service(svc_name)
-                            .await
+                            .context("ZIP conduit RSD setup deadline")?
                             .context("failed to connect streaming_zip_conduit RSD service")?
-                    };
+                        };
 
-                    eprintln!("Installing via streaming zip conduit...");
-                    ios_core::apps::install_ipa(
-                        &mut stream,
-                        source_path,
-                        Some(Box::new(|percent, status| {
-                            eprintln!("  [{percent}%] {status}");
-                        })),
-                    )
-                    .await
-                    .context("streaming zip conduit install failed")?;
-                    println!("Installed {ipa_path} (streaming)");
+                        crate::output::write_error_line(format_args!(
+                            "Installing via streaming zip conduit..."
+                        ))?;
+                        ios_core::apps::install_ipa_owned_with_timeout(
+                            stream,
+                            source_path,
+                            Some(Box::new(streaming_install::write_progress)),
+                            Duration::from_secs(300),
+                        )
+                        .await
+                        .context("streaming zip conduit install failed")?;
+                        Ok::<_, anyhow::Error>(())
+                    };
+                    tokio::select! {biased;
+                        signal=tokio::signal::ctrl_c()=>{signal?;return Err(anyhow::Error::new(ios_core::OperationCancelled::new()).context("streaming IPA install cancelled; device effect unknown"));}
+                        result=operation=>result?,
+                    }
+                    mutation_output::emit(
+                        &Mutation::Install {
+                            path: &ipa_path,
+                            streaming: true,
+                        },
+                        json,
+                    )?;
                     return Ok(());
                 }
 
                 let install_paths = build_install_paths(source_path)?;
 
-                let afc_stream = device
-                    .connect_service("com.apple.afc")
-                    .await
-                    .context("failed to connect AFC for app staging")?;
-                let mut afc = ios_core::afc::AfcClient::new(afc_stream);
-
-                match afc.make_dir("/PublicStaging").await {
-                    Ok(()) => {}
-                    Err(ios_core::afc::AfcError::Status(
-                        ios_core::afc::AfcStatusCode::ObjectExists,
-                    )) => {}
-                    Err(err) => {
-                        return Err(err).context("failed to create /PublicStaging on device");
-                    }
-                }
-
-                let staged_path = if install_paths.is_directory {
-                    remove_staged_path(&mut afc, &install_paths.final_remote_path, true)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to clear staged bundle {}",
-                                install_paths.final_remote_path
-                            )
-                        })?;
-
-                    stage_app_bundle(&mut afc, source_path, &install_paths.final_remote_path)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to upload app bundle to {}",
-                                install_paths.final_remote_path
-                            )
-                        })?;
-
-                    StagedPath {
-                        path: install_paths.final_remote_path.clone(),
-                        is_directory: true,
-                    }
-                } else {
-                    for stale_path in [
-                        &install_paths.temp_remote_path,
-                        &install_paths.final_remote_path,
-                    ] {
-                        remove_staged_path(&mut afc, stale_path, false)
+                Box::pin(install_staged_package(
+                    |service| async {
+                        device
+                            .connect_service_with_timeout(service, Duration::from_secs(30))
                             .await
-                            .with_context(|| format!("failed to clear staged file {stale_path}"))?;
-                    }
-
-                    let mut ipa_file = tokio::fs::File::open(source_path)
-                        .await
-                        .with_context(|| format!("open {}", source_path.display()))?;
-                    afc.write_file_from_reader(&install_paths.temp_remote_path, &mut ipa_file)
-                        .await
-                        .context(format!(
-                            "failed to upload IPA to {}",
-                            install_paths.temp_remote_path
-                        ))?;
-                    afc.rename(
-                        &install_paths.temp_remote_path,
-                        &install_paths.final_remote_path,
-                    )
-                    .await
-                    .context(format!(
-                        "failed to finalize staged IPA at {}",
-                        install_paths.final_remote_path
-                    ))?;
-
-                    StagedPath {
-                        path: install_paths.final_remote_path.clone(),
-                        is_directory: false,
-                    }
-                };
-
-                let install_result: Result<()> = async {
-                    let install_stream = device
-                        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
-                        .await
-                        .context("failed to connect installation proxy")?;
-                    let mut proxy = ios_core::apps::InstallationProxy::new(install_stream);
-                    proxy
-                        .install(&install_paths.package_path)
-                        .await
-                        .context(format!(
-                            "failed to install staged IPA {}",
-                            install_paths.package_path
-                        ))?;
-                    Ok(())
-                }
-                .await;
-
-                let cleanup_result =
-                    remove_staged_path(&mut afc, &staged_path.path, staged_path.is_directory).await;
-
-                if let Err(err) = install_result {
-                    if let Err(cleanup_err) = cleanup_result {
-                        return Err(err.context(format!(
-                            "failed to clean staged install payload after install error: {cleanup_err}"
-                        )));
-                    }
-                    return Err(err);
-                }
-
-                cleanup_result.context("installed app but failed to remove staged payload")?;
-                println!("Installed {ipa_path}");
+                            .map_err(Into::into)
+                    },
+                    source_path,
+                    &install_paths,
+                    false,
+                    Duration::from_secs(300),
+                    tokio::signal::ctrl_c(),
+                ))
+                .await?;
+                mutation_output::emit(
+                    &Mutation::Install {
+                        path: &ipa_path,
+                        streaming: false,
+                    },
+                    json,
+                )?;
             }
             AppsSub::Upgrade { ipa_path } => {
                 let source_path = std::path::Path::new(&ipa_path);
@@ -401,81 +456,21 @@ impl AppsCmd {
                     ));
                 }
 
-                let afc_stream = device
-                    .connect_service("com.apple.afc")
-                    .await
-                    .context("failed to connect AFC for app staging")?;
-                let mut afc = ios_core::afc::AfcClient::new(afc_stream);
-
-                match afc.make_dir("/PublicStaging").await {
-                    Ok(()) => {}
-                    Err(ios_core::afc::AfcError::Status(
-                        ios_core::afc::AfcStatusCode::ObjectExists,
-                    )) => {}
-                    Err(err) => {
-                        return Err(err).context("failed to create /PublicStaging on device");
-                    }
-                }
-
-                for stale_path in [
-                    &install_paths.temp_remote_path,
-                    &install_paths.final_remote_path,
-                ] {
-                    remove_staged_path(&mut afc, stale_path, false)
-                        .await
-                        .with_context(|| format!("failed to clear staged file {stale_path}"))?;
-                }
-
-                let mut ipa_file = tokio::fs::File::open(source_path)
-                    .await
-                    .with_context(|| format!("open {}", source_path.display()))?;
-                afc.write_file_from_reader(&install_paths.temp_remote_path, &mut ipa_file)
-                    .await
-                    .context(format!(
-                        "failed to upload IPA to {}",
-                        install_paths.temp_remote_path
-                    ))?;
-                afc.rename(
-                    &install_paths.temp_remote_path,
-                    &install_paths.final_remote_path,
-                )
-                .await
-                .context(format!(
-                    "failed to finalize staged IPA at {}",
-                    install_paths.final_remote_path
-                ))?;
-
-                let upgrade_result: Result<()> = async {
-                    let install_stream = device
-                        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
-                        .await
-                        .context("failed to connect installation proxy")?;
-                    let mut proxy = ios_core::apps::InstallationProxy::new(install_stream);
-                    proxy
-                        .upgrade(&install_paths.package_path)
-                        .await
-                        .context(format!(
-                            "failed to upgrade staged IPA {}",
-                            install_paths.package_path
-                        ))?;
-                    Ok(())
-                }
-                .await;
-
-                let cleanup_result =
-                    remove_staged_path(&mut afc, &install_paths.final_remote_path, false).await;
-
-                if let Err(err) = upgrade_result {
-                    if let Err(cleanup_err) = cleanup_result {
-                        return Err(err.context(format!(
-                            "failed to clean staged upgrade payload after upgrade error: {cleanup_err}"
-                        )));
-                    }
-                    return Err(err);
-                }
-
-                cleanup_result.context("upgraded app but failed to remove staged payload")?;
-                println!("Upgraded {ipa_path}");
+                Box::pin(install_staged_package(
+                    |service| async {
+                        device
+                            .connect_service_with_timeout(service, Duration::from_secs(30))
+                            .await
+                            .map_err(Into::into)
+                    },
+                    source_path,
+                    &install_paths,
+                    true,
+                    Duration::from_secs(300),
+                    tokio::signal::ctrl_c(),
+                ))
+                .await?;
+                mutation_output::emit(&Mutation::Upgrade { path: &ipa_path }, json)?;
             }
             AppsSub::Archive { bundle_id } => {
                 let stream = device
@@ -483,7 +478,12 @@ impl AppsCmd {
                     .await?;
                 let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.archive(&bundle_id).await?;
-                println!("Archived {bundle_id}");
+                mutation_output::emit(
+                    &Mutation::Archive {
+                        bundle_id: &bundle_id,
+                    },
+                    json,
+                )?;
             }
             AppsSub::Restore { bundle_id } => {
                 let stream = device
@@ -491,7 +491,12 @@ impl AppsCmd {
                     .await?;
                 let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.restore(&bundle_id).await?;
-                println!("Restored {bundle_id}");
+                mutation_output::emit(
+                    &Mutation::Restore {
+                        bundle_id: &bundle_id,
+                    },
+                    json,
+                )?;
             }
             AppsSub::Show { bundle_id, attrs } => {
                 let stream = device
@@ -506,14 +511,15 @@ impl AppsCmd {
                 let app_json = app_to_json_with_attrs(&app, &attrs);
 
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&app_json)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&app_json)?);
                 } else {
-                    print_app_details(&app_json);
+                    print_app_details(&app_json)?;
                 }
             }
             AppsSub::InstallRecord {
                 bundle_id,
                 timeout_secs,
+                ..
             } => {
                 let timeout = Duration::from_secs(timeout_secs);
                 let result = tokio::time::timeout(timeout, async {
@@ -537,23 +543,23 @@ impl AppsCmd {
                     Ok::<_, anyhow::Error>(proxy.query(&bundle_id).await?)
                 })
                 .await
-                .map_err(|_| anyhow::anyhow!("install-record timed out after {timeout:?}"))??;
+                .with_context(|| format!("install-record timed out after {timeout:?}"))??;
                 let output = install_record_to_json(&result);
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&output)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&output)?);
                 } else {
-                    println!("DB UUID: {}", result.db_uuid);
-                    println!("DB sequence: {}", result.db_sequence);
-                    println!(
+                    crate::output::outln!("DB UUID: {}", result.db_uuid);
+                    crate::output::outln!("DB sequence: {}", result.db_sequence);
+                    crate::output::outln!(
                         "Install path: {}",
                         result.install_path.as_deref().unwrap_or("-")
                     );
-                    println!(
+                    crate::output::outln!(
                         "Persistent identifier: {}",
                         hex::encode(&result.persistent_identifier)
                     );
                     if !result.extra.is_empty() {
-                        println!("Extra fields: {}", result.extra.len());
+                        crate::output::outln!("Extra fields: {}", result.extra.len());
                     }
                 }
             }
@@ -561,14 +567,13 @@ impl AppsCmd {
                 let processes = match connect_appservice(&device, &udid).await {
                     Ok(mut client) => client.list_processes().await?,
                     Err(e) if should_fallback_to_instruments(&e) => {
-                        let (_device, stream) =
-                            super::instruments::connect_instruments(&udid).await?;
+                        let stream = connect_apps_instruments(&device, ios_major).await?;
                         let mut di = ios_core::instruments::DeviceInfoClient::connect(stream)
                             .await
-                            .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+                            .context("DTX error")?;
                         di.running_processes()
                             .await
-                            .map_err(|err| anyhow::anyhow!("runningProcesses error: {err}"))?
+                            .context("runningProcesses error")?
                             .into_iter()
                             .map(|p| ios_core::apps::RunningAppProcess {
                                 pid: p.pid,
@@ -597,11 +602,11 @@ impl AppsCmd {
                             })
                         })
                         .collect();
-                    println!("{}", serde_json::to_string_pretty(&list)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                 } else {
                     for process in &processes {
                         let bundle = process.bundle_id.as_deref().unwrap_or("-");
-                        println!("{:<8} {:<45} {}", process.pid, bundle, process.name);
+                        crate::output::outln!("{:<8} {:<45} {}", process.pid, bundle, process.name);
                     }
                 }
             }
@@ -609,27 +614,24 @@ impl AppsCmd {
                 match connect_appservice(&device, &udid).await {
                     Ok(mut client) => client.kill_process(pid).await?,
                     Err(e) if should_fallback_to_instruments(&e) => {
-                        let (_device, stream) =
-                            super::instruments::connect_instruments(&udid).await?;
+                        let stream = connect_apps_instruments(&device, ios_major).await?;
                         let mut pc =
                             ios_core::instruments::process_control::ProcessControl::connect(stream)
                                 .await
-                                .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
-                        pc.kill(pid)
-                            .await
-                            .map_err(|err| anyhow::anyhow!("kill error: {err}"))?;
+                                .context("DTX error")?;
+                        pc.kill(pid).await.context("kill error")?;
                     }
                     Err(e) => return Err(e.into()),
                 }
-                println!("Killed process {pid}");
+                mutation_output::emit(&Mutation::Kill { pid }, json)?;
             }
             AppsSub::Signal { pid, signal } => match connect_appservice(&device, &udid).await {
                 Ok(mut client) => {
                     client.send_signal(pid, signal).await?;
-                    println!("Sent signal {signal} to process {pid}");
+                    mutation_output::emit(&Mutation::Signal { pid, signal }, json)?;
                 }
                 Err(e) if should_fallback_to_instruments(&e) => {
-                    return Err(anyhow::anyhow!(
+                    return Err(anyhow::Error::new(e).context(
                             "arbitrary signal sending requires iOS 17+ appservice (not available on this device); \
                              use 'apps kill' for SIGKILL which supports DTX fallback"
                         ));
@@ -640,14 +642,13 @@ impl AppsCmd {
                 let processes = match connect_appservice(&device, &udid).await {
                     Ok(mut client) => client.list_processes().await?,
                     Err(e) if should_fallback_to_instruments(&e) => {
-                        let (_device, stream) =
-                            super::instruments::connect_instruments(&udid).await?;
+                        let stream = connect_apps_instruments(&device, ios_major).await?;
                         let mut di = ios_core::instruments::DeviceInfoClient::connect(stream)
                             .await
-                            .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+                            .context("DTX error")?;
                         di.running_processes()
                             .await
-                            .map_err(|err| anyhow::anyhow!("runningProcesses error: {err}"))?
+                            .context("runningProcesses error")?
                             .into_iter()
                             .map(|p| ios_core::apps::RunningAppProcess {
                                 pid: p.pid,
@@ -661,40 +662,33 @@ impl AppsCmd {
                     Err(e) => return Err(e.into()),
                 };
 
-                let pattern_lower = pattern.to_ascii_lowercase();
-                let matched: Vec<_> = processes
-                    .iter()
-                    .filter(|p| p.name.to_ascii_lowercase().contains(&pattern_lower))
-                    .collect();
-
-                if matched.is_empty() {
-                    println!("No processes matched pattern '{pattern}'");
-                } else {
-                    for p in &matched {
-                        match connect_appservice(&device, &udid).await {
-                            Ok(mut client) => client.send_signal(p.pid, signal).await?,
+                let device_ref = &device;
+                let udid_ref = udid.as_str();
+                mutation_output::signal_matches(&processes, &pattern, signal, json,
+                    |pid| async move {
+                        match connect_appservice(device_ref, udid_ref).await {
+                            Ok(mut client) => client.send_signal(pid, signal).await?,
                             Err(e) if should_fallback_to_instruments(&e) => {
                                 if !pkill_signal_allows_instruments_fallback(signal) {
-                                    return Err(anyhow::anyhow!(
+                                    return Err(anyhow::Error::new(e).context(format!(
                                         "apps pkill --signal {signal} requires iOS 17+ appservice \
                                          because Instruments fallback only supports SIGKILL (9)"
-                                    ));
+                                    )));
                                 }
-                                let (_device, stream) =
-                                    super::instruments::connect_instruments(&udid).await?;
+                                let stream=connect_apps_instruments(device_ref,ios_major).await?;
                                 let mut pc = ios_core::instruments::process_control::ProcessControl::connect(stream)
                                     .await
-                                    .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
-                                pc.kill(p.pid)
+                                    .context("DTX error")?;
+                                pc.kill(pid)
                                     .await
-                                    .map_err(|err| anyhow::anyhow!("kill error: {err}"))?;
+                                    .context("kill error")?;
                             }
                             Err(e) => return Err(e.into()),
                         }
-                        println!("Sent signal {signal} to {} (pid {})", p.name, p.pid);
-                    }
-                    println!("Killed {} process(es)", matched.len());
-                }
+                        Ok(())
+                    },
+                    |record| crate::output::write_formatted(format_args!("{record}")),
+                ).await?;
             }
             AppsSub::Launch { bundle_id } => {
                 let pid = match connect_appservice(&device, &udid).await {
@@ -702,32 +696,33 @@ impl AppsCmd {
                     Err(e) if should_fallback_to_instruments(&e) => {
                         use std::collections::HashMap;
 
-                        let (_device, stream) =
-                            super::instruments::connect_instruments(&udid).await?;
+                        let stream = connect_apps_instruments(&device, ios_major).await?;
                         let mut pc =
                             ios_core::instruments::process_control::ProcessControl::connect(stream)
                                 .await
-                                .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+                                .context("DTX error")?;
                         let env = HashMap::new();
                         Some(
                             pc.launch(&bundle_id, &[], &env)
                                 .await
-                                .map_err(|err| anyhow::anyhow!("launch error: {err}"))?,
+                                .context("launch error")?,
                         )
                     }
                     Err(e) => return Err(e.into()),
                 };
-                if let Some(pid) = pid {
-                    println!("Launched {bundle_id} (pid {pid})");
-                } else {
-                    println!("Launched {bundle_id}");
-                }
+                mutation_output::emit(
+                    &Mutation::Launch {
+                        bundle_id: &bundle_id,
+                        pid,
+                    },
+                    json,
+                )?;
             }
             AppsSub::Roots => {
                 let mut client = connect_appservice(&device, &udid).await?;
                 let roots = client.list_roots().await?;
                 let roots_json = xpc_value_to_json(&roots);
-                println!("{}", serde_json::to_string_pretty(&roots_json)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&roots_json)?);
             }
             AppsSub::Spawn { executable, args } => {
                 let mut client = connect_appservice(&device, &udid).await?;
@@ -738,11 +733,11 @@ impl AppsCmd {
                     "pid": pid,
                 });
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&output)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&output)?);
                 } else if let Some(pid) = pid {
-                    println!("Spawned {executable} (pid {pid})");
+                    crate::output::outln!("Spawned {executable} (pid {pid})");
                 } else {
-                    println!("Spawned {executable}");
+                    crate::output::outln!("Spawned {executable}");
                 }
             }
             AppsSub::Icons {
@@ -814,10 +809,10 @@ impl AppsCmd {
                 };
 
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&results)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&results)?);
                 } else {
                     for result in &results {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             result
                                 .get("output")
@@ -834,11 +829,9 @@ impl AppsCmd {
                     client.monitor_process_termination(pid),
                 )
                 .await
-                .map_err(|_| {
-                    anyhow::anyhow!("timed out waiting for process {pid} termination")
-                })??;
+                .with_context(|| format!("timed out waiting for process {pid} termination"))??;
                 let output = process_termination_to_json(&termination);
-                println!("{}", serde_json::to_string_pretty(&output)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&output)?);
             }
             AppsSub::Uninstall { bundle_id } => {
                 let stream = device
@@ -846,10 +839,54 @@ impl AppsCmd {
                     .await?;
                 let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.uninstall(&bundle_id).await?;
-                println!("Uninstalled {bundle_id}");
+                mutation_output::emit(
+                    &Mutation::Uninstall {
+                        bundle_id: &bundle_id,
+                    },
+                    json,
+                )?;
             }
         }
         Ok(())
+    }
+}
+
+async fn connect_apps_instruments(
+    device: &ios_core::ConnectedDevice,
+    major: Option<u64>,
+) -> Result<ios_core::device::ServiceStream> {
+    let major = major.ok_or_else(|| {
+        anyhow::anyhow!("apps instruments fallback requires observed device version")
+    })?;
+    if major >= 17 {
+        device
+            .connect_rsd_service(ios_core::instruments::SERVICE_IOS17)
+            .await
+            .map_err(Into::into)
+    } else {
+        match device
+            .connect_service(ios_core::instruments::SERVICE_IOS14)
+            .await
+        {
+            Ok(stream) => Ok(stream),
+            Err(_) => device
+                .connect_service(ios_core::instruments::SERVICE_LEGACY)
+                .await
+                .map_err(Into::into),
+        }
+    }
+}
+
+fn apps_operation_budget(sub: &AppsSub) -> Option<Duration> {
+    match sub {
+        AppsSub::Monitor { .. } => None,
+        AppsSub::Install { .. }
+        | AppsSub::Upgrade { .. }
+        | AppsSub::Archive { .. }
+        | AppsSub::Restore { .. }
+        | AppsSub::Uninstall { .. } => Some(Duration::from_secs(300)),
+        AppsSub::InstallRecord { timeout_secs, .. } => Some(Duration::from_secs(*timeout_secs)),
+        _ => Some(Duration::from_secs(30)),
     }
 }
 
@@ -896,18 +933,27 @@ async fn connect_appservice(
     device: &ios_core::ConnectedDevice,
     udid: &str,
 ) -> Result<ios_core::apps::AppServiceClient, CoreError> {
-    let (xpc, metadata) = device
-        .connect_xpc_service_with_metadata(ios_core::apps::APPSERVICE_SERVICE)
-        .await?;
-    Ok(ios_core::apps::AppServiceClient::new_with_features(
+    let (xpc, metadata) = tokio::time::timeout(
+        Duration::from_secs(30),
+        device.connect_xpc_service_with_metadata(ios_core::apps::APPSERVICE_SERVICE),
+    )
+    .await
+    .map_err(|error| CoreError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, error)))??;
+    let mut client = ios_core::apps::AppServiceClient::new_with_features(
         xpc,
         udid.to_string(),
         metadata.features,
-    ))
+    );
+    client.set_request_timeout(Some(Duration::from_secs(30)));
+    Ok(client)
 }
 
 fn should_fallback_to_instruments(err: &CoreError) -> bool {
     match err {
+        CoreError::Xpc(ios_core::XpcError::ServiceNotFound(service)) => matches!(
+            service.as_str(),
+            ios_core::apps::APPSERVICE_SERVICE | "com.apple.coredevice.appservice.shim.remote"
+        ),
         CoreError::Unsupported(message) => {
             message.contains("service 'com.apple.coredevice.appservice' not found")
                 || message.contains("RSD not available")
@@ -974,6 +1020,101 @@ fn build_install_paths(path: &std::path::Path) -> Result<InstallPaths> {
     })
 }
 
+async fn cancellable_apps_operation<T>(
+    budget: Option<Duration>,
+    stop: impl std::future::Future<Output = std::io::Result<()>>,
+    operation: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let bounded = async {
+        match budget {
+            Some(budget) => finite_service_operation(budget, operation).await,
+            None => operation.await,
+        }
+    };
+    tokio::select! { biased;
+        signal = stop => {
+            signal.context("apps cancellation signal failed")?;
+            Err(anyhow::Error::new(ios_core::OperationCancelled::new())
+                .context("apps command cancelled; device effects may be unknown"))
+        },
+        result = bounded => result,
+    }
+}
+
+async fn install_staged_package<C, F, S>(
+    mut connect: C,
+    source: &std::path::Path,
+    paths: &InstallPaths,
+    upgrade: bool,
+    budget: Duration,
+    stop: impl std::future::Future<Output = std::io::Result<()>>,
+) -> Result<()>
+where
+    C: FnMut(&'static str) -> F,
+    F: std::future::Future<Output = Result<S>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut staging_started = false;
+    let operation = async {
+        let mut afc = ios_core::afc::AfcClient::new(connect("com.apple.afc").await?);
+        ensure_remote_dir(&mut afc, "/PublicStaging").await?;
+        // From this point even a partial upload needs cleanup on a fresh stream.
+        staging_started = true;
+        if paths.is_directory {
+            remove_staged_path(&mut afc, &paths.final_remote_path, true).await?;
+            stage_app_bundle(&mut afc, source, &paths.final_remote_path).await?;
+        } else {
+            remove_staged_path(&mut afc, &paths.temp_remote_path, false).await?;
+            remove_staged_path(&mut afc, &paths.final_remote_path, false).await?;
+            let mut file = tokio::fs::File::open(source).await?;
+            afc.write_file_from_reader(&paths.temp_remote_path, &mut file)
+                .await?;
+            afc.rename(&paths.temp_remote_path, &paths.final_remote_path)
+                .await?;
+        }
+        drop(afc);
+        let stream = connect(ios_core::apps::INSTALLATION_PROXY_SERVICE).await?;
+        let mut proxy = ios_core::apps::InstallationProxy::new(stream);
+        if upgrade {
+            proxy
+                .upgrade_with_timeout(&paths.package_path, budget)
+                .await?;
+        } else {
+            proxy
+                .install_with_timeout(&paths.package_path, budget)
+                .await?;
+        }
+        Ok(())
+    };
+    let primary = cancellable_apps_operation(Some(budget), stop, operation).await;
+    if !staging_started {
+        return primary;
+    }
+    // The original operation is dropped before reconnecting. Its partial AFC
+    // framing and late installation replies are never reused by cleanup.
+    let cleanup = finite_service_operation(Duration::from_secs(5), async {
+        let mut afc = ios_core::afc::AfcClient::new(connect("com.apple.afc").await?);
+        let temporary = if paths.is_directory {
+            Ok(())
+        } else {
+            remove_staged_path(&mut afc, &paths.temp_remote_path, false).await
+        };
+        let final_path =
+            remove_staged_path(&mut afc, &paths.final_remote_path, paths.is_directory).await;
+        crate::cmd::test_workflow::combine_results(
+            temporary,
+            final_path,
+            "final staging path cleanup failed",
+        )
+    })
+    .await;
+    crate::cmd::test_workflow::combine_results(
+        primary,
+        cleanup,
+        "staged app payload cleanup failed",
+    )
+}
+
 async fn remove_staged_path<S>(
     afc: &mut ios_core::afc::AfcClient<S>,
     path: &str,
@@ -1028,11 +1169,6 @@ where
     Err(anyhow::anyhow!(
         "staged app bundle still exists after recursive cleanup: {path}"
     ))
-}
-
-struct StagedPath {
-    path: String,
-    is_directory: bool,
 }
 
 async fn stage_app_bundle<S>(
@@ -1232,42 +1368,10 @@ fn install_record_to_json(
 }
 
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(plist_to_json).collect())
-        }
-        plist::Value::Boolean(v) => serde_json::Value::Bool(*v),
-        plist::Value::Data(bytes) => serde_json::Value::Array(
-            bytes
-                .iter()
-                .map(|byte| serde_json::Value::from(*byte))
-                .collect(),
-        ),
-        plist::Value::Date(date) => serde_json::Value::String(date.to_xml_format()),
-        plist::Value::Dictionary(dict) => serde_json::Value::Object(
-            dict.iter()
-                .map(|(k, v)| (k.clone(), plist_to_json(v)))
-                .collect(),
-        ),
-        plist::Value::Integer(n) => {
-            if let Some(i) = n.as_signed() {
-                serde_json::Value::from(i)
-            } else if let Some(u) = n.as_unsigned() {
-                serde_json::Value::from(u)
-            } else {
-                serde_json::Value::Null
-            }
-        }
-        plist::Value::Real(v) => serde_json::Number::from_f64(*v)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::String(s) => serde_json::Value::String(s.clone()),
-        plist::Value::Uid(uid) => serde_json::Value::from(uid.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::NumericArray))
 }
 
-fn print_app_details(json: &serde_json::Value) {
+fn print_app_details(json: &serde_json::Value) -> Result<()> {
     let mut rows: Vec<(String, String)> = json
         .as_object()
         .into_iter()
@@ -1276,8 +1380,9 @@ fn print_app_details(json: &serde_json::Value) {
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     for (key, value) in rows {
-        println!("{key}: {value}");
+        crate::output::outln!("{key}: {value}");
     }
+    Ok(())
 }
 
 fn format_json_value(value: &serde_json::Value) -> String {
@@ -1413,6 +1518,22 @@ fn filter_running_processes_by_name(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn app_command_clock_profiles_distinguish_finite_mutations_and_long_monitoring() {
+        use clap::Parser;
+        let command = TestCli::parse_from(["apps", "list"]);
+        assert_eq!(
+            super::apps_operation_budget(&command.command),
+            Some(std::time::Duration::from_secs(30))
+        );
+        let command = TestCli::parse_from(["apps", "install", "Example.ipa", "--streaming"]);
+        assert_eq!(
+            super::apps_operation_budget(&command.command),
+            Some(std::time::Duration::from_secs(300))
+        );
+        let command = TestCli::parse_from(["apps", "monitor", "42", "--timeout-secs", "600"]);
+        assert_eq!(super::apps_operation_budget(&command.command), None);
+    }
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1492,6 +1613,7 @@ mod tests {
             AppsSub::InstallRecord {
                 bundle_id,
                 timeout_secs,
+                ..
             } => {
                 assert_eq!(bundle_id, "com.apple.Preferences");
                 assert_eq!(timeout_secs, 7);
@@ -1896,6 +2018,34 @@ mod tests {
     }
 
     #[test]
+    fn instruments_fallback_accepts_only_named_typed_appservice_misses() {
+        for name in [
+            ios_core::apps::APPSERVICE_SERVICE,
+            "com.apple.coredevice.appservice.shim.remote",
+        ] {
+            assert!(should_fallback_to_instruments(&CoreError::Xpc(
+                ios_core::XpcError::ServiceNotFound(name.into()),
+            )));
+        }
+        assert!(!should_fallback_to_instruments(&CoreError::Xpc(
+            ios_core::XpcError::ServiceNotFound("other-service".into()),
+        )));
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::ConnectionRefused,
+            std::io::ErrorKind::BrokenPipe,
+        ] {
+            assert!(!should_fallback_to_instruments(&CoreError::Xpc(
+                ios_core::XpcError::Io(std::io::Error::from(kind)),
+            )));
+        }
+        assert!(!should_fallback_to_instruments(&CoreError::Other(
+            "service 'com.apple.coredevice.appservice' not found".into(),
+        )));
+    }
+
+    #[test]
     fn parses_apps_roots_subcommand() {
         let parsed = TestCli::try_parse_from(["apps", "roots"]);
         assert!(parsed.is_ok(), "apps roots subcommand should parse");
@@ -2052,4 +2202,15 @@ mod tests {
         assert!(pkill_signal_allows_instruments_fallback(9));
         assert!(!pkill_signal_allows_instruments_fallback(15));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!([0, 127, 255]),
+        serde_json::json!([]),
+        true,
+    );
 }

@@ -2,12 +2,14 @@
 //!
 //! Service: `com.apple.preboardservice_v2`
 
+crate::redaction::error_debug!(PreboardError);
+
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.preboardservice_v2";
 const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum PreboardError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

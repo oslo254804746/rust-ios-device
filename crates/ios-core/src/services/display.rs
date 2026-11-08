@@ -4,6 +4,8 @@
 //! exposes encoded RTP/HEVC/AAC data, rather than pretending to decode pixels or
 //! audio.  The VNC/pixel decoder remains a consumer-level concern.
 
+crate::redaction::error_debug!(DisplayError);
+
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -49,6 +51,8 @@ pub const DEFAULT_TRANSPORT_PROTOCOL_TYPE: i64 = 2;
 pub const MAX_RTP_PACKET_BYTES: usize = 65_535;
 pub const DEFAULT_MAX_ACCESS_UNIT_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_MAX_ACCESS_UNIT_PACKETS: usize = 4_096;
+/// Minimum iOS major version required for DisplayService media streaming (`dtremotedisplayd`).
+pub const MIN_DISPLAY_STREAM_IOS_MAJOR: u32 = 27;
 
 // Apple's DisplayService appends this fixed footer to the final fragment of
 // some coded-slice NALs. It is not part of the Annex-B HEVC access unit; match
@@ -56,7 +60,7 @@ pub const DEFAULT_MAX_ACCESS_UNIT_PACKETS: usize = 4_096;
 const DISPLAYSERVICE_NAL_TRAILER: &[u8] =
     b"\x04\xf0\x0a\xc0\x00\x00\x03\x00\x00\x04\xec\x0a\xb0\x03";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DisplayError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -70,12 +74,40 @@ pub enum DisplayError {
     FeatureMissing(&'static str),
     #[error("display operation timed out")]
     Timeout,
+    #[error("could not open a fresh display connection: {0}")]
+    Reconnect(XpcError),
+    #[error("the device camera or microphone is in use (CoreDevice 9022); close the app using it and retry")]
+    MediaInUse,
+    #[error("display media streaming requires iOS 27 or later (device is running {0})")]
+    VersionNotSupported(String),
+}
+
+/// Verify that `product_version` is at least iOS [`MIN_DISPLAY_STREAM_IOS_MAJOR`] (27).
+pub fn ensure_display_stream_supported_version(product_version: &str) -> Result<(), DisplayError> {
+    let major_str = product_version.trim().split('.').next().unwrap_or("");
+    let major = major_str.parse::<u32>().map_err(|_| {
+        DisplayError::Protocol(format!("invalid device ProductVersion {product_version:?}"))
+    })?;
+    if major < MIN_DISPLAY_STREAM_IOS_MAJOR {
+        return Err(DisplayError::VersionNotSupported(
+            product_version.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKind {
     Video,
     Audio,
+}
+
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> DisplayError {
+    DisplayError::Io(crate::error::context::retained_io(kind, phase, source))
 }
 
 impl MediaKind {
@@ -159,8 +191,10 @@ pub struct RawAccessUnit {
 
 pub struct DisplayServiceClient {
     client: XpcClient,
+    request_sent: bool,
     envelope_mode: CoreDeviceEnvelopeMode,
     service_features: Option<Vec<String>>,
+    media_start_pending: bool,
 }
 
 pub type DisplayService = DisplayServiceClient;
@@ -172,8 +206,10 @@ impl DisplayServiceClient {
     pub fn new_with_mode(client: XpcClient, mode: CoreDeviceEnvelopeMode) -> Self {
         Self {
             client,
+            request_sent: false,
             envelope_mode: mode,
             service_features: None,
+            media_start_pending: false,
         }
     }
     pub fn new_with_features<I, S>(client: XpcClient, features: I) -> Self
@@ -183,8 +219,10 @@ impl DisplayServiceClient {
     {
         Self {
             client,
+            request_sent: false,
             envelope_mode: CoreDeviceEnvelopeMode::Modern,
             service_features: Some(features.into_iter().map(Into::into).collect()),
+            media_start_pending: false,
         }
     }
     pub fn from_resolved_metadata(
@@ -202,6 +240,11 @@ impl DisplayServiceClient {
         self.service_features.as_deref().map_or(true, |f| {
             f.is_empty() || f.iter().any(|x| x == START_MEDIA_FEATURE)
         })
+    }
+    /// A start request may have reached the service, including interrupted
+    /// startup. A completed MediaInUse rejection clears this observation.
+    pub fn request_may_have_executed(&self) -> bool {
+        self.media_start_pending
     }
     fn ensure(&self, feature: &'static str) -> Result<(), DisplayError> {
         if self.envelope_mode == CoreDeviceEnvelopeMode::Legacy {
@@ -254,14 +297,20 @@ impl DisplayServiceClient {
                 "invalid media stream options".into(),
             ));
         }
-        let receiver: IpAddr = options
-            .receiver_ip
-            .parse()
-            .map_err(|_| DisplayError::Protocol("receiver_ip is not an IP address".into()))?;
-        let sender: IpAddr = options
-            .sender_ip
-            .parse()
-            .map_err(|_| DisplayError::Protocol("sender_ip is not an IP address".into()))?;
+        let receiver: IpAddr = options.receiver_ip.parse().map_err(|error| {
+            native_error(
+                std::io::ErrorKind::InvalidInput,
+                "parse media receiver address",
+                error,
+            )
+        })?;
+        let sender: IpAddr = options.sender_ip.parse().map_err(|error| {
+            native_error(
+                std::io::ErrorKind::InvalidInput,
+                "parse media sender address",
+                error,
+            )
+        })?;
         validate_media_endpoint(receiver, "receiver_ip")?;
         validate_media_endpoint(sender, "sender_ip")?;
         if receiver.is_ipv4() != sender.is_ipv4() {
@@ -279,14 +328,18 @@ impl DisplayServiceClient {
         let call_id = uuid::Uuid::new_v4().to_string().to_ascii_uppercase();
         let offer = build_negotiator_offer(kind, &call_id, sid, options)?;
         let input = build_start_input(kind, options, id, offer);
-        let response = self
+        let result = self
             .invoke_with_deadline(
                 START_MEDIA_FEATURE,
                 START_MEDIA_ACTION,
                 input,
                 options.timeout,
             )
-            .await?;
+            .await;
+        if matches!(result, Err(DisplayError::MediaInUse)) {
+            self.media_start_pending = false;
+        }
+        let response = result?;
         let connection = response
             .as_dict()
             .and_then(|d| d.get("connection"))
@@ -315,15 +368,20 @@ impl DisplayServiceClient {
             remote_ssrc,
         })
     }
-    pub async fn stop_media_stream(&mut self, id: uuid::Uuid) -> Result<XpcValue, DisplayError> {
-        self.ensure(STOP_MEDIA_FEATURE)?;
-        let result = self
-            .invoke(
-                STOP_MEDIA_FEATURE,
-                STOP_MEDIA_ACTION,
-                dict([("avcMediaStreamOptionClientSessionID", uuid_value(id))]),
-            )
-            .await;
+    /// Stop all media streams. CoreDevice's stop request takes stream tokens,
+    /// not the client session UUID; this compatibility method stops all streams.
+    pub async fn stop_media_stream(&mut self, _id: uuid::Uuid) -> Result<XpcValue, DisplayError> {
+        self.stop_media_streams(true, &[]).await
+    }
+
+    /// Stop every stream, or the specified device-issued UInt32 stream tokens.
+    /// A previous request on this client causes a fresh connection to be opened.
+    pub async fn stop_media_streams(
+        &mut self,
+        stop_all: bool,
+        identifiers: &[u32],
+    ) -> Result<XpcValue, DisplayError> {
+        let result = self.stop_media_streams_strict(stop_all, identifiers).await;
         match result {
             Ok(value) => Ok(value),
             Err(DisplayError::Xpc(XpcError::Io(error)))
@@ -332,13 +390,34 @@ impl DisplayServiceClient {
                     std::io::ErrorKind::UnexpectedEof
                         | std::io::ErrorKind::ConnectionReset
                         | std::io::ErrorKind::BrokenPipe
-                        | std::io::ErrorKind::NotConnected
                 ) =>
             {
                 Ok(dict([("stopped", XpcValue::Bool(true))]))
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// An observed CoreDevice reply is required. EOF/reset/write failure stays
+    /// an error and cannot supply a device stop acknowledgement. Stream tokens
+    /// are the device-issued UInt32 identifiers, not the client session UUID.
+    pub async fn stop_media_streams_strict(
+        &mut self,
+        stop_all: bool,
+        identifiers: &[u32],
+    ) -> Result<XpcValue, DisplayError> {
+        self.ensure(STOP_MEDIA_FEATURE)?;
+        if !stop_all && identifiers.is_empty() {
+            return Err(DisplayError::Protocol(
+                "select stream identifiers or stop_all".into(),
+            ));
+        }
+        self.invoke(
+            STOP_MEDIA_FEATURE,
+            STOP_MEDIA_ACTION,
+            build_stop_input(stop_all, identifiers),
+        )
+        .await
     }
     async fn invoke(
         &mut self,
@@ -357,15 +436,64 @@ impl DisplayServiceClient {
         input: XpcValue,
         deadline: Duration,
     ) -> Result<XpcValue, DisplayError> {
-        let response = tokio::time::timeout(
-            deadline,
+        let response = tokio::time::timeout(deadline, async {
+            // dtremotedisplayd can abort on a second reply-bearing request on
+            // one connection, leaving camera/microphone access blocked. Mark
+            // the channel used before I/O, including cancellation and timeout.
+            if self.request_sent {
+                self.client = self
+                    .client
+                    .reconnect()
+                    .await
+                    .map_err(DisplayError::Reconnect)?;
+            }
+            if feature == START_MEDIA_FEATURE {
+                self.media_start_pending = true;
+            }
+            self.request_sent = true;
             self.client
-                .call(build_request_with_action("", feature, action, input)),
-        )
+                .call(build_request_with_action("", feature, action, input))
+                .await
+                .map_err(DisplayError::Xpc)
+        })
         .await
-        .map_err(|_| DisplayError::Timeout)??;
+        .map_err(|error| {
+            native_error(std::io::ErrorKind::TimedOut, "invoke media control", error)
+        })??;
+        if feature == START_MEDIA_FEATURE && media_in_use(&response) {
+            return Err(DisplayError::MediaInUse);
+        }
         parse_output(response).map_err(DisplayError::Protocol)
     }
+}
+
+fn build_stop_input(stop_all: bool, identifiers: &[u32]) -> XpcValue {
+    let mut input = IndexMap::from([("stopAll".into(), XpcValue::Bool(stop_all))]);
+    if !identifiers.is_empty() {
+        input.insert(
+            "identifiers".into(),
+            XpcValue::Array(
+                identifiers
+                    .iter()
+                    .map(|id| XpcValue::Uint64(u64::from(*id)))
+                    .collect(),
+            ),
+        );
+    }
+    XpcValue::Dictionary(input)
+}
+
+fn media_in_use(response: &crate::XpcMessage) -> bool {
+    matches!(
+        response
+            .body
+            .as_ref()
+            .and_then(XpcValue::as_dict)
+            .and_then(|body| body.get("CoreDevice.error"))
+            .and_then(XpcValue::as_dict)
+            .and_then(|error| error.get("code")),
+        Some(XpcValue::Int64(9022) | XpcValue::Uint64(9022))
+    )
 }
 
 pub struct MediaStreamSession {
@@ -397,29 +525,104 @@ impl MediaStreamSession {
         Self::start(service, MediaKind::Audio, options).await
     }
     async fn start(
-        mut service: DisplayServiceClient,
+        service: DisplayServiceClient,
         kind: MediaKind,
         options: MediaStreamOptions,
     ) -> Result<Self, DisplayError> {
-        let ip: IpAddr = options
-            .receiver_ip
-            .parse()
-            .map_err(|_| DisplayError::Protocol("receiver_ip is not an IP address".into()))?;
+        let mut pending = Some(service);
+        let result = Self::start_retained(&mut pending, kind, options).await;
+        match result {
+            Ok(session) => Ok(session),
+            Err(error) => {
+                if let Some(service) = pending
+                    .as_mut()
+                    .filter(|service| service.request_may_have_executed())
+                {
+                    let cleanup = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        service.stop_media_streams_strict(true, &[]),
+                    )
+                    .await
+                    .map_err(|elapsed| {
+                        native_error(
+                            std::io::ErrorKind::TimedOut,
+                            "failed media startup cleanup",
+                            elapsed,
+                        )
+                    })
+                    .and_then(|result| result.map(|_| ()));
+                    return Err(finish_media_stop(Err(error), cleanup).unwrap_err());
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Keep the original service owner in the caller until negotiation succeeds.
+    /// On failure or future cancellation it can still issue a separately bounded
+    /// stop through the service's original reconnect factory.
+    pub async fn start_video_retained(
+        service: &mut Option<DisplayServiceClient>,
+        options: MediaStreamOptions,
+    ) -> Result<Self, DisplayError> {
+        Self::start_retained(service, MediaKind::Video, options).await
+    }
+
+    async fn start_retained(
+        service: &mut Option<DisplayServiceClient>,
+        kind: MediaKind,
+        options: MediaStreamOptions,
+    ) -> Result<Self, DisplayError> {
+        let ip: IpAddr = options.receiver_ip.parse().map_err(|error| {
+            native_error(
+                std::io::ErrorKind::InvalidInput,
+                "parse media receiver address",
+                error,
+            )
+        })?;
         validate_media_endpoint(ip, "receiver_ip")?;
-        let socket = Arc::new(UdpSocket::bind(SocketAddr::new(ip, options.receiver_port)).await?);
+        let socket = match UdpSocket::bind(SocketAddr::new(ip, options.receiver_port)).await {
+            Ok(sock) => Arc::new(sock),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrNotAvailable => Arc::new(
+                UdpSocket::bind(SocketAddr::new(
+                    IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                    options.receiver_port,
+                ))
+                .await?,
+            ),
+            Err(err) => return Err(err.into()),
+        };
+        Self::negotiate_session(service, kind, options, socket).await
+    }
+
+    async fn negotiate_session(
+        service: &mut Option<DisplayServiceClient>,
+        kind: MediaKind,
+        options: MediaStreamOptions,
+        socket: Arc<UdpSocket>,
+    ) -> Result<Self, DisplayError> {
         let port = socket.local_addr()?.port();
         let mut options = options;
         options.receiver_port = port;
+        let control = service
+            .as_mut()
+            .ok_or_else(|| DisplayError::Protocol("media startup service was consumed".into()))?;
         let start = match kind {
-            MediaKind::Video => service.start_video_stream(&options).await?,
-            MediaKind::Audio => service.start_audio_stream(&options).await?,
+            MediaKind::Video => control.start_video_stream(&options).await?,
+            MediaKind::Audio => control.start_audio_stream(&options).await?,
         };
         let sender = start.sender_port.map(|port| {
             options
                 .sender_ip
                 .parse()
                 .map(|ip| SocketAddr::new(ip, port))
-                .map_err(|_| DisplayError::Protocol("sender_ip is not an IP address".into()))
+                .map_err(|error| {
+                    native_error(
+                        std::io::ErrorKind::InvalidInput,
+                        "parse media sender address",
+                        error,
+                    )
+                })
         });
         let sender = sender.transpose()?;
         let highest_sequence = Arc::new(AtomicU32::new(0));
@@ -455,7 +658,7 @@ impl MediaStreamSession {
             _ => None,
         };
         Ok(Self {
-            service: Some(service),
+            service: service.take(),
             socket,
             kind,
             id: start.client_session_id,
@@ -511,7 +714,9 @@ impl MediaStreamSession {
             }
             let n = tokio::time::timeout(remaining, self.socket.recv(&mut packet))
                 .await
-                .map_err(|_| DisplayError::Timeout)??;
+                .map_err(|error| {
+                    native_error(std::io::ErrorKind::TimedOut, "receive media packet", error)
+                })??;
             // RTCP packets use the same RTP version bit but their 8-bit
             // packet type maps to the reserved RTP payload-type range. A
             // minimal RTCP RR is only 8 bytes, so classify it before the
@@ -544,19 +749,79 @@ impl MediaStreamSession {
         }
     }
     pub async fn stop(&mut self, timeout: Duration) -> Result<(), DisplayError> {
-        if let Some(task) = self.rtcp_task.take() {
+        if let Some(task) = &self.rtcp_task {
             task.abort();
         }
-        if let Some(task) = self.drain_task.take() {
+        if let Some(task) = &self.drain_task {
             task.abort();
         }
-        let Some(mut service) = self.service.take() else {
-            return Ok(());
+        // Borrow the original handles until each join finishes. Cancelling stop
+        // during a join leaves that owner available to the next stop call.
+        let mut cleanup = join_media_task(&mut self.rtcp_task).await;
+        cleanup = finish_media_stop(cleanup, join_media_task(&mut self.drain_task).await);
+        let primary = if let Some(service) = &mut self.service {
+            tokio::time::timeout(timeout, service.stop_media_stream(self.id))
+                .await
+                .map_err(|error| {
+                    native_error(std::io::ErrorKind::TimedOut, "stop media session", error)
+                })
+                .and_then(|result| result.map(|_| ()))
+        } else {
+            Ok(())
         };
-        tokio::time::timeout(timeout, service.stop_media_stream(self.id))
+        self.service.take();
+        finish_media_stop(primary, cleanup)
+    }
+
+    /// Join this session's original media tasks and require an actual stop
+    /// reply. The caller must authorize stop_all or supply observed owned
+    /// tokens; this API does not infer ownership from the client session UUID.
+    /// A failed/cancelled operation retains its service owner for later cleanup.
+    pub async fn stop_strict(
+        &mut self,
+        timeout: Duration,
+        stop_all: bool,
+        identifiers: &[u32],
+    ) -> Result<XpcValue, DisplayError> {
+        if let Some(task) = &self.rtcp_task {
+            task.abort();
+        }
+        if let Some(task) = &self.drain_task {
+            task.abort();
+        }
+        let mut cleanup = join_media_task(&mut self.rtcp_task).await;
+        cleanup = finish_media_stop(cleanup, join_media_task(&mut self.drain_task).await);
+        let primary = if let Some(service) = &mut self.service {
+            tokio::time::timeout(
+                timeout,
+                service.stop_media_streams_strict(stop_all, identifiers),
+            )
             .await
-            .map_err(|_| DisplayError::Timeout)??;
-        Ok(())
+            .map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "strict stop media session",
+                    error,
+                )
+            })
+            .and_then(|result| result)
+        } else {
+            Err(DisplayError::Protocol(
+                "no owned media service remains for a strict stop observation".into(),
+            ))
+        };
+        match (primary, cleanup) {
+            (Ok(response), Ok(())) => {
+                self.service.take();
+                Ok(response)
+            }
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(primary), Err(cleanup)) => Err(native_error(
+                std::io::ErrorKind::Other,
+                "strict media stop and original task joins failed",
+                MediaStopFailure { primary, cleanup },
+            )),
+        }
     }
     pub fn sender_addr(&self) -> Option<SocketAddr> {
         self.sender
@@ -582,6 +847,47 @@ impl MediaStreamSession {
     /// Pixel decoding/VNC is intentionally not part of this API; callers consume raw units.
     pub fn media_kind(&self) -> MediaKind {
         self.kind
+    }
+}
+
+async fn join_media_task(task: &mut Option<JoinHandle<()>>) -> Result<(), DisplayError> {
+    let Some(handle) = task.as_mut() else {
+        return Ok(());
+    };
+    let result = handle.await;
+    task.take();
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(native_error(
+            std::io::ErrorKind::Other,
+            "join media task",
+            error,
+        )),
+    }
+}
+
+#[derive(thiserror::Error)]
+#[error("media stream stop and task cleanup failed")]
+struct MediaStopFailure {
+    #[source]
+    primary: DisplayError,
+    #[allow(dead_code)] // Retains the original cleanup object alongside the primary source.
+    cleanup: DisplayError,
+}
+crate::redaction::error_debug!(MediaStopFailure);
+
+fn finish_media_stop(
+    primary: Result<(), DisplayError>,
+    cleanup: Result<(), DisplayError>,
+) -> Result<(), DisplayError> {
+    match (primary, cleanup) {
+        (Ok(()), result) | (result, Ok(())) => result,
+        (Err(primary), Err(cleanup)) => Err(native_error(
+            std::io::ErrorKind::Other,
+            "stop media stream and cleanup",
+            MediaStopFailure { primary, cleanup },
+        )),
     }
 }
 
@@ -966,6 +1272,7 @@ fn uuid_value(id: uuid::Uuid) -> XpcValue {
 fn typed_i64(value: i64) -> XpcValue {
     dict([("int", XpcValue::Int64(value))])
 }
+#[allow(dead_code)]
 fn typed_u64(value: u64) -> XpcValue {
     dict([("uint", XpcValue::Uint64(value))])
 }
@@ -1018,8 +1325,12 @@ fn optional_u16(
     if value == 0 {
         return Ok(None);
     }
-    u16::try_from(value).map(Some).map_err(|_| {
-        DisplayError::Protocol(format!("streamConfig.{key} value {value} exceeds u16::MAX"))
+    u16::try_from(value).map(Some).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode media configuration u16",
+            error,
+        )
     })
 }
 
@@ -1033,8 +1344,12 @@ fn optional_u32(
     if value == 0 {
         return Ok(None);
     }
-    u32::try_from(value).map(Some).map_err(|_| {
-        DisplayError::Protocol(format!("streamConfig.{key} value {value} exceeds u32::MAX"))
+    u32::try_from(value).map(Some).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode media configuration u32",
+            error,
+        )
     })
 }
 
@@ -1071,15 +1386,15 @@ fn build_start_input(
     dict([
         (
             "clientSupportedFeatures",
-            typed_u64(CLIENT_SUPPORTED_FEATURES),
+            XpcValue::Uint64(CLIENT_SUPPORTED_FEATURES),
         ),
         ("direction", XpcValue::String("output".into())),
         ("negotiatorOffer", XpcValue::Data(offer)),
         ("options", XpcValue::Dictionary(opts)),
         ("receiverIP", XpcValue::String(o.receiver_ip.clone())),
-        ("receiverPort", typed_u64(u64::from(o.receiver_port))),
+        ("receiverPort", XpcValue::Uint64(u64::from(o.receiver_port))),
         ("senderIP", XpcValue::String(o.sender_ip.clone())),
-        ("timeout", typed_u64(o.timeout.as_secs())),
+        ("timeout", XpcValue::Uint64(o.timeout.as_secs())),
         ("type", XpcValue::String(kind.wire_name().into())),
     ])
 }
@@ -1173,7 +1488,7 @@ fn build_media_blob(
         pb_field(&mut settings, 2, u64::from(o.allow_rtcp_feedback));
         for (pt, features, count, f4) in [
             (123u64, b"FLS;SW:1;" as &[u8], 4, 1u64),
-            (100, b"FLS;VRAE:0;SW:1;" as &[u8], 2, 14),
+            (100, b"FLS;SW:1;" as &[u8], 2, 14),
         ] {
             let mut bank = Vec::new();
             pb_field(&mut bank, 1, pt);
@@ -1269,6 +1584,571 @@ fn build_media_blob(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn explicit_media_in_use_rejection_does_not_authorize_stop_all_cleanup() {
+        let (client, mut peer, _) = crate::test_native::connected_xpc_pair().await;
+        let remote = tokio::spawn(async move {
+            let request = next_control_request(&mut peer).await;
+            let response = crate::encode_xpc_message(&crate::XpcMessage {
+                flags: crate::xpc_message_flags::ALWAYS_SET
+                    | crate::xpc_message_flags::DATA
+                    | crate::xpc_message_flags::REPLY,
+                msg_id: request.msg_id,
+                body: Some(dict([(
+                    "CoreDevice.error",
+                    dict([("code", XpcValue::Int64(9022))]),
+                )])),
+            })
+            .unwrap();
+            let mut header = [0; 9];
+            header[..3].copy_from_slice(&(response.len() as u32).to_be_bytes()[1..]);
+            header[8] = 3;
+            peer.write_all(&header).await.unwrap();
+            peer.write_all(&response).await.unwrap();
+            peer
+        });
+        let mut service = DisplayServiceClient::new(client);
+        let error = service
+            .start_video_stream(&MediaStreamOptions {
+                receiver_ip: "fd00::1".into(),
+                sender_ip: "fd00::2".into(),
+                receiver_port: 1234,
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DisplayError::MediaInUse));
+        assert!(!service.request_may_have_executed());
+        drop(service);
+        let mut peer = remote.await.unwrap();
+        let mut tail = Vec::new();
+        peer.read_to_end(&mut tail).await.unwrap();
+        // Only flow-control frames can remain. No stop request is submitted.
+        while !tail.is_empty() {
+            assert_ne!(tail[3], 0);
+            let n = u32::from_be_bytes([0, tail[0], tail[1], tail[2]]) as usize;
+            tail.drain(..9 + n);
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_reconnect_before_start_does_not_authorize_media_cleanup() {
+        let (client, mut peer, _) = crate::test_native::connected_xpc_pair().await;
+        let client = client.with_reconnector(|| async {
+            Err(XpcError::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionReset,
+            )))
+        });
+        let mut service = DisplayServiceClient::new(client);
+        // A previous query used this connection; the start must reconnect first.
+        service.request_sent = true;
+        let error = service
+            .start_video_stream(&MediaStreamOptions {
+                receiver_ip: "fd00::1".into(),
+                sender_ip: "fd00::2".into(),
+                receiver_port: 1234,
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DisplayError::Reconnect(_)));
+        assert!(!service.request_may_have_executed());
+        drop(service);
+        let mut tail = Vec::new();
+        peer.read_to_end(&mut tail).await.unwrap();
+        while !tail.is_empty() {
+            assert_ne!(tail[3], 0, "no start or stop XPC request was sent");
+            let n = u32::from_be_bytes([0, tail[0], tail[1], tail[2]]) as usize;
+            tail.drain(..9 + n);
+        }
+    }
+
+    #[cfg(feature = "hid")]
+    #[tokio::test]
+    async fn authorized_hid_close_requires_real_media_stop_reply() {
+        for keyboard in [false, true] {
+            let (client, mut peer, _) = crate::test_native::connected_xpc_pair().await;
+            let remote = tokio::spawn(async move {
+                let request = next_control_request(&mut peer).await;
+                assert_eq!(
+                    request.body.unwrap().as_dict().unwrap()["CoreDevice.featureIdentifier"]
+                        .as_str(),
+                    Some(STOP_MEDIA_FEATURE)
+                );
+                peer.shutdown().await.unwrap();
+                let mut tail = Vec::new();
+                peer.read_to_end(&mut tail).await.unwrap();
+            });
+            let media = MediaStreamSession {
+                service: Some(DisplayServiceClient::new(client)),
+                socket: Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()),
+                kind: MediaKind::Video,
+                id: uuid::Uuid::new_v4(),
+                assembler: RtpAssembler::new(MediaKind::Video, 1024, 10),
+                sender: None,
+                local_ssrc: None,
+                remote_ssrc: None,
+                highest_sequence: Arc::new(AtomicU32::new(0)),
+                highest_sequence_seen: Arc::new(AtomicBool::new(false)),
+                rtcp_task: None,
+                drain_task: None,
+            };
+            let (hid_client, _hid_peer, _) = crate::test_native::connected_xpc_pair().await;
+            let mut hid = crate::hid::UniversalHidServiceClient::new(hid_client);
+            let error = if keyboard {
+                hid.keyboard_session_with_media(7, media)
+                    .close(Duration::from_secs(2))
+                    .await
+                    .unwrap_err()
+            } else {
+                hid.touch_session_with_media(7, media)
+                    .close(Duration::from_secs(2))
+                    .await
+                    .unwrap_err()
+            };
+            assert!(matches!(error, crate::hid::HidError::Media(_)));
+            assert!(crate::test_native::has_source::<std::io::Error>(&error));
+            tokio::time::timeout(Duration::from_secs(2), remote)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_start_retains_original_reconnector_and_requires_real_stop_reply() {
+        let (client, mut original, _) = crate::test_native::connected_xpc_pair().await;
+        let (replacement, mut stop_peer, _) = crate::test_native::connected_xpc_pair().await;
+        let replacement = Arc::new(std::sync::Mutex::new(Some(replacement)));
+        let client = client.with_reconnector(move || {
+            let replacement = Arc::clone(&replacement);
+            async move {
+                Ok(replacement
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("one original reconnect"))
+            }
+        });
+        let mut service = Some(DisplayServiceClient::new(client));
+        let socket = Arc::new(UdpSocket::bind("[::1]:0").await.unwrap());
+        let options = MediaStreamOptions {
+            receiver_ip: "fd00::1".into(),
+            sender_ip: "fd00::2".into(),
+            ..Default::default()
+        };
+        {
+            // Inject only the owned localhost UDP socket; the production
+            // negotiation/ownership path and XPC requests remain unchanged.
+            let startup = MediaStreamSession::negotiate_session(
+                &mut service,
+                MediaKind::Video,
+                options,
+                socket,
+            );
+            tokio::pin!(startup);
+            tokio::select! {
+                result = &mut startup => panic!("start must await its reply: {}", result.is_ok()),
+                request = next_control_request(&mut original) => {
+                    assert_eq!(request.body.unwrap().as_dict().unwrap()["CoreDevice.featureIdentifier"].as_str(), Some(START_MEDIA_FEATURE));
+                }
+            }
+        }
+        assert!(service.as_ref().unwrap().request_may_have_executed());
+        let responder = tokio::spawn(async move {
+            let request = next_control_request(&mut stop_peer).await;
+            let body = request.body.as_ref().unwrap().as_dict().unwrap();
+            assert_eq!(
+                body["CoreDevice.featureIdentifier"].as_str(),
+                Some(STOP_MEDIA_FEATURE)
+            );
+            assert_eq!(
+                body["CoreDevice.input"].as_dict().unwrap()["stopAll"],
+                XpcValue::Bool(true)
+            );
+            let response = crate::encode_xpc_message(&crate::XpcMessage {
+                flags: crate::xpc_message_flags::ALWAYS_SET
+                    | crate::xpc_message_flags::DATA
+                    | crate::xpc_message_flags::REPLY,
+                msg_id: request.msg_id,
+                body: Some(dict([("CoreDevice.output", dict([]))])),
+            })
+            .unwrap();
+            let mut header = [0u8; 9];
+            header[..3].copy_from_slice(&(response.len() as u32).to_be_bytes()[1..]);
+            header[8] = 3;
+            stop_peer.write_all(&header).await.unwrap();
+            stop_peer.write_all(&response).await.unwrap();
+            stop_peer
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            service
+                .as_mut()
+                .unwrap()
+                .stop_media_streams_strict(true, &[]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(service);
+        let mut stop_peer = responder.await.unwrap();
+        for peer in [&mut original, &mut stop_peer] {
+            let mut tail = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut tail))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    async fn next_control_request(peer: &mut tokio::io::DuplexStream) -> crate::XpcMessage {
+        loop {
+            let mut header = [0u8; 9];
+            peer.read_exact(&mut header).await.unwrap();
+            let size = u32::from_be_bytes([0, header[0], header[1], header[2]]) as usize;
+            assert!(size <= 64 * 1024);
+            let mut payload = vec![0; size];
+            peer.read_exact(&mut payload).await.unwrap();
+            if header[3] == 0 {
+                return crate::decode_xpc_message(payload.into()).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_stop_rejects_native_eof_instead_of_manufacturing_device_ack() {
+        let (client, mut peer, _open) = crate::test_native::connected_xpc_pair().await;
+        let peer_task = tokio::spawn(async move {
+            let request = next_control_request(&mut peer).await;
+            let body = request.body.as_ref().unwrap().as_dict().unwrap();
+            assert_eq!(
+                body.get("CoreDevice.featureIdentifier")
+                    .and_then(XpcValue::as_str),
+                Some(STOP_MEDIA_FEATURE)
+            );
+            peer.shutdown().await.unwrap();
+            peer
+        });
+        let mut service = DisplayServiceClient::new(client);
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            service.stop_media_streams_strict(false, &[7]),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        let DisplayError::Xpc(XpcError::Io(outer)) = &error else {
+            panic!("strict stop must retain its original XPC/native IO boundary");
+        };
+        assert_eq!(outer.kind(), std::io::ErrorKind::UnexpectedEof);
+        // UnexpectedEof deliberately remains generic IO in the shared
+        // classifier: it can also be a truncated host file. Verify the actual
+        // original H2 read cause instead of guessing a disconnect category.
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Io);
+        let mut current: Option<&(dyn std::error::Error + 'static)> = outer
+            .get_ref()
+            .map(|cause| cause as &(dyn std::error::Error + 'static));
+        let mut original_eof = false;
+        for _ in 0..16 {
+            let Some(cause) = current else { break };
+            if let Some(crate::xpc::h2_raw::H2Error::Io(native)) =
+                cause.downcast_ref::<crate::xpc::h2_raw::H2Error>()
+            {
+                assert_eq!(native.kind(), std::io::ErrorKind::UnexpectedEof);
+                assert_eq!(native.raw_os_error(), None);
+                original_eof = true;
+                break;
+            }
+            current = cause.source();
+        }
+        assert!(original_eof, "the original native H2 EOF object was lost");
+        drop(service);
+        let mut peer = peer_task.await.unwrap();
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut remaining))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn strict_stop_uses_device_tokens_and_observed_reply_then_original_eof() {
+        let (client, mut peer, _open) = crate::test_native::connected_xpc_pair().await;
+        let peer_task = tokio::spawn(async move {
+            let request = next_control_request(&mut peer).await;
+            let body = request.body.as_ref().unwrap().as_dict().unwrap();
+            let input = body.get("CoreDevice.input").unwrap().as_dict().unwrap();
+            assert_eq!(input.get("stopAll"), Some(&XpcValue::Bool(false)));
+            assert_eq!(
+                input.get("identifiers"),
+                Some(&XpcValue::Array(vec![XpcValue::Uint64(7)]))
+            );
+            let response = crate::encode_xpc_message(&crate::XpcMessage {
+                flags: crate::xpc_message_flags::ALWAYS_SET
+                    | crate::xpc_message_flags::DATA
+                    | crate::xpc_message_flags::REPLY,
+                msg_id: request.msg_id,
+                body: Some(dict([(
+                    "CoreDevice.output",
+                    dict([("observed", XpcValue::Bool(true))]),
+                )])),
+            })
+            .unwrap();
+            let mut header = [0u8; 9];
+            header[..3].copy_from_slice(&(response.len() as u32).to_be_bytes()[1..]);
+            header[8] = 3;
+            peer.write_all(&header).await.unwrap();
+            peer.write_all(&response).await.unwrap();
+            peer
+        });
+        let mut service = DisplayServiceClient::new(client);
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            service.stop_media_streams_strict(false, &[7]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response, dict([("observed", XpcValue::Bool(true))]));
+        drop(service);
+        let mut peer = peer_task.await.unwrap();
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut remaining))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn strict_media_session_stop_joins_original_udp_drain_before_reply_receipt() {
+        let (client, mut peer, _open) = crate::test_native::connected_xpc_pair().await;
+        let peer_task = tokio::spawn(async move {
+            let request = next_control_request(&mut peer).await;
+            let input = request
+                .body
+                .as_ref()
+                .unwrap()
+                .as_dict()
+                .unwrap()
+                .get("CoreDevice.input")
+                .unwrap()
+                .as_dict()
+                .unwrap();
+            assert_eq!(input.get("stopAll"), Some(&XpcValue::Bool(true)));
+            let response = crate::encode_xpc_message(&crate::XpcMessage {
+                flags: crate::xpc_message_flags::ALWAYS_SET
+                    | crate::xpc_message_flags::DATA
+                    | crate::xpc_message_flags::REPLY,
+                msg_id: request.msg_id,
+                body: Some(dict([(
+                    "CoreDevice.output",
+                    dict([("observed", XpcValue::Bool(true))]),
+                )])),
+            })
+            .unwrap();
+            let mut header = [0u8; 9];
+            header[..3].copy_from_slice(&(response.len() as u32).to_be_bytes()[1..]);
+            header[8] = 3;
+            peer.write_all(&header).await.unwrap();
+            peer.write_all(&response).await.unwrap();
+            peer
+        });
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let mut session = MediaStreamSession {
+            service: Some(DisplayServiceClient::new(client)),
+            socket: socket.clone(),
+            kind: MediaKind::Video,
+            id: uuid::Uuid::new_v4(),
+            assembler: RtpAssembler::new(MediaKind::Video, 1024, 10),
+            sender: None,
+            local_ssrc: None,
+            remote_ssrc: None,
+            highest_sequence: Arc::new(AtomicU32::new(0)),
+            highest_sequence_seen: Arc::new(AtomicBool::new(false)),
+            rtcp_task: None,
+            drain_task: None,
+        };
+        session.spawn_drain();
+        assert!(session.drain_task.is_some());
+        let response = session
+            .stop_strict(Duration::from_secs(2), true, &[])
+            .await
+            .unwrap();
+        assert_eq!(response, dict([("observed", XpcValue::Bool(true))]));
+        assert!(
+            session.drain_task.is_none()
+                && session.rtcp_task.is_none()
+                && session.service.is_none()
+        );
+        assert_eq!(
+            Arc::strong_count(&socket),
+            2,
+            "only the fixture and original session may still own the UDP socket"
+        );
+        drop(session);
+        assert_eq!(Arc::strong_count(&socket), 1);
+        let mut peer = peer_task.await.unwrap();
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut remaining))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn media_task_stop_joins_original_aborted_task_before_returning() {
+        struct OnDrop(Arc<AtomicBool>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let released = Arc::new(AtomicBool::new(false));
+        let task_released = released.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let mut task = Some(tokio::spawn(async move {
+            let _owned = OnDrop(task_released);
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        }));
+        ready.await.unwrap();
+        task.as_ref().unwrap().abort();
+        join_media_task(&mut task).await.unwrap();
+        assert!(task.is_none());
+        assert!(released.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn media_task_panic_is_retained_alongside_stop_failure() {
+        let mut task = Some(tokio::spawn(async {
+            panic!("synthetic media child failure");
+        }));
+        let cleanup = join_media_task(&mut task).await;
+        assert!(task.is_none());
+        let failure = finish_media_stop(
+            Err(DisplayError::Protocol("synthetic stop failure".into())),
+            cleanup,
+        )
+        .unwrap_err();
+        // Access the owned secondary object directly instead of accepting a stringified join error.
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&failure);
+        let mut found = false;
+        while let Some(error) = current {
+            if let Some(owned) = error.downcast_ref::<MediaStopFailure>() {
+                assert!(matches!(&owned.primary, DisplayError::Protocol(_)));
+                assert!(crate::test_native::has_source::<tokio::task::JoinError>(
+                    &owned.cleanup
+                ));
+                found = true;
+                break;
+            }
+            current = error.source();
+        }
+        assert!(found);
+    }
+
+    #[tokio::test]
+    async fn native_media_address_errors_are_input_without_consuming_request() {
+        let (client, _peer, _open) = crate::test_native::connected_xpc_pair().await;
+        let mut service = DisplayServiceClient::new(client);
+        for receiver in [true, false] {
+            let options = MediaStreamOptions {
+                receiver_ip: if receiver { "owned-private" } else { "fd00::1" }.into(),
+                sender_ip: if receiver { "fd00::2" } else { "owned-private" }.into(),
+                receiver_port: 4000,
+                ..MediaStreamOptions::default()
+            };
+            let error = service.start_video_stream(&options).await.unwrap_err();
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            assert!(crate::test_native::has_source::<std::net::AddrParseError>(
+                &error
+            ));
+            assert!(!service.request_sent);
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+    }
+
+    #[test]
+    fn native_media_config_integer_faults_keep_protocol_source_and_optional_values() {
+        let values = IndexMap::from([("port".into(), XpcValue::Uint64(u64::MAX))]);
+        for error in [
+            optional_u16(&values, "port").unwrap_err(),
+            optional_u32(&values, "port").unwrap_err(),
+        ] {
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+                &error
+            ));
+        }
+        assert_eq!(optional_u16(&values, "missing").unwrap(), None);
+        let values = IndexMap::from([("port".into(), XpcValue::Uint64(0))]);
+        assert_eq!(optional_u16(&values, "port").unwrap(), None);
+        assert_eq!(optional_u32(&values, "port").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn native_media_control_timeout_keeps_elapsed_and_used_channel() {
+        let (client, _peer, open) = crate::test_native::connected_xpc_pair().await;
+        open.store(false, Ordering::SeqCst);
+        let mut service = DisplayServiceClient::new(client);
+        let error = service
+            .invoke_with_deadline(
+                MEDIA_SUPPORT_FEATURE,
+                MEDIA_SUPPORT_ACTION,
+                dict([]),
+                Duration::from_millis(1),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(service.request_sent);
+        assert!(matches!(
+            service.get_media_support_info().await,
+            Err(DisplayError::Reconnect(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_media_receive_and_stop_timeout_keep_elapsed_and_consumption() {
+        let (client, _peer, open) = crate::test_native::connected_xpc_pair().await;
+        open.store(false, Ordering::SeqCst);
+        let mut session = MediaStreamSession {
+            service: Some(DisplayServiceClient::new(client)),
+            socket: Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()),
+            kind: MediaKind::Video,
+            id: uuid::Uuid::new_v4(),
+            assembler: RtpAssembler::new(MediaKind::Video, 1024, 10),
+            sender: None,
+            local_ssrc: None,
+            remote_ssrc: None,
+            highest_sequence: Arc::new(AtomicU32::new(0)),
+            highest_sequence_seen: Arc::new(AtomicBool::new(false)),
+            rtcp_task: None,
+            drain_task: None,
+        };
+        let error = session
+            .recv_access_unit(Duration::from_millis(5))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(session.service.is_some());
+        let zero = session.recv_access_unit(Duration::ZERO).await.unwrap_err();
+        assert!(matches!(zero, DisplayError::Timeout));
+        session.spawn_drain();
+        let error = session.stop(Duration::from_millis(1)).await.unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(session.service.is_none() && session.drain_task.is_none());
+        session.stop(Duration::ZERO).await.unwrap();
+    }
     fn pkt(seq: u16, ts: u32, marker: bool, payload: &[u8]) -> Vec<u8> {
         let mut p = vec![
             0x80,
@@ -1463,6 +2343,7 @@ mod tests {
     }
     #[test]
     fn offer_has_expected_modes_and_compression() {
+        use std::io::Read;
         let o = MediaStreamOptions::default();
         let v = build_negotiator_offer(MediaKind::Video, "ABC", 1, &o).unwrap();
         let p = plist::Value::from_reader(std::io::Cursor::new(v)).unwrap();
@@ -1470,6 +2351,18 @@ mod tests {
         assert_eq!(
             d["avcMediaStreamNegotiatorMode"].as_signed_integer(),
             Some(5)
+        );
+        let compressed = d["avcMediaStreamNegotiatorMediaBlob"].as_data().unwrap();
+        let mut blob = Vec::new();
+        flate2::read::ZlibDecoder::new(compressed)
+            .read_to_end(&mut blob)
+            .unwrap();
+        assert!(!blob.windows(4).any(|window| window == b"VRAE"));
+        assert_eq!(
+            blob.windows(9)
+                .filter(|window| *window == b"FLS;SW:1;")
+                .count(),
+            2
         );
         let a = build_negotiator_offer(MediaKind::Audio, "ABC", 1, &o).unwrap();
         let p = plist::Value::from_reader(std::io::Cursor::new(a)).unwrap();
@@ -1488,15 +2381,9 @@ mod tests {
         let id = uuid::Uuid::from_u128(1);
         let video = build_start_input(MediaKind::Video, &options, id, Bytes::from_static(b"offer"));
         let video = video.as_dict().unwrap();
-        assert_eq!(
-            video["clientSupportedFeatures"].as_dict().unwrap()["uint"],
-            XpcValue::Uint64(140)
-        );
+        assert_eq!(video["clientSupportedFeatures"], XpcValue::Uint64(140));
         assert_eq!(video["direction"].as_str(), Some("output"));
-        assert_eq!(
-            video["receiverPort"].as_dict().unwrap()["uint"],
-            XpcValue::Uint64(1234)
-        );
+        assert_eq!(video["receiverPort"], XpcValue::Uint64(1234));
         assert_eq!(video["type"].as_str(), Some("video"));
         let opts = video["options"].as_dict().unwrap();
         assert!(opts.contains_key("CoreDeviceVideoDisplayMode"));
@@ -1551,5 +2438,22 @@ mod tests {
             "RemoteSSRC"
         )
         .is_err());
+    }
+
+    #[test]
+    fn display_stream_requires_ios_27_or_later() {
+        for unsupported in ["18.7.10", "26.4"] {
+            let err = ensure_display_stream_supported_version(unsupported).unwrap_err();
+            assert!(matches!(
+                &err,
+                DisplayError::VersionNotSupported(version) if version == unsupported
+            ));
+            assert_eq!(
+                err.to_string(),
+                format!("display media streaming requires iOS 27 or later (device is running {unsupported})")
+            );
+        }
+        assert!(ensure_display_stream_supported_version("27.0").is_ok());
+        assert!(ensure_display_stream_supported_version("27.2").is_ok());
     }
 }

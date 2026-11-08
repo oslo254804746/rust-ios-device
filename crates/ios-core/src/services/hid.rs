@@ -7,6 +7,8 @@
 //! machine therefore rejects concurrent contacts instead of silently putting
 //! fields on the wire that CoreDevice does not understand.
 
+crate::redaction::error_debug!(HidError);
+
 use std::fmt;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -36,6 +38,10 @@ const SIDE_CHANNEL_REPORT_LIMIT: usize = 4 * 1024;
 /// a timing guarantee: callers should still use an absolute operation
 /// deadline around a sequence of reports.
 pub const MAX_TOUCH_REPORTS: usize = 256;
+/// Maximum simultaneous touch contacts supported in a `mainTouchscreen` report.
+pub const MAX_TOUCH_CONTACTS: usize = 5;
+/// Upstream pmd3 name for the 5-contact `mainTouchscreen` slot count.
+pub const TOUCHSCREEN_CONTACT_COUNT_MAXIMUM: u8 = 5;
 /// Bound keyboard input before any report is sent.
 pub const MAX_TEXT_LENGTH: usize = 4096;
 pub const DEFAULT_TOUCHSCREEN_SERVICE_ID: u64 = 257;
@@ -47,6 +53,15 @@ pub const DIGITIZER_SURFACE_TOUCHSCREEN_GESTURE: u64 = DEFAULT_GESTURE_SERVICE_I
 pub const KEYBOARD_SURFACE_DEFAULT_SERVICE_ID: u64 = DEFAULT_KEYBOARD_SERVICE_ID;
 pub const TOUCHSCREEN_STATE_CONTACT: u8 = 0xc2;
 pub const TOUCHSCREEN_STATE_RELEASE: u8 = 0x02;
+pub const TOUCHSCREEN_STATE_TOUCHING: u8 = 0xc0;
+/// Settle interval after starting the media stream so `backboardd` re-matches
+/// HID surfaces as authenticated before the first touch report is sent.
+pub const TOUCH_SURFACE_AUTH_SETTLE: Duration = Duration::from_millis(500);
+pub const TOUCH_AUTH_SETTLE_SECONDS: f64 = 0.5;
+/// Settle interval after `createService` so iOS attaches the virtual keyboard
+/// before the first report (preventing a latched Shift on iOS 27.2).
+pub const KEYBOARD_ATTACH_SETTLE: Duration = Duration::from_millis(300);
+pub const KEYBOARD_ATTACH_SETTLE_SECONDS: f64 = 0.3;
 pub const HID_BUTTON_STATE_DOWN: u64 = 1;
 pub const HID_BUTTON_STATE_UP: u64 = 2;
 pub const HID_BUTTON_STATE_CANCELED: u64 = 3;
@@ -55,10 +70,12 @@ pub const TOUCHSCREEN_REPORT_ID: u8 = 0x09;
 pub const KEYBOARD_REPORT_ID: u8 = 0x01;
 
 /// Errors returned by CoreDevice HID operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum HidError {
     #[error("xpc error: {0}")]
     Xpc(#[from] XpcError),
+    #[error("HID media authorization error: {0}")]
+    Media(#[source] crate::display::DisplayError),
     #[error("HID protocol error: {0}")]
     Protocol(String),
     #[error("CoreDevice HID requires the modern envelope; legacy mode is unsupported")]
@@ -337,6 +354,119 @@ pub fn build_digitizer_report(x: i32, y: i32, timestamp: Option<u64>) -> Bytes {
     Bytes::copy_from_slice(&report)
 }
 
+/// One raw contact in a multi-contact `mainTouchscreen` report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TouchContact {
+    /// Stable `0..4` (`0..MAX_TOUCH_CONTACTS`) identity for the lifetime of this contact.
+    pub identity: u8,
+    pub phase: TouchPhase,
+    pub x: u16,
+    pub y: u16,
+}
+
+pub type TouchscreenContact = TouchContact;
+
+impl TouchContact {
+    pub const fn new(identity: u8, phase: TouchPhase, x: u16, y: u16) -> Self {
+        Self {
+            identity,
+            phase,
+            x,
+            y,
+        }
+    }
+
+    pub const fn is_touching(self) -> bool {
+        matches!(self.phase, TouchPhase::Down | TouchPhase::Move)
+    }
+
+    pub const fn wire_state(self) -> u8 {
+        if self.is_touching() {
+            TOUCHSCREEN_STATE_TOUCHING | self.identity
+        } else {
+            self.identity
+        }
+    }
+}
+
+/// One normalized contact in a multi-contact `mainTouchscreen` report.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MultiTouchPoint {
+    /// Stable `0..4` (`0..MAX_TOUCH_CONTACTS`) identity for the lifetime of this contact.
+    pub identity: u8,
+    pub phase: TouchPhase,
+    pub coordinate: TouchCoordinate,
+}
+
+impl MultiTouchPoint {
+    pub const fn new(identity: u8, phase: TouchPhase, coordinate: TouchCoordinate) -> Self {
+        Self {
+            identity,
+            phase,
+            coordinate,
+        }
+    }
+
+    pub fn to_raw(self) -> TouchContact {
+        let (x, y) = self.coordinate.raw();
+        TouchContact {
+            identity: self.identity,
+            phase: self.phase,
+            x,
+            y,
+        }
+    }
+}
+
+/// Build the exact 58-byte multi-contact `mainTouchscreen` report (`0x09`) used by pmd3.
+///
+/// Up to [`MAX_TOUCH_CONTACTS`] (5) contacts can be encoded in a single report,
+/// each with a unique identity in `0..MAX_TOUCH_CONTACTS` (`0..=4`).
+pub fn build_multitouch_report(
+    contacts: &[TouchContact],
+    timestamp: Option<u64>,
+) -> Result<Bytes, HidError> {
+    if contacts.len() > MAX_TOUCH_CONTACTS {
+        return Err(HidError::Protocol(format!(
+            "at most {MAX_TOUCH_CONTACTS} contacts per report, got {}",
+            contacts.len()
+        )));
+    }
+    let mut seen_identities = 0u8;
+    for contact in contacts {
+        if usize::from(contact.identity) >= MAX_TOUCH_CONTACTS {
+            return Err(HidError::Protocol(format!(
+                "contact identity must be 0..={}, got {}",
+                MAX_TOUCH_CONTACTS - 1,
+                contact.identity
+            )));
+        }
+        let bit = 1u8 << contact.identity;
+        if (seen_identities & bit) != 0 {
+            return Err(HidError::Protocol(format!(
+                "duplicate contact identity {}",
+                contact.identity
+            )));
+        }
+        seen_identities |= bit;
+    }
+    let mut report = [0u8; 58];
+    report[0] = TOUCHSCREEN_REPORT_ID;
+    report[1] = contacts.len() as u8;
+    report[2] = TOUCHSCREEN_CONTACT_COUNT_MAXIMUM;
+    for (index, contact) in contacts.iter().enumerate() {
+        let offset = 3 + index * 5;
+        report[offset] = contact.wire_state();
+        report[offset + 1..offset + 3].copy_from_slice(&contact.x.to_le_bytes());
+        report[offset + 3..offset + 5].copy_from_slice(&contact.y.to_le_bytes());
+    }
+    report[40] = 0x02;
+    report[44..50].copy_from_slice(
+        &(timestamp.unwrap_or_else(monotonic_timestamp) & ((1 << 48) - 1)).to_le_bytes()[..6],
+    );
+    Ok(Bytes::copy_from_slice(&report))
+}
+
 /// Build the exact 58-byte single-contact touchscreen report used by pmd3.
 pub fn build_touchscreen_report(
     phase: TouchPhase,
@@ -587,6 +717,31 @@ impl UniversalHidServiceClient {
             .await
     }
 
+    pub async fn send_multitouch(
+        &mut self,
+        contacts: &[MultiTouchPoint],
+        service_id: u64,
+        timestamp: Option<u64>,
+    ) -> Result<(), HidError> {
+        let raw_contacts = contacts
+            .iter()
+            .copied()
+            .map(MultiTouchPoint::to_raw)
+            .collect::<Vec<_>>();
+        self.send_multitouch_raw(&raw_contacts, service_id, timestamp)
+            .await
+    }
+
+    pub async fn send_multitouch_raw(
+        &mut self,
+        contacts: &[TouchContact],
+        service_id: u64,
+        timestamp: Option<u64>,
+    ) -> Result<(), HidError> {
+        let report = build_multitouch_report(contacts, timestamp)?;
+        self.send_report(service_id, report).await
+    }
+
     pub async fn create_keyboard_service(
         &mut self,
         service_id: u64,
@@ -612,16 +767,18 @@ impl UniversalHidServiceClient {
             .call(build_create_keyboard_request(service))
             .await?;
         let output = parse_direct_response(response)?;
-        let Some(value) = output.as_dict().and_then(|items| items.get("serviceID")) else {
-            return Ok(service_id);
+        let resolved_id = match output.as_dict().and_then(|items| items.get("serviceID")) {
+            None => service_id,
+            Some(XpcValue::Uint64(value)) => *value,
+            Some(XpcValue::Int64(value)) if *value >= 0 => *value as u64,
+            Some(_) => {
+                return Err(HidError::Protocol(
+                    "HID createService response has an invalid serviceID".into(),
+                ))
+            }
         };
-        match value {
-            XpcValue::Uint64(value) => Ok(*value),
-            XpcValue::Int64(value) if *value >= 0 => Ok(*value as u64),
-            _ => Err(HidError::Protocol(
-                "HID createService response has an invalid serviceID".into(),
-            )),
-        }
+        tokio::time::sleep(KEYBOARD_ATTACH_SETTLE).await;
+        Ok(resolved_id)
     }
 
     pub async fn send_keyboard(
@@ -665,6 +822,7 @@ impl UniversalHidServiceClient {
         AuthorizedTouchSession {
             session: self.touch_session(service_id),
             media,
+            media_closed: false,
         }
     }
 
@@ -679,6 +837,7 @@ impl UniversalHidServiceClient {
         AuthorizedKeyboardSession {
             session: self.keyboard_session(service_id),
             media,
+            media_closed: false,
         }
     }
 }
@@ -763,8 +922,8 @@ fn keyboard_service_dictionary(
     product_id: i64,
 ) -> XpcValue {
     let pair = dict([
-        ("DeviceUsage", XpcValue::Int64(6)),
-        ("DeviceUsagePage", XpcValue::Int64(1)),
+        ("DeviceUsage", dict([("int", XpcValue::Int64(6))])),
+        ("DeviceUsagePage", dict([("int", XpcValue::Int64(1))])),
     ]);
     let storage = dict([
         (
@@ -781,7 +940,7 @@ fn keyboard_service_dictionary(
         ("PrimaryUsagePage", dict([("int", XpcValue::Int64(1))])),
         (
             "DeviceUsagePairs",
-            XpcValue::Array(vec![dict([("dictionary", pair)])]),
+            dict([("array", XpcValue::Array(vec![dict([("dictionary", pair)])]))]),
         ),
         (
             "Transport",
@@ -878,6 +1037,17 @@ pub struct TouchSession<'a> {
 }
 
 impl TouchSession<'_> {
+    /// This is local report ownership, not a device contact-state observation.
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    /// A successful one-way report write establishes local release ownership;
+    /// the protocol supplies no separate acknowledgement from the device.
+    pub fn has_active_contact(&self) -> bool {
+        self.active_contact.is_some()
+    }
+
     pub async fn touch(
         &mut self,
         contact_id: u32,
@@ -921,7 +1091,13 @@ impl TouchSession<'_> {
                 .send_touchscreen(TouchPhase::Cancel, coordinate, self.service_id, None);
         tokio::time::timeout(timeout, operation)
             .await
-            .map_err(|_| HidError::Protocol("touch session close timed out".into()))??;
+            .map_err(|error| {
+                HidError::Xpc(crate::xpc::native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "close HID touch session",
+                    error,
+                ))
+            })??;
         self.active_contact = None;
         self.last_coordinate = None;
         let _ = contact_id;
@@ -940,6 +1116,7 @@ impl Drop for TouchSession<'_> {
 pub struct AuthorizedTouchSession<'a, P: HidMediaProvider> {
     session: TouchSession<'a>,
     media: P,
+    media_closed: bool,
 }
 
 impl<P: HidMediaProvider> AuthorizedTouchSession<'_, P> {
@@ -970,6 +1147,23 @@ impl<P: HidMediaProvider> AuthorizedTouchSession<'_, P> {
         Ok(())
     }
 
+    pub async fn send_multitouch(&mut self, contacts: &[MultiTouchPoint]) -> Result<(), HidError> {
+        if self.session.closed {
+            return Err(HidError::Protocol("touch session is closed".into()));
+        }
+        if self.session.report_count >= MAX_TOUCH_REPORTS {
+            return Err(HidError::Protocol(format!(
+                "touch report limit {MAX_TOUCH_REPORTS} exceeded"
+            )));
+        }
+        self.session
+            .service
+            .send_multitouch(contacts, self.session.service_id, None)
+            .await?;
+        self.session.report_count += 1;
+        Ok(())
+    }
+
     pub async fn touch(
         &mut self,
         contact_id: u32,
@@ -984,6 +1178,10 @@ impl<P: HidMediaProvider> AuthorizedTouchSession<'_, P> {
     /// alive so the caller can retry instead of leaving an active contact
     /// unauthenticated.
     pub async fn close(&mut self, timeout: Duration) -> Result<(), HidError> {
+        if self.media_closed {
+            return Ok(());
+        }
+        let started = tokio::time::Instant::now();
         let hid_result = self.session.close(timeout).await;
         // Keep the media authorization alive when release failed. Stopping
         // it here could leave a contact active while removing the gate
@@ -993,11 +1191,13 @@ impl<P: HidMediaProvider> AuthorizedTouchSession<'_, P> {
         let media_result = self
             .media
             .media_session()
-            .stop(timeout)
+            .stop_strict(timeout.saturating_sub(started.elapsed()), true, &[])
             .await
-            .map_err(|error| {
-                HidError::Protocol(format!("media authorization stop failed: {error}"))
-            });
+            .map(|_| ())
+            .map_err(HidError::Media);
+        if media_result.is_ok() {
+            self.media_closed = true;
+        }
         media_result
     }
 }
@@ -1018,6 +1218,25 @@ pub struct KeyboardSession<'a> {
     closed: bool,
 }
 
+fn key_report_sequence(
+    usage: KeyboardUsage,
+    modifiers: &[KeyboardModifier],
+) -> Vec<Vec<KeyboardUsage>> {
+    let modifier_usages = modifiers
+        .iter()
+        .map(|modifier| modifier.usage())
+        .collect::<Vec<_>>();
+    let mut sequence = Vec::with_capacity(if modifier_usages.is_empty() { 2 } else { 3 });
+    if !modifier_usages.is_empty() {
+        sequence.push(modifier_usages.clone());
+    }
+    let mut pressed = modifier_usages;
+    pressed.push(usage);
+    sequence.push(pressed);
+    sequence.push(Vec::new());
+    sequence
+}
+
 impl KeyboardSession<'_> {
     pub async fn send_key(
         &mut self,
@@ -1027,19 +1246,12 @@ impl KeyboardSession<'_> {
         if self.closed {
             return Err(HidError::Protocol("keyboard session is closed".into()));
         }
-        let mut usages = modifiers
-            .iter()
-            .map(|modifier| modifier.usage())
-            .collect::<Vec<_>>();
-        usages.push(usage);
-        self.service
-            .send_keyboard(self.service_id, &usages, None)
-            .await?;
-        self.pressed = usages;
-        self.service
-            .send_keyboard(self.service_id, &[], None)
-            .await?;
-        self.pressed.clear();
+        for usages in key_report_sequence(usage, modifiers) {
+            self.service
+                .send_keyboard(self.service_id, &usages, None)
+                .await?;
+            self.pressed = usages;
+        }
         Ok(())
     }
 
@@ -1068,6 +1280,10 @@ impl KeyboardSession<'_> {
         Ok(count)
     }
 
+    pub async fn type_text_with_shift_lead_in(&mut self, text: &str) -> Result<usize, HidError> {
+        self.type_text(text).await
+    }
+
     pub async fn close(&mut self, timeout: Duration) -> Result<(), HidError> {
         if self.closed {
             return Ok(());
@@ -1075,7 +1291,13 @@ impl KeyboardSession<'_> {
         let operation = self.service.send_keyboard(self.service_id, &[], None);
         tokio::time::timeout(timeout, operation)
             .await
-            .map_err(|_| HidError::Protocol("keyboard session close timed out".into()))??;
+            .map_err(|error| {
+                HidError::Xpc(crate::xpc::native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "close HID keyboard session",
+                    error,
+                ))
+            })??;
         self.pressed.clear();
         self.closed = true;
         Ok(())
@@ -1092,6 +1314,7 @@ impl Drop for KeyboardSession<'_> {
 pub struct AuthorizedKeyboardSession<'a, P: HidMediaProvider> {
     session: KeyboardSession<'a>,
     media: P,
+    media_closed: bool,
 }
 
 impl<P: HidMediaProvider> AuthorizedKeyboardSession<'_, P> {
@@ -1107,17 +1330,27 @@ impl<P: HidMediaProvider> AuthorizedKeyboardSession<'_, P> {
         self.session.type_text(text).await
     }
 
+    pub async fn type_text_with_shift_lead_in(&mut self, text: &str) -> Result<usize, HidError> {
+        self.session.type_text_with_shift_lead_in(text).await
+    }
+
     pub async fn close(&mut self, timeout: Duration) -> Result<(), HidError> {
+        if self.media_closed {
+            return Ok(());
+        }
+        let started = tokio::time::Instant::now();
         let hid_result = self.session.close(timeout).await;
         hid_result?;
         let media_result = self
             .media
             .media_session()
-            .stop(timeout)
+            .stop_strict(timeout.saturating_sub(started.elapsed()), true, &[])
             .await
-            .map_err(|error| {
-                HidError::Protocol(format!("media authorization stop failed: {error}"))
-            });
+            .map(|_| ())
+            .map_err(HidError::Media);
+        if media_result.is_ok() {
+            self.media_closed = true;
+        }
         media_result
     }
 }
@@ -1186,7 +1419,66 @@ fn ascii_usage(character: char) -> Option<(KeyboardUsage, bool)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_cleanup_error_retains_original_display_and_native_io_categories() {
+        let native = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        let error = super::HidError::Media(crate::display::DisplayError::Io(native));
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::Disconnected
+        );
+        let source = std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<crate::display::DisplayError>()
+            .unwrap();
+        let crate::display::DisplayError::Io(native) = source else {
+            panic!("original display IO error lost")
+        };
+        assert_eq!(native.kind(), std::io::ErrorKind::ConnectionReset);
+    }
     use super::*;
+
+    #[tokio::test]
+    async fn native_close_timeouts_keep_elapsed_and_held_state_until_send_succeeds() {
+        use crate::{
+            classify_error,
+            test_native::{connected_xpc_pair, has_source},
+            ErrorClass,
+        };
+        use std::sync::atomic::Ordering;
+        let (client, _peer, open) = connected_xpc_pair().await;
+        let mut service = UniversalHidServiceClient::new(client);
+        open.store(false, Ordering::SeqCst);
+        let mut touch = service.touch_session(DEFAULT_TOUCHSCREEN_SERVICE_ID);
+        touch.active_contact = Some(7);
+        touch.last_coordinate = Some(TouchCoordinate { x: 0.3, y: 0.4 });
+        let error = touch.close(Duration::from_millis(1)).await.unwrap_err();
+        assert_eq!(classify_error(&error), ErrorClass::Timeout);
+        assert!(has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(touch.active_contact, Some(7));
+        assert_eq!(
+            touch.last_coordinate,
+            Some(TouchCoordinate { x: 0.3, y: 0.4 })
+        );
+        assert!(!touch.closed);
+        open.store(true, Ordering::SeqCst);
+        touch.close(Duration::from_secs(1)).await.unwrap();
+        assert!(touch.closed && touch.active_contact.is_none() && touch.last_coordinate.is_none());
+        touch.close(Duration::ZERO).await.unwrap();
+        drop(touch);
+        let mut keyboard = service.keyboard_session(DEFAULT_KEYBOARD_SERVICE_ID);
+        keyboard.pressed.push(KeyboardUsage::new(4).unwrap());
+        open.store(false, Ordering::SeqCst);
+        let error = keyboard.close(Duration::from_millis(1)).await.unwrap_err();
+        assert_eq!(classify_error(&error), ErrorClass::Timeout);
+        assert!(has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(keyboard.pressed, [KeyboardUsage::new(4).unwrap()]);
+        assert!(!keyboard.closed);
+        open.store(true, Ordering::SeqCst);
+        keyboard.close(Duration::from_secs(1)).await.unwrap();
+        assert!(keyboard.closed && keyboard.pressed.is_empty());
+        keyboard.close(Duration::ZERO).await.unwrap();
+    }
 
     #[test]
     fn reports_match_upstream_sizes_and_offsets() {
@@ -1259,6 +1551,19 @@ mod tests {
             panic!()
         };
         assert_eq!(descriptor.as_ref(), KEYBOARD_REPORT_DESCRIPTOR);
+        assert_eq!(
+            storage["DeviceUsagePairs"],
+            dict([(
+                "array",
+                XpcValue::Array(vec![dict([(
+                    "dictionary",
+                    dict([
+                        ("DeviceUsage", dict([("int", XpcValue::Int64(6))])),
+                        ("DeviceUsagePage", dict([("int", XpcValue::Int64(1))])),
+                    ]),
+                )])]),
+            )])
+        );
     }
 
     #[test]
@@ -1346,5 +1651,112 @@ mod tests {
             list.as_dict().unwrap()["payload"].as_dict().unwrap()["connectedServices"],
             XpcValue::Dictionary(IndexMap::new())
         );
+    }
+
+    #[test]
+    fn multitouch_report_matches_upstream_layout_and_rejects_invalid_contacts() {
+        let ts = 0x0001_0203_0405u64;
+        assert_eq!(
+            build_touchscreen_report(TouchPhase::Down, 10, 20, Some(ts)),
+            build_multitouch_report(&[TouchContact::new(2, TouchPhase::Down, 10, 20)], Some(ts))
+                .unwrap()
+        );
+        assert_eq!(
+            build_touchscreen_report(TouchPhase::Up, 10, 20, Some(ts)),
+            build_multitouch_report(&[TouchContact::new(2, TouchPhase::Up, 10, 20)], Some(ts))
+                .unwrap()
+        );
+
+        let report = build_multitouch_report(
+            &[
+                TouchContact::new(2, TouchPhase::Down, 0x1234, 0x5678),
+                TouchContact::new(3, TouchPhase::Up, 0x9abc, 0xdef0),
+            ],
+            Some(ts),
+        )
+        .unwrap();
+        assert_eq!(report.len(), 58);
+        assert_eq!(&report[..3], &[0x09, 0x02, 0x05]);
+        assert_eq!(&report[3..8], &[0xc2, 0x34, 0x12, 0x78, 0x56]);
+        assert_eq!(&report[8..13], &[0x03, 0xbc, 0x9a, 0xf0, 0xde]);
+        assert_eq!(&report[13..40], &[0u8; 27]);
+        assert_eq!(
+            &report[40..],
+            &[2, 0, 0, 0, 5, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+
+        let five_contacts = (0..5u8)
+            .map(|i| TouchContact::new(i, TouchPhase::Down, u16::from(i), u16::from(i)))
+            .collect::<Vec<_>>();
+        let five_report = build_multitouch_report(&five_contacts, Some(0)).unwrap();
+        assert_eq!(&five_report[..3], &[0x09, 0x05, 0x05]);
+        let states = (0..5).map(|i| five_report[3 + 5 * i]).collect::<Vec<_>>();
+        assert_eq!(states, vec![0xc0, 0xc1, 0xc2, 0xc3, 0xc4]);
+        assert_eq!(&five_report[28..40], &[0u8; 12]);
+
+        let empty_report = build_multitouch_report(&[], Some(0)).unwrap();
+        assert_eq!(&empty_report[..3], &[0x09, 0x00, 0x05]);
+        assert_eq!(&empty_report[3..40], &[0u8; 37]);
+
+        assert_eq!(
+            &build_multitouch_report(&[], Some(u64::MAX)).unwrap()[44..50],
+            &[0xff; 6]
+        );
+
+        let mut six_contacts = five_contacts;
+        six_contacts.push(TouchContact::new(0, TouchPhase::Down, 0, 0));
+        assert!(build_multitouch_report(&six_contacts, Some(0)).is_err());
+        assert!(build_multitouch_report(
+            &[
+                TouchContact::new(1, TouchPhase::Down, 0, 0),
+                TouchContact::new(1, TouchPhase::Down, 5, 5),
+            ],
+            Some(0),
+        )
+        .is_err());
+        assert!(
+            build_multitouch_report(&[TouchContact::new(5, TouchPhase::Down, 0, 0)], Some(0))
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn keyboard_shift_lead_in_and_multitouch_send_succeed() {
+        assert_eq!(
+            key_report_sequence(KEY_A, &[KeyboardModifier::LeftShift]),
+            vec![
+                vec![KEY_LEFT_SHIFT],
+                vec![KEY_LEFT_SHIFT, KEY_A],
+                Vec::new(),
+            ]
+        );
+        assert_eq!(
+            key_report_sequence(KEY_A, &[]),
+            vec![vec![KEY_A], Vec::new()]
+        );
+
+        let (client, _peer, _open) = crate::test_native::connected_xpc_pair().await;
+        let mut service = UniversalHidServiceClient::new(client);
+        let points = [
+            MultiTouchPoint::new(
+                0,
+                TouchPhase::Down,
+                TouchCoordinate::new(0.25, 0.5).unwrap(),
+            ),
+            MultiTouchPoint::new(
+                1,
+                TouchPhase::Down,
+                TouchCoordinate::new(0.75, 0.5).unwrap(),
+            ),
+        ];
+        service
+            .send_multitouch(&points, DEFAULT_TOUCHSCREEN_SERVICE_ID, Some(42))
+            .await
+            .unwrap();
+
+        let mut keyboard = service.keyboard_session(DEFAULT_KEYBOARD_SERVICE_ID);
+        assert_eq!(keyboard.type_text("A!a").await.unwrap(), 3);
+        assert!(keyboard.pressed.is_empty());
+        keyboard.close(Duration::from_secs(1)).await.unwrap();
     }
 }

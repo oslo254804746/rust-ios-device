@@ -351,7 +351,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ActivityTraceClient<S> {
                 TapMessage::Data(bytes) => match self.decoder.decode_message(&bytes) {
                     Ok(entries) => self.pending.extend(entries),
                     Err(error) => {
-                        tracing::debug!("skipping undecodable activity trace frame: {error}");
+                        tracing::debug!(error = %crate::redaction::diagnostic_error(&error), "skipping undecodable activity trace frame");
                     }
                 },
                 TapMessage::Plist(_) => {}

@@ -9,10 +9,186 @@ use crate::xpc::{XpcMessage, XpcValue};
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+pub mod asr;
+mod error_mapping;
+pub mod img4;
+pub mod preflight;
+pub mod recovery;
+pub mod restored;
+pub mod state_machine;
+pub mod tss;
+use error_mapping::{native_h2, native_xpc};
+
+pub use img4::{
+    component_fourcc, parse_img4_envelope, stitch_img4_component, ParsedImg4Envelope,
+    RestoreProperty, RestorePropertyValue, StitchedImg4Component,
+};
+pub use recovery::{
+    build_recovery_ramdisk_plan, execute_recovery_ramdisk_handoff, RecoveryBootStep,
+    RecoveryDeviceMode, RecoveryHandoffReceipt, RecoveryRamdiskPlan,
+    RecoveryReenumerationTransport, SimulatedRecoveryTransport,
+};
+pub use restored::{
+    run_restored_protocol_session, run_restored_update_loop, RestoredClient, RestoredProtocolAssets,
+};
+pub use state_machine::{
+    run_experimental_restore_loop, RestoreExecutionReport, RestoreFailure, RestoreProtocolGaps,
+    RestoreState, RestoreStateMachine, RestoreStepOutcome,
+};
+
+/// Reference fixture metadata only; this does not establish a supported Update executor.
+///
+/// Provenance:
+/// - Upstream source: pymobiledevice3 (commit 03ba2270) & idevicerestore (v1.0.0+)
+/// - Device Class: iPhone 13 Pro ("d63ap", ProductType: iPhone14,2)
+/// - Target Architecture: Apple Silicon A15 Bionic (arm64e)
+/// - ApBoardID: 0x0c (12)
+/// - ApChipID: 0x8110 (33040)
+/// - Target Firmware: iOS 17.5.1 (Build: 21F90)
+/// - Restore Variant: "Upgrade Install (IPSW)"
+/// - Restore Behavior: "Update"
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedUpdateProfile {
+    pub device_class: &'static str,
+    pub board_id: u64,
+    pub chip_id: u64,
+    pub product_version: &'static str,
+    pub build_version: &'static str,
+    pub restore_behavior: &'static str,
+    pub upstream_reference: &'static str,
+}
+
+pub const IPHONE13_PRO_UPDATE_PROFILE: VerifiedUpdateProfile = VerifiedUpdateProfile {
+    device_class: "d63ap",
+    board_id: 0x0c,
+    chip_id: 0x8110,
+    product_version: "17.5.1",
+    build_version: "21F90",
+    restore_behavior: "Update",
+    upstream_reference: "pymobiledevice3@03ba2270, idevicerestore@1.0.0+",
+};
+
+#[cfg(test)]
+mod native_source_contract_tests;
+#[cfg(test)]
+mod test_assets;
+
 /// RSD service name for RestoreRemoteServices.
 pub const SERVICE_NAME: &str = "com.apple.RestoreRemoteServices.restoreserviced";
 
 service_error!(RestoreError);
+
+/// Known restore data requests. iOS 27 aliases share the same handler families
+/// as their older counterparts when a restore transport is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreDataRequestKind {
+    BuildIdentityDict,
+    PersonalizedBootObjectV3,
+    SourceBootObjectV4,
+    SourceBootObjectV5,
+    RecoveryOSLocalPolicy,
+    RecoveryOSRootTicketData,
+    RecoveryOSFileAssetImage,
+    RecoveryOSIBootFWFilesImages,
+    RecoveryOSImage,
+    RecoveryOSVersionData,
+    RootTicket,
+    NORData,
+    BasebandData,
+    FDRTrustData,
+    FirmwareUpdaterData,
+    FirmwareUpdaterPreflight,
+    DeviceRestoreInfoPreflight,
+    KernelCache,
+    DeviceTree,
+    SystemImageData,
+    RecoveryOSASRImage,
+    SystemImageRootHash,
+    SystemImageCanonicalMetadata,
+    FUDData,
+    PersonalizedData,
+    EANData,
+    BootabilityBundle,
+    BootabilityBundleV2,
+    ReceiptManifest,
+    HostSystemTime,
+    SystemImageWorkloads,
+}
+
+impl RestoreDataRequestKind {
+    pub fn from_data_type(data_type: &str) -> Option<Self> {
+        match data_type {
+            "BuildIdentityDict" => Some(Self::BuildIdentityDict),
+            "PersonalizedBootObjectV3" => Some(Self::PersonalizedBootObjectV3),
+            "SourceBootObjectV4" => Some(Self::SourceBootObjectV4),
+            "SourceBootObjectV5" => Some(Self::SourceBootObjectV5),
+            "RecoveryOSLocalPolicy" => Some(Self::RecoveryOSLocalPolicy),
+            "RecoveryOSRootTicketData" => Some(Self::RecoveryOSRootTicketData),
+            "RecoveryOSFileAssetImage" => Some(Self::RecoveryOSFileAssetImage),
+            "RecoveryOSIBootFWFilesImages" => Some(Self::RecoveryOSIBootFWFilesImages),
+            "RecoveryOSImage" => Some(Self::RecoveryOSImage),
+            "RecoveryOSVersionData" => Some(Self::RecoveryOSVersionData),
+            "RootTicket" => Some(Self::RootTicket),
+            "NORData" => Some(Self::NORData),
+            "BasebandData" => Some(Self::BasebandData),
+            "FDRTrustData" => Some(Self::FDRTrustData),
+            "FirmwareUpdaterData" => Some(Self::FirmwareUpdaterData),
+            "FirmwareUpdaterPreflight" => Some(Self::FirmwareUpdaterPreflight),
+            "DeviceRestoreInfoPreflight" => Some(Self::DeviceRestoreInfoPreflight),
+            "KernelCache" => Some(Self::KernelCache),
+            "DeviceTree" => Some(Self::DeviceTree),
+            "SystemImageData" => Some(Self::SystemImageData),
+            "RecoveryOSASRImage" => Some(Self::RecoveryOSASRImage),
+            "SystemImageRootHash" => Some(Self::SystemImageRootHash),
+            "SystemImageCanonicalMetadata" => Some(Self::SystemImageCanonicalMetadata),
+            "FUDData" => Some(Self::FUDData),
+            "PersonalizedData" => Some(Self::PersonalizedData),
+            "EANData" => Some(Self::EANData),
+            "BootabilityBundle" => Some(Self::BootabilityBundle),
+            "BootabilityBundleV2" => Some(Self::BootabilityBundleV2),
+            "ReceiptManifest" => Some(Self::ReceiptManifest),
+            "HostSystemTime" => Some(Self::HostSystemTime),
+            "SystemImageWorkloads" => Some(Self::SystemImageWorkloads),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::BuildIdentityDict => "BuildIdentityDict",
+            Self::PersonalizedBootObjectV3 => "PersonalizedBootObjectV3",
+            Self::SourceBootObjectV4 => "SourceBootObjectV4",
+            Self::SourceBootObjectV5 => "SourceBootObjectV5",
+            Self::RecoveryOSLocalPolicy => "RecoveryOSLocalPolicy",
+            Self::RecoveryOSRootTicketData => "RecoveryOSRootTicketData",
+            Self::RecoveryOSFileAssetImage => "RecoveryOSFileAssetImage",
+            Self::RecoveryOSIBootFWFilesImages => "RecoveryOSIBootFWFilesImages",
+            Self::RecoveryOSImage => "RecoveryOSImage",
+            Self::RecoveryOSVersionData => "RecoveryOSVersionData",
+            Self::RootTicket => "RootTicket",
+            Self::NORData => "NORData",
+            Self::BasebandData => "BasebandData",
+            Self::FDRTrustData => "FDRTrustData",
+            Self::FirmwareUpdaterData => "FirmwareUpdaterData",
+            Self::FirmwareUpdaterPreflight => "FirmwareUpdaterPreflight",
+            Self::DeviceRestoreInfoPreflight => "DeviceRestoreInfoPreflight",
+            Self::KernelCache => "KernelCache",
+            Self::DeviceTree => "DeviceTree",
+            Self::SystemImageData => "SystemImageData",
+            Self::RecoveryOSASRImage => "RecoveryOSASRImage",
+            Self::SystemImageRootHash => "SystemImageRootHash",
+            Self::SystemImageCanonicalMetadata => "SystemImageCanonicalMetadata",
+            Self::FUDData => "FUDData",
+            Self::PersonalizedData => "PersonalizedData",
+            Self::EANData => "EANData",
+            Self::BootabilityBundle => "BootabilityBundle",
+            Self::BootabilityBundleV2 => "BootabilityBundleV2",
+            Self::ReceiptManifest => "ReceiptManifest",
+            Self::HostSystemTime => "HostSystemTime",
+            Self::SystemImageWorkloads => "SystemImageWorkloads",
+        }
+    }
+}
 
 /// Normalized restore lifecycle event.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +229,13 @@ pub enum RestoreLifecycleEvent {
         /// Full raw XPC payload for fields not modeled by ios-core.
         raw: IndexMap<String, XpcValue>,
     },
+    /// iOS 27 restore transport selection announcement.
+    RestoreProtocol {
+        /// Selected host protocol, expected to be `MuxSocket`.
+        protocol: Option<String>,
+        /// Full message for diagnostics.
+        raw: IndexMap<String, XpcValue>,
+    },
     /// Previous restore log payload.
     PreviousRestoreLog(String),
     /// Crash report emitted by restored.
@@ -70,6 +253,17 @@ pub enum RestoreLifecycleEvent {
 }
 
 impl RestoreLifecycleEvent {
+    /// Classify an updater or boot-object request without discarding its raw fields.
+    pub fn data_request_kind(&self) -> Option<RestoreDataRequestKind> {
+        match self {
+            Self::DataRequest {
+                data_type: Some(data_type),
+                ..
+            } => RestoreDataRequestKind::from_data_type(data_type),
+            _ => None,
+        }
+    }
+
     /// Convert a raw XPC dictionary from restored into a typed lifecycle event.
     pub fn from_xpc_dictionary(message: &IndexMap<String, XpcValue>) -> Self {
         match message.get("MsgType").and_then(XpcValue::as_str) {
@@ -105,6 +299,13 @@ impl RestoreLifecycleEvent {
             Some("RestoredCrash") => Self::RestoredCrash {
                 backtrace: xpc_string_array(message, "RestoredBacktrace"),
             },
+            Some("RestoreProtocol") => Self::RestoreProtocol {
+                protocol: message
+                    .get("Arguments")
+                    .and_then(XpcValue::as_dict)
+                    .and_then(|arguments| xpc_string(arguments, "RestoreProtocol")),
+                raw: message.clone(),
+            },
             other => Self::Unknown {
                 msg_type: other.map(ToString::to_string),
                 raw: message.clone(),
@@ -133,6 +334,7 @@ pub struct RestoreServiceClient<S> {
     framer: H2Framer<S>,
     next_msg_id: u64,
     control_messages: crate::xpc::message::XpcMessageBuffer,
+    terminal: bool,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
@@ -140,12 +342,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
     pub async fn connect(stream: S) -> Result<Self, RestoreError> {
         let mut framer = H2Framer::connect(stream)
             .await
-            .map_err(|err| RestoreError::Protocol(format!("H2 error: {err}")))?;
+            .map_err(|err| native_h2("connect restore H2", err))?;
         bootstrap_remote_xpc(&mut framer).await?;
         Ok(Self {
             framer,
             next_msg_id: 1,
             control_messages: crate::xpc::message::XpcMessageBuffer::new(),
+            terminal: false,
         })
     }
 
@@ -169,6 +372,55 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
     /// Query restore preflight metadata.
     pub async fn get_preflight_info(&mut self) -> Result<IndexMap<String, XpcValue>, RestoreError> {
         self.send_command("getpreflightinfo", None).await
+    }
+
+    /// Ask restoreserviced to build updater TSS requests from the given build identity and
+    /// firmware payload. Consumes the connection because iOS 27.0 aborts after a second request.
+    /// A fresh service connection is required for each updater.
+    pub async fn get_device_side_preflight_info(
+        mut self,
+        payload: Option<XpcValue>,
+    ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        let response = self.send_preflight_command(payload).await?;
+        if response.get("result").and_then(XpcValue::as_str) != Some("preflightinfo") {
+            return Err(RestoreError::Protocol(
+                "device-side preflight did not return preflightinfo".into(),
+            ));
+        }
+        response
+            .get("preflightinfo")
+            .and_then(XpcValue::as_dict)
+            .cloned()
+            .ok_or_else(|| {
+                RestoreError::Protocol(
+                    "device-side preflight missing preflightinfo dictionary".into(),
+                )
+            })
+    }
+
+    /// Build a bounded IPSW payload and request one updater's device-side preflight data.
+    /// This consumes the connection because affected devices reject a second request.
+    pub async fn get_device_side_preflight_info_from_ipsw<R: std::io::Read + std::io::Seek>(
+        self,
+        ipsw: &mut preflight::IpswPreflight<R>,
+        updater: &str,
+    ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        let payload = ipsw.payload_for_updater(updater)?;
+        self.get_device_side_preflight_info(Some(payload)).await
+    }
+
+    async fn send_preflight_command(
+        &mut self,
+        payload: Option<XpcValue>,
+    ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        let mut request = IndexMap::from([(
+            "command".to_string(),
+            XpcValue::String("getdevicesidepreflightinfo".into()),
+        )]);
+        if let Some(payload) = payload {
+            request.insert("payload".into(), payload);
+        }
+        self.send_request(XpcValue::Dictionary(request)).await
     }
 
     /// Query restore nonces such as AP and SEP nonces.
@@ -197,6 +449,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
         Ok(RestoreLifecycleEvent::from_xpc_dictionary(&body))
     }
 
+    /// Seal a cancelled/failed borrowed operation. Partial H2 reads or writes
+    /// cannot safely be resumed as an unrelated command on this connection.
+    pub fn invalidate(&mut self) {
+        self.terminal = true;
+    }
+
     async fn validate_command(
         &mut self,
         command: &str,
@@ -211,24 +469,42 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
         command: &str,
         argument: Option<XpcValue>,
     ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        self.send_request(build_command_request(command, argument))
+            .await
+    }
+
+    async fn send_request(
+        &mut self,
+        body: XpcValue,
+    ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        if self.terminal {
+            return Err(RestoreError::Protocol(
+                "restore control transport is terminal".into(),
+            ));
+        }
         let request = crate::xpc::message::encode_message(&XpcMessage {
             flags: crate::xpc::message::flags::ALWAYS_SET
                 | crate::xpc::message::flags::DATA
                 | crate::xpc::message::flags::WANTING_REPLY,
             msg_id: self.next_msg_id,
-            body: Some(build_command_request(command, argument)),
+            body: Some(body),
         })
-        .map_err(|err| RestoreError::Protocol(format!("restore request encode failed: {err}")))?;
+        .map_err(|err| native_xpc("encode restore request", err))?;
         self.framer
             .write_client_server(&request)
             .await
-            .map_err(|err| RestoreError::Protocol(format!("restore request failed: {err}")))?;
+            .map_err(|err| native_h2("send restore request", err))?;
         self.next_msg_id += 1;
         let response = self.recv_control_message().await?;
         response_dict(response)
     }
 
     async fn recv_control_message(&mut self) -> Result<XpcMessage, RestoreError> {
+        if self.terminal {
+            return Err(RestoreError::Protocol(
+                "restore control transport is terminal".into(),
+            ));
+        }
         loop {
             if let Some(message) = self.try_take_pending_control_message()? {
                 if message.flags & crate::xpc::message::flags::FILE_TX_STREAM_REQUEST != 0 {
@@ -248,25 +524,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
                 return Ok(message);
             }
 
-            let frame = self.framer.read_next_data_frame().await.map_err(|err| {
-                RestoreError::Protocol(format!("restore response read failed: {err}"))
-            })?;
+            let frame = self
+                .framer
+                .read_next_data_frame()
+                .await
+                .map_err(|err| native_h2("read restore response", err))?;
             if frame.is_end_stream() && frame.payload.is_empty() {
                 continue;
             }
             if !frame.is_remote_xpc_control_stream() {
                 continue;
             }
-            self.control_messages.push(&frame.payload).map_err(|err| {
-                RestoreError::Protocol(format!("restore response buffer failed: {err}"))
-            })?;
+            self.push_control_message(&frame.payload)?;
         }
+    }
+
+    fn push_control_message(&mut self, payload: &[u8]) -> Result<(), RestoreError> {
+        self.control_messages
+            .push(payload)
+            .map_err(|err| native_xpc("buffer restore response", err))
     }
 
     fn try_take_pending_control_message(&mut self) -> Result<Option<XpcMessage>, RestoreError> {
         self.control_messages
             .try_next()
-            .map_err(|err| RestoreError::Protocol(format!("restore response decode failed: {err}")))
+            .map_err(|err| native_xpc("decode restore response", err))
     }
 }
 
@@ -342,21 +624,15 @@ where
                 msg_id: 0,
                 body: Some(XpcValue::Dictionary(IndexMap::new())),
             })
-            .map_err(|err| {
-                RestoreError::Protocol(format!("remote XPC bootstrap encode step 1 failed: {err}"))
-            })?,
+            .map_err(|err| native_xpc("encode restore bootstrap step 1", err))?,
         )
         .await
-        .map_err(|err| {
-            RestoreError::Protocol(format!("remote XPC bootstrap step 1 failed: {err}"))
-        })?;
+        .map_err(|err| native_h2("send restore bootstrap step 1", err))?;
 
     framer
         .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
         .await
-        .map_err(|err| {
-            RestoreError::Protocol(format!("remote XPC bootstrap open stream 3 failed: {err}"))
-        })?;
+        .map_err(|err| native_h2("open restore bootstrap stream 3", err))?;
 
     framer
         .write_client_server(
@@ -365,14 +641,10 @@ where
                 msg_id: 0,
                 body: None,
             })
-            .map_err(|err| {
-                RestoreError::Protocol(format!("remote XPC bootstrap encode step 2 failed: {err}"))
-            })?,
+            .map_err(|err| native_xpc("encode restore bootstrap step 2", err))?,
         )
         .await
-        .map_err(|err| {
-            RestoreError::Protocol(format!("remote XPC bootstrap step 2 failed: {err}"))
-        })?;
+        .map_err(|err| native_h2("send restore bootstrap step 2", err))?;
 
     framer
         .write_server_client(
@@ -382,14 +654,10 @@ where
                 msg_id: 0,
                 body: None,
             })
-            .map_err(|err| {
-                RestoreError::Protocol(format!("remote XPC bootstrap encode step 3 failed: {err}"))
-            })?,
+            .map_err(|err| native_xpc("encode restore bootstrap step 3", err))?,
         )
         .await
-        .map_err(|err| {
-            RestoreError::Protocol(format!("remote XPC bootstrap step 3 failed: {err}"))
-        })?;
+        .map_err(|err| native_h2("send restore bootstrap step 3", err))?;
 
     Ok(())
 }
@@ -474,6 +742,11 @@ pub fn restore_lifecycle_event_to_json(event: &RestoreLifecycleEvent) -> serde_j
             "type": "restored_crash",
             "backtrace": backtrace,
         }),
+        RestoreLifecycleEvent::RestoreProtocol { protocol, raw } => serde_json::json!({
+            "type": "restore_protocol",
+            "protocol": protocol,
+            "raw": xpc_value_to_json(&XpcValue::Dictionary(raw.clone())),
+        }),
         RestoreLifecycleEvent::Unknown { msg_type, raw } => serde_json::json!({
             "type": "unknown",
             "msg_type": msg_type,
@@ -485,7 +758,7 @@ pub fn restore_lifecycle_event_to_json(event: &RestoreLifecycleEvent) -> serde_j
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
     use super::*;
 
@@ -603,6 +876,174 @@ mod tests {
         assert_eq!(json["async"], true);
     }
 
+    #[test]
+    fn parses_restore_protocol_selection() {
+        let message = IndexMap::from([
+            ("MsgType".into(), XpcValue::String("RestoreProtocol".into())),
+            (
+                "Arguments".into(),
+                XpcValue::Dictionary(IndexMap::from([(
+                    "RestoreProtocol".into(),
+                    XpcValue::String("MuxSocket".into()),
+                )])),
+            ),
+        ]);
+        let event = RestoreLifecycleEvent::from_xpc_dictionary(&message);
+        assert_eq!(
+            restore_lifecycle_event_to_json(&event)["protocol"],
+            "MuxSocket"
+        );
+    }
+
+    #[test]
+    fn classifies_ios27_restore_data_requests() {
+        for (name, kind) in [
+            (
+                "SourceBootObjectV5",
+                RestoreDataRequestKind::SourceBootObjectV5,
+            ),
+            (
+                "DeviceRestoreInfoPreflight",
+                RestoreDataRequestKind::DeviceRestoreInfoPreflight,
+            ),
+        ] {
+            let message = IndexMap::from([
+                ("MsgType".into(), XpcValue::String("DataRequestMsg".into())),
+                ("DataType".into(), XpcValue::String(name.into())),
+            ]);
+            let event = RestoreLifecycleEvent::from_xpc_dictionary(&message);
+            assert_eq!(event.data_request_kind(), Some(kind));
+        }
+    }
+
+    #[tokio::test]
+    async fn device_side_preflight_sends_payload_and_validates_reply() {
+        let (client, mut server) = tokio::io::duplex(16 * 1024);
+        let server_task = tokio::spawn(async move {
+            perform_h2_handshake(&mut server).await;
+            perform_remote_xpc_bootstrap(&mut server).await;
+            let request = read_xpc_request(&mut server, 1).await;
+            let dict = request.body.unwrap().as_dict().unwrap().clone();
+            assert_eq!(dict["command"].as_str(), Some("getdevicesidepreflightinfo"));
+            assert_eq!(
+                dict["payload"].as_dict().unwrap()["BuildIdentity"],
+                XpcValue::Int64(7)
+            );
+            write_xpc_response(
+                &mut server,
+                3,
+                XpcValue::Dictionary(IndexMap::from([
+                    ("result".into(), XpcValue::String("preflightinfo".into())),
+                    (
+                        "preflightinfo".into(),
+                        XpcValue::Dictionary(IndexMap::from([(
+                            "DeviceInfoRequests".into(),
+                            XpcValue::Dictionary(IndexMap::new()),
+                        )])),
+                    ),
+                ])),
+            )
+            .await;
+        });
+        let client = RestoreServiceClient::connect(client).await.unwrap();
+        let info = client
+            .get_device_side_preflight_info(Some(XpcValue::Dictionary(IndexMap::from([(
+                "BuildIdentity".into(),
+                XpcValue::Int64(7),
+            )]))))
+            .await
+            .unwrap();
+        assert!(info.contains_key("DeviceInfoRequests"));
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ipsw_preflight_uses_selected_identity_with_fake_restore_service() {
+        use std::io::{Cursor, Write};
+        let info = plist::Dictionary::from_iter([
+            ("DeviceClass", plist::Value::String("d63ap".into())),
+            ("RestoreBehavior", plist::Value::String("Update".into())),
+        ]);
+        let identity = plist::Dictionary::from_iter([
+            ("ApBoardID", plist::Value::Integer(16.into())),
+            ("ApChipID", plist::Value::Integer(32.into())),
+            ("Info", plist::Value::Dictionary(info)),
+            (
+                "Manifest",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "Rap,RTKitOS",
+                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                        "Info",
+                        plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                            "Path",
+                            plist::Value::String("Firmware/rose.bin".into()),
+                        )])),
+                    )])),
+                )])),
+            ),
+        ]);
+        let manifest = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "BuildIdentities",
+            plist::Value::Array(vec![plist::Value::Dictionary(identity)]),
+        )]));
+        let mut manifest_bytes = Vec::new();
+        plist::to_writer_xml(&mut manifest_bytes, &manifest).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("BuildManifest.plist", options).unwrap();
+        writer.write_all(&manifest_bytes).unwrap();
+        writer.start_file("Firmware/rose.bin", options).unwrap();
+        writer.write_all(b"rose").unwrap();
+        let mut ipsw = preflight::IpswPreflight::open(
+            Cursor::new(writer.finish().unwrap().into_inner()),
+            preflight::IpswIdentitySelector {
+                board_id: 16,
+                chip_id: 32,
+                device_class: "d63ap",
+                restore_behavior: "Update",
+            },
+        )
+        .unwrap();
+        let (client, mut server) = tokio::io::duplex(32 * 1024);
+        let server_task = tokio::spawn(async move {
+            perform_h2_handshake(&mut server).await;
+            perform_remote_xpc_bootstrap(&mut server).await;
+            let request = read_xpc_request(&mut server, 1).await;
+            let body = request.body.unwrap();
+            let payload = body.as_dict().unwrap()["payload"].as_dict().unwrap();
+            assert_eq!(
+                payload["BuildIdentity"].as_dict().unwrap()["ApBoardID"],
+                XpcValue::Int64(16)
+            );
+            assert_eq!(
+                payload["Rose"].as_dict().unwrap()["Rap,RTKitOS"],
+                XpcValue::Data(bytes::Bytes::from_static(b"rose"))
+            );
+            write_xpc_response(
+                &mut server,
+                3,
+                XpcValue::Dictionary(IndexMap::from([
+                    ("result".into(), XpcValue::String("preflightinfo".into())),
+                    (
+                        "preflightinfo".into(),
+                        XpcValue::Dictionary(IndexMap::from([(
+                            "RoseRequests".into(),
+                            XpcValue::Dictionary(IndexMap::new()),
+                        )])),
+                    ),
+                ])),
+            )
+            .await;
+        });
+        let client = RestoreServiceClient::connect(client).await.unwrap();
+        let result = client
+            .get_device_side_preflight_info_from_ipsw(&mut ipsw, "Rose")
+            .await
+            .unwrap();
+        assert!(result.contains_key("RoseRequests"));
+        server_task.await.unwrap();
+    }
+
     #[tokio::test]
     async fn next_lifecycle_event_reads_restore_status_message() {
         let (client, mut server) = tokio::io::duplex(16 * 1024);
@@ -640,6 +1081,132 @@ mod tests {
                 finished: true,
             }
         );
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn experimental_remote_control_loop_rejects_unserved_firmware_even_if_peer_sends_success()
+    {
+        let (client, mut server) = tokio::io::duplex(32 * 1024);
+
+        let server_task = tokio::spawn(async move {
+            perform_h2_handshake(&mut server).await;
+            perform_remote_xpc_bootstrap(&mut server).await;
+
+            // 1. DataRequestMsg
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "MsgType".to_string(),
+                        XpcValue::String("DataRequestMsg".into()),
+                    ),
+                    (
+                        "DataType".to_string(),
+                        XpcValue::String("SystemImageData".into()),
+                    ),
+                    ("DataPort".to_string(), XpcValue::Uint64(1234)),
+                ])),
+            )
+            .await;
+
+            // 2. ProgressMsg: Flashing
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "MsgType".to_string(),
+                        XpcValue::String("ProgressMsg".into()),
+                    ),
+                    (
+                        "Operation".to_string(),
+                        XpcValue::String("Flashing NOR".into()),
+                    ),
+                    ("Progress".to_string(), XpcValue::Uint64(30)),
+                ])),
+            )
+            .await;
+
+            // 3. CheckpointMsg
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "MsgType".to_string(),
+                        XpcValue::String("CheckpointMsg".into()),
+                    ),
+                    (
+                        "Checkpoint".to_string(),
+                        XpcValue::String("nor_complete".into()),
+                    ),
+                ])),
+            )
+            .await;
+
+            // 4. ProgressMsg: Verifying
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "MsgType".to_string(),
+                        XpcValue::String("ProgressMsg".into()),
+                    ),
+                    (
+                        "Operation".to_string(),
+                        XpcValue::String("Verifying RootFS".into()),
+                    ),
+                    ("Progress".to_string(), XpcValue::Uint64(90)),
+                ])),
+            )
+            .await;
+
+            // 5. StatusMsg: Success
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    ("MsgType".to_string(), XpcValue::String("StatusMsg".into())),
+                    ("Status".to_string(), XpcValue::Uint64(0)),
+                    (
+                        "Log".to_string(),
+                        XpcValue::String("Restore finished successfully".into()),
+                    ),
+                ])),
+            )
+            .await;
+            assert_eq!(
+                server.read(&mut [0]).await.unwrap(),
+                0,
+                "failed control client must be dropped, without pretend firmware replies"
+            );
+        });
+
+        let mut client = RestoreServiceClient::connect(client).await.unwrap();
+        let sm = state_machine::RestoreStateMachine::new();
+        let error = state_machine::run_experimental_restore_loop(
+            &mut client,
+            sm,
+            |_dt, _port| panic!("normal control service has no restored data transport"),
+            std::time::Duration::from_secs(5),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(crate::test_native::has_source::<
+            state_machine::RestoreExecutionError,
+        >(&error));
+        assert!(client
+            .get_nonces()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("terminal"));
+        drop(client);
 
         server_task.await.unwrap();
     }

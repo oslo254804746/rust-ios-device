@@ -10,6 +10,13 @@ pub struct DiscoverCmd {
 
 #[derive(clap::Subcommand)]
 enum DiscoverSub {
+    /// Correlate current Wi-Fi advertisements using existing trust only
+    PairedIdentity {
+        #[arg(long, default_value = "15")]
+        timeout: u64,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
     /// Browse for iOS 17+ devices via mDNS (_remoted._tcp)
     Mdns {
         #[arg(long, default_value = "5", help = "Discovery timeout in seconds")]
@@ -34,8 +41,50 @@ enum DiscoverSub {
 }
 
 impl DiscoverCmd {
+    pub async fn run_with_target(
+        self,
+        selected_udid: Option<String>,
+        json_global: bool,
+    ) -> Result<()> {
+        if let DiscoverSub::PairedIdentity { timeout, json } = self.sub {
+            let udid = selected_udid.ok_or_else(|| {
+                crate::output::input_decision("--udid required for paired identity observation")
+            })?;
+            anyhow::ensure!(
+                (1..=60).contains(&timeout),
+                crate::output::input_decision("paired identity timeout must be 1..60 seconds")
+            );
+            let observations =
+                ios_core::device::observe_paired_identity(&udid, Duration::from_secs(timeout))
+                    .await?;
+            if json || json_global {
+                crate::output::outln!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "schema_version":1,"selected_udid":udid,
+                        "transport_scope":"existing-trust-identity-observation","observations":observations,
+                    }))?
+                );
+            } else {
+                for observation in observations {
+                    crate::output::outln!(
+                        "{}: advertisement {} matched selected target",
+                        observation.mechanism,
+                        observation.advertisement_index
+                    );
+                }
+            }
+            return Ok(());
+        }
+        self.run(json_global).await
+    }
     pub async fn run(self, json_global: bool) -> Result<()> {
         match self.sub {
+            DiscoverSub::PairedIdentity { .. } => {
+                return Err(crate::output::input_decision(
+                    "paired identity observation requires explicit target dispatch",
+                ))
+            }
             DiscoverSub::Mdns { timeout, json } => {
                 let json = json || json_global;
                 use tokio_stream::StreamExt;
@@ -57,18 +106,21 @@ impl DiscoverCmd {
                             "name": device.name,
                         }));
                     } else {
-                        println!(
+                        crate::output::outln!(
                             "{:<45} [{}]:{} {}",
-                            device.udid, device.ipv6, device.rsd_port, device.name
+                            device.udid,
+                            device.ipv6,
+                            device.rsd_port,
+                            device.name
                         );
                     }
                     found += 1;
                 }
 
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&devices)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&devices)?);
                 } else if found == 0 {
-                    println!("No mDNS devices discovered within {timeout}s.");
+                    crate::output::outln!("No mDNS devices discovered within {timeout}s.");
                 }
             }
             DiscoverSub::Mobdev2 { timeout, json } => {
@@ -99,19 +151,19 @@ fn print_bonjour_services(services: &[ios_core::BonjourService], json: bool) -> 
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&list)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
     } else if services.is_empty() {
-        println!("No services discovered.");
+        crate::output::outln!("No services discovered.");
     } else {
         for s in services {
-            println!(
+            crate::output::outln!(
                 "{:<60} port={} addrs={}",
                 s.instance,
                 s.port,
                 s.addresses.join(", ")
             );
             for (key, value) in &s.properties {
-                println!("  {key}={value}");
+                crate::output::outln!("  {key}={value}");
             }
         }
     }

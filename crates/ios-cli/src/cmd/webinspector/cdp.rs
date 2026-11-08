@@ -1,0 +1,1416 @@
+//! CDP HTTP/WebSocket adaptation and bridge task ownership.
+//! WebInspector wire/Target state remains in ios-core sessions.
+use super::connection::InspectorConnection;
+use super::diagnostics::diagnostic_cdp_response;
+use super::http::{cdp_reload_policy, serve, server_state, AppError, ServerState};
+use super::tasks::control::Budget;
+use super::workflows::{find_page_by_id, is_inspectable_page_type, page_target_id};
+use super::PAGE_DISCOVERY_IDLE;
+use crate::access::{Admission, HttpBoundaryArgs, Principal, ServerAccessArgs};
+use anyhow::{anyhow, Result};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, State};
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use axum::{Extension, Json, Router};
+use futures_util::{SinkExt, StreamExt};
+use ios_core::webinspector::cdp_browser::{
+    self, BrowserCdpAction, BrowserCdpState, BrowserDiscoveryKnowledge, JsContextCdpAdapter,
+};
+use ios_core::webinspector::cdp_page::PageCdpAdapter;
+use ios_core::webinspector::{
+    ApplicationPage, InspectorSession, InspectorSessionEvent, WebInspectorClient,
+    WebInspectorEvent, WirType,
+};
+use serde::Serialize;
+use serde_json::{json, Value as JsonValue};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+use tokio::sync::{mpsc, watch, Mutex, Notify, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
+
+mod browser_tasks;
+#[cfg(test)]
+use browser_tasks::stop_browser_page;
+use browser_tasks::{report_cleanup, stop_browser_pages, BrowserPageCleanup, BrowserPageSession};
+
+const MAX_CDP_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
+const CDP_TARGET_POLL: Duration = Duration::from_secs(2);
+const CDP_PAGE_CHANNEL: usize = 64;
+const CDP_PAGE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CDP_PAGE_LOCKS: usize = 4096;
+static CDP_PAGE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+pub(super) async fn lock_cdp_page(
+    target_id: &str,
+    timeout_duration: Duration,
+) -> Result<OwnedMutexGuard<()>> {
+    let locks = CDP_PAGE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = locks.lock().await;
+    if !map.contains_key(target_id) && map.len() >= MAX_CDP_PAGE_LOCKS {
+        map.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+    if !map.contains_key(target_id) && map.len() >= MAX_CDP_PAGE_LOCKS {
+        return Err(anyhow!("too many concurrent CDP page locks"));
+    }
+    let lock = map.entry(target_id.to_string()).or_default().clone();
+    drop(map);
+    Ok(tokio::time::timeout(timeout_duration, lock.lock_owned()).await?)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CdpTargetDescriptor {
+    description: String,
+    id: String,
+    title: String,
+    #[serde(rename = "type")]
+    target_type: String,
+    url: String,
+    #[serde(rename = "webSocketDebuggerUrl")]
+    web_socket_debugger_url: String,
+    #[serde(rename = "devtoolsFrontendUrl")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    devtools_frontend_url: Option<String>,
+}
+
+pub(super) async fn run_cdp_server(
+    udid: &str,
+    host: String,
+    port: u16,
+    timeout: Duration,
+    access: ServerAccessArgs,
+    boundary: HttpBoundaryArgs,
+) -> Result<()> {
+    let (listener, state, boundary) =
+        server_state(udid, &host, port, timeout, access, boundary).await?;
+    serve(
+        listener,
+        boundary.protect(cdp_router(state), crate::http_diagnostics::ErrorShape::Cdp),
+    )
+    .await
+}
+
+pub(super) fn cdp_router(state: ServerState) -> Router {
+    let admission = Admission::debug(
+        state.access.clone(),
+        crate::http_diagnostics::ErrorShape::Cdp,
+        state.udid.clone(),
+    );
+    Router::new()
+        .route("/json", get(cdp_targets))
+        .route("/json/list", get(cdp_targets))
+        .route("/json/version", get(cdp_version))
+        .route("/json/version/", get(cdp_version))
+        .route("/devtools/page/:page_id", get(cdp_page_ws))
+        .route("/devtools/browser/:browser_id", get(cdp_browser_ws))
+        .route("/auth/reload", post(cdp_reload_policy))
+        .with_state(state)
+        .merge(admission.ticket_routes())
+        .layer(axum::middleware::from_fn_with_state(
+            crate::http_diagnostics::ErrorShape::Cdp,
+            crate::http_diagnostics::rejections,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            admission,
+            crate::access::admission,
+        ))
+}
+
+async fn cdp_targets(
+    State(state): State<ServerState>,
+) -> Result<Json<Vec<CdpTargetDescriptor>>, AppError> {
+    let pages = load_open_pages(&state).await?;
+    Ok(Json(cdp_target_descriptors(
+        &pages,
+        &state.cdp_host,
+        state.cdp_port,
+    )))
+}
+
+pub(super) async fn cdp_version(State(state): State<ServerState>) -> Json<JsonValue> {
+    Json(json!({
+        "Browser": "Safari",
+        "Protocol-Version": "1.1",
+        "User-Agent": "ios-cli",
+        "webSocketDebuggerUrl": format!("ws://{}:{}/devtools/browser/ios-cli", state.cdp_host, state.cdp_port),
+    }))
+}
+
+async fn cdp_page_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
+    Path(page_id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok(ws
+        .max_frame_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
+        .max_message_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            if let Err(error) =
+                handle_cdp_socket(socket, &state, &page_id, principal.revoked()).await
+            {
+                let _ = crate::output::write_error_line(format_args!(
+                    "cdp bridge closed with error: {}",
+                    crate::output::error_message(&error)
+                ));
+            }
+        }))
+}
+
+async fn handle_cdp_socket(
+    socket: WebSocket,
+    server: &ServerState,
+    page_id: &str,
+    stop: impl std::future::Future<Output = ()> + Send,
+) -> Result<()> {
+    let signal = async {
+        stop.await;
+        Ok::<(), std::io::Error>(())
+    };
+    tokio::pin!(signal);
+    let timeout = server.timeout;
+    let budget = Budget::new(timeout, "CDP page setup")?;
+    let (_page_guard, _device, mut client, mut session, mut js_adapter) = budget
+        .drive(
+            Box::pin(async {
+                let guard = lock_cdp_page(page_id, budget.remaining()?).await?;
+                let InspectorConnection { device, stream } = server
+                    .source
+                    .connect(&server.udid, budget.remaining()?)
+                    .await?;
+                let mut client = WebInspectorClient::new(stream);
+                let remaining = budget.cap(&mut client)?;
+                client.start_preserving_errors(remaining).await?;
+                let (application_id, page) =
+                    discover_cdp_page(&mut client, page_id, budget).await?;
+                let mut session = InspectorSession::new(application_id, page.id);
+                let js_adapter =
+                    (page.page_type == WirType::JavaScript).then(JsContextCdpAdapter::default);
+                let remaining = budget.cap(&mut client)?;
+                session
+                    .attach_unpaused(
+                        &mut client,
+                        page.page_type != WirType::JavaScript,
+                        remaining,
+                    )
+                    .await?;
+                client.set_operation_timeout(None);
+                Ok((guard, device, client, session, js_adapter))
+            }),
+            &mut signal,
+        )
+        .await?;
+
+    let mut page_adapter = js_adapter.is_none().then(|| PageCdpAdapter::new(timeout));
+    let client_in_progress = client.in_progress_handle();
+    let (mut sender, mut receiver) = socket.split();
+    let bridge_result = tokio::select! {
+        biased;
+        _ = &mut signal => Err(anyhow::Error::new(ios_core::OperationCancelled::new())
+            .context("CDP page authorization revoked")),
+        result = async {
+        loop {
+            // Each message turn yields back to the directly owned lease
+            // control while preserving the existing unbiased traffic choice.
+            tokio::task::yield_now().await;
+            let translation_deadline = page_adapter.as_ref().and_then(PageCdpAdapter::next_deadline);
+            tokio::select! {
+                biased;
+                inbound = std::future::poll_fn(|cx| {
+                    if client_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+                        std::task::Poll::Pending
+                    } else {
+                        receiver.poll_next_unpin(cx)
+                    }
+                }) => {
+                    match inbound {
+                        Some(Ok(Message::Text(text))) => {
+                            let message: JsonValue = serde_json::from_str(text.as_ref())?;
+                            if let Some(error) = cdp_browser::unverified_page_error(&message) {
+                                sender.send(Message::Text(error.to_string())).await?;
+                                continue;
+                            }
+                            if let Some(error) = js_adapter.as_ref().and_then(|adapter| adapter.invalid_context_response(&message)) {
+                                sender.send(Message::Text(error.to_string())).await?;
+                                continue;
+                            }
+                            let outgoing = if let Some(adapter) = &mut js_adapter {
+                                adapter.outgoing(message)
+                            } else { vec![message] };
+                            for message in outgoing {
+                                if let Some(adapter) = &mut page_adapter {
+                                    let translated = adapter.outgoing(message);
+                                    for response in translated.client { sender.send(Message::Text(response.to_string())).await?; }
+                                    for wire in translated.wire { session.send_bridge_message(&mut client, &wire).await?; }
+                                    if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
+                                } else { session.send_bridge_message(&mut client, &message).await?; }
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => return Err(error.into()),
+                    }
+                }
+                expired = async {
+                    match translation_deadline {
+                        Some(at) => tokio::time::timeout_at(at.into(), std::future::pending::<()>()).await.unwrap_err(),
+                        None => std::future::pending::<tokio::time::error::Elapsed>().await,
+                    }
+                } => {
+                    // A periodic timer must never drop a partial native read.
+                    // Only a real outstanding command deadline may interrupt it.
+                    if !client.is_usable() { return Err(anyhow::Error::new(expired).context("CDP translated command deadline expired during native IO")); }
+                    if let Some(adapter) = &mut page_adapter {
+                        for message in adapter.expired() { sender.send(Message::Text(message.to_string())).await?; }
+                        if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
+                    }
+                }
+                outbound = session.next_session_event(&mut client, timeout) => {
+                    match outbound {
+                        Ok(InspectorSessionEvent::Closed) => {
+                            let flush = Budget::new(CDP_PAGE_CLEANUP_TIMEOUT, "CDP page native closure flush")?;
+                            flush.drive(Box::pin(async {
+                                if let Some(message) = js_adapter.as_mut().and_then(JsContextCdpAdapter::context_destroyed) {
+                                    cdp_browser::validate_routed_message(&message)?;
+                                    sender.send(Message::Text(message.to_string())).await?;
+                                }
+                                sender.send(Message::Close(None)).await?;
+                                Ok(())
+                            }), std::future::pending::<std::io::Result<()>>()).await?;
+                            break;
+                        }
+                        Ok(InspectorSessionEvent::Message(message)) => {
+                            if let Some(message) = session.bridge_message(&message)? {
+                                let incoming = if let Some(adapter) = &mut js_adapter {
+                                    adapter.incoming(message)
+                                } else { vec![message] };
+                                for message in incoming {
+                                    if let Some(adapter) = &mut page_adapter {
+                                        let translated = adapter.incoming(message);
+                                        for wire in translated.wire { session.send_bridge_message(&mut client, &wire).await?; }
+                                        for message in translated.client {
+                                            sender.send(Message::Text(diagnostic_cdp_response(message).to_string())).await?;
+                                        }
+                                        if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
+                                    } else { sender.send(Message::Text(diagnostic_cdp_response(message).to_string())).await?; }
+                                }
+                            }
+                        }
+                        Err(error) if error.timeout_duration().is_some() && client.is_usable() => {},
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
+        }
+        Ok(())
+        } => result,
+    };
+    let mut owner = super::tasks::session_owner::Session::Inspector {
+        session,
+        attached: true,
+    };
+    let cleanup =
+        super::tasks::session_owner::cleanup(&mut client, &mut owner, CDP_PAGE_CLEANUP_TIMEOUT)
+            .await;
+    drop(client);
+    if _device.is_some() {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    super::tasks::control::finish(bridge_result, cleanup)
+}
+
+enum BrowserPageOutput {
+    Message {
+        session_id: String,
+        message: JsonValue,
+    },
+    Closed {
+        session_id: String,
+        // Sent atomically with closure so Runtime destruction cannot be lost
+        // behind this child's flat-session detach on a full relay channel.
+        final_message: Option<JsonValue>,
+    },
+}
+
+struct AdmittedPageOutput {
+    value: BrowserPageOutput,
+    _permit: OwnedSemaphorePermit,
+}
+
+#[derive(Clone)]
+enum BrowserOutputSender {
+    #[cfg(test)]
+    Raw(mpsc::Sender<BrowserPageOutput>),
+    Admitted {
+        sender: mpsc::Sender<AdmittedPageOutput>,
+        permits: Arc<Semaphore>,
+        closed: Arc<Notify>,
+    },
+}
+
+impl BrowserOutputSender {
+    async fn send(&self, value: BrowserPageOutput) -> Result<()> {
+        if let BrowserPageOutput::Message { message, .. } = &value {
+            cdp_browser::validate_routed_message(message)?;
+        }
+        match self {
+            #[cfg(test)]
+            Self::Raw(sender) => sender.send(value).await.map_err(anyhow::Error::from),
+            Self::Admitted {
+                sender, permits, ..
+            } => {
+                let permit = permits.clone().acquire_owned().await?;
+                sender
+                    .send(AdmittedPageOutput {
+                        value,
+                        _permit: permit,
+                    })
+                    .await
+                    .map_err(anyhow::Error::from)
+            }
+        }
+    }
+
+    fn notify_closed(&self, value: BrowserPageOutput) {
+        #[cfg(not(test))]
+        let _ = value;
+        match self {
+            #[cfg(test)]
+            Self::Raw(sender) => {
+                let _ = sender.try_send(value);
+            }
+            Self::Admitted { closed, .. } => closed.notify_one(),
+        }
+    }
+}
+
+struct BrowserPageOutputs {
+    receiver: mpsc::Receiver<AdmittedPageOutput>,
+    deferred: VecDeque<AdmittedPageOutput>,
+}
+
+impl BrowserPageOutputs {
+    async fn next(&mut self) -> Option<AdmittedPageOutput> {
+        match self.deferred.pop_front() {
+            Some(output) => Some(output),
+            None => self.receiver.recv().await,
+        }
+    }
+
+    /// Once a child has joined it cannot append another output. Scan one
+    /// bounded snapshot, retaining every other UUID's original order.
+    fn drain_session(&mut self, session_id: &str) -> Result<Vec<AdmittedPageOutput>> {
+        let mut snapshot = std::mem::take(&mut self.deferred);
+        let count = self.receiver.len();
+        for _ in 0..count {
+            match self.receiver.try_recv() {
+                Ok(output) => snapshot.push_back(output),
+                Err(_) => break,
+            }
+        }
+        let mut messages = Vec::new();
+        for output in snapshot {
+            match &output.value {
+                BrowserPageOutput::Message {
+                    session_id: source, ..
+                } if source == session_id => messages.push(output),
+                BrowserPageOutput::Closed {
+                    session_id: source, ..
+                } if source == session_id => {}
+                _ => {
+                    if self.deferred.len() >= CDP_PAGE_CHANNEL {
+                        return Err(anyhow!("CDP deferred output count limit"));
+                    }
+                    self.deferred.push_back(output);
+                }
+            }
+        }
+        Ok(messages)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RetireReason {
+    discovery_closed: bool,
+    notify: bool,
+}
+
+async fn cdp_browser_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
+    Path(browser_id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    if browser_id != "ios-cli" {
+        return Err(AppError::bad_request("unknown CDP browser endpoint"));
+    }
+    Ok(ws
+        .max_frame_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
+        .max_message_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            if let Err(error) = handle_cdp_browser_socket(socket, &state, principal.revoked()).await
+            {
+                let _ = crate::output::write_error_line(format_args!(
+                    "cdp browser bridge closed with error: {}",
+                    crate::output::error_message(&error)
+                ));
+            }
+        }))
+}
+
+async fn handle_cdp_browser_socket(
+    socket: WebSocket,
+    server: &ServerState,
+    stop: impl std::future::Future<Output = ()> + Send,
+) -> Result<()> {
+    tokio::pin!(stop);
+    let (mut sender, mut receiver) = socket.split();
+    let mut state = BrowserCdpState::new("ios-cli");
+    let initial = tokio::select! {
+        biased;
+        _ = &mut stop => return Err(anyhow::Error::new(ios_core::OperationCancelled::new())
+            .context("webinspector CDP browser cancelled")),
+        result = load_open_pages(server) => result?,
+    };
+    state.refresh(&initial);
+    let (page_output_tx, page_output_rx) = mpsc::channel(CDP_PAGE_CHANNEL);
+    let page_closed = Arc::new(Notify::new());
+    let page_output_tx = BrowserOutputSender::Admitted {
+        sender: page_output_tx,
+        permits: Arc::new(Semaphore::new(CDP_PAGE_CHANNEL)),
+        closed: page_closed.clone(),
+    };
+    let mut page_outputs = BrowserPageOutputs {
+        receiver: page_output_rx,
+        deferred: VecDeque::new(),
+    };
+    let mut sessions: HashMap<String, BrowserPageSession> = HashMap::new();
+    // Removed children remain owned outside active work, even if revocation
+    // interrupts a borrowed cleanup while joins or native expiry are pending.
+    let mut retiring = BrowserPageCleanup::new(Vec::new(), CDP_PAGE_CLEANUP_TIMEOUT);
+    let mut poll = tokio::time::interval(CDP_TARGET_POLL);
+    poll.tick().await;
+    let mut auto_attach_pending = false;
+    let result = tokio::select! {
+        biased;
+        _ = &mut stop => Err(anyhow::Error::new(ios_core::OperationCancelled::new())
+            .context("webinspector CDP browser cancelled")),
+        result = async {
+        loop {
+            tokio::task::yield_now().await;
+            tokio::select! {
+                biased;
+                inbound = receiver.next() => {
+                    match inbound {
+                        Some(Ok(Message::Text(text))) => {
+                            let request: JsonValue = match serde_json::from_str(text.as_ref()) {
+                                Ok(request) => request,
+                                Err(_) => {
+                                    sender.send(Message::Text(json!({"error": {"code": -32700, "message": "Parse error"}}).to_string())).await?;
+                                    continue;
+                                }
+                            };
+                            if matches!(request.get("method").and_then(JsonValue::as_str), Some("Target.getTargets" | "Target.attachToTarget")) {
+                                match load_browser_discovery(server).await {
+                                    Ok(discovery) => {
+                                        let refresh = state.refresh_observed(&discovery.pages, &discovery.knowledge);
+                                        for id in refresh.removed_sessions {
+                                            retire_cdp_browser_page(&id, RetireReason { discovery_closed: true, notify: true }, &mut sessions, &mut retiring, &mut state, &mut sender, &mut page_outputs).await?;
+                                        }
+                                        send_cdp_messages(&mut sender, refresh.messages).await?;
+                                        if !discovery.complete {
+                                            send_cdp_messages(&mut sender, vec![cdp_browser::error(&request, -32000, "Target discovery incomplete")]).await?;
+                                            continue;
+                                        }
+                                    }
+                                    Err(_) => {
+                                        send_cdp_messages(&mut sender, vec![cdp_browser::error(&request, -32000, "Target discovery failed")]).await?;
+                                        continue;
+                                    }
+                                }
+                            }
+                            let is_set_auto_attach = request.get("method").and_then(JsonValue::as_str) == Some("Target.setAutoAttach");
+                            let action = state.handle(request);
+                            match action {
+                                BrowserCdpAction::Send(messages) => {
+                                    send_cdp_messages(&mut sender, messages).await?;
+                                    if is_set_auto_attach && !state.unattached_targets().is_empty() {
+                                        auto_attach_cdp_pages(server, &mut state, &mut sessions, &page_output_tx, &mut sender).await?;
+                                    }
+                                }
+                                BrowserCdpAction::Attach { request, target_id } => {
+                                    let id = state.register_attachment_for_request(&target_id, &request).expect("known target");
+                                    let identity = state.native_page_for_target(&target_id);
+                                    match open_cdp_browser_page_at(server, &target_id, &id, page_output_tx.clone(), identity).await {
+                                        Ok(page) => {
+                                            sessions.insert(id.clone(), page);
+                                            let mut messages = Vec::new();
+                                            if let Some(event) = state.attached_event(&id) {
+                                                messages.push(event);
+                                            }
+                                            messages.push(cdp_browser::reply(&request, json!({"sessionId": id})));
+                                            send_cdp_messages(&mut sender, messages).await?;
+                                        }
+                                        Err(_) => {
+                                            state.detach(&id, false);
+                                            send_cdp_messages(&mut sender, vec![cdp_browser::error(&request, -32000, "Cannot attach to target")]).await?;
+                                        }
+                                    }
+                                }
+                                BrowserCdpAction::Detach { request, session_id } => {
+                                    retire_cdp_browser_page(&session_id, RetireReason { discovery_closed: false, notify: false }, &mut sessions, &mut retiring, &mut state, &mut sender, &mut page_outputs).await?;
+                                    send_cdp_messages(&mut sender, vec![cdp_browser::reply(&request, json!({}))]).await?;
+                                }
+                                BrowserCdpAction::Forward { session_id, message } => {
+                                    if let Some(page) = sessions.get(&session_id) {
+                                        if page.sender.send(message).await.is_err() {
+                                            retire_cdp_browser_page(&session_id, RetireReason { discovery_closed: false, notify: true }, &mut sessions, &mut retiring, &mut state, &mut sender, &mut page_outputs).await?;
+                                        }
+                                    }
+                                }
+                                BrowserCdpAction::NonFlatForward { request, session_id, message } => {
+                                    if let Some(page) = sessions.get(&session_id) {
+                                        let queued = tokio::time::timeout(CDP_PAGE_CLEANUP_TIMEOUT, page.sender.send(message)).await;
+                                        let response = match queued {
+                                            Ok(Ok(())) => cdp_browser::reply(&request, json!({})),
+                                            _ => cdp_browser::error(&request, -32001, "Nonflat session relay unavailable"),
+                                        };
+                                        send_cdp_messages(&mut sender, vec![response]).await?;
+                                    } else {
+                                        send_cdp_messages(&mut sender, vec![cdp_browser::error(&request, -32001, "Session with given id not found")]).await?;
+                                    }
+                                }
+                            }
+                            auto_attach_pending = !state.unattached_targets().is_empty();
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        Some(Ok(_)) => {},
+                        Some(Err(error)) => return Err(error.into()),
+                    }
+                }
+                output = page_outputs.next() => {
+                    let output = output.map(|AdmittedPageOutput { value, _permit }| (value, _permit));
+                    let (value, _permit) = match output { Some(output) => output, None => break };
+                    match value {
+                        BrowserPageOutput::Message {session_id, message} => {
+                            if let Some(message) = state.page_message(&session_id, message) {
+                                send_cdp_messages(&mut sender, vec![message]).await?;
+                            }
+                        }
+                        BrowserPageOutput::Closed {session_id, final_message} => {
+                            if let Some(page) = sessions.get(&session_id) {
+                                page.outcome.lock().unwrap_or_else(|poison| poison.into_inner()).final_message(final_message);
+                            }
+                            retire_cdp_browser_page(&session_id, RetireReason { discovery_closed: false, notify: true }, &mut sessions, &mut retiring, &mut state, &mut sender, &mut page_outputs).await?;
+                        }
+                    }
+                }
+                _ = page_closed.notified() => {
+                    let closed: Vec<_> = sessions.iter().filter(|(_, page)| page.outcome.lock().unwrap_or_else(|poison| poison.into_inner()).is_terminal()).map(|(id, _)| id.clone()).collect();
+                    for id in closed {
+                        retire_cdp_browser_page(&id, RetireReason { discovery_closed: false, notify: true }, &mut sessions, &mut retiring, &mut state, &mut sender, &mut page_outputs).await?;
+                    }
+                }
+                _ = poll.tick() => {
+                    if let Ok(discovery) = load_browser_discovery(server).await {
+                        let refresh = state.refresh_observed(&discovery.pages, &discovery.knowledge);
+                        for id in refresh.removed_sessions {
+                            retire_cdp_browser_page(&id, RetireReason { discovery_closed: true, notify: true }, &mut sessions, &mut retiring, &mut state, &mut sender, &mut page_outputs).await?;
+                        }
+                        send_cdp_messages(&mut sender, refresh.messages).await?;
+                        auto_attach_pending = !state.unattached_targets().is_empty();
+                    }
+                }
+                _ = std::future::ready(()), if auto_attach_pending => {
+                    auto_attach_pending = false;
+                    auto_attach_cdp_pages(server, &mut state, &mut sessions, &page_output_tx, &mut sender).await?;
+                }
+            }
+        }
+        Ok(())
+        } => result,
+    };
+    let (mut pages, issued) = retiring.into_remaining();
+    pages.extend(sessions.into_values());
+    let cleanup = super::tasks::control::finish(
+        issued,
+        stop_browser_pages(pages, CDP_PAGE_CLEANUP_TIMEOUT).await,
+    );
+    super::tasks::control::finish(result, cleanup)
+}
+
+/// Retain the exact UUID route until its original child joins and any positively
+/// observed native destruction is flushed. Late queued close events cannot
+/// remove a replacement session, because `detach` is keyed by this UUID.
+async fn retire_cdp_browser_page(
+    session_id: &str,
+    reason: RetireReason,
+    sessions: &mut HashMap<String, BrowserPageSession>,
+    retiring: &mut BrowserPageCleanup,
+    state: &mut BrowserCdpState,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    outputs: &mut BrowserPageOutputs,
+) -> Result<()> {
+    if let Some(page) = sessions.remove(session_id) {
+        let flush = Budget::new(
+            CDP_PAGE_CLEANUP_TIMEOUT,
+            "CDP child join and final context flush",
+        )?;
+        let outcome = page.outcome.clone();
+        if reason.discovery_closed {
+            outcome
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .observe_discovery_closed();
+        }
+        retiring.push_with_budget(page, flush);
+        report_cleanup(retiring.stop().await);
+        let messages = outputs.drain_session(session_id)?;
+        let final_message = outcome
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take_final_message();
+        flush
+            .drive(
+                Box::pin(async {
+                    for output in messages {
+                        let AdmittedPageOutput { value, _permit } = output;
+                        let BrowserPageOutput::Message { message, .. } = value else {
+                            continue;
+                        };
+                        if let Some(message) = state.page_message(session_id, message) {
+                            cdp_browser::validate_routed_message(&message)?;
+                            sender.send(Message::Text(message.to_string())).await?;
+                        }
+                    }
+                    if let Some(message) =
+                        final_message.and_then(|message| state.page_message(session_id, message))
+                    {
+                        cdp_browser::validate_routed_message(&message)?;
+                        sender.send(Message::Text(message.to_string())).await?;
+                    }
+                    send_cdp_messages(sender, state.detach(session_id, reason.notify)).await?;
+                    Ok(())
+                }),
+                std::future::pending::<std::io::Result<()>>(),
+            )
+            .await?;
+        return Ok(());
+    }
+    // A late notification for an already retired UUID has no remaining route.
+    Ok(())
+}
+
+async fn send_cdp_messages(
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    messages: Vec<JsonValue>,
+) -> Result<()> {
+    for message in messages {
+        ios_core::webinspector::cdp_browser::validate_routed_message(&message)?;
+        sender.send(Message::Text(message.to_string())).await?;
+    }
+    Ok(())
+}
+
+async fn auto_attach_cdp_pages(
+    server: &ServerState,
+    state: &mut BrowserCdpState,
+    sessions: &mut HashMap<String, BrowserPageSession>,
+    output: &BrowserOutputSender,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> Result<()> {
+    for target_id in state.unattached_targets() {
+        if let Some(session_id) = state.register_attachment(&target_id) {
+            if let Ok(page) = open_cdp_browser_page_at(
+                server,
+                &target_id,
+                &session_id,
+                output.clone(),
+                state.native_page_for_target(&target_id),
+            )
+            .await
+            {
+                sessions.insert(session_id.clone(), page);
+                if let Some(event) = state.attached_event(&session_id) {
+                    send_cdp_messages(sender, vec![event]).await?;
+                }
+            } else {
+                state.detach(&session_id, false);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+async fn open_cdp_browser_page(
+    server: &ServerState,
+    target_id: &str,
+    cdp_session_id: &str,
+    output: mpsc::Sender<BrowserPageOutput>,
+) -> Result<BrowserPageSession> {
+    open_cdp_browser_page_at(
+        server,
+        target_id,
+        cdp_session_id,
+        BrowserOutputSender::Raw(output),
+        None,
+    )
+    .await
+}
+
+async fn open_cdp_browser_page_at(
+    server: &ServerState,
+    target_id: &str,
+    cdp_session_id: &str,
+    output: BrowserOutputSender,
+    native_page: Option<(String, u64)>,
+) -> Result<BrowserPageSession> {
+    let budget = Budget::new(server.timeout, "CDP browser page setup")?;
+    let (guard, device, mut client, mut inspector, mut js_adapter) = budget
+        .drive(
+            Box::pin(async {
+                let guard = lock_cdp_page(target_id, budget.remaining()?).await?;
+                let InspectorConnection { device, stream } = server
+                    .source
+                    .connect(&server.udid, budget.remaining()?)
+                    .await?;
+                let mut client = WebInspectorClient::new(stream);
+                let remaining = budget.cap(&mut client)?;
+                client.start_preserving_errors(remaining).await?;
+                let (application_id, page) =
+                    discover_cdp_page_at(&mut client, target_id, budget, native_page.as_ref())
+                        .await?;
+                let mut inspector = InspectorSession::new(application_id, page.id);
+                let js_adapter =
+                    (page.page_type == WirType::JavaScript).then(JsContextCdpAdapter::default);
+                let remaining = budget.cap(&mut client)?;
+                inspector
+                    .attach_unpaused(
+                        &mut client,
+                        page.page_type != WirType::JavaScript,
+                        remaining,
+                    )
+                    .await?;
+                client.set_operation_timeout(None);
+                Ok((guard, device, client, inspector, js_adapter))
+            }),
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await?;
+    let (input, mut receiver) = mpsc::channel(CDP_PAGE_CHANNEL);
+    let (cancel, mut cancellation) = watch::channel(false);
+    let timeout = server.timeout;
+    let cdp_session_id = cdp_session_id.to_string();
+    let page_target_id = target_id.to_string();
+    let outcome = browser_tasks::outcome();
+    let task_outcome = outcome.clone();
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        let _device = device;
+        let mut page_adapter = js_adapter
+            .is_none()
+            .then(|| PageCdpAdapter::with_target_id(timeout, page_target_id));
+        let client_in_progress = client.in_progress_handle();
+        let stop = async {
+            loop {
+                if *cancellation.borrow() {
+                    return;
+                }
+                if cancellation.changed().await.is_err() {
+                    return;
+                }
+            }
+        };
+        tokio::pin!(stop);
+        let mut final_message = None;
+        let mut native_closed = false;
+        let primary = tokio::select! {
+            biased;
+            _ = &mut stop => Ok(()),
+            result = async {
+        loop {
+            tokio::task::yield_now().await;
+            let translation_deadline = page_adapter.as_ref().and_then(PageCdpAdapter::next_deadline);
+            tokio::select! {
+                biased;
+                inbound = std::future::poll_fn(|cx| {
+                    if client_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+                        std::task::Poll::Pending
+                    } else {
+                        receiver.poll_recv(cx)
+                    }
+                }) => {
+                    match inbound {
+                        Some(message) => {
+                            if let Some(error) = cdp_browser::unverified_page_error(&message) {
+                                output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message: error }).await?;
+                                continue;
+                            }
+                            if let Some(error) = js_adapter.as_ref().and_then(|adapter| adapter.invalid_context_response(&message)) {
+                                output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message: error }).await?;
+                                continue;
+                            }
+                            let messages = if let Some(adapter) = &mut js_adapter {
+                                adapter.outgoing(message)
+                            } else { vec![message] };
+                            for message in messages {
+                                if let Some(adapter) = &mut page_adapter {
+                                    let translated = adapter.outgoing(message);
+                                    for message in translated.client {
+                                        output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
+                                    }
+                                    for wire in translated.wire { inspector.send_bridge_message(&mut client, &wire).await?; }
+                                    if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
+                                } else { inspector.send_bridge_message(&mut client, &message).await?; }
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                expired = async {
+                    match translation_deadline {
+                        Some(at) => tokio::time::timeout_at(at.into(), std::future::pending::<()>()).await.unwrap_err(),
+                        None => std::future::pending::<tokio::time::error::Elapsed>().await,
+                    }
+                } => {
+                    if !client.is_usable() { return Err(anyhow::Error::new(expired).context("CDP browser translated command deadline expired during native IO")); }
+                    if let Some(adapter) = &mut page_adapter {
+                        for message in adapter.expired() {
+                            output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
+                        }
+                        if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
+                    }
+                }
+                outbound = inspector.next_session_event(&mut client, timeout) => {
+                    match outbound {
+                        Ok(InspectorSessionEvent::Closed) => {
+                            native_closed = true;
+                            final_message = js_adapter.as_mut().and_then(JsContextCdpAdapter::context_destroyed);
+                            break;
+                        }
+                        Ok(InspectorSessionEvent::Message(message)) => {
+                            if let Some(message) = inspector.bridge_message(&message)? {
+                                // The outer session ID is added by the browser state.
+                                let messages = if let Some(adapter) = &mut js_adapter {
+                                    adapter.incoming(message)
+                                } else { vec![message] };
+                                for message in messages {
+                                    if let Some(adapter) = &mut page_adapter {
+                                        let translated = adapter.incoming(message);
+                                        for wire in translated.wire { inspector.send_bridge_message(&mut client, &wire).await?; }
+                                        for message in translated.client {
+                                            let message = diagnostic_cdp_response(message);
+                                            output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
+                                        }
+                                        if !adapter.is_usable() { return Err(ios_core::CoreError::Protocol("CDP page translation detached".into()).into()); }
+                                    } else {
+                                        let created = message["method"] == "Runtime.executionContextCreated";
+                                        let message = diagnostic_cdp_response(message);
+                                        output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
+                                        if created {
+                                            task_outcome.lock().unwrap_or_else(|poison| poison.into_inner()).context_candidate(js_adapter.as_ref().and_then(JsContextCdpAdapter::announced_context_destruction));
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        Err(error) if error.timeout_duration().is_some() && client.is_usable() => {},
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
+        }
+        Ok(())
+            } => result,
+        };
+        task_outcome
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .final_message(final_message.clone());
+        task_outcome
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .primary(primary);
+        let mut owner = super::tasks::session_owner::Session::Inspector {
+            session: inspector,
+            attached: true,
+        };
+        let cleanup =
+            super::tasks::session_owner::cleanup(&mut client, &mut owner, CDP_PAGE_CLEANUP_TIMEOUT)
+                .await;
+        task_outcome
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .cleanup(cleanup);
+        drop(client);
+        if _device.is_some() {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        task_outcome
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .terminal();
+        let terminal = BrowserPageOutput::Closed {
+            session_id: cdp_session_id,
+            final_message,
+        };
+        #[cfg(test)]
+        if native_closed && matches!(output, BrowserOutputSender::Raw(_)) {
+            let relayed =
+                tokio::time::timeout(CDP_PAGE_CLEANUP_TIMEOUT, output.send(terminal)).await;
+            let relay_cleanup = match relayed {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(error.context("CDP browser closure relay closed")),
+                Err(error) => {
+                    Err(anyhow::Error::new(error).context("CDP browser closure relay deadline"))
+                }
+            };
+            task_outcome
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .cleanup(relay_cleanup);
+        } else {
+            // Preserve cancellation/EOF's best-effort terminal notification:
+            // a full parent queue must not extend the original child join.
+            output.notify_closed(terminal);
+        }
+        #[cfg(not(test))]
+        {
+            let _ = native_closed;
+            output.notify_closed(terminal);
+        }
+    });
+    Ok(BrowserPageSession {
+        sender: input,
+        cancel,
+        task,
+        outcome,
+    })
+}
+
+async fn load_open_pages(server: &ServerState) -> Result<Vec<ApplicationPage>> {
+    let discovery = load_browser_discovery(server).await?;
+    if !discovery.complete {
+        return Err(anyhow::Error::new(
+            ios_core::webinspector::WebInspectorError::Protocol(
+                "Incomplete native WebInspector discovery snapshot".into(),
+            ),
+        ));
+    }
+    Ok(discovery.pages)
+}
+
+struct BrowserDiscovery {
+    pages: Vec<ApplicationPage>,
+    knowledge: BrowserDiscoveryKnowledge,
+    complete: bool,
+}
+
+async fn load_browser_discovery(server: &ServerState) -> Result<BrowserDiscovery> {
+    let budget = Budget::new(server.timeout, "CDP discovery")?;
+    budget
+        .drive(
+            Box::pin(async {
+                let InspectorConnection {
+                    device: _device,
+                    stream,
+                } = server
+                    .source
+                    .connect(&server.udid, budget.remaining()?)
+                    .await?;
+                let mut client = WebInspectorClient::new(stream);
+                let remaining = budget.cap(&mut client)?;
+                client.start_preserving_errors(remaining).await?;
+                budget.cap(&mut client)?;
+                let (pages, observations) = client
+                    .open_application_pages_observed(PAGE_DISCOVERY_IDLE)
+                    .await
+                    .map_err(anyhow::Error::from)?;
+                let mut knowledge = BrowserDiscoveryKnowledge::default();
+                for observation in observations {
+                    match observation {
+                        WebInspectorEvent::ConnectedApplications { applications } => {
+                            knowledge.connected_applications =
+                                Some(applications.into_iter().map(|app| app.id).collect());
+                            knowledge.disconnected_applications.retain(|id| {
+                                !knowledge
+                                    .connected_applications
+                                    .as_ref()
+                                    .unwrap()
+                                    .contains(id)
+                            });
+                        }
+                        WebInspectorEvent::Listing { application_id, .. } => {
+                            knowledge.listed_applications.insert(application_id);
+                        }
+                        WebInspectorEvent::ApplicationDisconnected { application_id } => {
+                            knowledge.listed_applications.remove(&application_id);
+                            if let Some(apps) = &mut knowledge.connected_applications {
+                                apps.remove(&application_id);
+                            }
+                            knowledge.disconnected_applications.insert(application_id);
+                        }
+                        WebInspectorEvent::ApplicationConnected { application }
+                        | WebInspectorEvent::ApplicationUpdated { application } => {
+                            knowledge.disconnected_applications.remove(&application.id);
+                            if let Some(apps) = &mut knowledge.connected_applications {
+                                apps.insert(application.id);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if knowledge.connected_applications.is_none()
+                    && knowledge.listed_applications.is_empty()
+                    && knowledge.disconnected_applications.is_empty()
+                {
+                    return Err(anyhow::Error::new(
+                        ios_core::webinspector::WebInspectorError::Protocol(
+                            "No complete native discovery observation".into(),
+                        ),
+                    ));
+                }
+                Ok(BrowserDiscovery {
+                    pages,
+                    complete: client.has_complete_application_snapshot(),
+                    knowledge,
+                })
+            }),
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await
+}
+
+/// A selected target can attach once its exact cached page is admitted. The
+/// target listing is not a request for a quiescent snapshot of every page.
+async fn discover_cdp_page(
+    client: &mut WebInspectorClient<ios_core::device::ServiceStream>,
+    page_id: &str,
+    budget: Budget,
+) -> Result<(String, ios_core::webinspector::Page)> {
+    discover_cdp_page_at(client, page_id, budget, None).await
+}
+
+async fn discover_cdp_page_at(
+    client: &mut WebInspectorClient<ios_core::device::ServiceStream>,
+    page_id: &str,
+    budget: Budget,
+    native_page: Option<&(String, u64)>,
+) -> Result<(String, ios_core::webinspector::Page)> {
+    budget.cap(client)?;
+    client.request_connected_applications().await?;
+    loop {
+        let remaining = budget.cap(client)?;
+        if let Some((application_id, native_page_id)) = native_page {
+            if let Some(page) = client
+                .page(application_id, *native_page_id)
+                .filter(|page| is_inspectable_page_type(&page.page_type))
+            {
+                return Ok((application_id.clone(), page.clone()));
+            }
+        } else if let Ok(page) = find_page_by_id(client, page_id) {
+            return Ok(page);
+        }
+        match client
+            .next_event_with_timeout(remaining.min(PAGE_DISCOVERY_IDLE))
+            .await
+        {
+            Ok(_) => tokio::task::yield_now().await,
+            Err(error) if error.timeout_duration().is_some() && client.is_usable() => {
+                budget.cap(client)?;
+                client.request_connected_applications().await?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn cdp_target_descriptors(
+    pages: &[ApplicationPage],
+    host: &str,
+    port: u16,
+) -> Vec<CdpTargetDescriptor> {
+    pages
+        .iter()
+        .filter(|page| is_inspectable_page_type(&page.page.page_type))
+        .map(|page| CdpTargetDescriptor {
+            description: String::new(),
+            id: page_target_id(&page.application.id, &page.page),
+            title: page.page.title.clone().unwrap_or_default(),
+            target_type: if matches!(page.page.page_type, WirType::JavaScript) {
+                "node".to_string()
+            } else {
+                "page".to_string()
+            },
+            url: page.page.url.clone().unwrap_or_default(),
+            web_socket_debugger_url: format!(
+                "ws://{host}:{port}/devtools/page/{}",
+                page_target_id(&page.application.id, &page.page)
+            ),
+            // This bridge exposes the CDP WebSocket but does not host a
+            // DevTools frontend. Do not advertise a URL that clients cannot
+            // actually open; the field is optional in the CDP target schema.
+            devtools_frontend_url: None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+pub(super) mod lifecycle_tests;
+
+#[cfg(test)]
+mod setup_tests;
+
+#[cfg(test)]
+mod cleanup_tests;
+
+#[cfg(test)]
+mod lease_tests;
+
+#[cfg(test)]
+mod browser_task_tests;
+
+#[cfg(test)]
+mod browser_lease_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::super::workflows::find_page_in_snapshot;
+    use super::*;
+    use ios_core::webinspector::{Application, AutomationAvailability, Page};
+
+    #[tokio::test]
+    async fn cdp_websocket_failure_hides_device_error_data_and_keeps_routing() {
+        const SECRET: &str = "synthetic-private-key-UDID-token-device-data";
+        let raw = json!({"id": 17, "sessionId": "synthetic-session", "error": {
+            "code": -32001, "message": SECRET, "data": {"PrivateKey": SECRET}
+        }});
+        assert!(raw.to_string().contains(SECRET));
+        let router = Router::new().route(
+            "/synthetic-reply",
+            get(move |ws: WebSocketUpgrade| {
+                let raw = raw.clone();
+                async move {
+                    ws.on_upgrade(move |mut socket| async move {
+                        socket
+                            .send(Message::Text(diagnostic_cdp_response(raw).to_string()))
+                            .await
+                            .unwrap();
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let (mut socket, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/synthetic-reply"))
+                .await
+                .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(2), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let raw = frame.into_text().unwrap();
+        assert!(!raw.contains(SECRET));
+        let reply: JsonValue = serde_json::from_str(&raw).unwrap();
+        assert_eq!(reply["id"], 17);
+        assert_eq!(reply["sessionId"], "synthetic-session");
+        assert_eq!(reply["error"]["code"], -32001);
+        assert!(reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("WebInspector protocol request failed: operation error:"));
+        assert!(reply["error"].get("data").is_none());
+        let result =
+            json!({"id": 18, "result": {"value": SECRET, "exceptionDetails": {"text": SECRET}}});
+        assert_eq!(diagnostic_cdp_response(result.clone()), result);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[test]
+    fn cdp_target_descriptors_filter_non_inspectable_pages() {
+        let pages = vec![
+            ApplicationPage {
+                application: Application {
+                    id: "PID:42".into(),
+                    bundle_identifier: "com.apple.mobilesafari".into(),
+                    pid: 42,
+                    name: "Safari".into(),
+                    availability: AutomationAvailability::Available,
+                    is_active: true,
+                    is_proxy: false,
+                    is_ready: true,
+                    host_application_identifier: None,
+                },
+                page: Page {
+                    id: 7,
+                    listing_key: "page-7".into(),
+                    page_type: WirType::WebPage,
+                    title: Some("Example".into()),
+                    url: Some("https://example.com".into()),
+                    automation_is_paired: None,
+                    automation_name: None,
+                    automation_version: None,
+                    automation_session_id: None,
+                    automation_connection_id: None,
+                },
+            },
+            ApplicationPage {
+                application: Application {
+                    id: "PID:42".into(),
+                    bundle_identifier: "com.apple.mobilesafari".into(),
+                    pid: 42,
+                    name: "Safari".into(),
+                    availability: AutomationAvailability::Available,
+                    is_active: true,
+                    is_proxy: false,
+                    is_ready: true,
+                    host_application_identifier: None,
+                },
+                page: Page {
+                    id: 8,
+                    listing_key: "page-8".into(),
+                    page_type: WirType::Automation,
+                    title: Some("Automation".into()),
+                    url: None,
+                    automation_is_paired: Some(true),
+                    automation_name: Some("Safari".into()),
+                    automation_version: Some("1".into()),
+                    automation_session_id: Some("S".into()),
+                    automation_connection_id: Some("C".into()),
+                },
+            },
+            ApplicationPage {
+                application: Application {
+                    id: "PID:43".into(),
+                    bundle_identifier: "com.example.jscontext".into(),
+                    pid: 43,
+                    name: "JSContext host".into(),
+                    availability: AutomationAvailability::Available,
+                    is_active: true,
+                    is_proxy: false,
+                    is_ready: true,
+                    host_application_identifier: None,
+                },
+                page: Page {
+                    id: 1,
+                    listing_key: "js-1".into(),
+                    page_type: WirType::JavaScript,
+                    title: None,
+                    url: None,
+                    automation_is_paired: None,
+                    automation_name: None,
+                    automation_version: None,
+                    automation_session_id: None,
+                    automation_connection_id: None,
+                },
+            },
+        ];
+        let descriptors = cdp_target_descriptors(&pages, "127.0.0.1", 9222);
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].id, "PID:42:page-7");
+        assert_eq!(
+            descriptors[0].web_socket_debugger_url,
+            "ws://127.0.0.1:9222/devtools/page/PID:42:page-7"
+        );
+        assert_eq!(descriptors[0].devtools_frontend_url, None);
+        assert_eq!(descriptors[1].id, "PID:43:js-1");
+        assert_eq!(descriptors[1].target_type, "node");
+        assert_eq!(descriptors[1].devtools_frontend_url, None);
+
+        let json = serde_json::to_value(&descriptors).unwrap();
+        assert!(json
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|target| target.get("devtoolsFrontendUrl").is_none()));
+    }
+
+    #[test]
+    fn qualified_cdp_target_ids_select_duplicate_page_keys_by_application() {
+        let application = |id: &str| Application {
+            id: id.into(),
+            bundle_identifier: format!("com.example.{id}"),
+            pid: 42,
+            name: id.into(),
+            availability: AutomationAvailability::Available,
+            is_active: true,
+            is_proxy: false,
+            is_ready: true,
+            host_application_identifier: None,
+        };
+        let pages = vec![
+            ApplicationPage {
+                application: application("PID:42"),
+                page: Page {
+                    id: 1,
+                    listing_key: "1".into(),
+                    page_type: WirType::WebPage,
+                    title: None,
+                    url: None,
+                    automation_is_paired: None,
+                    automation_name: None,
+                    automation_version: None,
+                    automation_session_id: None,
+                    automation_connection_id: None,
+                },
+            },
+            ApplicationPage {
+                application: application("PID:43"),
+                page: Page {
+                    id: 1,
+                    listing_key: "1".into(),
+                    page_type: WirType::WebPage,
+                    title: None,
+                    url: None,
+                    automation_is_paired: None,
+                    automation_name: None,
+                    automation_version: None,
+                    automation_session_id: None,
+                    automation_connection_id: None,
+                },
+            },
+        ];
+
+        let first = cdp_target_descriptors(&pages, "127.0.0.1", 9222);
+        assert_eq!(
+            first
+                .iter()
+                .map(|target| target.id.as_str())
+                .collect::<Vec<_>>(),
+            ["PID:42:1", "PID:43:1"]
+        );
+        let (application_id, page) = find_page_in_snapshot(&pages, "PID:43:1")
+            .expect("qualified target should resolve to its owning application");
+        assert_eq!(application_id, "PID:43");
+        assert_eq!(page.id, 1);
+    }
+    #[tokio::test]
+    async fn dropping_a_browser_page_ownership_guard_aborts_its_child_task() {
+        let lock = Arc::new(Mutex::new(()));
+        let guard = lock.clone().lock_owned().await;
+        let (sender, _receiver) = mpsc::channel(1);
+        let (cancel, _cancellation) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        });
+        drop(BrowserPageSession {
+            sender,
+            cancel,
+            task,
+            outcome: browser_tasks::outcome(),
+        });
+        let _released = tokio::time::timeout(Duration::from_secs(1), lock.lock_owned())
+            .await
+            .unwrap();
+    }
+}

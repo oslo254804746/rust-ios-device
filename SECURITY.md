@@ -19,6 +19,38 @@ Include:
 
 This project can handle highly sensitive material, including pair records, private keys, provisioning profiles, backups, syslogs, crash reports, and device identifiers. Do not include those files or values in issues, PRs, logs, test fixtures, or screenshots unless they are synthetic.
 
+Diagnostic identifiers use `ios_core::redaction::diagnostic_id`, a process-local
+opaque correlation value. It cannot sanitize arbitrary device data or error
+text; callers must avoid logging those payloads. Explicit device-selection
+output and public API fields still carry identifiers for their intended purpose.
+PairRecord, PersistedCredentials and PairedCredentials Debug implementations
+omit all credential fields. Serialization remains intentionally available for
+owner-only persistence and must never be used as a diagnostic formatter.
+
+Discovery events, mDNS/Bonjour records, usbmux devices and connection options
+also use diagnostic Debug formatting: raw identifiers, addresses, TXT contents
+and pair-record paths are omitted or replaced by correlation values.
+Device-selection fields and their explicit JSON serialization retain their
+selection purpose. CoreError/MuxError Debug output contains the variant and
+safe IO metadata; targeted device-not-found and PairRecordError Display output
+does not render raw identifiers, paths or malformed credential data. Match
+typed errors for programmatic handling rather than parsing diagnostic text.
+
+Owned protocol/service errors use safe Debug views, and supervised-pairing,
+supervision identity and verify-pair session Debug omit credential material.
+Their typed fields, Display and explicitly traversed error sources can still
+carry data for API use. Value-model Debug and serialization are also explicit
+data access, not diagnostic formatters. Automatic CLI, HTTP/CDP and Python
+boundaries use the [diagnostic contract](docs/diagnostic-contract.md), including
+framework HTTP rejection handling. Host fixtures check original output before
+any masking; a sanitized copy cannot prove the original output did not leak.
+These checks do not certify all device workflows or access-control boundaries.
+CLI verbosity applies only to reviewed project log targets. Third-party logs
+are excluded even at TRACE because their protocol/transport logging can contain
+raw headers or device content. Applications embedding the Rust library choose
+their own global logging policy; this CLI filter cannot protect an independent
+application's subscriber.
+
 ## Scope
 
 Security reports may include memory safety issues in FFI boundaries, credential leakage, unsafe handling of pair records or private keys, unauthorized device operations, and network services exposed by the tunnel manager.

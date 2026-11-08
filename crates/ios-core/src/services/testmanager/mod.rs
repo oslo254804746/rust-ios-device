@@ -8,6 +8,9 @@ pub mod results;
 pub mod workflow;
 pub mod xctestrun;
 
+#[cfg(test)]
+mod input_source_contract_tests;
+
 use crate::proto::nskeyedarchiver_encode::{
     archive_uuid, archive_xct_capabilities, archive_xctest_configuration, XcTestConfiguration,
     XctCapabilities,
@@ -71,18 +74,59 @@ where
     S2: AsyncRead + AsyncWrite + Unpin + Send,
 {
     pub async fn connect(session_stream: S1, control_stream: S2) -> Result<Self, DtxError> {
-        let mut session = DtxConnection::new(session_stream);
-        let mut control = DtxConnection::new(control_stream);
+        let mut client = Self::from_streams(session_stream, control_stream);
+        client.initialize_channels().await?;
+        Ok(client)
+    }
 
-        let session_channel = session.request_channel(DAEMON_CONNECTION_INTERFACE).await?;
-        let control_channel = control.request_channel(DAEMON_CONNECTION_INTERFACE).await?;
-
-        Ok(Self {
-            session,
-            session_channel,
+    /// Retain both original streams before the cancellable channel handshake.
+    pub fn from_streams(session_stream: S1, control_stream: S2) -> Self {
+        Self {
+            session: DtxConnection::new(session_stream),
+            session_channel: 0,
             driver_channel: None,
-            control: Some((control, control_channel)),
-        })
+            control: Some((DtxConnection::new(control_stream), 0)),
+        }
+    }
+
+    pub async fn initialize_channels(&mut self) -> Result<(), DtxError> {
+        if self.session_channel != 0 {
+            return Err(DtxError::Protocol(
+                "testmanager channels already initialized".into(),
+            ));
+        }
+        self.session_channel = self
+            .session
+            .request_channel(DAEMON_CONNECTION_INTERFACE)
+            .await?;
+        let (control, channel) = self
+            .control
+            .as_mut()
+            .ok_or_else(|| DtxError::Protocol("testmanager control missing".into()))?;
+        *channel = control.request_channel(DAEMON_CONNECTION_INTERFACE).await?;
+        Ok(())
+    }
+
+    /// Close both original transports within one cleanup budget, including an
+    /// interrupted startup. No business operation is performed during drain.
+    pub async fn close(&mut self, budget: std::time::Duration) -> Result<(), DtxError> {
+        let until = tokio::time::Instant::now()
+            .checked_add(budget)
+            .ok_or_else(|| {
+                DtxError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "testmanager close budget exceeds instant range",
+                ))
+            })?;
+        let first = self.session.close(budget).await;
+        let second = if let Some((control, _)) = &mut self.control {
+            control
+                .close(until.saturating_duration_since(tokio::time::Instant::now()))
+                .await
+        } else {
+            Ok(())
+        };
+        crate::services::dtx::codec::combine_close_results(first, second)
     }
 
     pub async fn initiate_session(
@@ -90,6 +134,11 @@ where
         session_identifier: Bytes,
         capabilities: Bytes,
     ) -> Result<DtxMessage, DtxError> {
+        if self.session_channel == 0 {
+            return Err(DtxError::Protocol(
+                "testmanager session channel is not initialized".into(),
+            ));
+        }
         self.session
             .method_call(
                 self.session_channel,
@@ -100,6 +149,7 @@ where
                 ],
             )
             .await
+            .and_then(crate::services::dtx::codec::checked_reply)
     }
 
     pub async fn initiate_control_session(
@@ -114,6 +164,7 @@ where
                 &[archived_object(capabilities)],
             )
             .await
+            .and_then(crate::services::dtx::codec::checked_reply)
     }
 
     pub async fn initiate_session_with_capabilities(
@@ -140,9 +191,11 @@ where
         &mut self,
         pid: u64,
     ) -> Result<bool, DtxError> {
-        let pid = i64::try_from(pid).map_err(|_| {
-            DtxError::Protocol(format!(
-                "test runner process id exceeds DTX signed integer range: {pid}"
+        let pid = i64::try_from(pid).map_err(|error| {
+            DtxError::Io(crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidInput,
+                "encode test runner process identifier",
+                error,
             ))
         })?;
         let (control, channel) = self.control_mut()?;
@@ -154,6 +207,7 @@ where
             )
             .await?;
 
+        let response = crate::services::dtx::codec::checked_reply(response)?;
         match response.payload {
             DtxPayload::Response(NSObject::Bool(authorized)) => Ok(authorized),
             other => Err(DtxError::Protocol(format!(
@@ -394,6 +448,7 @@ where
     fn control_mut(&mut self) -> Result<(&mut DtxConnection<S2>, i32), DtxError> {
         self.control
             .as_mut()
+            .filter(|(_, channel)| *channel != 0)
             .map(|(control, channel)| (control, *channel))
             .ok_or_else(|| DtxError::Protocol("control connection is not configured".into()))
     }

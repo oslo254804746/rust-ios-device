@@ -1,6 +1,4 @@
 use anyhow::Result;
-use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions};
 
 #[derive(clap::Args)]
 pub struct AmfiCmd {
@@ -14,6 +12,13 @@ enum AmfiSub {
     RevealDeveloperMode,
     /// Request enabling Developer Mode through com.apple.amfi.lockdown
     EnableDeveloperMode,
+    /// Confirm the post-restart Developer Mode prompt through com.apple.amfi.lockdown
+    AcceptDeveloperMode,
+    /// Trust the developer app signer of an installed provisioning profile
+    TrustAppSigner {
+        /// UUID of the installed provisioning profile
+        uuid: String,
+    },
 }
 
 impl AmfiCmd {
@@ -23,31 +28,35 @@ impl AmfiCmd {
         match self.sub {
             AmfiSub::RevealDeveloperMode => reveal_developer_mode(&udid, json).await,
             AmfiSub::EnableDeveloperMode => enable_developer_mode(&udid, json).await,
+            AmfiSub::AcceptDeveloperMode => accept_developer_mode(&udid, json).await,
+            AmfiSub::TrustAppSigner { uuid } => trust_app_signer(&udid, &uuid, json).await,
         }
     }
 }
 
 async fn reveal_developer_mode(udid: &str, json: bool) -> Result<()> {
-    let opts = ConnectOptions {
-        tun_mode: TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    let device = connect(udid, opts).await?;
-    let mut stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
-    ios_core::amfi::reveal_developer_mode(&mut stream)
+    let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+        udid,
+        ios_core::amfi::SERVICE_NAME,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
+    let mut client = ios_core::amfi::AmfiClient::new(stream);
+    client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+    client
+        .reveal_developer_mode()
         .await
-        .map_err(|e| anyhow::anyhow!("amfi reveal-developer-mode failed: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("amfi reveal-developer-mode failed"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "developer_mode_revealed": true,
             }))?
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Developer Mode option revealed. Open Settings > Privacy & Security on the device."
         );
     }
@@ -56,19 +65,21 @@ async fn reveal_developer_mode(udid: &str, json: bool) -> Result<()> {
 }
 
 async fn enable_developer_mode(udid: &str, json: bool) -> Result<()> {
-    let opts = ConnectOptions {
-        tun_mode: TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    let device = connect(udid, opts).await?;
-    let mut stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
-    ios_core::amfi::enable_developer_mode(&mut stream)
+    let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+        udid,
+        ios_core::amfi::SERVICE_NAME,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
+    let mut client = ios_core::amfi::AmfiClient::new(stream);
+    client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+    client
+        .enable_developer_mode()
         .await
-        .map_err(|e| anyhow::anyhow!("amfi enable-developer-mode failed: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("amfi enable-developer-mode failed"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "developer_mode_enable_requested": true,
@@ -76,7 +87,66 @@ async fn enable_developer_mode(udid: &str, json: bool) -> Result<()> {
             }))?
         );
     } else {
-        println!("Developer Mode enable requested. Restart the device and confirm the prompt.");
+        crate::output::outln!(
+            "Developer Mode enable requested. Restart the device and confirm the prompt."
+        );
+    }
+
+    Ok(())
+}
+
+async fn accept_developer_mode(udid: &str, json: bool) -> Result<()> {
+    let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+        udid,
+        ios_core::amfi::SERVICE_NAME,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
+    let mut client = ios_core::amfi::AmfiClient::new(stream);
+    client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+    client
+        .accept_developer_mode()
+        .await
+        .map_err(|e| anyhow::Error::new(e).context("amfi accept-developer-mode failed"))?;
+
+    if json {
+        crate::output::outln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "developer_mode_accepted": true,
+            }))?
+        );
+    } else {
+        crate::output::outln!("Developer Mode post-restart prompt confirmed.");
+    }
+
+    Ok(())
+}
+
+async fn trust_app_signer(udid: &str, uuid: &str, json: bool) -> Result<()> {
+    let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+        udid,
+        ios_core::amfi::SERVICE_NAME,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
+    let mut client = ios_core::amfi::AmfiClient::new(stream);
+    client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
+    client
+        .trust_app_signer(uuid)
+        .await
+        .map_err(|e| anyhow::Error::new(e).context("amfi trust-app-signer failed"))?;
+
+    if json {
+        crate::output::outln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "app_signer_trusted": true,
+                "uuid": uuid,
+            }))?
+        );
+    } else {
+        crate::output::outln!("Trusted app signer for provisioning profile {uuid}.");
     }
 
     Ok(())

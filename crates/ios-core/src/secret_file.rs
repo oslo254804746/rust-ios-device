@@ -9,9 +9,10 @@
 //! they did before.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use zeroize::Zeroizing;
 
 /// Owner read/write only.
 #[cfg(unix)]
@@ -70,6 +71,124 @@ pub fn write_secret(path: &Path, contents: &[u8]) -> io::Result<()> {
     replace_secret_file(&tmp, path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })
+}
+
+/// Read a regular, private secret file into a buffer wiped on drop.
+///
+/// The limit must be between one byte and 1 MiB. Unix checks the opened file's
+/// owner and mode, rejects leaf symlinks and opens nonblocking before checking
+/// its type so a FIFO cannot hang the reader. Windows rejects reparse points;
+/// its owner/read permissions still depend on the configured parent ACL.
+/// Callers must trust the parent path; this is not a directory-race guarantee.
+pub fn read_secret(path: &Path, limit: u64) -> io::Result<Zeroizing<Vec<u8>>> {
+    if !(1..=1024 * 1024).contains(&limit) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secret read limit must be between one byte and 1 MiB",
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Open the leaf itself instead of following a reparse point.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secret path must be a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    ensure_private_owner(&metadata)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "secret path must not be a reparse point",
+            ));
+        }
+    }
+    if metadata.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "secret file exceeds size limit",
+        ));
+    }
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "secret file exceeds size limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn ensure_private_owner(metadata: &fs::Metadata) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no arguments or memory preconditions.
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "secret must belong to the effective user with no group/other access",
+        ));
+    }
+    Ok(())
+}
+
+/// Publish a new owner-only secret without replacing an existing destination.
+///
+/// Creates a missing private parent, but rejects an existing nonprivate parent
+/// on Unix instead of changing its permissions. The caller must trust all
+/// parent components. Publication requires hard links; unsupported filesystems
+/// fail explicitly. A reported cleanup failure can occur after publication.
+pub fn write_secret_new(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    match fs::symlink_metadata(parent) {
+        Ok(metadata) => {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "secret parent must be a directory, not a symlink",
+                ));
+            }
+            #[cfg(unix)]
+            ensure_private_owner(&metadata)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => create_secret_dir(parent)?,
+        Err(error) => return Err(error),
+    }
+    let temporary = parent.join(format!(".ios-secret-{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = create_secret_file(&temporary)?;
+    let result = (|| -> io::Result<()> {
+        file.write_all(contents)?;
+        file.sync_all()?;
+        fs::hard_link(&temporary, path)
+    })();
+    // Close before cleanup, including on platforms that restrict open-file
+    // deletion. Only this invocation's create_new file is removed.
+    drop(file);
+    let cleanup = fs::remove_file(temporary);
+    result.and(cleanup)
 }
 
 #[cfg(not(windows))]
@@ -181,6 +300,105 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_secret_preserves_existing_target_and_cleans_owned_staging() {
+        let dir = std::env::temp_dir().join(format!("ios-new-secret-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("token");
+        write_secret_new(&path, b"synthetic-original-token").unwrap();
+        let error = write_secret_new(&path, b"synthetic-replacement-token").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), b"synthetic-original-token");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        let directory_target = dir.join("directory-target");
+        fs::create_dir(&directory_target).unwrap();
+        assert!(write_secret_new(&directory_target, b"synthetic-token").is_err());
+        assert!(directory_target.is_dir());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bounded_secret_reader_rejects_invalid_limits_size_and_directory() {
+        let dir = std::env::temp_dir().join(format!("ios-read-secret-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("token");
+        write_secret_new(&path, b"synthetic-token").unwrap();
+        assert_eq!(
+            read_secret(&path, 15).unwrap().as_slice(),
+            b"synthetic-token"
+        );
+        assert_eq!(
+            read_secret(&path, 4).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        for limit in [0, 1024 * 1024 + 1] {
+            assert_eq!(
+                read_secret(&path, limit).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        assert!(read_secret(&dir, 16).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_secret_reader_rejects_public_files_symlinks_and_fifo_without_blocking() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("ios-private-secret-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("token");
+        write_secret_new(&path, b"synthetic-token").unwrap();
+        let link = dir.join("link");
+        symlink(&path, &link).unwrap();
+        assert!(read_secret(&link, 64).is_err());
+        assert_eq!(
+            write_secret_new(&link, b"synthetic-replacement")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"synthetic-token");
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            read_secret(&path, 64).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let fifo = dir.join("fifo");
+        use std::os::unix::ffi::OsStrExt;
+        let fifo_name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path within this owned fixture is supplied.
+        assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            read_secret(&fifo, 64).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_secret_does_not_tighten_existing_shared_directory_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ios-shared-secret-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            write_secret_new(&dir.join("token"), b"synthetic-token")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]

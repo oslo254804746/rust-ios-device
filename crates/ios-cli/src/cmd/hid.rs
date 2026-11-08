@@ -5,14 +5,16 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use ios_core::display::{DisplayServiceClient, MediaStreamOptions, MediaStreamSession};
 use ios_core::hid::{
-    ButtonState, IndigoHidServiceClient, KeyboardUsage, TouchCoordinate, TouchPhase,
-    UniversalHidServiceClient, DEFAULT_KEYBOARD_SERVICE_ID, DEFAULT_TOUCHSCREEN_SERVICE_ID,
-    MAX_TEXT_LENGTH, MAX_TOUCH_REPORTS,
+    ButtonState, IndigoHidServiceClient, KeyboardUsage, MultiTouchPoint, TouchCoordinate,
+    TouchPhase, UniversalHidServiceClient, DEFAULT_KEYBOARD_SERVICE_ID,
+    DEFAULT_TOUCHSCREEN_SERVICE_ID, MAX_TEXT_LENGTH, MAX_TOUCH_CONTACTS, MAX_TOUCH_REPORTS,
+    TOUCH_SURFACE_AUTH_SETTLE,
 };
 use ios_core::{connect, ConnectOptions, TunMode};
 
 const DEFAULT_VENDOR_ID: i64 = 0x05ac;
 const DEFAULT_PRODUCT_ID: i64 = 0x0250;
+mod observer;
 
 #[derive(clap::Args)]
 pub struct HidCmd {
@@ -29,6 +31,19 @@ pub struct HidCmd {
 
 #[derive(clap::Subcommand)]
 enum HidSub {
+    /// Observe an approved synthetic contact/media stop and original native cleanup
+    ObserveStop {
+        #[arg(
+            long,
+            help = "SHA-256 of the approved baseline encoded XPC media-status value"
+        )]
+        expected_status_sha256: String,
+        #[arg(
+            long,
+            help = "Explicitly authorize the protocol's stopAll media operation"
+        )]
+        confirm_stop_all: bool,
+    },
     /// Send one Indigo hardware-button event.
     Button {
         #[arg(long, default_value_t = 0x0c)]
@@ -82,6 +97,16 @@ enum HidSub {
         #[arg(long, default_value_t = DEFAULT_KEYBOARD_SERVICE_ID)]
         service_id: u64,
     },
+    /// Send a multi-contact touch tap (up to 5 contacts, e.g. --points 0:0.2:0.5,1:0.3:0.5).
+    /// Send a multi-contact touch tap (up to 5 contacts, e.g. --points 0:0.2:0.5,1:0.3:0.5).
+    Multitouch {
+        #[arg(long, value_delimiter = ',', required = true)]
+        points: Vec<String>,
+        #[arg(long, default_value_t = 60)]
+        hold_ms: u64,
+        #[arg(long, default_value_t = DEFAULT_TOUCHSCREEN_SERVICE_ID)]
+        service_id: u64,
+    },
     /// Register a virtual keyboard and press/release one HID usage.
     Key {
         #[arg(value_name = "USAGE")]
@@ -94,6 +119,10 @@ enum HidSub {
 }
 
 impl HidCmd {
+    pub fn needs_default_udid(&self) -> bool {
+        !matches!(self.sub, HidSub::ObserveStop { .. })
+    }
+
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
         if !self.confirm {
             anyhow::bail!(
@@ -102,15 +131,34 @@ impl HidCmd {
         }
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for hid"))?;
         let timeout = if self.timeout == 0 {
-            anyhow::bail!("--timeout must be greater than zero");
+            return Err(crate::output::input_decision(
+                "--timeout must be greater than zero",
+            ));
         } else {
             Duration::from_secs(self.timeout)
         };
+        if let HidSub::ObserveStop {
+            expected_status_sha256,
+            confirm_stop_all,
+        } = &self.sub
+        {
+            return Box::pin(observer::run(
+                &udid,
+                expected_status_sha256,
+                *confirm_stop_all,
+                timeout,
+                json_output,
+            ))
+            .await;
+        }
         run_with_deadline(timeout, self.run_operation(udid, json_output)).await
     }
 
     async fn run_operation(self, udid: String, json_output: bool) -> Result<()> {
         match self.sub {
+            HidSub::ObserveStop { .. } => {
+                anyhow::bail!("HID observer requires its original owner entry point")
+            }
             HidSub::Button {
                 usage_page,
                 usage_code,
@@ -123,7 +171,7 @@ impl HidCmd {
                     .context("Indigo HID service is unavailable on this device")?;
                 let mut client = IndigoHidServiceClient::from_resolved_metadata(xpc, &metadata)?;
                 client.send_button(usage_page, usage_code, state).await?;
-                print_result(json_output, "button", 1, false);
+                print_result(json_output, "button", 1, false)?;
             }
             HidSub::Tap { x, y, service_id } => {
                 let coordinate = TouchCoordinate::new(x, y)?;
@@ -136,9 +184,12 @@ impl HidCmd {
                 }
                 .await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
-                print_result(json_output, "tap", 2, false);
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
+                print_result(json_output, "tap", 2, false)?;
             }
             HidSub::Swipe {
                 from_x,
@@ -171,9 +222,12 @@ impl HidCmd {
                 }
                 .await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
-                print_result(json_output, "swipe", steps + 1, false);
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
+                print_result(json_output, "swipe", steps + 1, false)?;
             }
             HidSub::Touch {
                 phase,
@@ -188,9 +242,12 @@ impl HidCmd {
                 let mut session = client.touch_session_with_media(service_id, media);
                 let operation = session.send_transition(phase, coordinate).await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
-                print_result(json_output, "touch", 1, false);
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
+                print_result(json_output, "touch", 1, false)?;
             }
             HidSub::Text { text, service_id } => {
                 let length = text.chars().count();
@@ -207,9 +264,45 @@ impl HidCmd {
                 let mut session = client.keyboard_session_with_media(keyboard, media);
                 let operation = session.type_text(&text).await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
-                print_result(json_output, "text", length, true);
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
+                print_result(json_output, "text", length, true)?;
+            }
+            HidSub::Multitouch {
+                points,
+                hold_ms,
+                service_id,
+            } => {
+                let coords = parse_multitouch_points(&points)?;
+                let (mut client, media, _device) = connect_universal_with_media(&udid).await?;
+                let mut session = client.touch_session_with_media(service_id, media);
+                let down = coords
+                    .iter()
+                    .map(|&(id, coord)| MultiTouchPoint::new(id, TouchPhase::Down, coord))
+                    .collect::<Vec<_>>();
+                let up = coords
+                    .iter()
+                    .map(|&(id, coord)| MultiTouchPoint::new(id, TouchPhase::Up, coord))
+                    .collect::<Vec<_>>();
+                let operation = async {
+                    session.send_multitouch(&down).await?;
+                    if hold_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(hold_ms)).await;
+                    }
+                    session.send_multitouch(&up).await?;
+                    Ok::<(), ios_core::hid::HidError>(())
+                }
+                .await;
+                let close_result = session.close(Duration::from_secs(5)).await;
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
+                print_result(json_output, "multitouch", 2, false)?;
             }
             HidSub::Key {
                 usage,
@@ -234,13 +327,47 @@ impl HidCmd {
                 };
                 let operation = session.send_key(usage, modifiers).await;
                 let close_result = session.close(Duration::from_secs(5)).await;
-                operation?;
-                close_result?;
-                print_result(json_output, "key", 1, false);
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
+                print_result(json_output, "key", 1, false)?;
             }
         }
         Ok(())
     }
+}
+
+fn parse_multitouch_points(points: &[String]) -> Result<Vec<(u8, TouchCoordinate)>> {
+    if points.is_empty() || points.len() > MAX_TOUCH_CONTACTS {
+        anyhow::bail!(
+            "--points must specify 1..={MAX_TOUCH_CONTACTS} contacts, got {}",
+            points.len()
+        );
+    }
+    let mut parsed = Vec::with_capacity(points.len());
+    for (idx, item) in points.iter().enumerate() {
+        let parts: Vec<&str> = item.split(':').collect();
+        let (identity, x_str, y_str) = match parts.as_slice() {
+            [x, y] => (idx as u8, *x, *y),
+            [id, x, y] => (
+                id.parse::<u8>()
+                    .with_context(|| format!("invalid contact identity in '{item}'"))?,
+                *x,
+                *y,
+            ),
+            _ => anyhow::bail!("invalid point '{item}'; expected x:y or id:x:y"),
+        };
+        let x = x_str
+            .parse::<f64>()
+            .with_context(|| format!("invalid x coordinate in '{item}'"))?;
+        let y = y_str
+            .parse::<f64>()
+            .with_context(|| format!("invalid y coordinate in '{item}'"))?;
+        parsed.push((identity, TouchCoordinate::new(x, y)?));
+    }
+    Ok(parsed)
 }
 
 fn validate_contact_id(contact_id: u32) -> Result<()> {
@@ -265,7 +392,10 @@ async fn connect_universal_with_media(
     // Universal HID's authorization side channel is RTP/UDP. The userspace
     // tunnel only exposes a TCP proxy, so use the kernel tunnel where the
     // advertised CDTunnel client address is an actual host interface.
-    let device = connect_device_with_mode(udid, TunMode::Kernel).await?;
+    let device = match connect_device_with_mode(udid, TunMode::Kernel).await {
+        Ok(dev) => dev,
+        Err(_) => connect_device_with_mode(udid, TunMode::Userspace).await?,
+    };
     let sender_ip = device
         .server_address()
         .ok_or_else(|| anyhow::anyhow!("tunnel did not provide a device server address"))?
@@ -293,24 +423,44 @@ async fn connect_universal_with_media(
     media.spawn_drain();
     // Match pmd3's touch_session: backboardd needs a short interval to
     // re-match the HID surfaces as authenticated before the first report.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(TOUCH_SURFACE_AUTH_SETTLE).await;
     let (xpc, metadata) = match device
         .connect_xpc_service_with_metadata(ios_core::hid::UNIVERSAL_SERVICE_NAME)
         .await
     {
         Ok(value) => value,
         Err(error) => {
-            let _ = media.stop(Duration::from_secs(5)).await;
-            return Err(anyhow::Error::from(error)
-                .context("Universal HID service is unavailable on this device"));
+            let primary = anyhow::Error::from(error)
+                .context("Universal HID service is unavailable on this device");
+            let cleanup = media
+                .stop_strict(Duration::from_secs(5), true, &[])
+                .await
+                .map(|_| ())
+                .map_err(Into::into);
+            return Err(crate::cmd::test_workflow::combine_results(
+                Err(primary),
+                cleanup,
+                "HID authorization media stop failed",
+            )
+            .unwrap_err());
         }
     };
     let client = match UniversalHidServiceClient::from_resolved_metadata(xpc, &metadata) {
         Ok(client) => client,
         Err(error) => {
-            let _ = media.stop(Duration::from_secs(5)).await;
-            return Err(anyhow::Error::from(error)
-                .context("Universal HID service is not a canonical RemoteXPC service"));
+            let primary = anyhow::Error::from(error)
+                .context("Universal HID service is not a canonical RemoteXPC service");
+            let cleanup = media
+                .stop_strict(Duration::from_secs(5), true, &[])
+                .await
+                .map(|_| ())
+                .map_err(Into::into);
+            return Err(crate::cmd::test_workflow::combine_results(
+                Err(primary),
+                cleanup,
+                "HID authorization media stop failed",
+            )
+            .unwrap_err());
         }
     };
     Ok((client, media, device))
@@ -340,9 +490,24 @@ async fn run_with_deadline<F>(timeout: Duration, operation: F) -> Result<()>
 where
     F: std::future::Future<Output = Result<()>>,
 {
+    run_with_deadline_and_signal(timeout, operation, tokio::signal::ctrl_c()).await
+}
+
+async fn run_with_deadline_and_signal<F, C>(
+    timeout: Duration,
+    operation: F,
+    signal: C,
+) -> Result<()>
+where
+    F: std::future::Future<Output = Result<()>>,
+    C: std::future::Future<Output = std::io::Result<()>>,
+{
     tokio::select! {
-        result = tokio::time::timeout(timeout, operation) => result.map_err(|_| anyhow::anyhow!("HID operation exceeded its absolute deadline"))?,
-        _ = tokio::signal::ctrl_c() => anyhow::bail!("HID operation cancelled by Ctrl+C"),
+        result = tokio::time::timeout(timeout, operation) => result.map_err(|error| anyhow::Error::new(error).context("HID operation exceeded its absolute deadline"))?,
+        signal = signal => {
+            signal?;
+            Err(anyhow::Error::new(ios_core::OperationCancelled::new()).context("HID operation cancelled by Ctrl+C"))
+        },
     }
 }
 
@@ -358,9 +523,9 @@ fn validate_text(value: &str) -> Result<String, String> {
     }
 }
 
-fn print_result(json_output: bool, operation: &str, reports: usize, sensitive: bool) {
+fn print_result(json_output: bool, operation: &str, reports: usize, sensitive: bool) -> Result<()> {
     if json_output {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::json!({
                 "operation": operation,
@@ -370,14 +535,81 @@ fn print_result(json_output: bool, operation: &str, reports: usize, sensitive: b
             })
         );
     } else if sensitive {
-        println!("Sent {operation} input ({reports} report units; text redacted)");
+        crate::output::outln!("Sent {operation} input ({reports} report units; text redacted)");
     } else {
-        println!("Sent {operation} input ({reports} report units)");
+        crate::output::outln!("Sent {operation} input ({reports} report units)");
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn owner_guards_hid_zero_timeout_is_input_before_operation() {
+        let command =
+            TestCli::parse_from(["hid", "--confirm", "--timeout", "0", "key", "enter"]).command;
+        let error = command
+            .run(Some("owned-private-device".to_owned()), true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert_eq!(error.to_string(), "--timeout must be greater than zero");
+        let io = error.downcast_ref::<std::io::Error>().unwrap();
+        assert!(io.raw_os_error().is_none());
+        assert!(io.get_ref().unwrap().source().is_none());
+    }
+
+    #[tokio::test]
+    async fn cli_native_sources_hid_signal_error_is_distinct_from_cancel() {
+        let error = super::run_with_deadline_and_signal(
+            std::time::Duration::from_secs(1),
+            std::future::pending(),
+            async { std::fs::File::open("").map(|_| ()) },
+        )
+        .await
+        .unwrap_err();
+        let native = error.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(native.kind(), std::io::ErrorKind::NotFound);
+        assert!(native.raw_os_error().is_some());
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::NotFound
+        );
+        assert!(!error
+            .chain()
+            .any(|source| source.is::<ios_core::OperationCancelled>()));
+
+        let error = super::run_with_deadline_and_signal(
+            std::time::Duration::from_secs(1),
+            std::future::pending(),
+            async { Ok(()) },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Cancelled
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<ios_core::OperationCancelled>()));
+    }
+    #[tokio::test]
+    async fn cli_native_sources_hid_deadline_retains_actual_elapsed() {
+        let error = super::run_with_deadline(std::time::Duration::ZERO, std::future::pending())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    }
     use clap::Parser;
 
     use super::*;

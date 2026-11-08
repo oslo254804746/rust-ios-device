@@ -38,7 +38,7 @@ enum PrepareSub {
         output_prefix: PathBuf,
         #[arg(long, default_value = ios_core::prepare::DEFAULT_ORGANIZATION_NAME)]
         common_name: String,
-        #[arg(long, env = "P12_PASSWORD", default_value = "")]
+        #[arg(long, env = "P12_PASSWORD", hide_env_values = true, default_value = "")]
         password: String,
     },
 }
@@ -80,7 +80,7 @@ fn run_create_cert(
     json: bool,
 ) -> Result<()> {
     let identity = ios_core::prepare::generate_supervision_identity(common_name, password)
-        .map_err(|err| anyhow::anyhow!("{err}"))?;
+        .map_err(anyhow::Error::new)?;
 
     if let Some(parent) = output_prefix.parent() {
         if !parent.as_os_str().is_empty() {
@@ -101,7 +101,7 @@ fn run_create_cert(
     ios_core::secret_file::write_secret(&p12_path, &identity.pkcs12_der)?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "certificate_der": der_path.display().to_string(),
@@ -112,10 +112,10 @@ fn run_create_cert(
             }))?
         );
     } else {
-        println!("DER: {}", der_path.display());
-        println!("PEM: {}", pem_path.display());
-        println!("Key: {}", key_path.display());
-        println!("P12: {}", p12_path.display());
+        crate::output::outln!("DER: {}", der_path.display());
+        crate::output::outln!("PEM: {}", pem_path.display());
+        crate::output::outln!("Key: {}", key_path.display());
+        crate::output::outln!("P12: {}", p12_path.display());
     }
 
     Ok(())
@@ -177,20 +177,18 @@ async fn run_prepare(
     let _ = mcinstall.get_cloud_configuration().await?;
     mcinstall.hello_host_identifier().await?;
     if let Err(err) = mcinstall.escalate_unsupervised().await {
-        tracing::debug!("prepare escalate-unsupervised returned non-fatal error: {err}");
+        tracing::debug!(error = %ios_core::redaction::diagnostic_error(&err), "prepare escalate-unsupervised returned non-fatal error");
     }
     mcinstall.hello_host_identifier().await?;
     mcinstall
-        .install_profile(
-            &ios_core::prepare::build_initial_profile().map_err(|err| anyhow::anyhow!("{err}"))?,
-        )
+        .install_profile(&ios_core::prepare::build_initial_profile().map_err(anyhow::Error::new)?)
         .await?;
 
     configure_lockdown(&device, language, locale, time_zone).await?;
     ensure_skip_setup_marker(&device).await?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "prepared": true,
@@ -203,13 +201,13 @@ async fn run_prepare(
             }))?
         );
     } else {
-        println!("Prepared device {udid}");
-        println!("Language: {language}");
-        println!("Locale: {locale}");
+        crate::output::outln!("Prepared device {udid}");
+        crate::output::outln!("Language: {language}");
+        crate::output::outln!("Locale: {locale}");
         if let Some(time_zone) = time_zone {
-            println!("Time zone: {time_zone}");
+            crate::output::outln!("Time zone: {time_zone}");
         }
-        println!(
+        crate::output::outln!(
             "Supervised: {}",
             if supervision_certificate.is_some() {
                 "yes"
@@ -217,7 +215,7 @@ async fn run_prepare(
                 "no"
             }
         );
-        println!("Skip-setup keys: {}", skip_keys.len());
+        crate::output::outln!("Skip-setup keys: {}", skip_keys.len());
     }
 
     Ok(())
@@ -256,7 +254,7 @@ async fn configure_lockdown(
         .await?;
     let epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|err| anyhow::anyhow!("system clock before unix epoch: {err}"))?
+        .map_err(|err| anyhow::Error::new(err).context("system clock before unix epoch"))?
         .as_secs() as i64;
     device
         .lockdown_set_value(
@@ -279,10 +277,10 @@ async fn ensure_skip_setup_marker(device: &ConnectedDevice) -> Result<()> {
     let stream = device.connect_service(AFC_SERVICE_NAME).await?;
     let mut afc = ios_core::afc::AfcClient::new(stream);
     if let Err(err) = afc.remove_all(SKIP_SETUP_FILE).await {
-        tracing::debug!("skip-setup marker cleanup ignored: {err}");
+        tracing::debug!(error = %ios_core::redaction::diagnostic_error(&err), "skip-setup marker cleanup ignored");
     }
     if let Err(err) = afc.make_dir(SKIP_SETUP_DIR).await {
-        tracing::debug!("skip-setup dir creation returned: {err}");
+        tracing::debug!(error = %ios_core::redaction::diagnostic_error(&err), "skip-setup dir creation returned");
     }
     afc.write_file(SKIP_SETUP_FILE, b"").await?;
     Ok(())

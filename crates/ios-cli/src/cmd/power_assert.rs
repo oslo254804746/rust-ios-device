@@ -1,6 +1,4 @@
 use anyhow::Result;
-use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions};
 
 #[derive(clap::Args)]
 pub struct PowerAssertCmd {
@@ -25,19 +23,14 @@ pub struct PowerAssertCmd {
 impl PowerAssertCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for power-assert"))?;
-        let device = connect(
+        let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
             &udid,
-            ConnectOptions {
-                tun_mode: TunMode::Userspace,
-                pair_record_path: None,
-                skip_tunnel: true,
-            },
+            ios_core::power_assertion::SERVICE_NAME,
+            std::time::Duration::from_secs(30),
         )
         .await?;
-        let stream = device
-            .connect_service(ios_core::power_assertion::SERVICE_NAME)
-            .await?;
         let mut client = ios_core::power_assertion::PowerAssertionClient::new(stream);
+        client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
         let response = client
             .create_assertion(
                 &self.assertion_type,
@@ -48,19 +41,20 @@ impl PowerAssertCmd {
             .await?;
 
         if json {
-            println!(
+            crate::output::outln!(
                 "{}",
                 serde_json::to_string_pretty(&plist::Value::Dictionary(response))?
             );
         } else {
-            println!(
+            crate::output::outln!(
                 "Created power assertion '{}' for {}s. Press Ctrl+C to release early.",
-                self.name, self.timeout
+                self.name,
+                self.timeout
             );
         }
 
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
+            signal = tokio::signal::ctrl_c() => { signal?; }
             _ = tokio::time::sleep(std::time::Duration::from_secs(self.timeout)) => {}
         }
 

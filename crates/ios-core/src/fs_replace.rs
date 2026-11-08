@@ -209,25 +209,11 @@ fn prepare_windows_move_path(path: &Path) -> io::Result<Vec<u16>> {
 pub fn move_file_replace(temporary: &Path, destination: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
-        validate_windows_path(temporary)?;
-        validate_windows_path(destination)?;
-        let temporary = prepare_windows_move_path(temporary)?;
-        let destination = prepare_windows_move_path(destination)?;
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
-        }
-        let result = unsafe {
-            MoveFileExW(
-                temporary.as_ptr(),
-                destination.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if result == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        move_with_flags(
+            temporary,
+            destination,
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
     }
     #[cfg(not(windows))]
     {
@@ -235,8 +221,117 @@ pub fn move_file_replace(temporary: &Path, destination: &Path) -> io::Result<()>
     }
 }
 
+#[cfg(windows)]
+fn move_with_flags(temporary: &Path, destination: &Path, flags: u32) -> io::Result<()> {
+    validate_windows_path(temporary)?;
+    validate_windows_path(destination)?;
+    let temporary = prepare_windows_move_path(temporary)?;
+    let destination = prepare_windows_move_path(destination)?;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+    // SAFETY: validated, NUL-terminated UTF-16 buffers live for this call.
+    let result = unsafe { MoveFileExW(temporary.as_ptr(), destination.as_ptr(), flags) };
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Publish a staging directory without replacing even an empty destination.
+/// The filesystem must support exclusive rename; never fall back to an
+/// existence check followed by an overwriting rename.
+#[cfg(any(feature = "ostrace", test))]
+pub(crate) fn move_directory_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        move_with_flags(source, destination, MOVEFILE_WRITE_THROUGH)
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let source = CString::new(source.as_os_str().as_bytes()).map_err(|error| {
+            crate::error::context::retained_io(
+                io::ErrorKind::InvalidInput,
+                "source path contains NUL",
+                error,
+            )
+        })?;
+        let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|error| {
+            crate::error::context::retained_io(
+                io::ErrorKind::InvalidInput,
+                "destination path contains NUL",
+                error,
+            )
+        })?;
+        #[cfg(target_os = "linux")]
+        // SAFETY: owned C strings live for the call. AT_FDCWD intentionally
+        // preserves the existing trusted-parent policy; this is not a dirfd
+        // defense against malicious intermediate directory replacement.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        // SAFETY: owned, NUL-terminated buffers live for this call.
+        let result =
+            unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (source, destination);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "exclusive directory rename is not supported on this platform",
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn diagnostic_sources_directory_nul_retains_owned_source_before_rename() {
+        use std::error::Error;
+        use std::os::unix::ffi::OsStrExt;
+        for source_is_invalid in [true, false] {
+            let raw = std::ffi::OsStr::from_bytes(b"owned-private-path\0suffix");
+            let invalid = std::path::Path::new(raw);
+            let valid = std::path::Path::new("unused-directory");
+            let error = if source_is_invalid {
+                super::move_directory_no_replace(invalid, valid)
+            } else {
+                super::move_directory_no_replace(valid, invalid)
+            }
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            let native = error
+                .source()
+                .unwrap()
+                .downcast_ref::<std::ffi::NulError>()
+                .unwrap();
+            assert_eq!(native.nul_position(), 18);
+            assert_eq!(native.clone().into_vec(), b"owned-private-path\0suffix");
+            assert!(!format!("{error:?} {:?}", error.get_ref()).contains("owned-private"));
+        }
+    }
+
     use super::*;
 
     fn unique_test_directory(name: &str) -> std::path::PathBuf {
@@ -247,6 +342,28 @@ mod tests {
         ));
         std::fs::create_dir_all(&directory).expect("create test directory");
         directory
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn directory_publication_does_not_replace_a_concurrent_empty_destination() {
+        let directory = unique_test_directory("exclusive-directory");
+        let source = directory.join("staging");
+        let destination = directory.join("输出😀.logarchive");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("fixture.log"), b"synthetic log").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert!(move_directory_no_replace(&source, &destination).is_err());
+        assert!(source.join("fixture.log").is_file());
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+        std::fs::remove_dir(&destination).unwrap();
+        move_directory_no_replace(&source, &destination).unwrap();
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(destination.join("fixture.log")).unwrap(),
+            b"synthetic log"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(windows)]

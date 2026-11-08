@@ -20,7 +20,12 @@ enum HttpProxySub {
         port: u16,
         #[arg(long, help = "Supervisor identity in .p12 format")]
         p12: PathBuf,
-        #[arg(long, env = "P12_PASSWORD", help = "Password for the .p12 file")]
+        #[arg(
+            long,
+            env = "P12_PASSWORD",
+            hide_env_values = true,
+            help = "Password for the .p12 file"
+        )]
         password: Option<String>,
         #[arg(
             long,
@@ -70,7 +75,7 @@ impl HttpProxyCmd {
                     .await?;
 
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "installed": true,
@@ -80,13 +85,13 @@ impl HttpProxyCmd {
                         }))?
                     );
                 } else {
-                    println!("Installed global HTTP proxy {host}:{port}");
+                    crate::output::outln!("Installed global HTTP proxy {host}:{port}");
                 }
             }
             HttpProxySub::Remove => {
                 client.remove_profile(GLOBAL_HTTP_PROXY_UUID).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "removed": true,
@@ -94,7 +99,7 @@ impl HttpProxyCmd {
                         }))?
                     );
                 } else {
-                    println!("Removed global HTTP proxy profile");
+                    crate::output::outln!("Removed global HTTP proxy profile");
                 }
             }
         }

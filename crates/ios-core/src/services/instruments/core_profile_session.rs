@@ -44,6 +44,37 @@ pub enum CoreProfileEvent {
     RawChunk(Bytes),
 }
 
+pub const STACKSHOT_SHARED_CACHE_KEY: &str = "shared_cache_dyld_load_info";
+
+/// Resolve `shared_cache_dyld_load_info` for a task inside a stackshot dictionary.
+///
+/// iOS 17.1+ / iOS 27 stackshots store `shared_cache_dyld_load_info` per task inside
+/// `task_snapshots[pid]` and carry no top-level `shared_cache_dyld_load_info`.
+/// Older stackshots store `shared_cache_dyld_load_info` at the top-level stackshot
+/// dictionary (or under `kcdata_stackshot`). This helper resolves the task-level
+/// entry first and falls back to the top-level stackshot dictionary.
+pub fn resolve_stackshot_task_shared_cache<'a>(
+    stackshot: &'a NSObject,
+    task: &'a NSObject,
+) -> Option<&'a NSObject> {
+    if let NSObject::Dict(task_dict) = task {
+        if let Some(info) = task_dict.get(STACKSHOT_SHARED_CACHE_KEY) {
+            return Some(info);
+        }
+    }
+    if let NSObject::Dict(stackshot_dict) = stackshot {
+        if let Some(info) = stackshot_dict.get(STACKSHOT_SHARED_CACHE_KEY) {
+            return Some(info);
+        }
+        if let Some(NSObject::Dict(kcdata)) = stackshot_dict.get("kcdata_stackshot") {
+            if let Some(info) = kcdata.get(STACKSHOT_SHARED_CACHE_KEY) {
+                return Some(info);
+            }
+        }
+    }
+    None
+}
+
 pub struct CoreProfileSessionClient<S> {
     conn: DtxConnection<S>,
     device_info_channel: i32,
@@ -99,15 +130,30 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CoreProfileSessionClient<S> {
                 Ok(())
             }
             Ok(Err(error)) => Err(error),
-            Err(_) => Ok(()),
+            Err(_) if self.conn.is_usable() => Ok(()),
+            Err(elapsed) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into()),
         }
     }
 
+    /// Tracks wire progress while a DTX operation is pending.
+    pub fn operation_progress(&self) -> crate::services::dtx::codec::DtxOperationProgress {
+        self.conn.operation_progress()
+    }
+
     pub async fn next_event(&mut self) -> Result<CoreProfileEvent, DtxError> {
-        if let Some(event) = self.pending_event.take() {
-            return Ok(event);
+        loop {
+            if let Some(event) = self.next_event_step().await? {
+                return Ok(event);
+            }
         }
-        self.recv_next_event().await
+    }
+
+    /// Receive one DTX message, returning None when it is not a profile event.
+    pub async fn next_event_step(&mut self) -> Result<Option<CoreProfileEvent>, DtxError> {
+        if let Some(event) = self.pending_event.take() {
+            return Ok(Some(event));
+        }
+        self.recv_event_step().await
     }
 
     pub async fn stop(&mut self) -> Result<(), DtxError> {
@@ -116,19 +162,58 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CoreProfileSessionClient<S> {
             .await
     }
 
+    /// Send stop and wait for a `k = 5` notice on this profile channel.
+    ///
+    /// This notice followed stop on the tested iOS 14 device. It does not
+    /// establish that every device or every recording resource is released.
+    /// Callers should bound the entire operation with their cleanup deadline.
+    pub async fn stop_and_wait_for_end_notice(&mut self) -> Result<(), DtxError> {
+        // A start-time event predates this stop and cannot acknowledge it.
+        let _ = self.pending_event.take();
+        self.stop().await?;
+        loop {
+            if let Some((channel, CoreProfileEvent::Notice(NSObject::Dict(dict)))) =
+                self.recv_event_step_with_channel().await?
+            {
+                if channel == self.core_profile_channel
+                    && matches!(dict.get("k"), Some(NSObject::Int(5) | NSObject::Uint(5)))
+                {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     async fn recv_next_event(&mut self) -> Result<CoreProfileEvent, DtxError> {
         loop {
-            let msg = self.conn.recv().await?;
-            if msg.expects_reply {
-                self.conn.send_ack(&msg).await?;
-            }
-            if !is_core_profile_live_channel(msg.channel_code, self.core_profile_channel) {
-                continue;
-            }
-            if let Some(event) = decode_core_profile_payload(msg.payload)? {
+            if let Some(event) = self.recv_event_step().await? {
                 return Ok(event);
             }
         }
+    }
+
+    async fn recv_event_step(&mut self) -> Result<Option<CoreProfileEvent>, DtxError> {
+        Ok(self
+            .recv_event_step_with_channel()
+            .await?
+            .map(|(_, event)| event))
+    }
+
+    async fn recv_event_step_with_channel(
+        &mut self,
+    ) -> Result<Option<(i32, CoreProfileEvent)>, DtxError> {
+        let msg = crate::services::dtx::codec::checked_reply(self.conn.recv().await?)?;
+        // A queued message may not read the transport, but its acknowledgement
+        // must still complete before a caller can safely cancel this step.
+        self.conn.mark_message_progress();
+        if msg.expects_reply {
+            self.conn.send_ack(&msg).await?;
+        }
+        if !is_core_profile_live_channel(msg.channel_code, self.core_profile_channel) {
+            return Ok(None);
+        }
+        let channel = msg.channel_code;
+        Ok(decode_core_profile_payload(msg.payload)?.map(|event| (channel, event)))
     }
 }
 
@@ -406,6 +491,9 @@ fn build_keyed_archive(root_uid: Value, objects: Vec<Value>) -> Value {
 
 fn decode_core_profile_payload(payload: DtxPayload) -> Result<Option<CoreProfileEvent>, DtxError> {
     match payload {
+        DtxPayload::Error(_) => Err(DtxError::Protocol(
+            "unexpected peer error in profile payload parser".into(),
+        )),
         DtxPayload::Empty => Ok(None),
         DtxPayload::Response(NSObject::Null) => Ok(None),
         DtxPayload::Response(object) => decode_core_profile_object(object),
@@ -497,6 +585,64 @@ fn default_config_uuid() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn lifecycle_dtx_profile_start_distinguishes_empty_idle_from_partial_notice() {
+        for partial in [false, true] {
+            let (stream, mut peer) = tokio::io::duplex(4096);
+            let mut session = CoreProfileSessionClient {
+                conn: DtxConnection::new(stream),
+                device_info_channel: 1,
+                core_profile_channel: 2,
+                mach_time_info: MachTimeInfo { numer: 1, denom: 1 },
+                pending_event: None,
+            };
+            let config = CoreProfileConfig::fps_defaults();
+            let caller = session.start(&config);
+            let server = async {
+                for _ in 0..2 {
+                    read_dtx_frame(&mut peer).await.unwrap();
+                }
+                if partial {
+                    let frame =
+                        encode_dtx(91, 0, -2, false, MSG_UNKNOWN_TYPE_ONE, b"owned chunk", &[]);
+                    peer.write_all(&frame[..8]).await.unwrap();
+                }
+                peer
+            };
+            let (result, mut peer) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(caller, server)
+            })
+            .await
+            .unwrap();
+            if partial {
+                let error = result.unwrap_err();
+                assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+                assert!(
+                    matches!(error, DtxError::Io(ref io) if io.get_ref().unwrap().is::<tokio::time::error::Elapsed>())
+                );
+                assert!(!session.conn.is_usable());
+            } else {
+                result.unwrap();
+                assert!(session.conn.is_usable());
+                peer.write_all(&encode_dtx(
+                    91,
+                    0,
+                    -2,
+                    false,
+                    MSG_UNKNOWN_TYPE_ONE,
+                    b"owned chunk",
+                    &[],
+                ))
+                .await
+                .unwrap();
+                assert!(
+                    matches!(tokio::time::timeout(Duration::from_secs(1), session.next_event()).await.unwrap().unwrap(), CoreProfileEvent::RawChunk(ref chunk) if chunk.as_ref() == b"owned chunk")
+                );
+                assert!(session.conn.is_usable());
+            }
+        }
+    }
+
     use crate::proto::nskeyedarchiver_encode;
     use plist::Value;
     use tokio::io::AsyncWriteExt;
@@ -507,6 +653,67 @@ mod tests {
 
     const MSG_RESPONSE: u32 = 3;
     const MSG_UNKNOWN_TYPE_ONE: u32 = 1;
+
+    #[test]
+    fn resolve_stackshot_task_shared_cache_prefers_task_and_falls_back_to_stackshot() {
+        let task_cache = NSObject::Dict(
+            [("imageLoadAddress".to_string(), NSObject::Uint(0x180000000))]
+                .into_iter()
+                .collect(),
+        );
+        let root_cache = NSObject::Dict(
+            [("imageLoadAddress".to_string(), NSObject::Uint(0x190000000))]
+                .into_iter()
+                .collect(),
+        );
+
+        // 1. iOS 17.1+ / iOS 27: task has its own shared_cache_dyld_load_info, no top-level entry
+        let stackshot_no_root = NSObject::Dict(Default::default());
+        let task_with_cache = NSObject::Dict(
+            [(STACKSHOT_SHARED_CACHE_KEY.to_string(), task_cache.clone())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_no_root, &task_with_cache),
+            Some(&task_cache)
+        );
+
+        // 2. Both present: task-level entry takes precedence over top-level fallback
+        let stackshot_with_root = NSObject::Dict(
+            [(STACKSHOT_SHARED_CACHE_KEY.to_string(), root_cache.clone())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_with_root, &task_with_cache),
+            Some(&task_cache)
+        );
+
+        // 3. Task lacks entry: falls back to top-level stackshot["shared_cache_dyld_load_info"]
+        let task_without_cache = NSObject::Dict(Default::default());
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_with_root, &task_without_cache),
+            Some(&root_cache)
+        );
+
+        // 4. Nested kcdata_stackshot fallback
+        let stackshot_kcdata = NSObject::Dict(
+            [("kcdata_stackshot".to_string(), stackshot_with_root.clone())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_kcdata, &task_without_cache),
+            Some(&root_cache)
+        );
+
+        // 5. Neither present: returns None
+        assert_eq!(
+            resolve_stackshot_task_shared_cache(&stackshot_no_root, &task_without_cache),
+            None
+        );
+    }
 
     #[test]
     fn default_fps_config_matches_reference_shape() {
@@ -702,6 +909,111 @@ mod tests {
             event,
             CoreProfileEvent::RawChunk(Bytes::from_static(b"broadcast-trace"))
         );
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_profile_end_notice_and_preserves_following_frame() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let mut session = CoreProfileSessionClient {
+            conn: DtxConnection::new(client),
+            device_info_channel: 1,
+            core_profile_channel: 2,
+            mach_time_info: MachTimeInfo { numer: 1, denom: 1 },
+            pending_event: Some(CoreProfileEvent::Notice(NSObject::Dict(
+                [("k".to_string(), NSObject::Int(5))].into_iter().collect(),
+            ))),
+        };
+        let mut task = tokio::spawn(async move {
+            session.stop_and_wait_for_end_notice().await.unwrap();
+            session
+        });
+        let request = read_dtx_frame(&mut server).await.unwrap();
+        assert!(
+            matches!(request.payload, DtxPayload::MethodInvocation { selector, .. } if selector == "stop")
+        );
+        assert!(!request.expects_reply);
+        let notice = |kind: i64| {
+            nskeyedarchiver_encode::archive_dict(vec![(
+                "k".to_string(),
+                Value::Integer(kind.into()),
+            )])
+        };
+        // A k=5 on the broadcast channel and the pre-stop pending k=5 are not
+        // the end notice of this profile channel.
+        server
+            .write_all(&encode_dtx(20, 0, 1, false, MSG_RESPONSE, &notice(5), &[]))
+            .await
+            .unwrap();
+        server
+            .write_all(&encode_dtx(
+                21,
+                0,
+                -2,
+                false,
+                MSG_UNKNOWN_TYPE_ONE,
+                b"trailing raw",
+                &[],
+            ))
+            .await
+            .unwrap();
+        server
+            .write_all(&encode_dtx(22, 0, -2, false, MSG_RESPONSE, &notice(6), &[]))
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut task)
+            .await
+            .is_err());
+        let final_notice = encode_dtx(23, 0, -2, false, MSG_RESPONSE, &notice(5), &[]);
+        server.write_all(&final_notice[..12]).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut task)
+            .await
+            .is_err());
+        server.write_all(&final_notice[12..]).await.unwrap();
+        server
+            .write_all(&encode_dtx(
+                24,
+                0,
+                -2,
+                false,
+                MSG_UNKNOWN_TYPE_ONE,
+                b"next frame",
+                &[],
+            ))
+            .await
+            .unwrap();
+        let mut session = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(session.next_event_step().await.unwrap(), Some(CoreProfileEvent::RawChunk(bytes)) if bytes.as_ref() == b"next frame")
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_wait_propagates_profile_error_notice() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            let mut session = CoreProfileSessionClient {
+                conn: DtxConnection::new(client),
+                device_info_channel: 1,
+                core_profile_channel: 2,
+                mach_time_info: MachTimeInfo { numer: 1, denom: 1 },
+                pending_event: None,
+            };
+            session.stop_and_wait_for_end_notice().await
+        });
+        read_dtx_frame(&mut server).await.unwrap();
+        let failure = nskeyedarchiver_encode::archive_dict(vec![
+            ("notice".into(), Value::String("synthetic failure".into())),
+            ("status".into(), Value::Integer(1.into())),
+        ]);
+        server
+            .write_all(&encode_dtx(30, 0, -2, false, MSG_RESPONSE, &failure, &[]))
+            .await
+            .unwrap();
+        let error = task.await.unwrap().unwrap_err();
+        assert!(matches!(error, DtxError::Protocol(ref message) if message == "synthetic failure"));
     }
 
     #[tokio::test]

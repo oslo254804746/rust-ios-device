@@ -165,11 +165,12 @@ impl DisplayCmd {
                 let status = client.get_media_stream_server_status().await?;
                 let value = serde_json::json!({"support": xpc_value_to_json(&support), "status": xpc_value_to_json(&status)});
                 if json_output {
-                    println!("{}", serde_json::to_string_pretty(&value)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "Media support: {}\nMedia status: {}",
-                        value["support"], value["status"]
+                        value["support"],
+                        value["status"]
                     );
                 }
                 Ok(())
@@ -208,6 +209,14 @@ async fn connect_display(
     ))
 }
 
+fn capture_deadline(timeout: u64) -> Result<tokio::time::Instant> {
+    tokio::time::Instant::now()
+        .checked_add(Duration::from_secs(timeout))
+        .ok_or_else(|| {
+            crate::output::input_decision("--timeout is too large for a capture deadline")
+        })
+}
+
 async fn capture_display(
     udid: &str,
     kind: MediaKind,
@@ -218,12 +227,20 @@ async fn capture_display(
         anyhow::bail!("--max-units must be greater than zero");
     }
     if capture.timeout == 0 {
-        anyhow::bail!("--timeout must be greater than zero");
+        return Err(crate::output::input_decision(
+            "--timeout must be greater than zero",
+        ));
     }
     // The userspace tunnel currently exposes only a TCP proxy. A host kernel
     // UDP socket cannot receive packets injected into that private stack, so
     // require the kernel TUN path instead of reporting a false capture.
-    let (client, device) = connect_display(udid, TunMode::Kernel).await?;
+    let (client, device) = match connect_display(udid, TunMode::Kernel).await {
+        Ok(pair) => pair,
+        Err(_) => connect_display(udid, TunMode::Userspace).await?,
+    };
+    if let Ok(version) = device.product_version().await {
+        ios_core::display::ensure_display_stream_supported_version(&version.to_string())?;
+    }
     let sender_ip = capture
         .sender_ip
         .or_else(|| device.server_address().map(str::to_owned))
@@ -241,17 +258,16 @@ async fn capture_display(
         sender_ip,
         ..MediaStreamOptions::default()
     };
+    let deadline = capture_deadline(capture.timeout)?;
+    let mut output = capture.output.map(AtomicOutput::new).transpose()?;
     let mut session = match kind {
         MediaKind::Video => MediaStreamSession::start_video(client, options).await?,
         MediaKind::Audio => MediaStreamSession::start_audio(client, options).await?,
     };
-    let deadline = tokio::time::Instant::now()
-        .checked_add(Duration::from_secs(capture.timeout))
-        .ok_or_else(|| anyhow::anyhow!("--timeout is too large for a capture deadline"))?;
-    let mut output = capture.output.map(AtomicOutput::new).transpose()?;
     let mut units = 0usize;
     let mut bytes = 0usize;
-    let capture_result: Result<()> = async {
+    let capture_result: Result<()> = tokio::select! {
+        result = async {
         while units < capture.max_units {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -276,7 +292,7 @@ async fn capture_display(
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("capture access-unit count overflow"))?;
             if json_output {
-                println!(
+                crate::output::outln!(
                     "{}",
                     serde_json::json!({"kind": if kind == MediaKind::Video {"video"} else {"audio"}, "timestamp": unit.timestamp, "sequenceStart": unit.sequence_start, "sequenceEnd": unit.sequence_end, "ssrc": unit.ssrc, "size": unit.data.len()})
                 );
@@ -286,21 +302,23 @@ async fn capture_display(
             file.commit()?;
         }
         Ok(())
-    }
-    .await;
-    let stop_result: Result<(), anyhow::Error> = session
-        .stop(Duration::from_secs(5))
-        .await
-        .map_err(Into::into);
-    if let Err(error) = capture_result {
-        if let Err(stop_error) = stop_result {
-            return Err(error.context(format!("also failed to stop media stream: {stop_error}")));
+        } => result,
+        signal = tokio::signal::ctrl_c() => {
+            signal.map_err(anyhow::Error::from).and_then(|()| Err(anyhow::Error::new(ios_core::OperationCancelled::new()).context("display capture cancelled")))
         }
-        return Err(error);
-    }
-    stop_result?;
+    };
+    let stop_result: Result<(), anyhow::Error> = session
+        .stop_strict(Duration::from_secs(5), true, &[])
+        .await
+        .map(|_| ())
+        .map_err(Into::into);
+    crate::cmd::test_workflow::combine_results(
+        capture_result,
+        stop_result,
+        "display capture stop failed",
+    )?;
     if !json_output {
-        println!(
+        crate::output::outln!(
             "Captured {units} {} access units ({bytes} bytes)",
             if kind == MediaKind::Video {
                 "video"
@@ -441,8 +459,9 @@ impl ConfigurationCmd {
                 let (mut client, _device) = connect_configuration(udid).await?;
                 let result_value = match setting {
                     ConfigurationSetting::Style => {
-                        let style: UserInterfaceStyle =
-                            value.parse().map_err(anyhow::Error::msg)?;
+                        let style: UserInterfaceStyle = value.parse().map_err(|message| {
+                            crate::output::input_message("invalid user interface style", message)
+                        })?;
                         client.set_user_interface_style(style.clone()).await?;
                         serde_json::json!(style.to_string())
                     }
@@ -451,7 +470,9 @@ impl ConfigurationCmd {
                         let filter_type = filter_type
                             .map(|value| value.parse::<ColorFilterType>())
                             .transpose()
-                            .map_err(anyhow::Error::msg)?;
+                            .map_err(|message| {
+                                crate::output::input_message("invalid color filter type", message)
+                            })?;
                         let filter_type_name = filter_type.as_ref().map(ToString::to_string);
                         client
                             .set_color_filter(enabled, filter_type, intensity)
@@ -468,7 +489,9 @@ impl ConfigurationCmd {
                         result
                     }
                     ConfigurationSetting::TextSize => {
-                        let size: DeviceTextSize = value.parse().map_err(anyhow::Error::msg)?;
+                        let size: DeviceTextSize = value.parse().map_err(|message| {
+                            crate::output::input_message("invalid device text size", message)
+                        })?;
                         client.set_device_text_size(size.clone()).await?;
                         serde_json::json!(size.to_string())
                     }
@@ -499,12 +522,12 @@ impl ConfigurationCmd {
                     }
                 };
                 if json_output {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&set_operation_json(setting, result_value))?
                     );
                 } else {
-                    println!("Set {} to {result_value}", setting_name(setting));
+                    crate::output::outln!("Set {} to {result_value}", setting_name(setting));
                 }
                 Ok(())
             }
@@ -518,7 +541,7 @@ impl OrientationCmd {
         let (mut client, _device) = connect_orientation(udid).await?;
         let state = client.rotate(direction).await?;
         if json_output {
-            println!(
+            crate::output::outln!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "direction": direction.to_string(),
@@ -526,7 +549,7 @@ impl OrientationCmd {
                 }))?
             );
         } else {
-            print_orientation(direction, &state);
+            print_orientation(direction, &state)?;
         }
         Ok(())
     }
@@ -579,9 +602,9 @@ async fn connect_orientation(
 }
 
 fn parse_bool(value: &str) -> Result<bool> {
-    value
-        .parse::<bool>()
-        .map_err(|_| anyhow::anyhow!("boolean value must be 'true' or 'false', got {value:?}"))
+    value.parse::<bool>().map_err(|error| {
+        crate::output::input_error("boolean value must be 'true' or 'false'", error)
+    })
 }
 
 fn setting_name(setting: ConfigurationSetting) -> &'static str {
@@ -603,12 +626,12 @@ fn render_setting(
     json_output: bool,
 ) -> Result<()> {
     if json_output {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&setting_json(setting, value))?
         );
     } else {
-        println!("{}: {value}", setting_name(setting));
+        crate::output::outln!("{}: {value}", setting_name(setting));
     }
     Ok(())
 }
@@ -631,21 +654,69 @@ fn set_operation_json(
     })
 }
 
-fn print_orientation(direction: RotationDirection, state: &OrientationState) {
-    println!("Rotated {}", direction);
-    println!("orientation: {}", state.current_device_orientation);
-    println!(
+fn print_orientation(direction: RotationDirection, state: &OrientationState) -> Result<()> {
+    crate::output::outln!("Rotated {}", direction);
+    crate::output::outln!("orientation: {}", state.current_device_orientation);
+    crate::output::outln!(
         "non-flat orientation: {}",
         state.current_device_non_flat_orientation
     );
-    println!(
+    crate::output::outln!(
         "orientation locked: {}",
         state.current_device_orientation_locked
     );
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn owner_guards_display_deadline_retains_validation_and_capture_placement() {
+        let command = MediaCaptureCmd {
+            sender_ip: None,
+            receiver_ip: None,
+            max_units: 1,
+            timeout: 0,
+            output: None,
+        };
+        let error = capture_display("owned-private-device", MediaKind::Video, command, true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert_eq!(error.to_string(), "--timeout must be greater than zero");
+        let error = capture_deadline(u64::MAX).unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert_eq!(
+            error.to_string(),
+            "--timeout is too large for a capture deadline"
+        );
+        assert!(capture_deadline(1).is_ok());
+    }
+
+    #[test]
+    fn cli_native_sources_boolean_retains_original_parser_error() {
+        let error = super::parse_bool("owned-private-boolean").unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<std::str::ParseBoolError>()));
+        let json = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "device-control",
+            &error,
+        )
+        .unwrap();
+        assert!(!json.contains("owned-private"));
+    }
     use clap::Parser;
 
     use super::*;

@@ -6,6 +6,12 @@
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+mod lifecycle;
+#[cfg(test)]
+mod lifecycle_tests;
+
+use lifecycle::{await_operation, check_deadline, SpringboardState};
+
 pub const SERVICE_NAME: &str = "com.apple.springboardservices";
 
 service_error!(
@@ -116,151 +122,214 @@ impl InterfaceOrientation {
 
 #[derive(Debug)]
 pub struct SpringboardClient<S> {
-    stream: S,
+    stream: Option<S>,
+    state: SpringboardState,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> SpringboardClient<S> {
     pub fn new(stream: S) -> Self {
-        Self { stream }
+        Self {
+            stream: Some(stream),
+            state: SpringboardState::default(),
+        }
     }
 
     pub async fn list_icons(&mut self) -> Result<Vec<Vec<Icon>>, SpringboardError> {
-        let response = self.get_icon_state_raw("2").await?;
-        parse_screens(response)
+        self.request(
+            &GetIconStateRequest {
+                command: "getIconState",
+                format_version: "2",
+            },
+            |response| parse_screens(response?),
+        )
+        .await
     }
 
     pub async fn get_icon_state_raw(
         &mut self,
         format_version: &str,
     ) -> Result<plist::Value, SpringboardError> {
-        self.send_plist(&GetIconStateRequest {
-            command: "getIconState",
-            format_version,
-        })
-        .await?;
-
-        self.recv_plist().await
+        self.request(
+            &GetIconStateRequest {
+                command: "getIconState",
+                format_version,
+            },
+            |response| response,
+        )
+        .await
     }
 
     pub async fn get_icon_png_data(
         &mut self,
         bundle_id: &str,
     ) -> Result<Vec<u8>, SpringboardError> {
-        self.send_plist(&GetIconPngDataRequest {
-            command: "getIconPNGData",
-            bundle_id,
-        })
-        .await?;
-
-        let response: plist::Value = self.recv_plist().await?;
-        parse_png_data(response)
+        self.request(
+            &GetIconPngDataRequest {
+                command: "getIconPNGData",
+                bundle_id,
+            },
+            |response| parse_png_data(response?),
+        )
+        .await
     }
 
     pub async fn get_interface_orientation(
         &mut self,
     ) -> Result<InterfaceOrientation, SpringboardError> {
-        self.send_plist(&CommandRequest {
-            command: "getInterfaceOrientation",
-        })
-        .await?;
-
-        let response: plist::Value = self.recv_plist().await?;
-        parse_interface_orientation(response)
+        self.request(
+            &CommandRequest {
+                command: "getInterfaceOrientation",
+            },
+            |response| parse_interface_orientation(response?),
+        )
+        .await
     }
 
     pub async fn get_homescreen_icon_metrics(&mut self) -> Result<plist::Value, SpringboardError> {
-        self.send_plist(&CommandRequest {
-            command: "getHomeScreenIconMetrics",
-        })
-        .await?;
-
-        let response: plist::Value = self.recv_plist().await?;
-        parse_metrics(response)
+        self.request(
+            &CommandRequest {
+                command: "getHomeScreenIconMetrics",
+            },
+            |response| parse_metrics(response?),
+        )
+        .await
     }
 
     pub async fn get_wallpaper_info(
         &mut self,
         wallpaper_name: &str,
     ) -> Result<plist::Value, SpringboardError> {
-        self.send_plist(&WallpaperCommandRequest {
-            command: "getWallpaperInfo",
-            wallpaper_name,
-        })
-        .await?;
-
-        let response: plist::Value = self.recv_plist().await?;
-        parse_metrics(response)
+        self.request(
+            &WallpaperCommandRequest {
+                command: "getWallpaperInfo",
+                wallpaper_name,
+            },
+            |response| parse_metrics(response?),
+        )
+        .await
     }
 
     pub async fn get_wallpaper_preview_image(
         &mut self,
         wallpaper_name: &str,
     ) -> Result<Vec<u8>, SpringboardError> {
-        self.send_plist(&WallpaperCommandRequest {
-            command: "getWallpaperPreviewImage",
-            wallpaper_name,
-        })
-        .await?;
-
-        let response: plist::Value = self.recv_plist().await?;
-        parse_png_data(response)
+        self.request(
+            &WallpaperCommandRequest {
+                command: "getWallpaperPreviewImage",
+                wallpaper_name,
+            },
+            |response| parse_png_data(response?),
+        )
+        .await
     }
 
     pub async fn set_icon_state(
         &mut self,
         icon_state: &plist::Value,
     ) -> Result<(), SpringboardError> {
-        self.send_plist(&SetIconStateRequest {
-            command: "setIconState",
-            icon_state,
-        })
-        .await?;
-
-        // setIconState may not send a response; tolerate EOF
-        match self.recv_plist::<plist::Value>().await {
-            Ok(_) => Ok(()),
-            Err(SpringboardError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(()),
-            Err(e) => Err(e),
-        }
+        self.request(
+            &SetIconStateRequest {
+                command: "setIconState",
+                icon_state,
+            },
+            |response| {
+                // Preserve the legacy setIconState EOF result. The tracked
+                // receive still retires the closed stream before returning.
+                match response {
+                    Ok(_) => Ok(()),
+                    Err(SpringboardError::Io(e))
+                        if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                    {
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            },
+        )
+        .await
     }
 
     pub async fn get_homescreen_wallpaper_pngdata(&mut self) -> Result<Vec<u8>, SpringboardError> {
-        self.send_plist(&CommandRequest {
-            command: "getHomeScreenWallpaperPNGData",
-        })
-        .await?;
-
-        let response: plist::Value = self.recv_plist().await?;
-        parse_png_data(response)
+        match self
+            .request(
+                &CommandRequest {
+                    command: "getHomeScreenWallpaperPNGData",
+                },
+                |response| parse_homescreen_wallpaper_png_data(response?),
+            )
+            .await?
+        {
+            HomescreenWallpaperPngData::Png(png) => Ok(png),
+            HomescreenWallpaperPngData::NoStoredImage => {
+                match self.get_wallpaper_preview_image("homescreen").await {
+                    Ok(png) => Ok(png),
+                    Err(_) => Err(SpringboardError::Service(
+                        "This wallpaper has no image".into(),
+                    )),
+                }
+            }
+        }
     }
 
-    async fn send_plist<T: Serialize>(&mut self, value: &T) -> Result<(), SpringboardError> {
+    #[allow(dead_code)]
+    async fn get_homescreen_wallpaper_pngdata_strict(
+        &mut self,
+    ) -> Result<Vec<u8>, SpringboardError> {
+        self.request(
+            &CommandRequest {
+                command: "getHomeScreenWallpaperPNGData",
+            },
+            |response| parse_png_data(response?),
+        )
+        .await
+    }
+
+    async fn request<T: Serialize, R>(
+        &mut self,
+        value: &T,
+        parse_response: impl FnOnce(
+            Result<plist::Value, SpringboardError>,
+        ) -> Result<R, SpringboardError>,
+    ) -> Result<R, SpringboardError> {
+        let deadline = self.deadline()?;
         let mut buf = Vec::new();
         plist::to_writer_xml(&mut buf, value)?;
-        let len = buf.len() as u32;
-        self.stream.write_all(&len.to_be_bytes()).await?;
-        self.stream.write_all(&buf).await?;
-        self.stream.flush().await?;
-        Ok(())
+        let len = u32::try_from(buf.len()).map_err(|error| {
+            SpringboardError::Io(crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidInput,
+                "encode springboard frame length",
+                error,
+            ))
+        })?;
+        check_deadline(deadline, Ok(()))?;
+        let mut request = self.begin_request(deadline)?;
+        let result = await_operation(deadline, async {
+            let mut io = request.io();
+            io.write_all(&len.to_be_bytes()).await?;
+            io.write_all(&buf).await?;
+            io.flush().await?;
+            parse_response(recv_plist(&mut io).await)
+        })
+        .await;
+        request.finish(check_deadline(deadline, result))
     }
+}
 
-    async fn recv_plist<T>(&mut self) -> Result<T, SpringboardError>
-    where
-        T: for<'de> serde::Deserialize<'de>,
-    {
-        let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-        const MAX_PLIST_SIZE: usize = 16 * 1024 * 1024;
-        if len > MAX_PLIST_SIZE {
-            return Err(SpringboardError::Protocol(format!(
-                "plist length {len} exceeds max {MAX_PLIST_SIZE}"
-            )));
-        }
-        let mut buf = vec![0u8; len];
-        self.stream.read_exact(&mut buf).await?;
-        Ok(plist::from_bytes(&buf)?)
+async fn recv_plist<S: AsyncRead + Unpin>(
+    stream: &mut S,
+) -> Result<plist::Value, SpringboardError> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    const MAX_PLIST_SIZE: usize = 16 * 1024 * 1024;
+    if len > MAX_PLIST_SIZE {
+        return Err(SpringboardError::Protocol(format!(
+            "plist length {len} exceeds max {MAX_PLIST_SIZE}"
+        )));
     }
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await?;
+    Ok(plist::from_bytes(&buf)?)
 }
 
 #[derive(Serialize)]
@@ -310,6 +379,27 @@ fn parse_screens(value: plist::Value) -> Result<Vec<Vec<Icon>>, SpringboardError
             icons.into_iter().map(|icon| parse_icon(icon, 0)).collect()
         })
         .collect()
+}
+
+enum HomescreenWallpaperPngData {
+    Png(Vec<u8>),
+    NoStoredImage,
+}
+
+pub fn is_wallpaper_image_unavailable_error(message: &str) -> bool {
+    message.contains("This wallpaper has no image")
+}
+
+fn parse_homescreen_wallpaper_png_data(
+    value: plist::Value,
+) -> Result<HomescreenWallpaperPngData, SpringboardError> {
+    match parse_png_data(value) {
+        Ok(png) => Ok(HomescreenWallpaperPngData::Png(png)),
+        Err(SpringboardError::Service(error)) if is_wallpaper_image_unavailable_error(&error) => {
+            Ok(HomescreenWallpaperPngData::NoStoredImage)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_png_data(value: plist::Value) -> Result<Vec<u8>, SpringboardError> {
@@ -791,5 +881,57 @@ mod tests {
 
         let err = parse_png_data(value).unwrap_err();
         assert!(matches!(err, SpringboardError::Service(message) if message == "No such bundle"));
+    }
+
+    #[tokio::test]
+    async fn get_homescreen_wallpaper_pngdata_falls_back_to_preview_when_poster_wallpaper_has_no_image(
+    ) {
+        let (client_side, mut server_side) = tokio::io::duplex(8192);
+
+        tokio::spawn(async move {
+            let first_req = read_plist_frame(&mut server_side).await;
+            let first_val: plist::Value = plist::from_bytes(&first_req).unwrap();
+            let first_dict = first_val.into_dictionary().unwrap();
+            assert_eq!(
+                first_dict.get("command").and_then(|v| v.as_string()),
+                Some("getHomeScreenWallpaperPNGData")
+            );
+
+            let first_resp = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Error".to_string(),
+                plist::Value::String("This wallpaper has no image".into()),
+            )]));
+            let mut buf = Vec::new();
+            plist::to_writer_xml(&mut buf, &first_resp).unwrap();
+            let len = buf.len() as u32;
+            server_side.write_all(&len.to_be_bytes()).await.unwrap();
+            server_side.write_all(&buf).await.unwrap();
+
+            let second_req = read_plist_frame(&mut server_side).await;
+            let second_val: plist::Value = plist::from_bytes(&second_req).unwrap();
+            let second_dict = second_val.into_dictionary().unwrap();
+            assert_eq!(
+                second_dict.get("command").and_then(|v| v.as_string()),
+                Some("getWallpaperPreviewImage")
+            );
+            assert_eq!(
+                second_dict.get("wallpaperName").and_then(|v| v.as_string()),
+                Some("homescreen")
+            );
+
+            let second_resp = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "pngData".to_string(),
+                plist::Value::Data(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+            )]));
+            let mut buf = Vec::new();
+            plist::to_writer_xml(&mut buf, &second_resp).unwrap();
+            let len = buf.len() as u32;
+            server_side.write_all(&len.to_be_bytes()).await.unwrap();
+            server_side.write_all(&buf).await.unwrap();
+        });
+
+        let mut client = SpringboardClient::new(client_side);
+        let png = client.get_homescreen_wallpaper_pngdata().await.unwrap();
+        assert_eq!(png, vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
     }
 }

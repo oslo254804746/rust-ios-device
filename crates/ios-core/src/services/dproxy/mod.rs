@@ -1,3 +1,6 @@
+use crate::plist_json::{self, DataEncoding, PlistJsonPolicy};
+crate::redaction::error_debug!(DproxyError);
+
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -7,6 +10,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bytes::BytesMut;
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+mod observations;
+pub use observations::{DecodeFailure, DecodeFailureKind, DecodeOutcome, DecodePhase};
+
+#[cfg(test)]
+mod eof_tests;
+#[cfg(test)]
+mod observation_contract_tests;
+#[cfg(test)]
+mod recording_contract_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyProtocol {
@@ -58,7 +71,7 @@ pub struct ProxyEvent {
     pub decoded: serde_json::Value,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DproxyError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -103,21 +116,57 @@ impl ProxyRecorder {
     }
 
     pub fn record_chunk(&mut self, direction: Direction, chunk: &[u8]) -> Result<(), DproxyError> {
+        self.record_chunk_impl(direction, chunk, None::<&mut fn(DecodeFailure)>)
+    }
+
+    /// Deliver independently owned decode failures without accumulating a session.
+    /// Event indices refer to decoded events in this chunk, not persisted lines.
+    /// The callback runs before event writes, including before a fatal return.
+    /// Raw-write failures skip decoding. Fatal decoding still skips event writes;
+    /// associated events may never reach disk. A callback must be quick and must
+    /// apply its own retention bound. Callback panics are not intercepted.
+    pub fn record_chunk_with_observer(
+        &mut self,
+        direction: Direction,
+        chunk: &[u8],
+        observer: &mut impl FnMut(DecodeFailure),
+    ) -> Result<(), DproxyError> {
+        self.record_chunk_impl(direction, chunk, Some(observer))
+    }
+
+    fn record_chunk_impl<F: FnMut(DecodeFailure)>(
+        &mut self,
+        direction: Direction,
+        chunk: &[u8],
+        observer: Option<&mut F>,
+    ) -> Result<(), DproxyError> {
         if chunk.is_empty() {
             return Ok(());
         }
-
-        let events = match direction {
+        let decoder = match direction {
             Direction::HostToDevice => {
                 self.host_to_device_raw.write_all(chunk)?;
-                self.host_to_device_decoder.push(direction, chunk)?
+                &mut self.host_to_device_decoder
             }
             Direction::DeviceToHost => {
                 self.device_to_host_raw.write_all(chunk)?;
-                self.device_to_host_decoder.push(direction, chunk)?
+                &mut self.device_to_host_decoder
             }
         };
-
+        let events = if let Some(observer) = observer {
+            let (events, failures, fatal) = decoder
+                .push_preserving_errors(direction, chunk)
+                .into_parts();
+            for failure in failures {
+                observer(failure);
+            }
+            if let Some(error) = fatal {
+                return Err(error);
+            }
+            events
+        } else {
+            decoder.push(direction, chunk)?
+        };
         self.write_events(events)
     }
 
@@ -138,14 +187,43 @@ impl ProxyRecorder {
     }
 
     fn write_events(&mut self, events: Vec<ProxyEvent>) -> Result<(), DproxyError> {
-        for event in events {
-            serde_json::to_writer(&mut self.events, &event)?;
-            self.events.write_all(b"\n")?;
-            eprintln!("[{}] {} {}", event.protocol, event.direction, event.summary);
-        }
-        self.events.flush()?;
-        Ok(())
+        write_events_to(&mut self.events, events, |event| {
+            write_event_diagnostic(&mut std::io::stderr().lock(), event)
+        })
     }
+}
+
+fn write_events_to(
+    writer: &mut impl Write,
+    events: Vec<ProxyEvent>,
+    mut diagnostic: impl FnMut(&ProxyEvent) -> std::io::Result<()>,
+) -> Result<(), DproxyError> {
+    for event in events {
+        serde_json::to_writer(&mut *writer, &event)?;
+        writer.write_all(b"\n")?;
+        diagnostic(&event)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_event_diagnostic(writer: &mut impl Write, event: &ProxyEvent) -> std::io::Result<()> {
+    writeln!(writer, "{}", diagnostic_event_summary(event))
+}
+
+fn diagnostic_event_summary(event: &ProxyEvent) -> String {
+    let protocol = match event.protocol.as_str() {
+        "lockdown" => "lockdown",
+        "dtx" => "dtx",
+        "xpc" => "xpc",
+        "binary" => "binary",
+        _ => "custom",
+    };
+    format!(
+        "[{protocol}] {} summary={}",
+        event.direction,
+        crate::redaction::diagnostic_id(&event.summary)
+    )
 }
 
 pub async fn proxy_bidirectional<L, R>(
@@ -157,7 +235,67 @@ where
     L: AsyncRead + AsyncWrite + Unpin,
     R: AsyncRead + AsyncWrite + Unpin,
 {
-    let recorder = std::sync::Arc::new(tokio::sync::Mutex::new(recorder));
+    proxy_bidirectional_impl(local, remote, recorder, None::<fn(DecodeFailure)>).await
+}
+
+/// Stream owned decode failures from both directions through one serialized
+/// synchronous callback. Returned forwarding/recording errors remain primary.
+/// The callback runs under the recording mutex before forwarding; keep it quick
+/// and bound caller-owned retention. It does not certify remote cleanup/reuse.
+pub async fn proxy_bidirectional_with_observer<L, R>(
+    local: L,
+    remote: R,
+    recorder: ProxyRecorder,
+    observer: impl FnMut(DecodeFailure) + Send,
+) -> Result<(), DproxyError>
+where
+    L: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + AsyncWrite + Unpin,
+{
+    proxy_bidirectional_impl(local, remote, recorder, Some(observer)).await
+}
+
+struct Recording<F> {
+    recorder: ProxyRecorder,
+    observer: Option<F>,
+    local_eof: bool,
+}
+
+impl<F> Recording<F> {
+    fn finish_direction(&self, direction: Direction) -> Result<(), DproxyError> {
+        let decoder = match direction {
+            Direction::HostToDevice => &self.recorder.host_to_device_decoder,
+            Direction::DeviceToHost => &self.recorder.device_to_host_decoder,
+        };
+        if decoder.protocol != ProxyProtocol::Binary
+            && (!decoder.buffer.is_empty() || decoder.xpc_buffered_bytes != 0)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "dproxy peer closed inside a protocol frame",
+            )
+            .into());
+        }
+        Ok(())
+    }
+}
+
+async fn proxy_bidirectional_impl<L, R, F>(
+    local: L,
+    remote: R,
+    recorder: ProxyRecorder,
+    observer: Option<F>,
+) -> Result<(), DproxyError>
+where
+    L: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + AsyncWrite + Unpin,
+    F: FnMut(DecodeFailure) + Send,
+{
+    let recorder = std::sync::Arc::new(tokio::sync::Mutex::new(Recording {
+        recorder,
+        observer,
+        local_eof: false,
+    }));
     let (local_reader, local_writer) = tokio::io::split(local);
     let (remote_reader, remote_writer) = tokio::io::split(remote);
 
@@ -179,27 +317,57 @@ where
     Ok(())
 }
 
-async fn pump<R, W>(
+async fn pump<R, W, F>(
     mut reader: R,
     mut writer: W,
     direction: Direction,
-    recorder: std::sync::Arc<tokio::sync::Mutex<ProxyRecorder>>,
+    recorder: std::sync::Arc<tokio::sync::Mutex<Recording<F>>>,
 ) -> Result<(), DproxyError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
+    F: FnMut(DecodeFailure) + Send,
 {
     let mut buf = [0u8; 16 * 1024];
     loop {
-        let read = reader.read(&mut buf).await?;
+        let read = match reader.read(&mut buf).await {
+            Ok(read) => read,
+            Err(error) => {
+                // Apple lockdown TLS services may omit close_notify after our
+                // client ends the session. Accept that shutdown only after a
+                // complete local EOF and a complete remote protocol frame.
+                let recording = recorder.lock().await;
+                if matches!(direction, Direction::DeviceToHost)
+                    && error.kind() == std::io::ErrorKind::UnexpectedEof
+                    && recording.local_eof
+                    && recording.recorder.device_to_host_decoder.protocol != ProxyProtocol::Binary
+                {
+                    recording.finish_direction(direction)?;
+                    drop(recording);
+                    writer.shutdown().await?;
+                    return Ok(());
+                }
+                return Err(error.into());
+            }
+        };
         if read == 0 {
+            {
+                let mut recording = recorder.lock().await;
+                recording.finish_direction(direction)?;
+                if matches!(direction, Direction::HostToDevice) {
+                    recording.local_eof = true;
+                }
+            }
             writer.shutdown().await?;
             return Ok(());
         }
 
         {
-            let mut recorder = recorder.lock().await;
-            recorder.record_chunk(direction, &buf[..read])?;
+            let mut recording = recorder.lock().await;
+            let Recording {
+                recorder, observer, ..
+            } = &mut *recording;
+            recorder.record_chunk_impl(direction, &buf[..read], observer.as_mut())?;
         }
 
         writer.write_all(&buf[..read]).await?;
@@ -233,11 +401,47 @@ impl StreamDecoder {
         direction: Direction,
         chunk: &[u8],
     ) -> Result<Vec<ProxyEvent>, DproxyError> {
+        self.push_impl(direction, chunk, false).into_result()
+    }
+
+    /// Decode with owned failures, partial events and the original fatal outcome.
+    /// Independent failures are not serialized into the legacy event schema.
+    /// Local guards have typed kinds but no fabricated native error/class.
+    /// After a DTX error, later input is explicitly marked ignored.
+    /// Legacy recorder methods use `push`; observer methods opt in here.
+    pub fn push_preserving_errors(&mut self, direction: Direction, chunk: &[u8]) -> DecodeOutcome {
+        self.push_impl(direction, chunk, true)
+    }
+
+    fn push_impl(&mut self, direction: Direction, chunk: &[u8], preserve: bool) -> DecodeOutcome {
+        let mut outcome = DecodeOutcome::new();
+        outcome.fatal_error = self
+            .decode_chunk(direction, chunk, preserve, &mut outcome)
+            .err();
+        outcome
+    }
+
+    fn decode_chunk(
+        &mut self,
+        direction: Direction,
+        chunk: &[u8],
+        preserve: bool,
+        outcome: &mut DecodeOutcome,
+    ) -> Result<(), DproxyError> {
         if self.protocol == ProxyProtocol::Dtx && self.dtx_broken {
-            return Ok(Vec::new());
+            outcome.input_ignored = true;
+            return Ok(());
         }
 
         let new_len = self.buffer.len().checked_add(chunk.len()).ok_or_else(|| {
+            outcome.observe_guard(
+                preserve,
+                direction,
+                DecodePhase::Buffer,
+                DecodeFailureKind::ResourceLimit,
+                None,
+                false,
+            );
             DproxyError::Protocol(format!(
                 "decoder buffer length overflow: current {}, incoming {}",
                 self.buffer.len(),
@@ -245,21 +449,34 @@ impl StreamDecoder {
             ))
         })?;
         if new_len > MAX_DECODER_BUFFER {
+            outcome.observe_guard(
+                preserve,
+                direction,
+                DecodePhase::Buffer,
+                DecodeFailureKind::ResourceLimit,
+                None,
+                false,
+            );
             return Err(DproxyError::Protocol(format!(
                 "decoder buffer length {new_len} exceeds limit {MAX_DECODER_BUFFER}"
             )));
         }
         self.buffer.extend_from_slice(chunk);
         match self.protocol {
-            ProxyProtocol::Lockdown => Ok(self.decode_lockdown(direction)),
-            ProxyProtocol::Dtx => Ok(self.decode_dtx(direction)),
-            ProxyProtocol::Xpc => self.decode_xpc(direction),
-            ProxyProtocol::Binary => Ok(Vec::new()),
+            ProxyProtocol::Lockdown => self.decode_lockdown(direction, preserve, outcome),
+            ProxyProtocol::Dtx => self.decode_dtx(direction, preserve, outcome),
+            ProxyProtocol::Xpc => return self.decode_xpc(direction, preserve, outcome),
+            ProxyProtocol::Binary => {}
         }
+        Ok(())
     }
 
-    fn decode_lockdown(&mut self, direction: Direction) -> Vec<ProxyEvent> {
-        let mut events = Vec::new();
+    fn decode_lockdown(
+        &mut self,
+        direction: Direction,
+        preserve: bool,
+        outcome: &mut DecodeOutcome,
+    ) {
         loop {
             if self.buffer.len() < 4 {
                 break;
@@ -270,7 +487,15 @@ impl StreamDecoder {
             let frame_len = match 4usize.checked_add(len) {
                 Some(frame_len) if frame_len <= MAX_DECODER_BUFFER => frame_len,
                 _ => {
-                    events.push(decoder_error_event(
+                    outcome.observe_guard(
+                        preserve,
+                        direction,
+                        DecodePhase::Lockdown,
+                        DecodeFailureKind::ResourceLimit,
+                        None,
+                        true,
+                    );
+                    outcome.events.push(decoder_error_event(
                         direction,
                         self.protocol,
                         format!(
@@ -289,8 +514,11 @@ impl StreamDecoder {
             let payload = self.buffer.split_to(len).freeze();
             let decoded = plist::from_bytes::<plist::Value>(&payload)
                 .map(plist_to_json)
-                .unwrap_or_else(|_| serde_json::json!({"raw": hex::encode(payload)}));
-            events.push(ProxyEvent {
+                .unwrap_or_else(|error| {
+                    outcome.observe_native(preserve, direction, DecodePhase::Lockdown, None, error);
+                    serde_json::json!({"raw": hex::encode(payload)})
+                });
+            outcome.events.push(ProxyEvent {
                 timestamp_ms: now_ms(),
                 direction: direction.as_str().to_string(),
                 protocol: self.protocol.as_str().to_string(),
@@ -298,17 +526,15 @@ impl StreamDecoder {
                 decoded,
             });
         }
-        events
     }
 
-    fn decode_dtx(&mut self, direction: Direction) -> Vec<ProxyEvent> {
-        let mut events = Vec::new();
+    fn decode_dtx(&mut self, direction: Direction, preserve: bool, outcome: &mut DecodeOutcome) {
         loop {
             match crate::services::dtx::decode_dtx_message_from_bytes(&self.buffer) {
                 Ok(Some((message, consumed))) => {
                     let _ = self.buffer.split_to(consumed);
                     let decoded = dtx_message_to_json(&message);
-                    events.push(ProxyEvent {
+                    outcome.events.push(ProxyEvent {
                         timestamp_ms: now_ms(),
                         direction: direction.as_str().to_string(),
                         protocol: self.protocol.as_str().to_string(),
@@ -318,29 +544,44 @@ impl StreamDecoder {
                 }
                 Ok(None) => break,
                 Err(err) => {
-                    events.push(decoder_error_event(
+                    let event = decoder_error_event(
                         direction,
                         self.protocol,
                         format!("DTX decode error: {err}"),
-                    ));
+                    );
+                    outcome.observe_native(preserve, direction, DecodePhase::Dtx, None, err);
+                    outcome.events.push(event);
                     self.buffer.clear();
                     self.dtx_broken = true;
                     break;
                 }
             }
         }
-        events
     }
 
-    fn decode_xpc(&mut self, direction: Direction) -> Result<Vec<ProxyEvent>, DproxyError> {
-        let mut events = Vec::new();
+    fn decode_xpc(
+        &mut self,
+        direction: Direction,
+        preserve: bool,
+        outcome: &mut DecodeOutcome,
+    ) -> Result<(), DproxyError> {
         loop {
             if self.consume_xpc_preface() {
                 break;
             }
 
             let Some((stream_id, frame_type, frame_flags, payload, consumed)) =
-                try_take_h2_frame(&self.buffer).map_err(DproxyError::Protocol)?
+                try_take_h2_frame(&self.buffer).map_err(|error| {
+                    outcome.observe_guard(
+                        preserve,
+                        direction,
+                        DecodePhase::H2Frame,
+                        DecodeFailureKind::ResourceLimit,
+                        None,
+                        false,
+                    );
+                    DproxyError::Protocol(error)
+                })?
             else {
                 break;
             };
@@ -349,11 +590,29 @@ impl StreamDecoder {
                 continue;
             }
 
-            self.append_xpc_stream_data(stream_id, &payload)?;
+            self.append_xpc_stream_data(stream_id, &payload)
+                .inspect_err(|_| {
+                    outcome.observe_guard(
+                        preserve,
+                        direction,
+                        DecodePhase::XpcStream,
+                        DecodeFailureKind::ResourceLimit,
+                        Some(stream_id),
+                        false,
+                    );
+                })?;
 
             loop {
                 let (message_result, consumed) = {
                     let Some(stream_buffer) = self.xpc_streams.get_mut(&stream_id) else {
+                        outcome.observe_guard(
+                            preserve,
+                            direction,
+                            DecodePhase::XpcStream,
+                            DecodeFailureKind::InvalidState,
+                            Some(stream_id),
+                            false,
+                        );
                         return Err(DproxyError::Protocol(format!(
                             "XPC stream {stream_id} buffer disappeared while decoding"
                         )));
@@ -370,7 +629,7 @@ impl StreamDecoder {
                             .as_ref()
                             .map(xpc_value_to_json)
                             .unwrap_or(serde_json::Value::Null);
-                        events.push(ProxyEvent {
+                        outcome.events.push(ProxyEvent {
                             timestamp_ms: now_ms(),
                             direction: direction.as_str().to_string(),
                             protocol: self.protocol.as_str().to_string(),
@@ -380,7 +639,42 @@ impl StreamDecoder {
                     }
                     Ok(None) => break,
                     Err(err) => {
-                        events.push(decoder_error_event(direction, self.protocol, err));
+                        let summary = err.legacy_summary();
+                        match err {
+                            XpcDecodeError::Header(error) | XpcDecodeError::Flags(error) => outcome
+                                .observe_native(
+                                    preserve,
+                                    direction,
+                                    DecodePhase::XpcMessage,
+                                    Some(stream_id),
+                                    error,
+                                ),
+                            XpcDecodeError::BodyLength(error) => outcome.observe_native(
+                                preserve,
+                                direction,
+                                DecodePhase::XpcMessage,
+                                Some(stream_id),
+                                error,
+                            ),
+                            XpcDecodeError::Native(error) => outcome.observe_native(
+                                preserve,
+                                direction,
+                                DecodePhase::XpcMessage,
+                                Some(stream_id),
+                                error,
+                            ),
+                            XpcDecodeError::LengthOverflow => outcome.observe_guard(
+                                preserve,
+                                direction,
+                                DecodePhase::XpcMessage,
+                                DecodeFailureKind::ResourceLimit,
+                                Some(stream_id),
+                                true,
+                            ),
+                        }
+                        outcome
+                            .events
+                            .push(decoder_error_event(direction, self.protocol, summary));
                         self.clear_xpc_stream(stream_id);
                         break;
                     }
@@ -394,7 +688,15 @@ impl StreamDecoder {
                 self.xpc_streams.remove(&stream_id);
             }
             if frame_flags & FLAG_END_STREAM != 0 && self.xpc_streams.contains_key(&stream_id) {
-                events.push(decoder_error_event(
+                outcome.observe_guard(
+                    preserve,
+                    direction,
+                    DecodePhase::XpcEndStream,
+                    DecodeFailureKind::IncompleteMessage,
+                    Some(stream_id),
+                    true,
+                );
+                outcome.events.push(decoder_error_event(
                     direction,
                     self.protocol,
                     format!("XPC stream {stream_id} ended with an incomplete message"),
@@ -402,7 +704,7 @@ impl StreamDecoder {
                 self.clear_xpc_stream(stream_id);
             }
         }
-        Ok(events)
+        Ok(())
     }
 
     fn unknown_xpc_stream_count(&self) -> usize {
@@ -551,28 +853,44 @@ fn try_take_h2_frame(buffer: &[u8]) -> Result<Option<DecodedH2Frame>, String> {
     )))
 }
 
-fn try_take_xpc_message(buffer: &mut BytesMut) -> Result<Option<crate::xpc::XpcMessage>, String> {
+enum XpcDecodeError {
+    Header(std::array::TryFromSliceError),
+    Flags(std::array::TryFromSliceError),
+    BodyLength(std::io::Error),
+    Native(crate::xpc::XpcError),
+    LengthOverflow,
+}
+
+impl XpcDecodeError {
+    fn legacy_summary(&self) -> String {
+        match self {
+            Self::Header(_) => "invalid XPC header".into(),
+            Self::Flags(_) => "invalid XPC flags".into(),
+            Self::BodyLength(error) => error.to_string(),
+            Self::Native(error) => error.to_string(),
+            Self::LengthOverflow => "XPC message length overflow".into(),
+        }
+    }
+}
+
+fn try_take_xpc_message(
+    buffer: &mut BytesMut,
+) -> Result<Option<crate::xpc::XpcMessage>, XpcDecodeError> {
     if buffer.len() < 24 {
         return Ok(None);
     }
 
-    let declared_body_len = u64::from_le_bytes(
-        buffer[8..16]
-            .try_into()
-            .map_err(|_| "invalid XPC header".to_string())?,
-    );
-    let message_flags = u32::from_le_bytes(
-        buffer[4..8]
-            .try_into()
-            .map_err(|_| "invalid XPC flags".to_string())?,
-    );
+    let declared_body_len =
+        u64::from_le_bytes(buffer[8..16].try_into().map_err(XpcDecodeError::Header)?);
+    let message_flags = u32::from_le_bytes(buffer[4..8].try_into().map_err(XpcDecodeError::Flags)?);
     let body_len = crate::xpc::message::checked_xpc_body_len(
         declared_body_len,
         crate::xpc::message::xpc_body_limit_for_flags(message_flags),
-    )?;
+    )
+    .map_err(XpcDecodeError::BodyLength)?;
     let total = 24usize
         .checked_add(body_len)
-        .ok_or_else(|| "XPC message length overflow".to_string())?;
+        .ok_or(XpcDecodeError::LengthOverflow)?;
     if buffer.len() < total {
         return Ok(None);
     }
@@ -580,7 +898,7 @@ fn try_take_xpc_message(buffer: &mut BytesMut) -> Result<Option<crate::xpc::XpcM
     let payload = buffer.split_to(total).freeze();
     crate::xpc::message::decode_message(payload)
         .map(Some)
-        .map_err(|err| err.to_string())
+        .map_err(XpcDecodeError::Native)
 }
 
 fn summarize_lockdown(decoded: &serde_json::Value) -> String {
@@ -605,6 +923,10 @@ fn summarize_dtx(message: &crate::services::dtx::DtxMessage) -> String {
         crate::services::dtx::DtxPayload::Response(value) => format!(
             "{}.{} c{} response {:?}",
             message.identifier, message.conversation_idx, message.channel_code, value
+        ),
+        crate::services::dtx::DtxPayload::Error(_) => format!(
+            "{}.{} c{} peer error",
+            message.identifier, message.conversation_idx, message.channel_code
         ),
         crate::services::dtx::DtxPayload::Notification { name, .. } => format!(
             "{}.{} c{} notify {}",
@@ -657,6 +979,9 @@ fn dtx_message_to_json(message: &crate::services::dtx::DtxMessage) -> serde_json
             "type": "response",
             "value": nsobject_to_json(value),
         }),
+        crate::services::dtx::DtxPayload::Error(value) => {
+            serde_json::json!({"type": "error", "value": nsobject_to_json(value)})
+        }
         crate::services::dtx::DtxPayload::Notification { name, object } => serde_json::json!({
             "type": "notification",
             "name": name,
@@ -740,31 +1065,7 @@ fn xpc_value_to_json(value: &crate::xpc::XpcValue) -> serde_json::Value {
 }
 
 fn plist_to_json(value: plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::String(value) => serde_json::Value::String(value),
-        plist::Value::Boolean(value) => serde_json::Value::Bool(value),
-        plist::Value::Integer(value) => value
-            .as_signed()
-            .map(serde_json::Value::from)
-            .or_else(|| value.as_unsigned().map(serde_json::Value::from))
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Real(value) => serde_json::Number::from_f64(value)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Data(bytes) => serde_json::Value::String(hex::encode(bytes)),
-        plist::Value::Array(values) => {
-            serde_json::Value::Array(values.into_iter().map(plist_to_json).collect())
-        }
-        plist::Value::Dictionary(values) => serde_json::Value::Object(
-            values
-                .into_iter()
-                .map(|(key, value)| (key, plist_to_json(value)))
-                .collect(),
-        ),
-        plist::Value::Date(value) => serde_json::Value::String(value.to_xml_format()),
-        plist::Value::Uid(value) => serde_json::Value::from(value.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::into_json(value, PlistJsonPolicy::new(DataEncoding::HexString))
 }
 
 fn now_ms() -> u128 {
@@ -799,6 +1100,22 @@ mod tests {
     use indexmap::IndexMap;
 
     use super::*;
+
+    #[test]
+    fn recorder_diagnostics_hide_payload_while_explicit_record_keeps_it() {
+        let secret = "synthetic-private-key-UDID-token-device-data";
+        let event = ProxyEvent {
+            timestamp_ms: 0,
+            direction: Direction::HostToDevice.as_str().into(),
+            protocol: secret.into(),
+            summary: secret.into(),
+            decoded: serde_json::json!({"PrivateKey": secret}),
+        };
+        assert!(serde_json::to_string(&event).unwrap().contains(secret));
+        let diagnostic = diagnostic_event_summary(&event);
+        assert!(!diagnostic.contains(secret));
+        assert!(diagnostic.starts_with("[custom] host->device summary=id:"));
+    }
 
     #[test]
     fn lockdown_decoder_extracts_complete_frames() {
@@ -1006,4 +1323,15 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].decoded["request"], "ping");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        true,
+    );
 }

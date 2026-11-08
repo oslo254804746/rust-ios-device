@@ -30,10 +30,16 @@
 //! control.
 //!
 //! ```
-//! use ios_core::{pair_new_device, PairedCredentials, PairingTransportError};
 //! use ios_core::{default_pair_record_path, LockdownClient, LockdownError, PairRecord};
 //! use ios_core::{archive_string, NsUrl, XcTestConfiguration, XctCapabilities};
 //! use ios_core::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
+//! ```
+//!
+//! Remote pairing requires both `tunnel` and `mdns` (or `coredevice-base`):
+//!
+//! ```
+//! # #[cfg(all(feature = "tunnel", feature = "mdns"))]
+//! use ios_core::{pair_new_device, PairedCredentials, PairingTransportError};
 //! ```
 //!
 //! ```compile_fail
@@ -69,12 +75,21 @@ pub(crate) mod lockdown;
 pub(crate) mod mux;
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 pub(crate) mod pairing_transport;
+/// Explicit policies for ordinary plist JSON results.
+pub mod plist_json;
 pub(crate) mod proto;
 #[cfg(feature = "tunnel")]
 pub(crate) mod psk_tls;
+/// Diagnostic display policy for sensitive identifiers.
+pub mod redaction;
 /// Owner-only persistence for files containing private-key material.
 pub mod secret_file;
 pub mod services;
+/// Bounded ownership and cancellation for finite existing-trust operations.
+pub mod session;
+pub(crate) mod staged_file;
+#[cfg(test)]
+pub(crate) mod test_native;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub(crate) mod tunnel;
@@ -83,26 +98,46 @@ pub(crate) mod xpc;
 pub use credentials::{PersistedCredentials, RemotePairingRecord};
 #[cfg(feature = "mdns")]
 pub use device::discover_paired_mobdev2_devices;
+#[cfg(feature = "mobileactivation")]
+pub use device::DeactivationFallbackError;
 pub use device::{
-    connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,
-    ConnectOptions, ConnectedDevice, InternationalConfiguration, PairedMobdev2Device,
-    ServiceStream,
+    connect_direct_usb_tunnel, connect_direct_usb_tunnel_with_owner, connect_remote_pairing_tunnel,
+    connect_remote_pairing_tunnel_with_owner, connect_tcp_lockdown_tunnel,
+    connect_tcp_lockdown_tunnel_with_owner, connect_with_owner, ConnectOptions, ConnectedDevice,
+    InitialRsdProbe, InitialRsdProbeSkipReason, InitialRsdProbeState, InternationalConfiguration,
+    PairedMobdev2Device, ServiceStream, TunnelOwner, TunnelReservation, TunnelReservationOwner,
+};
+#[cfg(feature = "tunnel")]
+pub use device::{
+    connect_direct_usb_tunnel_owned_with_owner, connect_owned_with_owner,
+    connect_remote_pairing_tunnel_owned_with_owner, connect_tcp_lockdown_tunnel_owned_with_owner,
+    observe_existing_rsd, ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdRoute,
+    ExistingRsdService, ExistingRsdServiceEvidence, OwnedConnectedDevice,
+};
+#[cfg(feature = "tunnel-private-ip")]
+pub use device::{
+    prepare_direct_usb_tunnel_owned_with_owner_at, prepare_owned_with_owner_at,
+    prepare_remote_pairing_tunnel_owned_with_owner_at,
+    prepare_tcp_lockdown_tunnel_owned_with_owner_at, PreparedConnectedDevice,
 };
 #[cfg(feature = "mdns")]
 pub use discovery::{browse_mobdev2, browse_remotepairing, BonjourService, MdnsDevice};
 pub use discovery::{DeviceEvent, DeviceInfo};
-pub use error::CoreError;
+pub use error::{classify_error, CoreError, ErrorClass, OperationCancelled};
+pub use flate2;
 pub use lockdown::{
-    default_pair_record_path, handshake_only_service_tls, recv_lockdown, send_lockdown,
-    start_lockdown_session, start_service, strip_service_tls, wrap_service_tls, GetValueRequest,
-    GetValueResponse, LockdownClient, LockdownError, PairRecord, PairRecordError, QueryTypeRequest,
+    default_pair_record_path, handshake_only_service_tls, load_pair_record_escrow_bag,
+    recv_lockdown, send_lockdown, start_lockdown_session, start_service,
+    start_service_preserving_errors, strip_service_tls, wrap_service_tls,
+    wrap_service_tls_with_server_name, GetValueRequest, GetValueResponse, LockdownClient,
+    LockdownError, LockdownResponseError, PairRecord, PairRecordError, QueryTypeRequest,
     QueryTypeResponse, RemoveValueRequest, ServiceInfo, SetValueRequest, StartServiceRequest,
     StartServiceResponse, StartSessionRequest, StartSessionResponse, StopSessionRequest,
     ValueOperationResponse, CORE_DEVICE_PROXY, LOCKDOWN_PORT,
 };
 #[cfg(feature = "supervised-pair")]
 pub use lockdown::{pair_supervised, save_pair_record, FullPairRecord};
-pub use mux::MuxClient;
+pub use mux::{MuxClient, MuxError};
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 pub use pairing_transport::{pair_new_device, PairedCredentials, PairingTransportError};
 pub use proto::nskeyedarchiver_encode::{
@@ -128,6 +163,8 @@ pub use services::companion;
 pub use services::configuration;
 #[cfg(feature = "crashreport")]
 pub use services::crashreport;
+#[cfg(feature = "cryptex")]
+pub use services::cryptex;
 #[cfg(feature = "debugserver")]
 pub use services::debugserver;
 #[cfg(feature = "deviceinfo")]
@@ -207,16 +244,48 @@ pub use services::testmanager::workflow::{
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};
-pub use tunnel::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
+#[cfg(feature = "tunnel")]
+pub use tunnel::forward::ForwardReaderCleanup;
+#[cfg(feature = "tunnel-userspace")]
+pub use tunnel::tun::userspace::UserspaceTunDevice;
+#[cfg(feature = "tunnel-userspace")]
+pub use tunnel::tun::userspace::LOCAL_PROXY_CONNECT_ACK as USERSPACE_PROXY_CONNECT_ACK;
+#[cfg(feature = "tunnel-private-ip")]
+pub use tunnel::TunnelShutdownFailure;
+pub use tunnel::{
+    build_icmpv6_echo_request, TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager,
+    UserspaceNudgeWatchdog, ICMPV6_ECHO_PACKET_LEN, USERSPACE_NUDGE_DELAY,
+};
+#[cfg(feature = "tunnel-private-ip")]
+pub use tunnel::{PhaseCleanup, PhaseFailure};
 #[cfg(feature = "tunnel")]
 pub use xpc::client::XpcClient;
+#[cfg(feature = "tunnel")]
+pub use xpc::h2_raw::{H2Error, H2Framer};
 pub use xpc::message::flags as xpc_message_flags;
 pub use xpc::message::{
     decode_message as decode_xpc_message, encode_message as encode_xpc_message, XpcMessage,
     XpcValue,
 };
-pub use xpc::rsd::{RsdHandshake, ServiceDescriptor, RSD_PORT};
+#[cfg(feature = "tunnel")]
+pub use xpc::rsd::{
+    owned_handshake_on_framer, OwnedRsdHandshake, OwnedRsdService, OwnedRsdServices,
+};
+pub use xpc::rsd::{RsdFeatureEvidence, RsdHandshake, ServiceDescriptor, RSD_PORT};
 pub use xpc::XpcError;
+
+#[doc(hidden)]
+pub mod test_support {
+    #[cfg(feature = "test-tunnel")]
+    pub use crate::device::prepare_scripted_tunnel_stream_at;
+    #[cfg(feature = "test-tunnel")]
+    pub use crate::device::{scripted_tunnel_peer, ScriptedTunnelConnection, ScriptedTunnelReport};
+    #[cfg(feature = "tunnel")]
+    pub use crate::xpc::h2_raw::{H2Framer, H2_PREFACE};
+    pub use crate::xpc::message::{decode_message, encode_message, flags, XpcMessage};
+    #[cfg(feature = "tunnel")]
+    pub use crate::xpc::rsd::{handshake_on_framer, initialize_xpc_connection_on_framer};
+}
 
 /// List all currently connected iOS devices (via usbmuxd).
 pub async fn list_devices() -> Result<Vec<DeviceInfo>, CoreError> {
@@ -242,3 +311,6 @@ pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice
 pub async fn discover_mdns() -> Result<impl futures_core::Stream<Item = MdnsDevice>, CoreError> {
     discovery::discover_mdns().await
 }
+
+#[cfg(test)]
+mod plist_contract;

@@ -4,10 +4,8 @@
 //! selectors. This module translates the selectors into stable Rust events and
 //! accumulates those events into a serializable summary for CLI and binding users.
 
-use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::services::dtx::{DtxMessage, DtxPayload, NSObject};
 use serde::Serialize;
@@ -15,6 +13,124 @@ use serde::Serialize;
 const MAX_CAPTURED_LOG_MESSAGES: usize = 16_384;
 const MAX_CAPTURED_LOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_JUNIT_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+const MAX_SUITES: usize = 1024;
+const MAX_CASES_PER_SUITE: usize = 4096;
+const MAX_TOTAL_CASES: usize = 16_384;
+const MAX_NAME_LEN: usize = 512;
+const MAX_FAILURE_MESSAGE_BYTES: usize = 64 * 1024;
+const MAX_FAILURE_FILE_BYTES: usize = 1024;
+
+#[cfg(test)]
+#[test]
+fn review_regression_finish_only_cases_cannot_bypass_limits() {
+    let mut recorder = TestRunRecorder::default();
+    recorder.apply(TestExecutionEvent::BeganPlan);
+    recorder.apply(TestExecutionEvent::SuiteStarted {
+        name: "suite".into(),
+        started_at: None,
+    });
+    for index in 0..=MAX_CASES_PER_SUITE {
+        recorder.apply(TestExecutionEvent::CaseFinished {
+            class_name: "Class".into(),
+            method_name: format!("case{index}"),
+            status: TestCaseStatus::Passed,
+            duration_seconds: 0.0,
+        });
+    }
+    recorder.apply(TestExecutionEvent::FinishedPlan);
+    let summary = recorder.summary();
+    assert!(summary.suites[0].cases.len() <= MAX_CASES_PER_SUITE);
+    assert!(
+        summary.terminal_outcome().is_err(),
+        "discarded results cannot pass CI"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn review_regression_failure_only_cases_and_finish_only_suites_are_bounded() {
+    let mut recorder = TestRunRecorder::default();
+    for index in 0..=MAX_CASES_PER_SUITE {
+        recorder.apply(TestExecutionEvent::CaseFailed {
+            class_name: "Class".into(),
+            method_name: format!("case{index}"),
+            message: "failure".into(),
+            file: None,
+            line: None,
+        });
+    }
+    assert_eq!(recorder.total_cases(), MAX_CASES_PER_SUITE);
+    assert!(recorder.summary().results_truncated);
+    for index in 0..=MAX_SUITES {
+        recorder.apply(TestExecutionEvent::SuiteFinished {
+            name: format!("suite{index}"),
+            finished_at: None,
+            test_count: 0,
+            skipped: 0,
+            failures: 0,
+            expected_failures: 0,
+            unexpected_failures: 0,
+            uncaught_exceptions: 0,
+            test_duration_seconds: 0.0,
+            total_duration_seconds: 0.0,
+        });
+    }
+    assert_eq!(recorder.summary().suites.len(), MAX_SUITES);
+}
+
+#[cfg(test)]
+#[test]
+fn review_regression_long_case_identifiers_never_alias_and_truncation_reaches_junit() {
+    let mut recorder = TestRunRecorder::default();
+    recorder.apply(TestExecutionEvent::BeganPlan);
+    for suffix in ["a", "b"] {
+        recorder.apply(TestExecutionEvent::CaseFinished {
+            class_name: "Class".into(),
+            method_name: format!("{}{suffix}", "m".repeat(MAX_NAME_LEN)),
+            status: TestCaseStatus::Passed,
+            duration_seconds: 0.0,
+        });
+    }
+    recorder.apply(TestExecutionEvent::FinishedPlan);
+    let summary = recorder.summary();
+    assert_eq!(summary.total_tests, 2);
+    assert_ne!(
+        summary.suites[0].cases[0].method_name,
+        summary.suites[0].cases[1].method_name
+    );
+    assert!(summary.results_truncated);
+    assert_eq!(
+        summary.terminal_outcome(),
+        Err(TestRunIncomplete::ResultsTruncated)
+    );
+    assert!(summary
+        .to_junit_xml()
+        .contains("XCTest result evidence exceeded ingestion limits"));
+}
+
+#[cfg(test)]
+#[test]
+fn review_regression_log_truncation_stays_within_byte_budget() {
+    let mut recorder = TestRunRecorder::default();
+    recorder.apply(TestExecutionEvent::Log {
+        message: "界".repeat(MAX_CAPTURED_LOG_BYTES / 3 + 1),
+        debug: false,
+    });
+    let summary = recorder.summary();
+    assert!(summary.logs_truncated);
+    assert!(summary.logs.iter().map(String::len).sum::<usize>() <= MAX_CAPTURED_LOG_BYTES);
+}
+
+fn truncate_name(mut s: String, max: usize) -> String {
+    if s.len() > max {
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
 
 /// XCTest selector emitted when a test plan begins.
 pub const DID_BEGIN_EXECUTING_TEST_PLAN_SELECTOR: &str = "_XCT_didBeginExecutingTestPlan";
@@ -299,6 +415,166 @@ pub struct TestRunSummary {
     pub debug_logs: Vec<String>,
     /// Suite summaries.
     pub suites: Vec<TestSuiteSummary>,
+    /// Whether log output exceeded bounds and was truncated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub logs_truncated: bool,
+    /// Result events or fields were rejected/truncated at ingestion; cannot pass CI.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub results_truncated: bool,
+}
+
+/// Supported terminal test outcomes, independent of workflow cleanup or reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestRunOutcome {
+    /// Every observed case has a supported terminal status and no failure was reported.
+    Passed,
+    /// XCTest reported failed cases or a nonzero suite failure counter.
+    FailedTests,
+}
+
+/// Observed result evidence that cannot establish a supported terminal outcome.
+#[derive(Clone, PartialEq, Eq)]
+pub enum TestRunIncomplete {
+    /// Result evidence was discarded by an ingestion limit.
+    ResultsTruncated,
+    /// No plan-start event was observed.
+    PlanNotBegun,
+    /// No plan-finish event was observed.
+    PlanNotFinished,
+    /// A case has no final status, is stalled, or has an unsupported status.
+    CaseStatus {
+        /// Class name reported by XCTest.
+        class_name: String,
+        /// Method name reported by XCTest.
+        method_name: String,
+        /// Actual status, if one was reported.
+        status: Option<TestCaseStatus>,
+    },
+    /// A suite reported uncaught exceptions.
+    UncaughtExceptions {
+        /// Suite name reported by XCTest.
+        suite_name: String,
+        /// Number of reported exceptions.
+        count: u64,
+    },
+}
+
+impl std::fmt::Debug for TestRunIncomplete {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ResultsTruncated => formatter.write_str("TestRunIncomplete::ResultsTruncated"),
+            Self::PlanNotBegun => formatter.write_str("TestRunIncomplete::PlanNotBegun"),
+            Self::PlanNotFinished => formatter.write_str("TestRunIncomplete::PlanNotFinished"),
+            Self::CaseStatus { status, .. } => formatter
+                .debug_struct("TestRunIncomplete::CaseStatus")
+                .field("class_name_retained", &true)
+                .field("method_name_retained", &true)
+                .field("status", &terminal_status_label(status.as_ref()))
+                .field("status_retained", &status.is_some())
+                .finish(),
+            Self::UncaughtExceptions { count, .. } => formatter
+                .debug_struct("TestRunIncomplete::UncaughtExceptions")
+                .field("suite_name_retained", &true)
+                .field("count", count)
+                .finish(),
+        }
+    }
+}
+
+fn terminal_status_label(status: Option<&TestCaseStatus>) -> &'static str {
+    match status {
+        None => "unfinished",
+        Some(TestCaseStatus::Stalled) => "stalled",
+        Some(TestCaseStatus::Other(_)) => "unsupported",
+        Some(TestCaseStatus::Passed) => "passed",
+        Some(TestCaseStatus::Failed) => "failed",
+        Some(TestCaseStatus::Skipped) => "skipped",
+        Some(TestCaseStatus::ExpectedFailure) => "expected_failure",
+    }
+}
+
+impl std::fmt::Display for TestRunIncomplete {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ResultsTruncated => {
+                formatter.write_str("XCTest result evidence exceeded ingestion limits")
+            }
+            Self::PlanNotBegun => formatter.write_str("XCTest plan did not report a start"),
+            Self::PlanNotFinished => formatter.write_str("XCTest plan did not report completion"),
+            Self::CaseStatus { status, .. } => write!(
+                formatter,
+                "XCTest case has no supported terminal status ({})",
+                terminal_status_label(status.as_ref())
+            ),
+            Self::UncaughtExceptions { count, .. } => write!(
+                formatter,
+                "XCTest suite reported {count} uncaught exception(s)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TestRunIncomplete {}
+
+impl TestRunSummary {
+    /// Count failure evidence without allowing a suite counter to hide concrete failed cases.
+    pub fn failure_count(&self) -> u64 {
+        self.failed_tests
+            .max(self.suites.iter().fold(0u64, |total, suite| {
+                let cases = suite
+                    .cases
+                    .iter()
+                    .filter(|case| case.status == Some(TestCaseStatus::Failed))
+                    .count() as u64;
+                total.saturating_add(
+                    suite
+                        .failures
+                        .unwrap_or(0)
+                        .max(suite.unexpected_failures.unwrap_or(0))
+                        .max(cases),
+                )
+            }))
+    }
+
+    /// Validate actual observed terminal evidence. An empty began-and-finished plan is valid;
+    /// this does not infer selection coverage or compare nested suite counters.
+    pub fn terminal_outcome(&self) -> Result<TestRunOutcome, TestRunIncomplete> {
+        if self.results_truncated {
+            return Err(TestRunIncomplete::ResultsTruncated);
+        }
+        if !self.began {
+            return Err(TestRunIncomplete::PlanNotBegun);
+        }
+        if !self.finished {
+            return Err(TestRunIncomplete::PlanNotFinished);
+        }
+        for suite in &self.suites {
+            if let Some(count) = suite.uncaught_exceptions.filter(|count| *count > 0) {
+                return Err(TestRunIncomplete::UncaughtExceptions {
+                    suite_name: suite.name.clone(),
+                    count,
+                });
+            }
+            for case in &suite.cases {
+                if matches!(
+                    case.status,
+                    None | Some(TestCaseStatus::Stalled) | Some(TestCaseStatus::Other(_))
+                ) {
+                    return Err(TestRunIncomplete::CaseStatus {
+                        class_name: case.class_name.clone(),
+                        method_name: case.method_name.clone(),
+                        status: case.status.clone(),
+                    });
+                }
+            }
+        }
+        Ok(if self.failure_count() > 0 {
+            TestRunOutcome::FailedTests
+        } else {
+            TestRunOutcome::Passed
+        })
+    }
 }
 
 /// Stateful accumulator for XCTest events.
@@ -311,9 +587,14 @@ pub struct TestRunRecorder {
     log_bytes: usize,
     debug_log_bytes: usize,
     suites: Vec<TestSuiteSummary>,
+    logs_truncated: bool,
+    results_truncated: bool,
 }
 
 impl TestRunRecorder {
+    fn total_cases(&self) -> usize {
+        self.suites.iter().map(|s| s.cases.len()).sum()
+    }
     /// Apply one event to the current run summary.
     pub fn apply(&mut self, event: TestExecutionEvent) {
         match event {
@@ -323,6 +604,12 @@ impl TestRunRecorder {
                 self.push_log(message, debug);
             }
             TestExecutionEvent::SuiteStarted { name, started_at } => {
+                if self.suites.len() >= MAX_SUITES {
+                    self.results_truncated = true;
+                    return;
+                }
+                let name = self.bounded_identifier(name);
+                let started_at = self.bounded_field(started_at, MAX_NAME_LEN);
                 self.suites.push(TestSuiteSummary {
                     name,
                     started_at,
@@ -350,7 +637,10 @@ impl TestRunRecorder {
                 test_duration_seconds,
                 total_duration_seconds,
             } => {
-                let suite = self.find_or_create_suite(&name);
+                let finished_at = self.bounded_field(finished_at, MAX_NAME_LEN);
+                let Some(suite) = self.find_or_create_suite(&name) else {
+                    return;
+                };
                 suite.finished_at = finished_at;
                 suite.test_count = Some(test_count);
                 suite.skipped = Some(skipped);
@@ -365,11 +655,19 @@ impl TestRunRecorder {
                 class_name,
                 method_name,
             } => {
-                // XCTest can report a suite name different from its test class. The Go listener
-                // attaches such cases to the currently running suite rather than creating a
-                // second class-named suite.
-                let suite = self.find_or_create_active_suite(&class_name);
-                suite.cases.push(TestCaseSummary {
+                let class_name = self.bounded_identifier(class_name);
+                let method_name = self.bounded_identifier(method_name);
+                let total_cases = self.total_cases();
+                let Some(index) = self.active_suite_index(&class_name) else {
+                    return;
+                };
+                if total_cases >= MAX_TOTAL_CASES
+                    || self.suites[index].cases.len() >= MAX_CASES_PER_SUITE
+                {
+                    self.results_truncated = true;
+                    return;
+                }
+                self.suites[index].cases.push(TestCaseSummary {
                     class_name,
                     method_name,
                     status: None,
@@ -384,7 +682,19 @@ impl TestRunRecorder {
                 file,
                 line,
             } => {
-                let case = self.find_or_create_case(&class_name, &method_name);
+                let message = if message.len() > MAX_FAILURE_MESSAGE_BYTES {
+                    self.results_truncated = true;
+                    let mut message =
+                        truncate_name(message, MAX_FAILURE_MESSAGE_BYTES - "... [truncated]".len());
+                    message.push_str("... [truncated]");
+                    message
+                } else {
+                    message
+                };
+                let file = self.bounded_field(file, MAX_FAILURE_FILE_BYTES);
+                let Some(case) = self.find_or_create_case(&class_name, &method_name) else {
+                    return;
+                };
                 case.status = Some(TestCaseStatus::Failed);
                 case.failure = Some(TestFailure {
                     message,
@@ -398,7 +708,13 @@ impl TestRunRecorder {
                 status,
                 duration_seconds,
             } => {
-                let case = self.find_or_create_case(&class_name, &method_name);
+                if matches!(&status, TestCaseStatus::Other(value) if value.len() > MAX_NAME_LEN) {
+                    self.results_truncated = true;
+                    return;
+                }
+                let Some(case) = self.find_or_create_case(&class_name, &method_name) else {
+                    return;
+                };
                 if case.status != Some(TestCaseStatus::Stalled) {
                     case.status = Some(status);
                 }
@@ -418,13 +734,17 @@ impl TestRunRecorder {
             .suites
             .iter()
             .map(|suite| {
-                suite.failures.unwrap_or_else(|| {
-                    suite
-                        .cases
-                        .iter()
-                        .filter(|case| case.status == Some(TestCaseStatus::Failed))
-                        .count() as u64
-                })
+                suite
+                    .failures
+                    .unwrap_or(0)
+                    .max(suite.unexpected_failures.unwrap_or(0))
+                    .max(
+                        suite
+                            .cases
+                            .iter()
+                            .filter(|case| case.status == Some(TestCaseStatus::Failed))
+                            .count() as u64,
+                    )
             })
             .sum();
         let skipped_tests = self
@@ -456,6 +776,8 @@ impl TestRunRecorder {
             logs: self.logs.clone(),
             debug_logs: self.debug_logs.clone(),
             suites: self.suites.clone(),
+            logs_truncated: self.logs_truncated,
+            results_truncated: self.results_truncated,
         }
     }
 
@@ -466,15 +788,24 @@ impl TestRunRecorder {
             (&mut self.logs, &mut self.log_bytes)
         };
         if logs.len() >= MAX_CAPTURED_LOG_MESSAGES || *used >= MAX_CAPTURED_LOG_BYTES {
+            if !self.logs_truncated {
+                self.logs_truncated = true;
+                if logs.len() < MAX_CAPTURED_LOG_MESSAGES && *used + 64 <= MAX_CAPTURED_LOG_BYTES {
+                    logs.push("[log output truncated: message or byte limit reached]".into());
+                }
+            }
             return;
         }
         let remaining = MAX_CAPTURED_LOG_BYTES - *used;
         if message.len() > remaining {
-            let mut end = remaining;
+            let marker = "... [truncated]";
+            let mut end = remaining.saturating_sub(marker.len());
             while end > 0 && !message.is_char_boundary(end) {
                 end -= 1;
             }
             message.truncate(end);
+            message.push_str(&marker[..marker.len().min(remaining)]);
+            self.logs_truncated = true;
         }
         if message.is_empty() {
             return;
@@ -483,29 +814,73 @@ impl TestRunRecorder {
         logs.push(message);
     }
 
-    fn find_or_create_case(&mut self, class_name: &str, method_name: &str) -> &mut TestCaseSummary {
-        let suite = self.find_or_create_active_suite(class_name);
-        if let Some(index) = suite
-            .cases
-            .iter()
-            .rposition(|case| case.class_name == class_name && case.method_name == method_name)
-        {
-            return &mut suite.cases[index];
-        }
-        let index = suite.cases.len();
-        suite.cases.push(TestCaseSummary {
-            class_name: class_name.to_string(),
-            method_name: method_name.to_string(),
-            status: None,
-            duration_seconds: None,
-            failure: None,
-        });
-        &mut suite.cases[index]
+    fn bounded_field(&mut self, value: Option<String>, max: usize) -> Option<String> {
+        value.map(|value| {
+            if value.len() > max {
+                self.results_truncated = true;
+            }
+            truncate_name(value, max)
+        })
     }
 
-    fn find_or_create_suite(&mut self, name: &str) -> &mut TestSuiteSummary {
+    fn bounded_identifier(&mut self, value: String) -> String {
+        if value.len() <= MAX_NAME_LEN {
+            return value;
+        }
+        use sha2::Digest;
+        self.results_truncated = true;
+        // Retain readable bounded labels without conflating common-prefix identities.
+        let digest = hex::encode(sha2::Sha256::digest(value.as_bytes()));
+        let mut label = truncate_name(value, MAX_NAME_LEN - digest.len() - 1);
+        label.push('#');
+        label.push_str(&digest);
+        label
+    }
+
+    fn find_or_create_case(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<&mut TestCaseSummary> {
+        let class_name = self.bounded_identifier(class_name.to_owned());
+        let method_name = self.bounded_identifier(method_name.to_owned());
+        let total_cases = self.total_cases();
+        let suite_index = self.active_suite_index(&class_name)?;
+        let existing = self.suites[suite_index]
+            .cases
+            .iter()
+            .rposition(|case| case.class_name == class_name && case.method_name == method_name);
+        let index = if let Some(index) = existing {
+            index
+        } else {
+            if total_cases >= MAX_TOTAL_CASES
+                || self.suites[suite_index].cases.len() >= MAX_CASES_PER_SUITE
+            {
+                self.results_truncated = true;
+                return None;
+            }
+            let suite = &mut self.suites[suite_index];
+            let index = suite.cases.len();
+            suite.cases.push(TestCaseSummary {
+                class_name: class_name.to_string(),
+                method_name: method_name.to_string(),
+                status: None,
+                duration_seconds: None,
+                failure: None,
+            });
+            index
+        };
+        Some(&mut self.suites[suite_index].cases[index])
+    }
+
+    fn suite_index(&mut self, name: &str) -> Option<usize> {
+        let name = self.bounded_identifier(name.to_owned());
         if let Some(index) = self.suites.iter().rposition(|suite| suite.name == name) {
-            return &mut self.suites[index];
+            return Some(index);
+        }
+        if self.suites.len() >= MAX_SUITES {
+            self.results_truncated = true;
+            return None;
         }
         let index = self.suites.len();
         self.suites.push(TestSuiteSummary {
@@ -522,18 +897,23 @@ impl TestRunRecorder {
             total_duration_seconds: None,
             cases: Vec::new(),
         });
-        &mut self.suites[index]
+        Some(index)
     }
 
-    fn find_or_create_active_suite(&mut self, class_name: &str) -> &mut TestSuiteSummary {
+    fn find_or_create_suite(&mut self, name: &str) -> Option<&mut TestSuiteSummary> {
+        let index = self.suite_index(name)?;
+        Some(&mut self.suites[index])
+    }
+
+    fn active_suite_index(&mut self, class_name: &str) -> Option<usize> {
         if let Some(index) = self
             .suites
             .iter()
             .rposition(|suite| suite.test_count.is_none())
         {
-            return &mut self.suites[index];
+            return Some(index);
         }
-        self.find_or_create_suite(class_name)
+        self.suite_index(class_name)
     }
 }
 
@@ -569,6 +949,10 @@ impl TestRunSummary {
 
         let diagnostic = diagnostic
             .map(|value| truncate_utf8(value, MAX_JUNIT_DIAGNOSTIC_BYTES))
+            .or_else(|| {
+                self.results_truncated
+                    .then(|| TestRunIncomplete::ResultsTruncated.to_string())
+            })
             .or_else(|| (!self.finished).then(|| "XCTest run did not finish".to_string()));
         if let Some(diagnostic) = diagnostic.as_deref() {
             total_errors = total_errors.saturating_add(1);
@@ -639,65 +1023,11 @@ pub fn write_junit_xml_atomic_with_diagnostic(
 }
 
 fn write_junit_xml_text_atomic(xml: &str, path: &Path) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "JUnit output path must name a file",
-        )
-    })?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = std::process::id();
-
-    for attempt in 0..16u32 {
-        let temporary = parent.join(format!(
-            ".{}.ios-junit-{pid}-{nonce}-{attempt}.tmp",
-            file_name.to_string_lossy()
-        ));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = match options.open(&temporary) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        };
-        let result = file.write_all(xml.as_bytes()).and_then(|_| file.sync_all());
-        drop(file);
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-        match replace_file_atomically(&temporary, path) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                let _ = fs::remove_file(&temporary);
-                return Err(error);
-            }
-        }
-    }
-
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not allocate a unique temporary JUnit output path",
-    ))
-}
-
-#[cfg(windows)]
-fn replace_file_atomically(temporary: &Path, destination: &Path) -> io::Result<()> {
-    crate::fs_replace::move_file_replace(temporary, destination)
-}
-
-#[cfg(not(windows))]
-fn replace_file_atomically(temporary: &Path, destination: &Path) -> io::Result<()> {
-    fs::rename(temporary, destination)
+    let (mut file, pending) = crate::staged_file::create(path)?;
+    let result = file.write_all(xml.as_bytes()).and_then(|_| file.sync_all());
+    drop(file);
+    result?;
+    pending.commit()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -949,5 +1279,253 @@ fn identifier_suite_name(value: Option<&NSObject>) -> Option<String> {
             .and_then(NSObject::as_str)
             .map(ToString::to_string),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod terminal_outcome_tests {
+    use super::*;
+
+    fn recorded_case(status: Option<TestCaseStatus>) -> TestRunRecorder {
+        let mut recorder = TestRunRecorder::default();
+        recorder.apply(TestExecutionEvent::BeganPlan);
+        recorder.apply(TestExecutionEvent::CaseStarted {
+            class_name: "Cases".into(),
+            method_name: "example".into(),
+        });
+        if let Some(status) = status {
+            recorder.apply(TestExecutionEvent::CaseFinished {
+                class_name: "Cases".into(),
+                method_name: "example".into(),
+                status,
+                duration_seconds: 0.1,
+            });
+        }
+        recorder.apply(TestExecutionEvent::FinishedPlan);
+        recorder
+    }
+
+    fn finish_suite(recorder: &mut TestRunRecorder, failures: u64, uncaught_exceptions: u64) {
+        recorder.apply(TestExecutionEvent::SuiteFinished {
+            name: "Cases".into(),
+            finished_at: None,
+            test_count: 1,
+            skipped: 0,
+            failures,
+            expected_failures: 0,
+            unexpected_failures: 0,
+            uncaught_exceptions,
+            test_duration_seconds: 0.1,
+            total_duration_seconds: 0.1,
+        });
+    }
+
+    #[test]
+    fn terminal_outcome_requires_observed_start_and_finish_but_allows_empty_plan() {
+        let mut recorder = TestRunRecorder::default();
+        recorder.apply(TestExecutionEvent::FinishedPlan);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Err(TestRunIncomplete::PlanNotBegun)
+        );
+        let mut recorder = TestRunRecorder::default();
+        recorder.apply(TestExecutionEvent::BeganPlan);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Err(TestRunIncomplete::PlanNotFinished)
+        );
+        recorder.apply(TestExecutionEvent::FinishedPlan);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Ok(TestRunOutcome::Passed)
+        );
+        assert_eq!(recorder.summary().total_tests, 0);
+    }
+
+    #[test]
+    fn terminal_outcome_rejects_unfinished_stalled_unknown_and_uncaught_evidence() {
+        for status in [
+            None,
+            Some(TestCaseStatus::Stalled),
+            Some(TestCaseStatus::Other("future".into())),
+        ] {
+            let summary = recorded_case(status.clone()).summary();
+            assert_eq!(
+                summary.terminal_outcome(),
+                Err(TestRunIncomplete::CaseStatus {
+                    class_name: "Cases".into(),
+                    method_name: "example".into(),
+                    status,
+                })
+            );
+            assert!(summary.finished);
+        }
+        let mut recorder = recorded_case(Some(TestCaseStatus::Passed));
+        finish_suite(&mut recorder, 0, 2);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Err(TestRunIncomplete::UncaughtExceptions {
+                suite_name: "Cases".into(),
+                count: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_failure_evidence_survives_zero_suite_counter_and_zero_summary_counter() {
+        let mut recorder = recorded_case(Some(TestCaseStatus::Failed));
+        finish_suite(&mut recorder, 0, 0);
+        let mut summary = recorder.summary();
+        assert_eq!(summary.suites[0].failures, Some(0));
+        assert_eq!(summary.failed_tests, 1);
+        summary.failed_tests = 0;
+        assert_eq!(summary.failure_count(), 1);
+        assert_eq!(summary.terminal_outcome(), Ok(TestRunOutcome::FailedTests));
+        let mut recorder = recorded_case(Some(TestCaseStatus::Passed));
+        finish_suite(&mut recorder, 3, 0);
+        assert_eq!(recorder.summary().failure_count(), 3);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Ok(TestRunOutcome::FailedTests)
+        );
+        let mut recorder = recorded_case(Some(TestCaseStatus::Passed));
+        recorder.apply(TestExecutionEvent::SuiteFinished {
+            name: "Cases".into(),
+            finished_at: None,
+            test_count: 1,
+            skipped: 0,
+            failures: 0,
+            expected_failures: 0,
+            unexpected_failures: 2,
+            uncaught_exceptions: 0,
+            test_duration_seconds: 0.1,
+            total_duration_seconds: 0.1,
+        });
+        let summary = recorder.summary();
+        assert_eq!(summary.suites[0].failures, Some(0));
+        assert_eq!(summary.suites[0].unexpected_failures, Some(2));
+        assert_eq!(summary.failed_tests, 2);
+        assert_eq!(summary.failure_count(), 2);
+        assert_eq!(summary.terminal_outcome(), Ok(TestRunOutcome::FailedTests));
+    }
+
+    #[test]
+    fn expected_failure_details_and_skipped_cases_are_supported_terminal_outcomes() {
+        for status in [
+            TestCaseStatus::Passed,
+            TestCaseStatus::Skipped,
+            TestCaseStatus::ExpectedFailure,
+        ] {
+            let mut recorder = TestRunRecorder::default();
+            recorder.apply(TestExecutionEvent::BeganPlan);
+            recorder.apply(TestExecutionEvent::CaseFailed {
+                class_name: "Cases".into(),
+                method_name: "example".into(),
+                message: "retained description".into(),
+                file: None,
+                line: None,
+            });
+            recorder.apply(TestExecutionEvent::CaseFinished {
+                class_name: "Cases".into(),
+                method_name: "example".into(),
+                status,
+                duration_seconds: 0.1,
+            });
+            recorder.apply(TestExecutionEvent::FinishedPlan);
+            let summary = recorder.summary();
+            assert!(summary.suites[0].cases[0].failure.is_some());
+            assert_eq!(summary.failed_tests, 0);
+            assert_eq!(summary.terminal_outcome(), Ok(TestRunOutcome::Passed));
+        }
+    }
+
+    #[test]
+    fn incomplete_error_keeps_names_and_status_while_debug_and_display_are_safe() {
+        let error = TestRunIncomplete::CaseStatus {
+            class_name: "private-class-marker".into(),
+            method_name: "private-method-marker".into(),
+            status: Some(TestCaseStatus::Other("private-status-marker".into())),
+        };
+        let debug = format!("{error:?}");
+        let display = error.to_string();
+        for marker in [
+            "private-class-marker",
+            "private-method-marker",
+            "private-status-marker",
+        ] {
+            assert!(!debug.contains(marker));
+            assert!(!display.contains(marker));
+        }
+        let TestRunIncomplete::CaseStatus {
+            class_name,
+            method_name,
+            status,
+        } = error
+        else {
+            panic!("original terminal evidence lost");
+        };
+        assert_eq!(class_name, "private-class-marker");
+        assert_eq!(method_name, "private-method-marker");
+        assert_eq!(
+            status,
+            Some(TestCaseStatus::Other("private-status-marker".into()))
+        );
+        let error = TestRunIncomplete::UncaughtExceptions {
+            suite_name: "private-suite-marker".into(),
+            count: 2,
+        };
+        assert!(!format!("{error:?}").contains("private-suite-marker"));
+        assert!(!error.to_string().contains("private-suite-marker"));
+    }
+
+    #[test]
+    fn test_recorder_bounds_and_truncation_markers() {
+        let mut recorder = TestRunRecorder::default();
+        recorder.apply(TestExecutionEvent::BeganPlan);
+
+        // Long suite name gets truncated
+        let long_name = "s".repeat(1000);
+        recorder.apply(TestExecutionEvent::SuiteStarted {
+            name: long_name.clone(),
+            started_at: None,
+        });
+        assert_eq!(recorder.suites[0].name.len(), MAX_NAME_LEN);
+
+        // Long case class and method get truncated
+        let long_case = "c".repeat(1000);
+        recorder.apply(TestExecutionEvent::CaseStarted {
+            class_name: long_case.clone(),
+            method_name: long_case.clone(),
+        });
+        assert_eq!(recorder.suites[0].cases[0].class_name.len(), MAX_NAME_LEN);
+        assert_eq!(recorder.suites[0].cases[0].method_name.len(), MAX_NAME_LEN);
+
+        // Long failure message gets truncated with marker
+        let long_message = "m".repeat(100_000);
+        recorder.apply(TestExecutionEvent::CaseFailed {
+            class_name: long_case.clone(),
+            method_name: long_case.clone(),
+            message: long_message,
+            file: Some("f".repeat(2000)),
+            line: Some(42),
+        });
+        let case = &recorder.suites[0].cases[0];
+        let failure = case.failure.as_ref().unwrap();
+        assert!(failure.message.ends_with("... [truncated]"));
+        assert!(failure.message.len() <= MAX_FAILURE_MESSAGE_BYTES + 32);
+        assert_eq!(failure.file.as_ref().unwrap().len(), MAX_FAILURE_FILE_BYTES);
+
+        // Huge log message gets truncated with marker
+        let huge_log = "L".repeat(9 * 1024 * 1024);
+        recorder.apply(TestExecutionEvent::Log {
+            message: huge_log,
+            debug: false,
+        });
+        assert!(recorder.logs_truncated);
+        assert!(recorder.logs.iter().any(|l| l.contains("truncated")));
+
+        recorder.apply(TestExecutionEvent::FinishedPlan);
+        let summary = recorder.summary();
+        assert!(summary.logs_truncated);
     }
 }

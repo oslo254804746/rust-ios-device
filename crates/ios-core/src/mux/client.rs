@@ -100,3 +100,70 @@ impl MuxClient {
         t
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{classify_error, CoreError, ErrorClass};
+    use std::{error::Error, io, time::Duration};
+    use tokio::{io::AsyncWriteExt, net::TcpListener};
+
+    #[tokio::test]
+    async fn actual_root_read_buid_keeps_request_and_native_response_fault_or_success() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for malformed in [true, false] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let endpoint = format!("tcp://{}", listener.local_addr().unwrap());
+                let device = tokio::spawn(async move {
+                    let (mut peer, _) = listener.accept().await.unwrap();
+                    let request: plist::Dictionary = recv_plist(&mut peer).await.unwrap();
+                    assert_eq!(request["MessageType"].as_string(), Some("ReadBUID"));
+                    assert_eq!(request["ProgName"].as_string(), Some("ios-rs"));
+                    assert_eq!(
+                        request["ClientVersionString"].as_string(),
+                        Some("ios-rs-0.1")
+                    );
+                    assert_eq!(request["BundleId"].as_string(), Some("rs.ios"));
+                    assert_eq!(request["kLibUSBMuxVersion"].as_unsigned_integer(), Some(3));
+                    if malformed {
+                        peer.write_all(&encode_message(b"<plist><dict>owned-private", 1).unwrap())
+                            .await
+                            .unwrap();
+                    } else {
+                        send_plist(
+                            &mut peer,
+                            &plist::Dictionary::from_iter([("BUID", "owned-buid")]),
+                            1,
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    peer.shutdown().await.unwrap();
+                });
+                // Construct from the owned endpoint without changing process-wide environment.
+                let mut client = crate::MuxClient {
+                    stream: UsbmuxStream::connect(&endpoint).await.unwrap(),
+                    tag: 1,
+                };
+                let result = client.read_buid().await;
+                if malformed {
+                    let error = result.unwrap_err();
+                    assert_eq!(classify_error(&error), ErrorClass::Protocol);
+                    let MuxError::Io(source) = &error else {
+                        panic!("native response lost")
+                    };
+                    assert_eq!(source.kind(), io::ErrorKind::InvalidData);
+                    assert!(source.source().unwrap().is::<plist::Error>());
+                    assert_eq!(CoreError::from(error).class(), ErrorClass::Protocol);
+                } else {
+                    assert_eq!(result.unwrap(), "owned-buid");
+                }
+                assert_eq!(client.tag, 2);
+                device.await.unwrap();
+                drop(client);
+            }
+        })
+        .await
+        .expect("bounded owned public BUID exchange");
+    }
+}

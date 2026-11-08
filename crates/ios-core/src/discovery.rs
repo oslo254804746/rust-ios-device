@@ -7,13 +7,58 @@ use tokio_stream::Stream;
 
 use crate::error::CoreError;
 
+#[cfg(feature = "mdns")]
+fn mdns_error(phase: &'static str, source: mdns_sd::Error) -> CoreError {
+    CoreError::Io(crate::error::context::retained_io(
+        std::io::ErrorKind::Other,
+        phase,
+        source,
+    ))
+}
+
+#[cfg(feature = "mdns")]
+#[path = "discovery_auth.rs"]
+pub(crate) mod auth;
+
+#[cfg(feature = "mdns")]
+struct BonjourBrowseGuard {
+    daemon: mdns_sd::ServiceDaemon,
+    service_type: &'static str,
+}
+
+#[cfg(feature = "mdns")]
+impl Drop for BonjourBrowseGuard {
+    fn drop(&mut self) {
+        // A browse can be cancelled by dropping its future/stream. Close the
+        // background daemon in that path too, not only on the timeout path.
+        let _ = self.daemon.stop_browse(self.service_type);
+        let _ = self.daemon.shutdown();
+    }
+}
+
 /// Summary info about a connected iOS device.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct DeviceInfo {
     pub udid: String,
     pub device_id: u32,
     pub connection_type: String,
     pub product_id: u16,
+}
+
+impl std::fmt::Debug for DeviceInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let connection_type = match self.connection_type.as_str() {
+            "USB" => "USB",
+            "Network" => "Network",
+            _ => "Other",
+        };
+        f.debug_struct("DeviceInfo")
+            .field("udid", &crate::redaction::diagnostic_id(&self.udid))
+            .field("device_id", &self.device_id)
+            .field("connection_type", &connection_type)
+            .field("product_id", &self.product_id)
+            .finish()
+    }
 }
 
 impl DeviceInfo {
@@ -28,10 +73,23 @@ impl DeviceInfo {
 }
 
 /// A device plug/unplug event.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum DeviceEvent {
     Attached(DeviceInfo),
     Detached { udid: String, device_id: u32 },
+}
+
+impl std::fmt::Debug for DeviceEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Attached(device) => f.debug_tuple("Attached").field(device).finish(),
+            Self::Detached { udid, device_id } => f
+                .debug_struct("Detached")
+                .field("udid", &crate::redaction::diagnostic_id(udid))
+                .field("device_id", device_id)
+                .finish(),
+        }
+    }
 }
 
 /// List all currently connected devices via usbmuxd.
@@ -77,15 +135,21 @@ pub async fn watch_devices() -> Result<impl Stream<Item = Result<DeviceEvent, Co
 pub async fn discover_mdns() -> Result<impl Stream<Item = MdnsDevice>, CoreError> {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
 
-    let mdns = ServiceDaemon::new().map_err(|e| CoreError::Other(format!("mDNS daemon: {e}")))?;
+    let mdns = ServiceDaemon::new().map_err(|error| mdns_error("create mDNS daemon", error))?;
 
     let service_type = "_remoted._tcp.local.";
-    let receiver = mdns
+    let guard = BonjourBrowseGuard {
+        daemon: mdns,
+        service_type,
+    };
+    let receiver = guard
+        .daemon
         .browse(service_type)
-        .map_err(|e| CoreError::Other(format!("mDNS browse: {e}")))?;
+        .map_err(|error| mdns_error("start mDNS browse", error))?;
 
     // Convert mdns_sd sync channel to async stream
     let stream = async_stream::stream! {
+        let _guard = guard;
         loop {
             match receiver.recv_async().await {
                 Ok(ServiceEvent::ServiceResolved(info)) => {
@@ -115,13 +179,23 @@ pub async fn discover_mdns() -> Result<impl Stream<Item = MdnsDevice>, CoreError
     Ok(stream)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg(feature = "mdns")]
 pub struct BonjourService {
     pub instance: String,
     pub port: u16,
     pub addresses: Vec<String>,
     pub properties: HashMap<String, String>,
+}
+
+#[cfg(feature = "mdns")]
+impl std::fmt::Debug for BonjourService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BonjourService")
+            .field("instance", &crate::redaction::diagnostic_id(&self.instance))
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "mdns")]
@@ -135,11 +209,19 @@ pub async fn browse_remotepairing(timeout: Duration) -> Result<Vec<BonjourServic
 }
 
 pub fn mobdev2_wifi_mac(instance: &str) -> Option<&str> {
-    instance.split_once('@').map(|(mac, _)| mac)
+    let (mac, _) = instance.split_once('@')?;
+    if mac.len() != 17
+        || !mac
+            .split(':')
+            .all(|part| part.len() == 2 && part.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return None;
+    }
+    Some(mac)
 }
 
 /// A device discovered via mDNS.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[cfg(feature = "mdns")]
 pub struct MdnsDevice {
     /// Device's IPv6 address (USB-Ethernet or Wi-Fi)
@@ -153,16 +235,31 @@ pub struct MdnsDevice {
 }
 
 #[cfg(feature = "mdns")]
+impl std::fmt::Debug for MdnsDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MdnsDevice")
+            .field("udid", &crate::redaction::diagnostic_id(&self.udid))
+            .field("rsd_port", &self.rsd_port)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "mdns")]
 async fn browse_bonjour_service(
-    service_type: &str,
+    service_type: &'static str,
     timeout: Duration,
 ) -> Result<Vec<BonjourService>, CoreError> {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
 
-    let mdns = ServiceDaemon::new().map_err(|e| CoreError::Other(format!("mDNS daemon: {e}")))?;
-    let receiver = mdns
+    let mdns = ServiceDaemon::new().map_err(|error| mdns_error("create mDNS daemon", error))?;
+    let guard = BonjourBrowseGuard {
+        daemon: mdns,
+        service_type,
+    };
+    let receiver = guard
+        .daemon
         .browse(service_type)
-        .map_err(|e| CoreError::Other(format!("mDNS browse: {e}")))?;
+        .map_err(|error| mdns_error("start mDNS browse", error))?;
 
     let deadline = Instant::now() + timeout;
     let mut services = HashMap::<String, BonjourService>::new();
@@ -176,6 +273,9 @@ async fn browse_bonjour_service(
         match tokio::time::timeout(remaining, receiver.recv_async()).await {
             Ok(Ok(ServiceEvent::ServiceResolved(info))) => {
                 let instance = info.get_fullname().to_string();
+                if services.len() >= 256 && !services.contains_key(&instance) {
+                    continue;
+                }
                 let entry = services
                     .entry(instance.clone())
                     .or_insert_with(|| BonjourService {
@@ -192,9 +292,17 @@ async fn browse_bonjour_service(
                     });
 
                 entry.port = info.get_port();
+                // TXT identifiers and auth tags rotate. Keep them from the
+                // same resolution event instead of retaining stale credentials.
+                entry.properties = info
+                    .get_properties()
+                    .iter()
+                    .take(64)
+                    .map(|property| (property.key().to_string(), property.val_str().to_string()))
+                    .collect();
                 for address in info.get_addresses() {
                     let full = address.to_string();
-                    if !entry.addresses.contains(&full) {
+                    if entry.addresses.len() < 16 && !entry.addresses.contains(&full) {
                         entry.addresses.push(full);
                     }
                 }
@@ -204,7 +312,9 @@ async fn browse_bonjour_service(
         }
     }
 
-    Ok(services.into_values().collect())
+    let mut services: Vec<_> = services.into_values().collect();
+    services.sort_by(|a, b| a.instance.cmp(&b.instance));
+    Ok(services)
 }
 
 #[derive(Default)]
@@ -242,7 +352,83 @@ impl DeviceEventMapper {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "mdns")]
+    #[test]
+    fn connection_native_mdns_keeps_opaque_backend_object_without_guessing_io() {
+        use std::error::Error;
+        for source in [
+            mdns_sd::Error::Again,
+            mdns_sd::Error::Msg("owned-private-mdns".into()),
+            mdns_sd::Error::ParseIpAddr("owned-private-mdns".into()),
+        ] {
+            // Backend objects exercise the exact four callers' shared adapter;
+            // no real multicast daemon or OS failure is manufactured here.
+            let expected = source.clone();
+            let error = super::mdns_error("create mDNS daemon", source);
+            assert_eq!(error.class(), crate::ErrorClass::Unknown);
+            let crate::CoreError::Io(io) = &error else {
+                panic!("backend lost")
+            };
+            assert_eq!(io.kind(), std::io::ErrorKind::Other);
+            assert_eq!(
+                io.source().unwrap().downcast_ref::<mdns_sd::Error>(),
+                Some(&expected)
+            );
+            assert!(!format!("{error:?} {:?}", io.get_ref()).contains("owned-private"));
+        }
+    }
+
     use super::*;
+
+    #[test]
+    fn discovery_debug_redacts_identifiers_but_device_selection_keeps_raw_fields() {
+        let secret = "synthetic-discovery-private-identifier";
+        let device = DeviceInfo {
+            udid: secret.into(),
+            device_id: 7,
+            connection_type: secret.into(),
+            product_id: 1,
+        };
+        let attached = DeviceEvent::Attached(device.clone());
+        let detached = DeviceEvent::Detached {
+            udid: secret.into(),
+            device_id: 7,
+        };
+        let mux = crate::mux::MuxDevice {
+            serial_number: secret.into(),
+            device_id: 7,
+            connection_type: secret.into(),
+            product_id: 1,
+        };
+        let output = format!("{device:?} {device:#?} {attached:?} {attached:#?} {detached:?} {detached:#?} {mux:?} {mux:#?}");
+        assert!(!output.contains(secret));
+        assert!(output.contains("id:"));
+        assert_eq!(device.udid, secret);
+        assert_eq!(serde_json::to_value(&device).unwrap()["udid"], secret);
+    }
+
+    #[cfg(feature = "mdns")]
+    #[test]
+    fn bonjour_debug_omits_txt_data_names_and_addresses() {
+        let secret = "synthetic-bonjour-private-data";
+        let service = BonjourService {
+            instance: secret.into(),
+            port: 1234,
+            addresses: vec![secret.into()],
+            properties: HashMap::from([(secret.into(), secret.into())]),
+        };
+        let device = MdnsDevice {
+            ipv6: "2001:db8::1234".parse().unwrap(),
+            rsd_port: 1234,
+            udid: secret.into(),
+            name: secret.into(),
+        };
+        let output = format!("{service:?} {service:#?} {device:?} {device:#?}");
+        assert!(!output.contains(secret));
+        assert!(!output.contains("2001:db8::1234"));
+        assert!(output.contains("1234"));
+        assert_eq!(service.properties[secret], secret);
+    }
 
     #[test]
     fn mapper_preserves_attached_device_details() {

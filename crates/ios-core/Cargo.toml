@@ -34,6 +34,7 @@ developer = [
     "accessibility_audit",
     "amfi",
     "btlogger",
+    "cryptex",
     "debugserver",
     "dproxy",
     "dtx",
@@ -57,6 +58,7 @@ management = [
 ios17 = [
     "apps",
     "configuration",
+    "cryptex",
     "deviceinfo",
     "diagnosticsservice",
     "dproxy",
@@ -76,10 +78,15 @@ ios17 = [
 coredevice-base = ["tunnel-userspace", "mdns"]
 coredevice-files = ["coredevice-base", "fileservice"]
 coredevice-info = ["coredevice-base", "deviceinfo"]
-mdns = ["dep:mdns-sd"]
+mdns = ["dep:mdns-sd", "dep:hmac", "dep:siphasher"]
 tunnel = ["dep:openssl", "dep:tokio-openssl"]
-tunnel-kernel = ["tunnel", "dep:tun-rs"]
-tunnel-userspace = ["tunnel", "dep:smoltcp"]
+# The private packet/IP engine is available to both selected final backends.
+# Enabling it alone does not enable the public userspace selection.
+tunnel-private-ip = ["tunnel", "dep:smoltcp", "dep:socket2", "dep:windows-sys"]
+tunnel-kernel = ["tunnel-private-ip", "dep:tun-rs", "dep:libloading"]
+tunnel-userspace = ["tunnel-private-ip"]
+# Explicit scripted authenticated-stream fixtures; deliberately absent from full.
+test-tunnel = ["tunnel-userspace"]
 supervised-pair = ["dep:openssl"]
 afc = []
 arbitration = []
@@ -107,16 +114,17 @@ instruments = ["dtx"]
 testmanager = ["dtx"]
 accessibility_audit = ["dtx"]
 debugserver = []
-fileservice = []
-deviceinfo = []
+fileservice = ["tunnel"]
+deviceinfo = ["tunnel"]
 imagemounter = ["dep:reqwest", "dep:zip"]
+cryptex = ["imagemounter", "tunnel"]
 pcap = []
 power_assertion = []
 preboard = []
 idam = []
 fetchsymbols = []
 ostrace = ["dep:tar"]
-pasteboard = ["tunnel", "mdns"]
+pasteboard = ["tunnel", "mdns", "notificationproxy"]
 configuration = ["tunnel"]
 orientation = ["tunnel"]
 iconservice = ["tunnel"]
@@ -129,9 +137,9 @@ installcoordination = ["tunnel"]
 icon_service = ["iconservice"]
 screen_capture = ["screencapture"]
 prepare = ["afc", "mcinstall", "supervised-pair"]
-restore = []
+restore = ["dep:reqwest", "dep:zip", "dep:sha1"]
 dproxy = ["dtx"]
-webinspector = []
+webinspector = ["dep:png"]
 full = [
     "classic",
     "developer",
@@ -144,6 +152,7 @@ full = [
 ]
 backup2-manifest = [
     "dep:rusqlite",
+    "dep:url",
     "dep:aes",
     "dep:aes-kw",
     "dep:cbc",
@@ -152,7 +161,7 @@ backup2-manifest = [
 ]
 
 [dependencies]
-tokio        = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tokio        = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
 bytes        = { workspace = true }
 zerocopy     = { workspace = true }
 thiserror    = { workspace = true }
@@ -187,15 +196,18 @@ tokio-openssl = { workspace = true, optional = true }
 h2           = { workspace = true }
 http         = { workspace = true }
 smoltcp      = { workspace = true, optional = true }
+socket2      = { version = "0.6.2", features = ["all"], optional = true }
 tun-rs       = { workspace = true, optional = true }
 p256         = { workspace = true }
 sha2         = { workspace = true }
 sha1         = { workspace = true, optional = true }
 aes          = { workspace = true, optional = true }
-aes-kw       = { workspace = true, optional = true }
+aes-kw       = { workspace = true, optional = true, features = ["std"] }
 cbc          = { workspace = true, optional = true }
 pbkdf2       = { workspace = true, optional = true, features = ["hmac", "sha1", "sha2"] }
 hkdf         = { workspace = true }
+hmac         = { workspace = true, optional = true }
+siphasher    = { workspace = true, optional = true }
 zeroize      = { workspace = true }
 subtle       = { workspace = true }
 num-bigint   = { workspace = true }
@@ -207,19 +219,35 @@ time         = { workspace = true }
 lz4_flex     = { workspace = true, optional = true }
 reqwest      = { workspace = true, optional = true }
 zip          = { workspace = true, optional = true }
+png          = { workspace = true, optional = true }
 crc32fast    = { workspace = true, optional = true }
 rusqlite     = { workspace = true, optional = true }
+url          = { version = "2.5", optional = true }
 tar          = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc         = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60.2", optional = true, features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_System_Threading", "Win32_Security"] }
+libloading = { version = "0.8.8", optional = true }
+
 [dev-dependencies]
-# `start_paused` test clocks let protocol tests advance virtual time
-# deterministically instead of racing real sleeps. Test-only: the production
-# feature set stays untouched.
-tokio        = { workspace = true, features = ["test-util"] }
+# A worker can block in controlled teardown while the timer drives shutdown.
+tokio        = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[test]]
+name = "accessibility_audit"
+required-features = ["accessibility_audit"]
+
+[[test]]
+name = "fetchsymbols"
+required-features = ["fetchsymbols"]
+
+[[test]]
+name = "ostrace"
+required-features = ["ostrace"]

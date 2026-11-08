@@ -1,0 +1,559 @@
+use super::super::{AttemptIdentity, Lifecycle, Route};
+use super::*;
+use crate::access::{AccessControl, Permission, Upstreams};
+use std::time::Duration;
+
+fn state() -> TunnelAgentState {
+    TunnelAgentState::with_source(
+        ios_core::TunMode::Userspace,
+        AccessControl::trusted_test_local(),
+        Upstreams::default(),
+        Arc::new(super::super::source::NoDevices),
+        Duration::from_secs(1),
+    )
+}
+
+fn authority(state: &TunnelAgentState, key: &str) -> DeviceAuthority {
+    state
+        .inner
+        .access
+        .authenticate(&axum::http::HeaderMap::new())
+        .unwrap()
+        .device_authority(Permission::ManageTunnels, key)
+        .ok()
+        .unwrap()
+}
+
+async fn manual(
+    state: &TunnelAgentState,
+    key: &str,
+) -> (Ticket, crate::cmd::tunnel::ControlIdentity, FailureVersion) {
+    manual_authorized(state, key, authority(state, key)).await
+}
+
+async fn manual_authorized(
+    state: &TunnelAgentState,
+    key: &str,
+    authority: DeviceAuthority,
+) -> (Ticket, crate::cmd::tunnel::ControlIdentity, FailureVersion) {
+    let ticket = state.inner.lifecycle.ticket(key).await.unwrap();
+    let mut manual_births = ticket
+        .prepare_manual_births::<1>(&state.inner.global_metadata_bytes)
+        .unwrap();
+    let slot = state.reserve_failure_slot(key).await.unwrap();
+    state
+        .record_failed_attempt(
+            key,
+            AttemptIdentity {
+                route: Route::Wifi(None),
+                native_id: None,
+            },
+            slot,
+            &ticket,
+        )
+        .await;
+    let failure = state.inner.failed_attempts.read().await[key]
+        .version
+        .clone();
+    ticket
+        .commit(|| {
+            ticket.establish_manual(
+                super::super::intent::RouteIntent::Wifi(None),
+                authority,
+                Some(failure.clone()),
+                None,
+                &mut manual_births,
+            )
+        })
+        .unwrap();
+    drop(manual_births);
+    let desired = ticket.desired().version;
+    (ticket, desired, failure)
+}
+
+#[tokio::test]
+async fn canonical_coordinator_key_buffer_and_fee_follow_last_ticket_after_table_drop() {
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(65536);
+    let bank = bank_birth.raw().clone();
+    let lifecycle = Lifecycle::with_metadata(bank_birth.clone()).unwrap();
+    let ticket = lifecycle.ticket("original-canonical-key").await.unwrap();
+    let pointer = ticket.udid().as_ptr();
+    let same = lifecycle.ticket(ticket.udid()).await.unwrap();
+    assert!(std::ptr::eq(same.udid().as_ptr(), pointer));
+    drop(lifecycle);
+    drop(same);
+    assert!(std::ptr::eq(ticket.udid().as_ptr(), pointer));
+    assert!(bank.available_permits() < 65536);
+    drop(ticket);
+    assert_eq!(bank.available_permits(), 65536);
+}
+
+#[tokio::test]
+async fn manual_preflight_revoked_authority_keeps_original_failure_and_exact_pending_tuple() {
+    use crate::access::test_support::{grant, PolicyFixture, DEVICE, TOKEN};
+    let policy = PolicyFixture::new(vec![grant(
+        TOKEN,
+        vec![Permission::ManageServer, Permission::ManageTunnels],
+    )]);
+    let access = AccessControl::from_file(policy.path.clone()).await.unwrap();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {TOKEN}").parse().unwrap(),
+    );
+    let principal = access.authenticate(&headers).unwrap();
+    let authorized = principal
+        .device_authority(Permission::ManageTunnels, DEVICE)
+        .ok()
+        .unwrap();
+    let state = TunnelAgentState::with_source(
+        ios_core::TunMode::Userspace,
+        access.clone(),
+        Upstreams::default(),
+        Arc::new(super::super::source::NoDevices),
+        Duration::from_secs(1),
+    );
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let mut plan =
+        Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
+    let (ticket, desired, failure) = manual_authorized(&state, DEVICE, authorized).await;
+    plan.collect().await;
+    assert_eq!(plan.selected(), 1);
+    policy.replace(vec![grant(TOKEN, vec![Permission::ManageServer])]);
+    access.reload(&principal).await.unwrap();
+    plan.into_inner()
+        .flush_collected(
+            &state,
+            &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(FailureVersion::ptr_eq(
+        &state.inner.failed_attempts.read().await[DEVICE].version,
+        &failure
+    ));
+    let pending = ticket.pending_success().unwrap();
+    assert!(
+        crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
+            && FailureVersion::ptr_eq(&pending.1.version, &failure)
+    );
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
+}
+
+#[tokio::test]
+async fn manual_preflight_stop_skips_old_writer_without_restarting_backoff() {
+    let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let mut stop = state.prepare_cutover::<3>().unwrap();
+    let mut plan =
+        Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
+    let (ticket, _, failure) = manual(&state, "stopped-before-cleanup").await;
+    plan.collect().await;
+    state.inner.lifecycle.stop(ticket.udid(), &mut stop).await;
+    drop(stop);
+    plan.into_inner()
+        .flush_collected(
+            &state,
+            &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(FailureVersion::ptr_eq(
+        &state.inner.failed_attempts.read().await[ticket.udid()].version,
+        &failure
+    ));
+    assert!(ticket.pending_success().is_none());
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
+}
+
+#[tokio::test(start_paused = true)]
+async fn manual_preflight_expired_authority_keeps_failure_and_unprocessed_pending() {
+    use crate::access::test_support::{grant, PolicyFixture, DEVICE, TOKEN};
+    let policy = PolicyFixture::new(vec![grant(TOKEN, vec![Permission::ManageTunnels])]);
+    let access = AccessControl::from_file(policy.path.clone()).await.unwrap();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {TOKEN}").parse().unwrap(),
+    );
+    let principal = access.authenticate(&headers).unwrap();
+    let authorized = principal
+        .device_authority(Permission::ManageTunnels, DEVICE)
+        .ok()
+        .unwrap();
+    let state = TunnelAgentState::with_source(
+        ios_core::TunMode::Userspace,
+        access,
+        Upstreams::default(),
+        Arc::new(super::super::source::NoDevices),
+        Duration::from_secs(1),
+    );
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let mut plan =
+        Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
+    let (ticket, desired, failure) = manual_authorized(&state, DEVICE, authorized).await;
+    plan.collect().await;
+    assert_eq!(plan.selected(), 1);
+    tokio::time::advance(Duration::from_secs(3601)).await;
+    plan.into_inner()
+        .flush_collected(
+            &state,
+            &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(FailureVersion::ptr_eq(
+        &state.inner.failed_attempts.read().await[DEVICE].version,
+        &failure
+    ));
+    let pending = ticket.pending_success().unwrap();
+    assert!(
+        crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
+            && FailureVersion::ptr_eq(&pending.1.version, &failure)
+    );
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
+}
+
+#[tokio::test]
+async fn actual_pending_clear_late_clock_restores_same_desired_and_failure_arcs() {
+    let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let (ticket, desired, failure) = manual(&state, "pending-clear-clock").await;
+    let deadline = super::super::scan::Deadline::new(Duration::from_millis(40)).unwrap();
+    let checks = std::sync::atomic::AtomicUsize::new(0);
+    let fenced = ticket.fenced();
+    let error = fenced
+        .commit(|| {
+            fenced.clear_success_checked(&desired, &failure, || {
+                if checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                deadline.check()
+            })
+        })
+        .unwrap_err();
+    assert!(error.is::<super::super::scan::DeadlineReached>());
+    assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let pending = ticket.pending_success().unwrap();
+    assert!(
+        crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
+            && FailureVersion::ptr_eq(&pending.1.version, &failure)
+    );
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
+}
+
+#[test]
+fn manual_preflight_actual_maximum_backings_exact_and_one_byte_refusal_refund() {
+    let lifecycle = Lifecycle::new();
+    let bytes = Preflight::bytes();
+    for limit in [bytes - 1, bytes] {
+        let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(limit);
+        let bank = bank_birth.raw().clone();
+        match Preflight::new(&bank, &lifecycle) {
+            Ok(plan) => {
+                assert_eq!(limit, bytes);
+                assert_eq!(bank.available_permits(), 0);
+                drop(plan);
+            }
+            Err(error) => {
+                assert_eq!(limit, bytes - 1);
+                assert_eq!(
+                    crate::output::operation_error_class(error.as_ref()),
+                    ios_core::ErrorClass::ResourceLimit
+                );
+            }
+        }
+        assert_eq!(bank.available_permits(), limit);
+    }
+}
+
+#[tokio::test]
+async fn manual_preflight_actual_foreign_roots_collect_current_at_closed_zero_and_writer_reuses_them(
+) {
+    use super::super::{lifecycle::TicketOwner, metadata_vec};
+    use std::sync::Mutex;
+
+    let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let mut epoch_clear = state.prepare_cutover::<2>().unwrap();
+    let origin = state.inner.global_metadata_bytes.clone();
+    let before = origin.available_permits();
+    let bytes = Preflight::bytes();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let roots = Arc::new(Mutex::new(Vec::new()));
+    let seen = roots.clone();
+    let mut plan = metadata_vec::with_allocation_hook(
+        move |layout, pointer| {
+            if layout.size() == TicketOwner::body_bytes() {
+                seen.lock().unwrap().push(pointer);
+            }
+        },
+        || Preflight::new(&bank, &state.inner.lifecycle).unwrap(),
+    );
+    assert_eq!(
+        roots.lock().unwrap().len(),
+        super::super::lifecycle::MAX_DEVICE_GATES
+    );
+    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(
+        origin.available_permits(),
+        before - super::super::lifecycle::MAX_DEVICE_GATES * TicketOwner::body_bytes()
+    );
+    let (old, old_desired, _) = manual(&state, "late-foreign-current").await;
+    state.inner.lifecycle.clear(&mut epoch_clear);
+    drop(epoch_clear);
+    let (ticket, desired, failure) = manual(&state, "late-foreign-current").await;
+    assert!(!super::super::ControlIdentity::ptr_eq(
+        &old_desired,
+        &desired
+    ));
+    assert!(!old.same_incarnation(&ticket));
+    let canonical = ticket.udid().as_ptr();
+    let held = origin
+        .clone()
+        .try_acquire_many_owned(origin.available_permits() as u32)
+        .unwrap();
+    origin.close();
+    bank.close();
+    let hook = metadata_vec::on_allocation(|_, _| {
+        panic!("CURRENT collector/writer allocated after Source")
+    });
+    plan.collect().await;
+    assert_eq!(plan.selected(), 1);
+    let completed = &plan.completed.as_slice()[0];
+    assert_eq!(completed.ticket.udid().as_ptr(), canonical);
+    assert!(completed.ticket.same_incarnation(&ticket));
+    assert!(super::super::ControlIdentity::ptr_eq(
+        &completed.desired,
+        &desired
+    ));
+    assert!(FailureVersion::ptr_eq(&completed.failure, &failure));
+    let value = &*completed.ticket as *const Ticket as usize;
+    assert!(roots.lock().unwrap().iter().any(|start| *start <= value
+        && value + std::mem::size_of::<Ticket>() <= *start + TicketOwner::body_bytes()));
+    plan.into_inner()
+        .flush_collected(
+            &state,
+            &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
+        )
+        .await
+        .unwrap();
+    drop(hook);
+    assert!(ticket.pending_success().is_none());
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    assert_eq!(bank.available_permits(), bytes);
+    drop((old, old_desired, ticket, desired, held, failure));
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
+    drop(state);
+    assert_eq!(
+        origin.available_permits(),
+        super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
+    );
+}
+
+#[tokio::test]
+async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at_zero_quota() {
+    let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    assert_eq!(state.inner.lifecycle.desired().await.unwrap().len(), 0);
+    let mut plan = Preflight::new(&bank, &state.inner.lifecycle).unwrap();
+    let (ticket, old_desired, failure) = manual(&state, "source-created-manual").await;
+    let mut manual_births = ticket
+        .prepare_manual_births::<1>(&state.inner.global_metadata_bytes)
+        .unwrap();
+    ticket
+        .commit(|| {
+            ticket.establish_manual(
+                super::super::intent::RouteIntent::Wifi(Some("current-host".into())),
+                authority(&state, ticket.udid()),
+                Some(failure.clone()),
+                None,
+                &mut manual_births,
+            )
+        })
+        .unwrap();
+    drop(manual_births);
+    let new_desired = ticket.desired().version;
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &new_desired,
+        &old_desired
+    ));
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    plan.collect().await;
+    assert_eq!(plan.selected(), 1);
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &plan.completed.as_slice()[0].desired,
+        &new_desired
+    ));
+    assert!(std::ptr::eq(
+        plan.completed.as_slice()[0].ticket.udid().as_ptr(),
+        ticket.udid().as_ptr()
+    ));
+    plan.into_inner()
+        .flush_collected(
+            &state,
+            &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!state
+        .inner
+        .failed_attempts
+        .read()
+        .await
+        .contains_key(ticket.udid()));
+    assert!(ticket.pending_success().is_none());
+    drop(held);
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
+}
+
+#[tokio::test]
+async fn manual_preflight_does_not_pin_idle_automatic_namespace() {
+    let lifecycle = Lifecycle::new();
+    let bank_birth = crate::cmd::tunnel::birth_bank::BirthBank::new(Preflight::bytes());
+    let bank = bank_birth.raw().clone();
+    let plan = Preflight::new(&bank, &lifecycle).unwrap();
+    for index in 0..super::super::lifecycle::MAX_DEVICE_GATES {
+        drop(lifecycle.ticket(&format!("idle-{index}")).await.unwrap());
+    }
+    assert_eq!(
+        lifecycle.coordinator_count().await,
+        super::super::lifecycle::MAX_DEVICE_GATES
+    );
+    let replacement = lifecycle.ticket("new-after-source").await.unwrap();
+    assert_eq!(replacement.udid(), "new-after-source");
+    assert_eq!(lifecycle.coordinator_count().await, 1);
+    assert_eq!(plan.selected(), 0);
+    drop(plan);
+    assert_eq!(bank.available_permits(), Preflight::bytes());
+}
+
+#[tokio::test]
+async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() {
+    let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let mut plan =
+        Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
+    let (ticket, old_desired, old_failure) = manual(&state, "changing-version").await;
+    plan.collect().await;
+    let slot = state.reserve_failure_slot(ticket.udid()).await.unwrap();
+    state
+        .record_failed_attempt(
+            ticket.udid(),
+            AttemptIdentity {
+                route: Route::Wifi(None),
+                native_id: None,
+            },
+            slot,
+            &ticket,
+        )
+        .await;
+    let new_failure = state.inner.failed_attempts.read().await[ticket.udid()]
+        .version
+        .clone();
+    let mut manual_births = ticket
+        .prepare_manual_births::<1>(&state.inner.global_metadata_bytes)
+        .unwrap();
+    ticket
+        .commit(|| {
+            ticket.establish_manual(
+                super::super::intent::RouteIntent::Wifi(None),
+                authority(&state, ticket.udid()),
+                Some(new_failure.clone()),
+                None,
+                &mut manual_births,
+            )
+        })
+        .unwrap();
+    drop(manual_births);
+    let new_desired = ticket.desired().version;
+    assert!(!crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &old_desired,
+        &new_desired
+    ));
+    assert!(!FailureVersion::ptr_eq(&old_failure, &new_failure));
+    plan.into_inner()
+        .flush_collected(
+            &state,
+            &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(FailureVersion::ptr_eq(
+        &state.inner.failed_attempts.read().await[ticket.udid()].version,
+        &new_failure
+    ));
+    let (pending_desired, pending) = ticket.pending_success().unwrap();
+    assert!(crate::cmd::tunnel::ControlIdentity::ptr_eq(
+        &pending_desired,
+        &new_desired
+    ));
+    assert!(FailureVersion::ptr_eq(&pending.version, &new_failure));
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
+}
+
+#[tokio::test]
+async fn manual_preflight_actual_late_writer_restores_failure_stamp_and_pending_tuple() {
+    let state = state();
+    let mut shutdown = state.prepare_cutover::<1>().unwrap();
+    let mut clear = state.prepare_cutover::<2>().unwrap();
+    let plan = Preflight::new(&state.inner.global_metadata_bytes, &state.inner.lifecycle).unwrap();
+    let (ticket, desired, failure) = manual(&state, "late-manual-success").await;
+    let mut releases = super::super::marker_identity::ReleaseFence::<2>::new();
+    ticket
+        .fenced()
+        .remember_failure(Some(failure.clone()), &mut releases);
+    drop(releases);
+    let original_stamp = ticket.failure_stamp().unwrap();
+    *state.inner.success_after_remove.lock().unwrap() =
+        Some(Box::new(|| std::thread::sleep(Duration::from_millis(100))));
+    let deadline = super::super::scan::Deadline::new(Duration::from_millis(40)).unwrap();
+    let error = plan
+        .into_inner()
+        .flush(&state, &deadline)
+        .await
+        .unwrap_err();
+    assert!(error.is::<super::super::scan::DeadlineReached>());
+    assert!(FailureVersion::ptr_eq(
+        &state.inner.failed_attempts.read().await[ticket.udid()].version,
+        &failure
+    ));
+    let stamp = ticket.failure_stamp().unwrap();
+    assert!(
+        FailureVersion::ptr_eq(&stamp.0, &original_stamp.0)
+            && crate::cmd::tunnel::ControlIdentity::ptr_eq(&stamp.1, &original_stamp.1)
+    );
+    let pending = ticket.pending_success().unwrap();
+    assert!(
+        crate::cmd::tunnel::ControlIdentity::ptr_eq(&pending.0, &desired)
+            && FailureVersion::ptr_eq(&pending.1.version, &failure)
+    );
+    state.notify_shutdown(&mut shutdown);
+    state.clear(&mut clear).await;
+    drop((shutdown, clear));
+}

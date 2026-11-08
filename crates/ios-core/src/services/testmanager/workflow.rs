@@ -1,3 +1,5 @@
+crate::redaction::error_debug!(RunXcTestPlanError);
+
 use std::collections::{HashMap, HashSet};
 
 use crate::proto::nskeyedarchiver_encode::{NsUrl, XcTestConfiguration, XctCapabilities};
@@ -59,7 +61,7 @@ pub struct RunXcTestPlan {
 }
 
 /// Validation failures for a direct XCTest plan.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RunXcTestPlanError {
     #[error("test runner bundle identifier is required")]
     MissingRunnerBundleId,
@@ -792,6 +794,332 @@ fn ns_null() -> Value {
     Value::Uid(Uid::new(0))
 }
 
+/// Error returned when a runner launch was submitted to CoreDevice `AppService`
+/// (or interrupted mid-flight) and its resulting PID cannot be uniquely
+/// reconciled and terminated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunnerLaunchUnconfirmed;
+
+impl std::fmt::Display for RunnerLaunchUnconfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("XCTest launch was submitted but its PID could not be reconciled; a runner may remain active on the selected device")
+    }
+}
+
+impl std::error::Error for RunnerLaunchUnconfirmed {}
+
+/// Structured tracking state for a CoreDevice `AppService` runner launch so
+/// that an unconfirmed launch can be reconciled against pre-launch process
+/// snapshots if the caller is cancelled or times out before receiving the PID.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PendingRunnerLaunch {
+    pub bundle_id: Option<String>,
+    pub baseline_pids: Option<Vec<u64>>,
+    pub launch_submitted: bool,
+    pub confirmed_pid: Option<u64>,
+}
+
+impl PendingRunnerLaunch {
+    /// Reset tracked launch state after cleanup completes.
+    pub fn clear(&mut self) {
+        self.bundle_id = None;
+        self.baseline_pids = None;
+        self.launch_submitted = false;
+        self.confirmed_pid = None;
+    }
+
+    /// Whether a launch may have reached the device without a confirmed PID.
+    pub fn needs_reconciliation(&self, controller_usable: bool) -> bool {
+        self.confirmed_pid.is_none()
+            && (self.launch_submitted || (self.bundle_id.is_some() && !controller_usable))
+    }
+}
+
+/// Receipt proving that an unconfirmed runner launch was uniquely identified
+/// by bundle identifier and baseline PID delta, and terminated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnconfirmedLaunchReconciliation {
+    pub bundle_id: String,
+    pub reconciled_pid: u64,
+}
+
+/// Launch an XCTest runner via CoreDevice `AppService` while recording the
+/// pre-launch PID baseline in `pending` so that cancellation after submission
+/// can reconcile and terminate the spawned process.
+#[cfg(all(feature = "apps", feature = "tunnel"))]
+pub async fn launch_coredevice_runner_observed(
+    appservice: &mut crate::services::apps::appservice::AppServiceClient,
+    plan: &TestLaunchPlan,
+    launch_env: &HashMap<String, String>,
+    pending: &mut PendingRunnerLaunch,
+) -> Result<u64, crate::services::apps::appservice::AppServiceError> {
+    let options = crate::services::apps::appservice::LaunchApplicationOptions {
+        arguments: plan.args.clone(),
+        environment_variables: launch_env.clone().into_iter().collect(),
+        standard_io_uses_pseudoterminals: true,
+        start_stopped: false,
+        terminate_existing: true,
+        standard_io_identifiers: Default::default(),
+    };
+    let previous = if appservice.supports_process_listing() {
+        Some(
+            appservice
+                .list_processes()
+                .await?
+                .into_iter()
+                .filter(|process| {
+                    process.bundle_id.as_deref() == Some(plan.runner.bundle_id.as_str())
+                })
+                .map(|process| process.pid)
+                .collect(),
+        )
+    } else {
+        None
+    };
+    pending.bundle_id = Some(plan.runner.bundle_id.clone());
+    pending.baseline_pids = previous;
+    let pid = appservice
+        .launch_application_observed(
+            &plan.runner.bundle_id,
+            &options,
+            &mut pending.launch_submitted,
+        )
+        .await?
+        .ok_or_else(|| {
+            crate::services::apps::appservice::AppServiceError::Protocol(
+                "CoreDevice launch returned no PID for XCTest runner".into(),
+            )
+        })?;
+    pending.confirmed_pid = Some(pid);
+    pending.bundle_id = None;
+    pending.baseline_pids = None;
+    Ok(pid)
+}
+
+/// Error returned when reconciling an unconfirmed runner launch fails.
+#[cfg(all(feature = "apps", feature = "tunnel"))]
+#[derive(thiserror::Error)]
+pub enum UnconfirmedLaunchReconcileError {
+    /// No baseline or non-unique candidate PID could be matched.
+    #[error("{0}")]
+    Ambiguous(#[from] RunnerLaunchUnconfirmed),
+    /// Underlying CoreDevice `AppService` transport/protocol failure during reconciliation.
+    #[error("{0}")]
+    AppService(#[from] crate::services::apps::appservice::AppServiceError),
+}
+
+#[cfg(all(feature = "apps", feature = "tunnel"))]
+crate::redaction::error_debug!(UnconfirmedLaunchReconcileError);
+
+/// Reconcile and terminate a runner process when a launch request was submitted
+/// to `AppService` (or interrupted on the wire) before its PID was confirmed.
+///
+/// Reconnects `appservice`, lists active processes, and requires exactly one
+/// new PID matching `pending.bundle_id` that was not in `pending.baseline_pids`.
+/// Never guesses when zero or multiple new candidates exist.
+#[cfg(all(feature = "apps", feature = "tunnel"))]
+pub async fn reconcile_unconfirmed_runner_launch(
+    appservice: &mut crate::services::apps::appservice::AppServiceClient,
+    pending: &mut PendingRunnerLaunch,
+) -> Result<Option<UnconfirmedLaunchReconciliation>, UnconfirmedLaunchReconcileError> {
+    let usable = appservice.is_usable();
+    if !pending.needs_reconciliation(usable) {
+        pending.clear();
+        return Ok(None);
+    }
+    let bundle_id = pending.bundle_id.take();
+    let baseline = pending.baseline_pids.take();
+    pending.launch_submitted = false;
+    let (Some(bundle_id), Some(previous)) = (bundle_id, baseline) else {
+        return Err(RunnerLaunchUnconfirmed.into());
+    };
+    appservice.reconnect().await?;
+    let processes = appservice.list_processes().await?;
+    let candidates: Vec<_> = processes
+        .iter()
+        .filter(|process| {
+            process.bundle_id.as_deref() == Some(bundle_id.as_str())
+                && !previous.contains(&process.pid)
+        })
+        .collect();
+    if candidates.len() != 1 {
+        return Err(RunnerLaunchUnconfirmed.into());
+    }
+    let reconciled_pid = candidates[0].pid;
+    appservice.kill_process(reconciled_pid).await?;
+    Ok(Some(UnconfirmedLaunchReconciliation {
+        bundle_id,
+        reconciled_pid,
+    }))
+}
+
+/// Extract failed test selector strings from a completed summary (e.g. `ClassName/methodName`).
+pub fn extract_failed_selectors(summary: &super::results::TestRunSummary) -> Vec<String> {
+    if summary.terminal_outcome().is_err() {
+        return Vec::new();
+    }
+    summary
+        .suites
+        .iter()
+        .flat_map(|suite| suite.cases.iter())
+        .filter(|case| matches!(case.status, Some(super::results::TestCaseStatus::Failed)))
+        .map(|case| format!("{}/{}", case.class_name, case.method_name))
+        .collect()
+}
+
+/// Merge rerun test results into the primary summary, replacing prior failures
+/// with new outcomes while preserving the initial failure in `debug_logs`.
+pub fn merge_rerun_summary(
+    primary: &mut super::results::TestRunSummary,
+    rerun: super::results::TestRunSummary,
+) -> Result<(), String> {
+    rerun.terminal_outcome().map_err(|err| err.to_string())?;
+    let expected: HashSet<_> = primary
+        .suites
+        .iter()
+        .flat_map(|suite| &suite.cases)
+        .filter(|case| matches!(case.status, Some(super::results::TestCaseStatus::Failed)))
+        .map(|case| (case.class_name.clone(), case.method_name.clone()))
+        .collect();
+    let mut rerun_cases = HashMap::new();
+    for suite in rerun.suites {
+        for case in suite.cases {
+            let key = (case.class_name.clone(), case.method_name.clone());
+            if !expected.contains(&key) {
+                return Err("rerun returned an unselected test case".to_string());
+            }
+            if rerun_cases.insert(key, case).is_some() {
+                return Err("rerun returned a duplicate test case".to_string());
+            }
+        }
+    }
+    if rerun_cases.len() != expected.len() {
+        return Err("rerun omitted a selected failed test case".to_string());
+    }
+
+    let mut failed_count = 0u64;
+    for suite in &mut primary.suites {
+        for case in &mut suite.cases {
+            let key = (case.class_name.clone(), case.method_name.clone());
+            if let Some(new_case) = rerun_cases.remove(&key) {
+                if matches!(case.status, Some(super::results::TestCaseStatus::Failed)) {
+                    primary
+                        .debug_logs
+                        .push(format!("workflow rerun prior result: {case:?}"));
+                }
+                *case = new_case;
+            }
+            if matches!(case.status, Some(super::results::TestCaseStatus::Failed)) {
+                failed_count += 1;
+            }
+        }
+        suite.failures = Some(
+            suite
+                .cases
+                .iter()
+                .filter(|case| matches!(case.status, Some(super::results::TestCaseStatus::Failed)))
+                .count() as u64,
+        );
+        suite.skipped = Some(
+            suite
+                .cases
+                .iter()
+                .filter(|case| matches!(case.status, Some(super::results::TestCaseStatus::Skipped)))
+                .count() as u64,
+        );
+    }
+    primary.failed_tests = failed_count;
+    primary.skipped_tests = primary
+        .suites
+        .iter()
+        .flat_map(|suite| &suite.cases)
+        .filter(|case| matches!(case.status, Some(super::results::TestCaseStatus::Skipped)))
+        .count() as u64;
+    primary.logs.extend(rerun.logs);
+    primary.debug_logs.extend(rerun.debug_logs);
+    Ok(())
+}
+
+/// Immutable record of one test execution attempt inside a composable workflow.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TestWorkflowAttemptRecord {
+    pub number: usize,
+    pub selectors: Vec<String>,
+    pub summary: super::results::TestRunSummary,
+    pub outcome: super::results::TestRunOutcome,
+}
+
+/// Result of executing a composable XCTest workflow with optional failed-test reruns.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TestWorkflowExecutionReport {
+    pub summary: super::results::TestRunSummary,
+    pub attempts: Vec<TestWorkflowAttemptRecord>,
+    pub outcome: super::results::TestRunOutcome,
+}
+
+/// Reusable Rust workflow entrypoint that executes a base [`TestLaunchPlan`]
+/// and up to `max_reruns` selective reruns of failed test cases, merging
+/// outcomes and preserving full per-attempt records.
+pub async fn execute_test_workflow_attempts<F, Fut, E>(
+    base_plan: TestLaunchPlan,
+    max_reruns: usize,
+    mut run_attempt: F,
+) -> Result<TestWorkflowExecutionReport, E>
+where
+    F: FnMut(usize, TestLaunchPlan) -> Fut,
+    Fut: std::future::Future<Output = Result<super::results::TestRunSummary, E>>,
+    E: From<String>,
+{
+    let mut attempts = Vec::with_capacity(1 + max_reruns);
+    let initial_selectors = base_plan.tests_to_run.clone();
+    let mut summary = run_attempt(1, base_plan.clone()).await?;
+    let initial_outcome = summary
+        .terminal_outcome()
+        .map_err(|err| E::from(err.to_string()))?;
+    attempts.push(TestWorkflowAttemptRecord {
+        number: 1,
+        selectors: initial_selectors,
+        summary: summary.clone(),
+        outcome: initial_outcome,
+    });
+
+    if summary.failure_count() > 0 && max_reruns > 0 {
+        for rerun_idx in 0..max_reruns {
+            let failed_selectors = extract_failed_selectors(&summary);
+            if failed_selectors.is_empty() {
+                break;
+            }
+            let mut rerun_plan = base_plan.clone();
+            rerun_plan.tests_to_run = failed_selectors.clone();
+            rerun_plan.tests_to_skip.clear();
+
+            let rerun_summary = run_attempt(rerun_idx + 2, rerun_plan).await?;
+            let rerun_outcome = rerun_summary
+                .terminal_outcome()
+                .map_err(|err| E::from(err.to_string()))?;
+            attempts.push(TestWorkflowAttemptRecord {
+                number: rerun_idx + 2,
+                selectors: failed_selectors,
+                summary: rerun_summary.clone(),
+                outcome: rerun_outcome,
+            });
+            merge_rerun_summary(&mut summary, rerun_summary).map_err(E::from)?;
+            if summary.failure_count() == 0 {
+                break;
+            }
+        }
+    }
+
+    let outcome = summary
+        .terminal_outcome()
+        .map_err(|err| E::from(err.to_string()))?;
+    Ok(TestWorkflowExecutionReport {
+        summary,
+        attempts,
+        outcome,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1187,5 +1515,93 @@ mod tests {
         assert_eq!(launch.runner.bundle_id, "com.example.Runner");
         assert_eq!(launch.xctest_bundle_name, "DemoTests.xctest");
         assert!(launch.is_xctest);
+    }
+
+    #[tokio::test]
+    async fn execute_test_workflow_attempts_reruns_failed_selectors_and_merges_report() {
+        use super::super::results::{
+            TestCaseStatus, TestExecutionEvent, TestRunOutcome, TestRunRecorder,
+        };
+
+        let base_plan = RunXcTestPlan::builder("com.example.Runner", "DemoTests.xctest")
+            .xctest(true)
+            .build()
+            .unwrap()
+            .into_test_launch_plan(runner(), None);
+
+        let report = execute_test_workflow_attempts(base_plan, 2, |attempt, plan| async move {
+            let mut recorder = TestRunRecorder::default();
+            recorder.apply(TestExecutionEvent::BeganPlan);
+            recorder.apply(TestExecutionEvent::SuiteStarted {
+                name: "LoginTests".into(),
+                started_at: None,
+            });
+            if attempt == 1 {
+                assert!(plan.tests_to_run.is_empty());
+                recorder.apply(TestExecutionEvent::CaseStarted {
+                    class_name: "LoginTests".into(),
+                    method_name: "testHappyPath".into(),
+                });
+                recorder.apply(TestExecutionEvent::CaseFinished {
+                    class_name: "LoginTests".into(),
+                    method_name: "testHappyPath".into(),
+                    status: TestCaseStatus::Passed,
+                    duration_seconds: 0.1,
+                });
+                recorder.apply(TestExecutionEvent::CaseStarted {
+                    class_name: "LoginTests".into(),
+                    method_name: "testFlaky".into(),
+                });
+                recorder.apply(TestExecutionEvent::CaseFinished {
+                    class_name: "LoginTests".into(),
+                    method_name: "testFlaky".into(),
+                    status: TestCaseStatus::Failed,
+                    duration_seconds: 0.2,
+                });
+            } else {
+                assert_eq!(plan.tests_to_run, vec!["LoginTests/testFlaky".to_string()]);
+                recorder.apply(TestExecutionEvent::CaseStarted {
+                    class_name: "LoginTests".into(),
+                    method_name: "testFlaky".into(),
+                });
+                recorder.apply(TestExecutionEvent::CaseFinished {
+                    class_name: "LoginTests".into(),
+                    method_name: "testFlaky".into(),
+                    status: TestCaseStatus::Passed,
+                    duration_seconds: 0.15,
+                });
+            }
+            recorder.apply(TestExecutionEvent::FinishedPlan);
+            Ok::<_, String>(recorder.summary())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(report.outcome, TestRunOutcome::Passed);
+        assert_eq!(report.attempts.len(), 2);
+        assert_eq!(report.attempts[0].outcome, TestRunOutcome::FailedTests);
+        assert_eq!(report.attempts[1].outcome, TestRunOutcome::Passed);
+        assert_eq!(report.attempts[1].selectors, vec!["LoginTests/testFlaky"]);
+        assert_eq!(report.summary.total_tests, 2);
+        assert_eq!(report.summary.failed_tests, 0);
+    }
+
+    #[test]
+    fn pending_runner_launch_tracks_reconciliation_requirement() {
+        let mut pending = PendingRunnerLaunch::default();
+        assert!(!pending.needs_reconciliation(true));
+        assert!(!pending.needs_reconciliation(false));
+
+        pending.bundle_id = Some("com.example.Runner".into());
+        pending.baseline_pids = Some(vec![7]);
+        assert!(!pending.needs_reconciliation(true));
+        assert!(pending.needs_reconciliation(false));
+
+        pending.launch_submitted = true;
+        assert!(pending.needs_reconciliation(true));
+
+        pending.confirmed_pid = Some(42);
+        assert!(!pending.needs_reconciliation(true));
+        assert!(!pending.needs_reconciliation(false));
     }
 }

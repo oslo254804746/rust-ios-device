@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use anyhow::Result;
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
@@ -24,13 +22,14 @@ impl MobileGestaltCmd {
             skip_tunnel: true,
         };
         let device = connect(&udid, opts).await?;
-        let mut stream = device
+        let stream = device
             .connect_service(ios_core::diagnostics::SERVICE_NAME)
             .await?;
+        let mut client = ios_core::diagnostics::DiagnosticsClient::new(stream);
+        client.set_operation_timeout(Some(std::time::Duration::from_secs(30)));
 
         let key_refs: Vec<&str> = self.keys.iter().map(String::as_str).collect();
-        let value = match ios_core::diagnostics::query_mobile_gestalt(&mut *stream, &key_refs).await
-        {
+        let value = match client.query_mobile_gestalt(&key_refs).await {
             Ok(value) => value,
             Err(ios_core::diagnostics::DiagnosticsError::Deprecated(message)) => {
                 match query_mobilegestalt_via_coredevice(&udid, &key_refs).await {
@@ -47,14 +46,12 @@ impl MobileGestaltCmd {
         };
 
         if self.plist {
-            let mut stdout = std::io::stdout().lock();
-            plist::to_writer_xml(&mut stdout, &value)?;
-            writeln!(&mut stdout)?;
+            crate::output::write_plist_xml(&value)?;
         } else if json {
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
         } else {
             for (key, rendered) in mobilegestalt_detail_lines(&value) {
-                println!("{key}: {rendered}");
+                crate::output::outln!("{key}: {rendered}");
             }
         }
 

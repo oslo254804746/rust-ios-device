@@ -1,15 +1,22 @@
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 use ios_core::springboard::{Icon, SpringboardClient};
-use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions};
 use tokio::fs;
 
 #[derive(clap::Args)]
 pub struct SpringboardCmd {
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 30_000,
+        value_parser = clap::value_parser!(u64).range(1..),
+        help = "Total budget per SpringBoard request, including send, receive and parse (milliseconds)"
+    )]
+    request_timeout_ms: u64,
     #[command(subcommand)]
     sub: SpringboardSub,
 }
@@ -99,27 +106,25 @@ impl SpringboardCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for springboard"))?;
 
-        let opts = ConnectOptions {
-            tun_mode: TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: true,
-        };
-        let device = connect(&udid, opts).await?;
-        let stream = device
-            .connect_service(ios_core::springboard::SERVICE_NAME)
-            .await?;
+        let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+            &udid,
+            ios_core::springboard::SERVICE_NAME,
+            Duration::from_secs(30),
+        )
+        .await?;
         let mut client = SpringboardClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_millis(self.request_timeout_ms)));
 
         match self.sub {
             SpringboardSub::Icons { json } => {
                 let screens = client.list_icons().await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&screens_to_json(&screens))?
                     );
                 } else {
-                    print_screens(&screens);
+                    print_screens(&screens)?;
                 }
             }
             SpringboardSub::State {
@@ -128,18 +133,19 @@ impl SpringboardCmd {
             } => {
                 let state = client.get_icon_state_raw(&format_version).await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&plist_to_json(&state))?);
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&plist_to_json(&state))?
+                    );
                 } else {
-                    let mut stdout = std::io::stdout().lock();
-                    plist::to_writer_xml(&mut stdout, &state)?;
-                    writeln!(&mut stdout)?;
+                    crate::output::write_plist_xml(&state)?;
                 }
             }
             SpringboardSub::StateSet { input } => {
                 let data = fs::read(&input).await?;
                 let icon_state: plist::Value = plist::from_bytes(&data)?;
                 client.set_icon_state(&icon_state).await?;
-                println!("Set icon state from {}", input.display());
+                crate::output::outln!("Set icon state from {}", input.display());
             }
             SpringboardSub::Find { bundle_id, json } => {
                 let screens = client.list_icons().await?;
@@ -148,7 +154,7 @@ impl SpringboardCmd {
                     anyhow::bail!("bundle not found in SpringBoard layout: {bundle_id}");
                 }
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&find_locations_to_json(
                             &bundle_id, &locations
@@ -156,7 +162,7 @@ impl SpringboardCmd {
                     );
                 } else {
                     for location in locations {
-                        println!("{location}");
+                        crate::output::outln!("{location}");
                     }
                 }
             }
@@ -170,7 +176,7 @@ impl SpringboardCmd {
                 let bytes = png.len();
                 fs::write(&output, png).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&icon_result_to_json(
                             &bundle_id,
@@ -179,7 +185,7 @@ impl SpringboardCmd {
                         ))?
                     );
                 } else {
-                    println!("Saved icon for {bundle_id} to {}", output.display());
+                    crate::output::outln!("Saved icon for {bundle_id} to {}", output.display());
                 }
             }
             SpringboardSub::IconAll { output_dir, json } => {
@@ -202,12 +208,12 @@ impl SpringboardCmd {
                             bytes,
                         });
                     } else {
-                        println!("Saved {bundle_id} -> {}", output.display());
+                        crate::output::outln!("Saved {bundle_id} -> {}", output.display());
                     }
                     saved += 1;
                 }
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&icon_all_result_to_json(
                             output_dir.to_string_lossy().as_ref(),
@@ -216,13 +222,13 @@ impl SpringboardCmd {
                         ))?
                     );
                 } else {
-                    println!("Saved {saved} icon(s) to {}", output_dir.display());
+                    crate::output::outln!("Saved {saved} icon(s) to {}", output_dir.display());
                 }
             }
             SpringboardSub::Orientation { json } => {
                 let orientation = client.get_interface_orientation().await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "raw": orientation.raw_value(),
@@ -230,13 +236,13 @@ impl SpringboardCmd {
                         }))?
                     );
                 } else {
-                    println!("{} ({})", orientation.raw_value(), orientation.label());
+                    crate::output::outln!("{} ({})", orientation.raw_value(), orientation.label());
                 }
             }
             SpringboardSub::IconMetrics { json } => {
                 let metrics = client.get_homescreen_icon_metrics().await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&plist_to_json(&metrics))?
                     );
@@ -244,10 +250,13 @@ impl SpringboardCmd {
                     let mut entries: Vec<_> = dict.iter().collect();
                     entries.sort_by(|a, b| a.0.cmp(b.0));
                     for (key, value) in entries {
-                        println!("{key}: {}", format_json_value(&plist_to_json(value)));
+                        crate::output::outln!(
+                            "{key}: {}",
+                            format_json_value(&plist_to_json(value))
+                        );
                     }
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&plist_to_json(&metrics))?
                     );
@@ -262,7 +271,7 @@ impl SpringboardCmd {
                 let bytes = png.len();
                 fs::write(&output, png).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&png_result_to_json(
                             &wallpaper_name,
@@ -271,7 +280,7 @@ impl SpringboardCmd {
                         ))?
                     );
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "Saved {wallpaper_name} wallpaper preview to {}",
                         output.display()
                     );
@@ -283,23 +292,53 @@ impl SpringboardCmd {
             } => {
                 let info = client.get_wallpaper_info(&wallpaper_name).await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&plist_to_json(&info))?);
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&plist_to_json(&info))?
+                    );
                 } else if let Some(dict) = info.as_dictionary() {
                     let mut entries: Vec<_> = dict.iter().collect();
                     entries.sort_by(|a, b| a.0.cmp(b.0));
                     for (key, value) in entries {
-                        println!("{key}: {}", format_json_value(&plist_to_json(value)));
+                        crate::output::outln!(
+                            "{key}: {}",
+                            format_json_value(&plist_to_json(value))
+                        );
                     }
                 } else {
-                    println!("{}", serde_json::to_string_pretty(&plist_to_json(&info))?);
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&plist_to_json(&info))?
+                    );
                 }
             }
             SpringboardSub::WallpaperHomeScreen { output, json } => {
-                let png = client.get_homescreen_wallpaper_pngdata().await?;
+                let png = match client.get_homescreen_wallpaper_pngdata().await {
+                    Ok(png) => png,
+                    Err(err) if is_homescreen_wallpaper_unavailable(&err) => {
+                        tracing::info!(
+                            "The wallpaper has no stored image (a poster wallpaper); saving its rendered preview instead"
+                        );
+                        if !client.is_usable() {
+                            let (_device, stream) = crate::cmd::connect::connect_lockdown_service(
+                                &udid,
+                                ios_core::springboard::SERVICE_NAME,
+                                Duration::from_secs(30),
+                            )
+                            .await?;
+                            client = SpringboardClient::new(stream);
+                            client.set_operation_timeout(Some(Duration::from_millis(
+                                self.request_timeout_ms,
+                            )));
+                        }
+                        client.get_wallpaper_preview_image("homescreen").await?
+                    }
+                    Err(err) => return Err(err.into()),
+                };
                 let bytes = png.len();
                 fs::write(&output, png).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&png_result_to_json(
                             "homescreen-fullsize",
@@ -308,7 +347,7 @@ impl SpringboardCmd {
                         ))?
                     );
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "Saved full-size Home Screen wallpaper to {} ({bytes} bytes)",
                         output.display()
                     );
@@ -373,43 +412,46 @@ fn icon_to_json(icon: &Icon) -> serde_json::Value {
     }
 }
 
-fn print_screens(screens: &[Vec<Icon>]) {
+fn print_screens(screens: &[Vec<Icon>]) -> Result<()> {
     for (screen_idx, screen) in screens.iter().enumerate() {
-        println!("Page {}", screen_idx + 1);
+        crate::output::outln!("Page {}", screen_idx + 1);
         for icon in screen {
-            print_icon(icon, "  ");
+            print_icon(icon, "  ")?;
         }
     }
+    Ok(())
 }
 
-fn print_icon(icon: &Icon, indent: &str) {
+fn print_icon(icon: &Icon, indent: &str) -> Result<()> {
     match icon {
         Icon::App(app) => {
-            println!("{indent}- {} ({})", app.display_name, app.bundle_identifier);
+            crate::output::outln!("{indent}- {} ({})", app.display_name, app.bundle_identifier);
         }
         Icon::WebClip(web_clip) => {
-            println!(
+            crate::output::outln!(
                 "{indent}- {} [webclip: {}]",
-                web_clip.display_name, web_clip.url
+                web_clip.display_name,
+                web_clip.url
             );
         }
         Icon::Custom(_) => {
-            println!("{indent}- <custom icon>");
+            crate::output::outln!("{indent}- <custom icon>");
         }
         Icon::Folder(folder) => {
-            println!("{indent}- Folder: {}", folder.display_name);
+            crate::output::outln!("{indent}- Folder: {}", folder.display_name);
             for (page_idx, page) in folder.pages.iter().enumerate() {
-                println!("{indent}  Page {}", page_idx + 1);
+                crate::output::outln!("{indent}  Page {}", page_idx + 1);
                 for nested in page {
-                    print_icon(nested, &format!("{indent}    "));
+                    print_icon(nested, &format!("{indent}    "))?;
                 }
             }
         }
         Icon::Unknown(unknown) => {
             let name = unknown.display_name.as_deref().unwrap_or("<unknown>");
-            println!("{indent}- {name} [unknown]");
+            crate::output::outln!("{indent}- {name} [unknown]");
         }
     }
+    Ok(())
 }
 
 fn find_locations_to_json(bundle_id: &str, locations: &[String]) -> serde_json::Value {
@@ -425,6 +467,18 @@ fn icon_result_to_json(bundle_id: &str, output: &str, bytes: usize) -> serde_jso
         "output": output,
         "bytes": bytes,
     })
+}
+
+fn is_homescreen_wallpaper_unavailable(err: &ios_core::springboard::SpringboardError) -> bool {
+    match err {
+        ios_core::springboard::SpringboardError::Service(message) => {
+            ios_core::springboard::is_wallpaper_image_unavailable_error(message)
+        }
+        ios_core::springboard::SpringboardError::Io(io_err) => {
+            io_err.kind() == std::io::ErrorKind::UnexpectedEof
+        }
+        _ => false,
+    }
 }
 
 fn png_result_to_json(name: &str, output: &str, bytes: usize) -> serde_json::Value {
@@ -525,30 +579,7 @@ fn collect_bundle_ids_in_icons(icons: &[Icon], bundle_ids: &mut BTreeSet<String>
 }
 
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(plist_to_json).collect())
-        }
-        plist::Value::Boolean(v) => serde_json::Value::Bool(*v),
-        plist::Value::Data(bytes) => serde_json::Value::String(hex::encode(bytes)),
-        plist::Value::Date(date) => serde_json::Value::String(date.to_xml_format()),
-        plist::Value::Dictionary(dict) => serde_json::Value::Object(
-            dict.iter()
-                .map(|(key, value)| (key.clone(), plist_to_json(value)))
-                .collect(),
-        ),
-        plist::Value::Integer(value) => value
-            .as_signed()
-            .map(serde_json::Value::from)
-            .or_else(|| value.as_unsigned().map(serde_json::Value::from))
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Real(value) => serde_json::Number::from_f64(*value)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::String(value) => serde_json::Value::String(value.clone()),
-        plist::Value::Uid(uid) => serde_json::Value::from(uid.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::HexString))
 }
 
 fn format_json_value(value: &serde_json::Value) -> String {
@@ -875,4 +906,32 @@ mod tests {
         assert_eq!(InterfaceOrientation::Landscape.raw_value(), 3);
         assert_eq!(InterfaceOrientation::Unknown(9).label(), "unknown");
     }
+
+    #[test]
+    fn detects_poster_wallpaper_unavailable_errors() {
+        let service_err =
+            ios_core::springboard::SpringboardError::Service("This wallpaper has no image".into());
+        assert!(is_homescreen_wallpaper_unavailable(&service_err));
+
+        let other_service_err =
+            ios_core::springboard::SpringboardError::Service("No such bundle".into());
+        assert!(!is_homescreen_wallpaper_unavailable(&other_service_err));
+
+        let eof_err = ios_core::springboard::SpringboardError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "connection terminated",
+        ));
+        assert!(is_homescreen_wallpaper_unavailable(&eof_err));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        true,
+    );
 }

@@ -21,16 +21,24 @@ uvx maturin develop
 Run the relevant checks:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+python scripts/validate.py full --python /path/to/python
 ```
 
 If a check requires hardware, a specific OS, Developer Mode, a Developer Disk Image, or elevated privileges, describe what you could and could not run.
 
+Use `python scripts/validate.py quick --package ios-core` during development.
+The full entry point requires stable Rust with rustfmt/Clippy, Rust 1.80, a C
+compiler, Python development libraries and uv. See [build.md](docs/build.md)
+for all scopes and interpreter selection. Rust workspace tests exclude the
+Python packaging feature; embedded Python host tests and wheel imports are
+separate required checks. CI uses the same entry point.
+
 ## Contribution guidelines
 
 - Keep changes focused. Avoid broad refactors mixed with behavior changes.
+- Review the [public compatibility rules](docs/public-contract.md) for Rust
+  fields/enum variants, CLI/JSON, C ABI and Python signatures. Preserve the
+  representative downstream fixtures or document an explicit migration.
 - Do not commit pair records, certificates, private keys, device backups, UDIDs from personal devices, logs with personal data, or local machine paths.
 - Add or update tests for protocol parsing, command-line argument parsing, and service behavior when practical.
 - For real-device changes, include the host OS, iOS version range, connection type, and whether the device was trusted, supervised, or in Developer Mode.

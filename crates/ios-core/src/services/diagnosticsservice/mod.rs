@@ -4,6 +4,8 @@
 //! returns metadata and an XPC file-transfer token; consumers that need the full
 //! archive must use the returned transfer information with a compatible data path.
 
+crate::redaction::error_debug!(DiagnosticsServiceError);
+
 use indexmap::IndexMap;
 
 use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
@@ -14,7 +16,7 @@ pub const SERVICE_NAME: &str = "com.apple.coredevice.diagnosticsservice";
 const FEATURE_CAPTURE_SYSDIAGNOSE: &str = "com.apple.coredevice.feature.capturesysdiagnose";
 
 /// Errors returned by CoreDevice diagnostics operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DiagnosticsServiceError {
     /// Underlying XPC transport or encoding error.
     #[error("xpc error: {0}")]

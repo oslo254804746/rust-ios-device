@@ -16,6 +16,8 @@
 //! 7. setupCiphers() – HKDF → two ChaCha20Poly1305 streams
 //! 8. createUnlockKey() – final handshake to finish pairing
 
+crate::redaction::error_debug!(PairingError);
+
 use crate::proto::{opack, tlv::TlvBuffer};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
@@ -25,8 +27,12 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use hkdf::Hkdf;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha512};
+use std::{error::Error, io};
 use uuid::Uuid;
 use zeroize::Zeroizing;
+
+#[cfg(test)]
+mod source_contract_tests;
 
 // ── TLV type codes (from go-ios tunnel/tlvbuffer.go) ──────────────────────────
 
@@ -75,12 +81,14 @@ impl HostIdentity {
     ) -> Result<Self, PairingError> {
         // Our own copy of the seed: the caller's slice is theirs to manage, this
         // one must not survive the constructor.
-        let seed: Zeroizing<[u8; 32]> = Zeroizing::new(private_key.try_into().map_err(|_| {
-            PairingError::Crypto(format!(
-                "expected 32-byte Ed25519 private key seed, got {} bytes",
-                private_key.len()
-            ))
-        })?);
+        let seed: Zeroizing<[u8; 32]> =
+            Zeroizing::new(private_key.try_into().map_err(|error| {
+                native_error(
+                    io::ErrorKind::InvalidInput,
+                    "decode host Ed25519 private seed",
+                    error,
+                )
+            })?);
         Ok(Self {
             identifier: identifier.into(),
             signing_key: SigningKey::from_bytes(&seed),
@@ -310,7 +318,7 @@ fn hkdf_sha512(ikm: &[u8], salt: &[u8], info: &[u8]) -> Result<[u8; 32], Pairing
     let h = Hkdf::<Sha512>::new(if salt.is_empty() { None } else { Some(salt) }, ikm);
     let mut out = [0u8; 32];
     h.expand(info, &mut out)
-        .map_err(|e| PairingError::Crypto(format!("HKDF expand failed: {e}")))?;
+        .map_err(|error| native_error(io::ErrorKind::InvalidInput, "expand pairing HKDF", error))?;
     Ok(out)
 }
 
@@ -329,12 +337,17 @@ fn chacha_seal(
     nonce_label: &[u8],
     plaintext: &[u8],
 ) -> Result<Vec<u8>, PairingError> {
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| PairingError::Crypto(format!("ChaCha key init failed: {e}")))?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|error| {
+        native_error(
+            io::ErrorKind::InvalidInput,
+            "initialize pairing cipher",
+            error,
+        )
+    })?;
     let nonce = chacha20poly1305::Nonce::from(chacha_nonce(nonce_label));
     cipher
         .encrypt(&nonce, plaintext)
-        .map_err(|e| PairingError::Crypto(format!("ChaCha seal failed: {e}")))
+        .map_err(|error| native_error(io::ErrorKind::Other, "seal pairing payload", error))
 }
 
 fn chacha_open(
@@ -342,22 +355,44 @@ fn chacha_open(
     nonce_label: &[u8],
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, PairingError> {
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| PairingError::Crypto(format!("ChaCha key init failed: {e}")))?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|error| {
+        native_error(
+            io::ErrorKind::InvalidInput,
+            "initialize pairing cipher",
+            error,
+        )
+    })?;
     let nonce = chacha20poly1305::Nonce::from(chacha_nonce(nonce_label));
-    cipher.decrypt(&nonce, ciphertext).map_err(|_| {
-        PairingError::Crypto("ChaCha decrypt failed (wrong key or tampered data)".into())
+    cipher.decrypt(&nonce, ciphertext).map_err(|error| {
+        native_error(
+            io::ErrorKind::InvalidData,
+            "authenticate pairing payload",
+            error,
+        )
     })
+}
+
+fn native_error(
+    kind: io::ErrorKind,
+    phase: &'static str,
+    source: impl Error + Send + Sync + 'static,
+) -> PairingError {
+    PairingError::Io(crate::device::error_context::retained_io(
+        kind, phase, source,
+    ))
 }
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum PairingError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("crypto error: {0}")]
     Crypto(String),
+    // Preserve the existing error family while OPACK now retains its native
+    // source in Io. This crate-private module has no current Protocol producer.
+    #[allow(dead_code)]
     #[error("protocol error: {0}")]
     Protocol(String),
 }
@@ -439,7 +474,7 @@ pub fn build_device_info_tlv(
             opack::OpackValue::String("ios-rs-serial".into()),
         ),
     ]))
-    .map_err(|e| PairingError::Protocol(e.to_string()))?;
+    .map_err(|error| native_error(io::ErrorKind::Other, "encode pairing device info", error))?;
 
     // 4. Build inner TLV
     let mut inner = TlvBuffer::new();
@@ -470,12 +505,75 @@ pub fn build_device_info_tlv(
 /// Decrypts the device's encrypted TLV response using the setup key derived
 /// during the device info exchange. A successful decryption proves the device
 /// holds the same session key, completing mutual authentication.
-pub fn verify_device_info_response(
+/// Recognize the optional peer key from the authenticated M6 payload. Missing
+/// or malformed optional info must not invalidate older devices' pair setup.
+pub(crate) fn verify_device_info_response(
     setup_key: &[u8; 32],
     encrypted_data: &[u8],
-) -> Result<(), PairingError> {
-    chacha_open(setup_key, b"PS-Msg06", encrypted_data)?;
-    Ok(())
+) -> Result<Option<Vec<u8>>, PairingError> {
+    let plaintext = zeroize::Zeroizing::new(chacha_open(setup_key, b"PS-Msg06", encrypted_data)?);
+    let fields = TlvBuffer::decode(&plaintext);
+    let Some(info) = fields.get(&TYPE_INFO) else {
+        return Ok(None);
+    };
+    let Ok((opack::OpackValue::Dict(entries), consumed)) = opack::decode(info) else {
+        return Ok(None);
+    };
+    if consumed != info.len() {
+        return Ok(None);
+    }
+    Ok(entries
+        .into_iter()
+        .find_map(|(key, value)| match (key, value) {
+            (opack::OpackValue::String(key), opack::OpackValue::Bytes(value))
+                if key == "altIRK" && value.len() == 16 =>
+            {
+                Some(value)
+            }
+            _ => None,
+        }))
+}
+
+#[cfg(test)]
+mod peer_discovery_key_tests {
+    use super::*;
+
+    #[test]
+    fn authenticated_device_info_extracts_optional_alt_irk() {
+        let info = opack::encode(&opack::OpackValue::Dict(vec![(
+            opack::OpackValue::String("altIRK".into()),
+            opack::OpackValue::Bytes(vec![42; 16]),
+        )]))
+        .unwrap();
+        let mut tlv = TlvBuffer::new();
+        tlv.push_bytes(TYPE_INFO, &info);
+        let ciphertext = chacha_seal(&[3; 32], b"PS-Msg06", &tlv.into_bytes()).unwrap();
+        assert_eq!(
+            verify_device_info_response(&[3; 32], &ciphertext).unwrap(),
+            Some(vec![42; 16])
+        );
+        assert!(verify_device_info_response(&[4; 32], &ciphertext).is_err());
+    }
+
+    #[test]
+    fn missing_or_malformed_optional_alt_irk_preserves_pair_setup() {
+        let invalid_length = opack::encode(&opack::OpackValue::Dict(vec![(
+            opack::OpackValue::String("altIRK".into()),
+            opack::OpackValue::Bytes(vec![42; 15]),
+        )]))
+        .unwrap();
+        for info in [None, Some(vec![255]), Some(invalid_length)] {
+            let mut tlv = TlvBuffer::new();
+            if let Some(info) = info {
+                tlv.push_bytes(TYPE_INFO, &info);
+            }
+            let ciphertext = chacha_seal(&[3; 32], b"PS-Msg06", &tlv.into_bytes()).unwrap();
+            assert_eq!(
+                verify_device_info_response(&[3; 32], &ciphertext).unwrap(),
+                None
+            );
+        }
+    }
 }
 
 /// Derive the two session cipher keys from the SRP session key.
@@ -503,13 +601,20 @@ pub fn build_verify_start_tlv(x25519_pub: &[u8]) -> Vec<u8> {
 /// Complete the pair verify handshake (step 2).
 ///
 /// Returns the derived cipher keys (client_key, server_key) on success.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg(feature = "tunnel")]
 pub struct VerifyPairSession {
     pub tlv: Vec<u8>,
     pub encryption_key: [u8; 32],
     pub client_key: [u8; 32],
     pub server_key: [u8; 32],
+}
+
+#[cfg(feature = "tunnel")]
+impl std::fmt::Debug for VerifyPairSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifyPairSession").finish_non_exhaustive()
+    }
 }
 
 /// The session is held for as long as the tunnel lives, so its three keys are
@@ -584,6 +689,24 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
+
+    #[cfg(feature = "tunnel")]
+    #[test]
+    fn pair_verification_debug_omits_tlv_and_cipher_keys() {
+        let secret = *b"synthetic-private-key-material!!";
+        let session = VerifyPairSession {
+            tlv: secret.to_vec(),
+            encryption_key: secret,
+            client_key: secret,
+            server_key: secret,
+        };
+        let output = format!("{session:?} {session:#?}");
+        assert!(!output.contains(std::str::from_utf8(&secret).unwrap()));
+        assert!(!output.contains(&format!("{secret:?}")));
+        assert!(!output.contains(&hex::encode(secret)));
+        assert!(output.contains("VerifyPairSession"));
+        assert_eq!(session.client_key, secret);
+    }
 
     #[test]
     fn test_host_identity_generation() {

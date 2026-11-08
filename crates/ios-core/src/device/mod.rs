@@ -1,57 +1,31 @@
-#[cfg(feature = "mdns")]
-use std::collections::HashMap;
-#[cfg(feature = "tunnel")]
-use std::net::Ipv6Addr;
-#[cfg(feature = "tunnel")]
-use std::str::FromStr;
-use std::sync::Arc;
-#[cfg(any(feature = "tunnel", feature = "mdns"))]
-use std::time::Duration;
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-use std::time::Instant;
-#[cfg(feature = "tunnel")]
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
+//! Device connection facade; implementation dependencies stay in their owners.
 
-#[cfg(feature = "mdns")]
-use crate::lockdown::pair_record::default_pair_record_dir;
-use crate::lockdown::pair_record::PairRecord;
-use crate::lockdown::protocol::{recv_lockdown, send_lockdown};
-#[cfg(feature = "tunnel")]
-use crate::lockdown::session::CORE_DEVICE_PROXY;
-use crate::lockdown::session::{start_lockdown_session, start_service, wrap_service_tls};
-use crate::lockdown::LOCKDOWN_PORT;
-use crate::mux::MuxClient;
-use crate::tunnel::manager::{TunMode, TunnelHandle};
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-use crate::xpc::rsd::handshake as rsd_handshake;
-use crate::xpc::rsd::{RsdHandshake, ServiceDescriptor};
-#[cfg(feature = "tunnel")]
-use crate::xpc::XpcClient;
-#[cfg(feature = "tunnel")]
-use tokio::io::ReadBuf;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-use tokio_stream::StreamExt;
+use std::sync::Arc;
 
 use crate::discovery::DeviceInfo;
-#[cfg(feature = "mdns")]
-use crate::discovery::{browse_mobdev2, mobdev2_wifi_mac, BonjourService};
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-use crate::discovery::{browse_remotepairing, MdnsDevice};
-use crate::error::CoreError;
+use crate::lockdown::pair_record::PairRecord;
+use crate::tunnel::manager::{TunMode, TunnelHandle};
+use crate::xpc::rsd::RsdHandshake;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 // ── ConnectOptions ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ConnectOptions {
     pub tun_mode: TunMode,
     pub pair_record_path: Option<std::path::PathBuf>,
     /// Skip tunnel; use direct lockdown (iOS <17 or service-only access).
     pub skip_tunnel: bool,
+}
+
+impl std::fmt::Debug for ConnectOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectOptions")
+            .field("tun_mode", &self.tun_mode)
+            .field("pair_record_configured", &self.pair_record_path.is_some())
+            .field("skip_tunnel", &self.skip_tunnel)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -82,23 +56,6 @@ pub struct ResolvedServiceMetadata {
     pub features: Vec<String>,
 }
 
-#[cfg(feature = "tunnel")]
-const TUNNEL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(feature = "mdns")]
-const MOBDEV2_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-const DIRECT_RSD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
-// Direct pairing TLV type: public key exchange (X25519 ephemeral public key)
-#[cfg(feature = "tunnel")]
-const DIRECT_PAIRING_TYPE_PUBLIC_KEY: u8 = 0x03;
-// Direct pairing TLV type: error response from device (pairing rejected or failed)
-#[cfg(feature = "tunnel")]
-const DIRECT_PAIRING_TYPE_ERROR: u8 = 0x07;
-#[cfg(feature = "tunnel")]
-const DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE: &str = "RemotePairing.ControlChannelMessageEnvelope";
-#[cfg(feature = "tunnel")]
-const DIRECT_CONTROL_CHANNEL_ORIGIN: &str = "host";
-
 // ── ConnectedDevice ────────────────────────────────────────────────────────────
 
 pub struct ConnectedDevice {
@@ -106,43 +63,183 @@ pub struct ConnectedDevice {
     pub(crate) tunnel: Option<Arc<TunnelHandle>>,
     /// RSD service directory (only available after tunnel is up on iOS 17+)
     pub(crate) rsd: Option<RsdHandshake>,
+    #[cfg(feature = "tunnel")]
+    owned_initial_rsd: Option<crate::OwnedRsdHandshake>,
+    #[cfg(feature = "tunnel")]
+    owned_initial_bank: Option<Arc<tokio::sync::Semaphore>>,
+    #[cfg(feature = "tunnel")]
+    owned_prepared_rsd: Option<PreparedRsdOwner>,
+    #[cfg(feature = "tunnel")]
+    pub(crate) prepared_rsd: Option<std::sync::Arc<PreparedRsdCatalogue>>,
+    initial_rsd_probe: InitialRsdProbe,
     pair_record: Option<Arc<PairRecord>>,
     lockdown_transport: LockdownTransport,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PairedMobdev2Device {
     pub udid: String,
     pub host: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for PairedMobdev2Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairedMobdev2Device")
+            .field("udid", &crate::redaction::diagnostic_id(&self.udid))
+            .field("host", &crate::redaction::diagnostic_id(&self.host))
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 enum LockdownTransport {
     Usbmux { device_id: u32 },
     Tcp { host: String },
 }
 
-fn should_strip_service_ssl(service_name: &str) -> bool {
-    matches!(
-        service_name,
-        "com.apple.instruments.remoteserver" | "com.apple.accessibility.axAuditDaemon.remoteserver"
-    )
+impl std::fmt::Debug for LockdownTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Usbmux { device_id } => f
+                .debug_struct("Usbmux")
+                .field("device_id", device_id)
+                .finish(),
+            Self::Tcp { host } => f
+                .debug_struct("Tcp")
+                .field("host", &crate::redaction::diagnostic_id(host))
+                .finish(),
+        }
+    }
 }
 
-include!("connected.rs");
+#[cfg(feature = "mobileactivation")]
+mod activation_error;
+#[cfg(feature = "mobileactivation")]
+mod deactivation_error;
+#[cfg(feature = "mobileactivation")]
+pub use deactivation_error::DeactivationFallbackError;
+mod connected;
 #[cfg(feature = "tunnel")]
-mod tunnel_endpoint;
+mod owned_connection;
 #[cfg(feature = "tunnel")]
-use tunnel_endpoint::TunnelEndpoint;
+pub use owned_connection::OwnedConnectedDevice;
+#[cfg(feature = "tunnel-private-ip")]
+mod admitted_future;
+#[cfg(feature = "tunnel-private-ip")]
+mod prepared_connection;
+#[cfg(feature = "tunnel-private-ip")]
+pub use prepared_connection::PreparedConnectedDevice;
+mod activation_policy;
+mod connection;
+#[cfg(feature = "tunnel")]
+pub(crate) mod existing_rsd;
+#[cfg(feature = "tunnel")]
+pub(crate) mod prepared_rsd;
+#[cfg(feature = "tunnel")]
+pub use existing_rsd::{
+    observe_existing_rsd, observe_existing_rsd_with_selection, ExistingRsdCleanupFailure,
+    ExistingRsdCleanupReceipt, ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdRoute,
+    ExistingRsdService, ExistingRsdServiceConnection, ExistingRsdServiceEvidence,
+    ExistingRsdServiceKind, ExistingRsdServiceOwner, ExistingRsdSession, RsdHandshakeMode,
+    RsdSelectionReceipt,
+};
+#[cfg(feature = "tunnel")]
+pub use existing_rsd::{
+    prepare_existing_rsd_at, prepare_existing_rsd_with_identity_at, prepare_owned_existing_rsd_at,
+    prepare_owned_existing_rsd_with_identity_at,
+};
+#[cfg(feature = "tunnel")]
+pub use prepared_rsd::{PreparedRsdCatalogue, PreparedRsdOwner};
+#[cfg(any(feature = "mdns", feature = "tunnel"))]
+pub(crate) mod error_context;
+mod lockdown_transport;
+mod rsd_observation;
+mod service_routing;
+mod support;
+mod tunnel_owner;
+
+pub use tunnel_owner::{TunnelOwner, TunnelReservation, TunnelReservationOwner};
+
+pub use rsd_observation::{InitialRsdProbe, InitialRsdProbeSkipReason, InitialRsdProbeState};
+
+pub use connection::{
+    connect, connect_direct_usb_tunnel, connect_direct_usb_tunnel_with_owner,
+    connect_remote_pairing_tunnel, connect_remote_pairing_tunnel_with_owner,
+    connect_tcp_lockdown_tunnel, connect_tcp_lockdown_tunnel_with_owner, connect_with_owner,
+};
+#[cfg(feature = "tunnel")]
+pub use connection::{
+    connect_direct_usb_tunnel_owned_with_owner, connect_owned_with_owner,
+    connect_remote_pairing_tunnel_owned_with_owner, connect_tcp_lockdown_tunnel_owned_with_owner,
+};
+#[cfg(feature = "tunnel-private-ip")]
+pub use connection::{
+    prepare_direct_usb_tunnel_owned_with_owner_at, prepare_owned_with_owner_at,
+    prepare_remote_pairing_tunnel_owned_with_owner_at,
+    prepare_tcp_lockdown_tunnel_owned_with_owner_at,
+};
+
+#[cfg(feature = "mdns")]
+mod discovery_match;
+#[cfg(feature = "mdns")]
+pub use discovery_match::discover_paired_mobdev2_devices;
+#[cfg(all(feature = "mdns", feature = "tunnel"))]
+pub use discovery_match::{observe_paired_identity, PairedIdentityReceipt};
+
+#[cfg(feature = "tunnel")]
+mod rsd_connect;
 #[cfg(feature = "tunnel")]
 mod tunnel_activation;
+#[cfg(feature = "test-tunnel")]
+#[doc(hidden)]
+pub use tunnel_activation::scripted_peer::{
+    remote as scripted_tunnel_peer, Connection as ScriptedTunnelConnection,
+    PeerReport as ScriptedTunnelReport,
+};
+
+/// Explicit local scripted authentication boundary for cross-crate lifecycle
+/// fixtures. This is not a device discovery/authentication constructor. The
+/// original CDTunnel, private IPv6/TCP, RSD and owner implementation still runs.
+#[cfg(feature = "test-tunnel")]
+#[doc(hidden)]
+pub async fn prepare_scripted_tunnel_stream_at<T>(
+    info: DeviceInfo,
+    stream: T,
+    owner: &dyn TunnelOwner,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    deadline: tokio::time::Instant,
+) -> Result<PreparedConnectedDevice, crate::CoreError>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let reservation = owner.reserve_owned()?;
+    let connection = tunnel_activation::TunnelConnection::new(
+        info,
+        None,
+        LockdownTransport::Tcp { host: "::1".into() },
+        "scripted authenticated stream fixture",
+    )
+    .with_initial_rsd_bank(Some(bank));
+    tunnel_activation::prepared::prepare_tunnel(
+        connection,
+        stream,
+        crate::TunMode::Userspace,
+        Some(reservation),
+        activation_policy::Prepared { deadline, bank },
+    )
+    .await
+}
+
+#[cfg(all(feature = "test-tunnel", feature = "mdns"))]
+mod workflow_fixture;
+#[cfg(all(feature = "test-tunnel", feature = "mdns"))]
+#[doc(hidden)]
+pub use workflow_fixture::{workflow_loopback_fixture, workflow_loopback_fixture_with_tunnel};
+
+#[cfg(all(feature = "tunnel", any(feature = "mdns", test)))]
+mod tunnel_connect;
 #[cfg(feature = "tunnel")]
-use tunnel_activation::{activate_tunnel, TunnelConnection};
-include!("lockdown_transport.rs");
-include!("tunnel_connect.rs");
-include!("discovery_match.rs");
-include!("rsd_connect.rs");
-include!("support.rs");
+mod tunnel_endpoint;
 
 #[cfg(test)]
-include!("tests.rs");
+mod tests;

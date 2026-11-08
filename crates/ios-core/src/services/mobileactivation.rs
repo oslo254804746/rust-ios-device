@@ -12,6 +12,8 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use zeroize::Zeroize;
 
+mod http_error;
+
 pub const SERVICE_NAME: &str = "com.apple.mobileactivationd";
 pub const ACTIVATION_URL: &str = "https://albert.apple.com/deviceservices/deviceActivation";
 pub const DRM_HANDSHAKE_URL: &str = "https://albert.apple.com/deviceservices/drmHandshake";
@@ -71,6 +73,59 @@ pub fn has_legacy_activation_wrapper(bytes: &[u8]) -> bool {
         .any(|key| root.contains_key(key))
 }
 
+#[cfg(test)]
+mod http_source_contract_tests;
+
+#[cfg(test)]
+mod deadline_source_contract_tests {
+    use super::*;
+    #[tokio::test]
+    async fn native_source_command_deadline_retains_elapsed() {
+        let (stream, _peer) = tokio::io::duplex(4096);
+        let mut client = MobileActivationClient::with_timeout(stream, Duration::from_millis(10));
+        let error = client.request_session_info().await.unwrap_err();
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(10)));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+    }
+    #[tokio::test]
+    async fn native_source_session_deadline_retains_elapsed() {
+        let (stream, _peer) = tokio::io::duplex(4096);
+        let mut client = MobileActivationClient::new(stream);
+        let started = tokio::time::Instant::now();
+        let error = client
+            .request_session_info_until(started + Duration::from_millis(10), started)
+            .await
+            .unwrap_err();
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(10)));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+    }
+
+    #[tokio::test]
+    async fn native_source_expired_session_marker_stays_source_free() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = MobileActivationClient::new(stream);
+        let started = tokio::time::Instant::now();
+        let error = client
+            .request_session_info_until(started, started)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            MobileActivationError::Timeout(Duration::ZERO)
+        ));
+        assert_eq!(error.timeout_duration(), Some(Duration::ZERO));
+        assert!(!crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        drop(client);
+        let mut received = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut peer, &mut received)
+            .await
+            .unwrap();
+        assert!(received.is_empty());
+    }
+}
+
 service_error!(MobileActivationError, between {
     /// The operation exceeded its configured deadline.
     #[error("mobile activation operation timed out after {0:?}")]
@@ -79,6 +134,46 @@ service_error!(MobileActivationError, between {
     #[error("activation HTTP error: {0}")]
     Http(String),
 });
+
+#[derive(thiserror::Error)]
+#[error("mobile activation operation timed out after {duration:?}")]
+struct MobileActivationTimeout {
+    duration: Duration,
+    #[source]
+    source: tokio::time::error::Elapsed,
+}
+crate::redaction::error_debug!(MobileActivationTimeout);
+
+impl MobileActivationError {
+    /// The budget reported by a mobileactivation-issued deadline or its legacy
+    /// Timeout variant. This does not establish safe retry or completed cleanup.
+    pub fn timeout_duration(&self) -> Option<Duration> {
+        if let Self::Timeout(duration) = self {
+            return Some(*duration);
+        }
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if let Some(error) = error.downcast_ref::<MobileActivationTimeout>() {
+                return Some(error.duration);
+            }
+            next = error.source();
+        }
+        None
+    }
+}
+
+fn native_timeout(
+    duration: Duration,
+    phase: &'static str,
+    source: tokio::time::error::Elapsed,
+) -> MobileActivationError {
+    MobileActivationError::Io(crate::error::context::retained_io(
+        std::io::ErrorKind::TimedOut,
+        phase,
+        MobileActivationTimeout { duration, source },
+    ))
+}
 
 /// A client for one `mobileactivationd` service connection.
 #[derive(Debug)]
@@ -316,7 +411,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MobileActivationClient<S> {
         }
         tokio::time::timeout_at(deadline, self.request_session_info())
             .await
-            .map_err(|_| activation_session_timeout(started, deadline))?
+            .map_err(|source| {
+                native_timeout(
+                    deadline.saturating_duration_since(started),
+                    "wait for activation session",
+                    source,
+                )
+            })?
     }
 
     async fn send_command(
@@ -348,7 +449,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MobileActivationClient<S> {
         };
         tokio::time::timeout(timeout, operation)
             .await
-            .map_err(|_| MobileActivationError::Timeout(timeout))?
+            .map_err(|source| native_timeout(timeout, "mobile activation command", source))?
     }
 }
 
@@ -546,6 +647,9 @@ impl ActivationHttpResponse {
 /// The default constructor accepts only the official Apple host. Custom
 /// endpoints remain HTTPS-only and require an explicit unsafe opt-in; TLS
 /// certificate verification is never disabled and redirects are rejected.
+/// Native HTTP failures retain their reqwest source under the existing IO
+/// variant; rejected endpoint input uses InvalidInput. Debug hashes URLs,
+/// while explicit source inspection can still reveal a private endpoint URL.
 #[derive(Clone)]
 pub struct ActivationHttpClient {
     client: reqwest::Client,
@@ -558,8 +662,14 @@ impl std::fmt::Debug for ActivationHttpClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ActivationHttpClient")
-            .field("activation_url", &self.activation_url)
-            .field("drm_handshake_url", &self.drm_handshake_url)
+            .field(
+                "activation_url",
+                &crate::redaction::diagnostic_id(&self.activation_url),
+            )
+            .field(
+                "drm_handshake_url",
+                &crate::redaction::diagnostic_id(&self.drm_handshake_url),
+            )
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -583,7 +693,7 @@ impl ActivationHttpClient {
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|error| MobileActivationError::Http(error.to_string()))?;
+            .map_err(|error| http_error::retain("build activation HTTP client", error))?;
         Ok(Self {
             client,
             activation_url: activation_url.to_owned(),
@@ -671,7 +781,7 @@ impl ActivationHttpClient {
             .body(body)
             .send()
             .await
-            .map_err(|error| MobileActivationError::Http(error.to_string()))?;
+            .map_err(|error| http_error::retain("send activation HTTP request", error))?;
         let status = response.status();
         let content_length = response.content_length();
         if content_length.is_some_and(|length| length > MAX_HTTP_BODY_SIZE as u64) {
@@ -703,7 +813,7 @@ impl ActivationHttpClient {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|error| MobileActivationError::Http(error.to_string()))?
+            .map_err(|error| http_error::retain("read activation HTTP body", error))?
         {
             if bytes.len().saturating_add(chunk.len()) > MAX_HTTP_BODY_SIZE {
                 return Err(MobileActivationError::Http(format!(
@@ -751,20 +861,20 @@ fn validate_endpoint(
     unsafe_custom_server: bool,
 ) -> Result<(), MobileActivationError> {
     let parsed = reqwest::Url::parse(url)
-        .map_err(|error| MobileActivationError::Http(format!("invalid endpoint URL: {error}")))?;
+        .map_err(|error| http_error::input(http_error::EndpointInputError::Url(Box::new(error))))?;
     if parsed.scheme() != "https" {
-        return Err(MobileActivationError::Http(
-            "activation endpoints must use HTTPS".into(),
+        return Err(http_error::input(
+            http_error::EndpointInputError::HttpsRequired,
         ));
     }
     if parsed.username() != "" || parsed.password().is_some() {
-        return Err(MobileActivationError::Http(
-            "activation endpoint must not contain user credentials".into(),
+        return Err(http_error::input(
+            http_error::EndpointInputError::Credentials,
         ));
     }
     if !unsafe_custom_server && url != official_url {
-        return Err(MobileActivationError::Http(
-            "non-official activation endpoint requires explicit unsafe opt-in".into(),
+        return Err(http_error::input(
+            http_error::EndpointInputError::CustomOptIn,
         ));
     }
     Ok(())
@@ -914,15 +1024,16 @@ mod tests {
 
     #[tokio::test]
     async fn activation_session_wait_times_out_and_cancellation_is_observable() {
-        let mut stream = MockStream::with_responses(vec![response_with_handshake(b"old"); 32]);
+        let mut stream = MockStream::with_responses(vec![
+            response_with_handshake(b"old"),
+            response_with_handshake(b"old"),
+            response_with_handshake(b"old"),
+            response_with_handshake(b"old"),
+        ]);
         let mut client = MobileActivationClient::new(&mut stream);
         let error = client
             .wait_for_activation_session_until(
-                // Windows timer scheduling can overshoot a 10 ms sleep by a
-                // full timer tick.  Leave enough room for the test to
-                // observe a second probe while still exercising the
-                // absolute-deadline timeout path.
-                tokio::time::Instant::now() + Duration::from_millis(100),
+                tokio::time::Instant::now() + Duration::from_millis(25),
                 Duration::from_millis(10),
             )
             .await
@@ -1010,7 +1121,11 @@ mod tests {
             )
             .await
             .expect_err("a stalled probe must remain an error");
-        assert!(matches!(error, MobileActivationError::Timeout(_)));
+        let reported = error
+            .timeout_duration()
+            .expect("activation-issued deadline");
+        assert!(reported > Duration::ZERO && reported <= Duration::from_millis(10));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
 
         let mut stream =
             MockStream::with_response(plist::Value::Dictionary(plist::Dictionary::from_iter([(
@@ -1378,9 +1493,8 @@ mod tests {
     async fn device_request_timeout_is_bounded() {
         let mut client =
             MobileActivationClient::with_timeout(PendingStream, Duration::from_millis(5));
-        assert!(matches!(
-            client.request_session_info().await,
-            Err(MobileActivationError::Timeout(_))
-        ));
+        let error = client.request_session_info().await.unwrap_err();
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(5)));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
     }
 }

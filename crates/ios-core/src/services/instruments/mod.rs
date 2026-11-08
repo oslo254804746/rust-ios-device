@@ -23,10 +23,13 @@ pub mod devicestate;
 pub mod energy;
 pub mod fps;
 pub mod graphics;
+pub mod location_simulation;
 pub mod network;
 pub mod notifications;
 pub mod process_control;
 pub mod screenshot;
+#[cfg(test)]
+mod sysmon_tests;
 pub mod tap;
 
 pub use activity_trace::{
@@ -39,8 +42,12 @@ pub use core_profile_session::{
 pub use deviceinfo::{DeviceInfoClient, RunningProcess};
 pub use devicestate::{ConditionProfile, ConditionProfileType, DeviceStateClient};
 pub use energy::EnergyMonitorClient;
-pub use fps::{parse_frame_commit_timestamps, FpsSample, FpsWindowCalculator, MachTimeInfo};
+pub use fps::{
+    iter_frame_commit_timestamps, parse_frame_commit_timestamps, FpsSample, FpsWindowCalculator,
+    MachTimeInfo,
+};
 pub use graphics::GraphicsMonitorClient;
+pub use location_simulation::LocationSimulationClient;
 pub use network::{
     ConnectionDetectionEvent, ConnectionUpdateEvent, InterfaceDetectionEvent, NetworkMonitorClient,
     NetworkMonitorEvent, SocketAddress,
@@ -173,7 +180,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SysmontapService<S> {
         let cfg_resp = conn
             .method_call(ch, "setConfig:", &[archived_object(archived)])
             .await?;
-        tracing::debug!("sysmontap setConfig: response: {:?}", cfg_resp.payload);
+        tracing::debug!(
+            identifier = cfg_resp.identifier,
+            "sysmontap setConfig response received"
+        );
 
         // start (fire-and-forget)
         conn.method_call_async(ch, "start", &[]).await?;
@@ -188,7 +198,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SysmontapService<S> {
     /// Blocks until a sample arrives.
     pub async fn next_cpu_sample(&mut self) -> Result<Option<CpuSample>, DtxError> {
         loop {
-            let msg = self.conn.recv().await?;
+            let msg = checked_sysmontap_message(self.conn.recv().await?)?;
             tracing::debug!(
                 "next_cpu_sample: id={} ch={} expects_reply={} payload={:?}",
                 msg.identifier,
@@ -210,7 +220,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SysmontapService<S> {
             tracing::debug!(
                 "sysmontap msg ch={} payload={:?}",
                 msg.channel_code,
-                &msg.payload
+                std::mem::discriminant(&msg.payload)
             );
 
             if let Some(sample) = parse_cpu_sample(&msg) {
@@ -229,7 +239,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SysmontapService<S> {
         proc_attr_names: &[String],
     ) -> Result<Option<ProcessSample>, DtxError> {
         loop {
-            let msg = self.conn.recv().await?;
+            let msg = checked_sysmontap_message(self.conn.recv().await?)?;
             if msg.expects_reply {
                 self.conn.send_ack(&msg).await?;
             }
@@ -271,6 +281,17 @@ fn build_sysmontap_config(cfg: &SysmontapConfig) -> Vec<(String, plist::Value)> 
             plist::Value::Integer(cfg.sample_interval.into()),
         ),
     ]
+}
+
+fn checked_sysmontap_message(mut message: DtxMessage) -> Result<DtxMessage, DtxError> {
+    message = crate::services::dtx::codec::checked_reply(message)?;
+    if let DtxPayload::Raw(bytes) = &message.payload {
+        let value = crate::proto::nskeyedarchiver::unarchive(bytes).map_err(|error| {
+            DtxError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        message.payload = DtxPayload::Response(archive_value_to_nsobject(value));
+    }
+    Ok(message)
 }
 
 // ── Sample parser ─────────────────────────────────────────────────────────────
@@ -499,47 +520,5 @@ pub(crate) fn nsobject_to_json(value: &NSObject) -> serde_json::Value {
                 .collect::<Map<_, _>>(),
         ),
         NSObject::Null => Value::Null,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn dict(fields: impl IntoIterator<Item = (&'static str, NSObject)>) -> NSObject {
-        NSObject::Dict(
-            fields
-                .into_iter()
-                .map(|(key, value)| (key.to_string(), value))
-                .collect(),
-        )
-    }
-
-    #[test]
-    fn archive_unsigned_integer_is_preserved_as_nsobject_uint() {
-        let value =
-            archive_value_to_nsobject(crate::proto::nskeyedarchiver::ArchiveValue::Uint(u64::MAX));
-        assert_eq!(value, NSObject::Uint(u64::MAX));
-    }
-
-    #[test]
-    fn process_snapshot_keeps_unsigned_sentinel_values() {
-        let process_values = NSObject::Array(vec![NSObject::Uint(u64::MAX)]);
-        let processes = dict([("1", process_values)]);
-        let message = DtxMessage {
-            identifier: 1,
-            conversation_idx: 0,
-            channel_code: 1,
-            expects_reply: false,
-            payload: DtxPayload::Response(NSObject::Array(vec![dict([("Processes", processes)])])),
-        };
-
-        let attrs = vec!["threadsSystem".to_string()];
-        let sample = parse_process_snapshot(&message, &attrs).expect("process sample");
-        assert_eq!(sample.processes.len(), 1);
-        assert_eq!(
-            sample.processes[0].get("threadsSystem"),
-            Some(&serde_json::json!(u64::MAX))
-        );
     }
 }

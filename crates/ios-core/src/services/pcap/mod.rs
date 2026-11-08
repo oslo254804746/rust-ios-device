@@ -28,6 +28,21 @@ pub struct CapturedPacket {
     pub payload: Vec<u8>,
 }
 
+impl CapturedPacket {
+    /// Returns true if `filter` matches this packet's full unit-qualified interface name
+    /// (e.g. `en0`, `pdp_ip0`) or its unitless interface base name (e.g. `en`, `pdp_ip`).
+    pub fn matches_interface(&self, filter: &str) -> bool {
+        let filter = filter.trim();
+        if filter.is_empty() {
+            return false;
+        }
+        let base = self
+            .interface_name
+            .trim_end_matches(|c: char| c.is_ascii_digit());
+        self.interface_name == filter || (!base.is_empty() && base == filter)
+    }
+}
+
 /// IP addresses observed in packets sourced by the device's Wi-Fi MAC.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct NetworkInfo {
@@ -122,7 +137,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> PcapClient<S> {
         while packets < limits.max_packets && bytes < limits.max_bytes {
             let packet = timeout_at(deadline, self.next_packet())
                 .await
-                .map_err(|_| PcapError::Protocol("IP finder timed out".into()))??;
+                .map_err(|error| {
+                    PcapError::Io(crate::error::context::retained_io(
+                        std::io::ErrorKind::TimedOut,
+                        "find packet capture IP",
+                        error,
+                    ))
+                })??;
             packets += 1;
             bytes = bytes.saturating_add(packet.payload.len());
             if bytes > limits.max_bytes {
@@ -248,8 +269,13 @@ pub fn write_packet_record<W: std::io::Write>(
 }
 
 fn checked_packet_record_len(len: usize) -> Result<u32, PcapError> {
-    u32::try_from(len)
-        .map_err(|_| PcapError::Protocol(format!("packet payload too large for pcap: {len}")))
+    u32::try_from(len).map_err(|error| {
+        PcapError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidInput,
+            "encode pcap packet length",
+            error,
+        ))
+    })
 }
 
 fn decode_packet(buf: &[u8]) -> Result<CapturedPacket, PcapError> {
@@ -273,8 +299,16 @@ fn decode_packet(buf: &[u8]) -> Result<CapturedPacket, PcapError> {
         )));
     }
 
+    let unit = be_u16(buf, 10)?;
     let frame_pre_length = be_u32(buf, 17)?;
-    let interface_name = parse_fixed_string(buf, 25, 16)?;
+    let raw_interface_name = parse_fixed_string(buf, 25, 16)?;
+    let interface_name = if !raw_interface_name.is_empty()
+        && !raw_interface_name.ends_with(|c: char| c.is_ascii_digit())
+    {
+        format!("{raw_interface_name}{unit}")
+    } else {
+        raw_interface_name
+    };
     let pid = le_i32(buf, 41)?;
     let proc_name = parse_fixed_string(buf, 45, 17)?;
     let pid2 = le_i32(buf, 66)?;
@@ -304,6 +338,14 @@ fn decode_packet(buf: &[u8]) -> Result<CapturedPacket, PcapError> {
     })
 }
 
+fn be_u16(buf: &[u8], offset: usize) -> Result<u16, PcapError> {
+    let bytes = buf
+        .get(offset..offset + 2)
+        .ok_or_else(|| PcapError::Protocol(format!("missing u16 at offset {offset}")))?;
+    // Safety: .get(offset..offset+2) returns exactly 2 bytes, so try_into::<[u8; 2]>() is infallible.
+    Ok(u16::from_be_bytes(bytes.try_into().unwrap()))
+}
+
 fn be_u32(buf: &[u8], offset: usize) -> Result<u32, PcapError> {
     let bytes = buf
         .get(offset..offset + 4)
@@ -329,7 +371,13 @@ fn parse_fixed_string(buf: &[u8], offset: usize, len: usize) -> Result<String, P
         .copied()
         .take_while(|byte| *byte != 0)
         .collect::<Vec<_>>();
-    String::from_utf8(trimmed).map_err(|e| PcapError::Protocol(format!("invalid string: {e}")))
+    String::from_utf8(trimmed).map_err(|error| {
+        PcapError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidData,
+            "decode packet capture metadata",
+            error,
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -337,6 +385,42 @@ mod tests {
     use crate::test_util::MockStream;
 
     use super::*;
+
+    #[test]
+    fn native_packet_metadata_utf8_fault_keeps_owned_bytes() {
+        let mut raw = sample_header(14);
+        raw[25] = 0xff;
+        let error = decode_packet(&raw).unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+        let mut found = None;
+        for _ in 0..32 {
+            let Some(error) = source else { break };
+            if let Some(error) = error.downcast_ref::<std::string::FromUtf8Error>() {
+                found = Some(error);
+                break;
+            }
+            source = error.source();
+        }
+        assert_eq!(found.unwrap().as_bytes(), b"\xffn0");
+    }
+
+    #[tokio::test]
+    async fn native_ip_finder_timeout_retains_elapsed() {
+        let (stream, _peer) = tokio::io::duplex(64);
+        let error = PcapClient::new(stream)
+            .find_ip(
+                "02:00:00:00:00:01",
+                FindIpLimits {
+                    timeout: Duration::from_millis(1),
+                    ..FindIpLimits::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+    }
 
     fn sample_header(frame_pre_length: u32) -> Vec<u8> {
         let mut buf = vec![0u8; DEFAULT_HEADER_SIZE];
@@ -368,12 +452,30 @@ mod tests {
     }
 
     #[test]
+    fn decode_packet_qualifies_unitless_interface_name_and_matches_interface() {
+        let mut raw = sample_header(14);
+        raw[10..12].copy_from_slice(&2u16.to_be_bytes());
+        raw[25..41].fill(0);
+        raw[25..31].copy_from_slice(b"pdp_ip");
+        raw.extend_from_slice(&[0xaa, 0xbb]);
+
+        let packet = decode_packet(&raw).unwrap();
+        assert_eq!(packet.interface_name, "pdp_ip2");
+        assert!(packet.matches_interface("pdp_ip2"));
+        assert!(packet.matches_interface("pdp_ip"));
+        assert!(!packet.matches_interface("pdp_ip0"));
+        assert!(!packet.matches_interface("pdp"));
+        assert!(!packet.matches_interface("en0"));
+        assert!(!packet.matches_interface(""));
+    }
+
+    #[test]
     fn checked_packet_record_len_rejects_large_lengths() {
         let err = checked_packet_record_len(u32::MAX as usize + 1).unwrap_err();
 
-        assert!(matches!(
-            err,
-            PcapError::Protocol(message) if message.contains("packet payload too large")
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::InvalidInput);
+        assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+            &err
         ));
     }
 

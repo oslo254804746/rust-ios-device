@@ -7,7 +7,127 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes yet.
+## [0.1.16] — 2026-11-08
+
+### Added
+
+#### iOS 26 / 27 / 27.2 Protocol Adaptations & CoreDevice Tunnel
+- Added a **20ms ICMPv6 Echo Request Nudge** in the userspace `smoltcp` tunnel
+  stack (`CDTunnel`) when active TCP sockets await device responses, eliminating
+  multi-second packet stalls during high-frequency HTTP/2 RemoteXPC and DTX
+  bursts on iOS 18–27.2.
+- Added **IPv6 UDP datagram forwarding** in the Userspace Tunnel proxy alongside
+  TCP stream proxying, enabling unprivileged `dtremotedisplayd` RTP media
+  streaming and HID touch authorization on Windows, macOS, and Linux without
+  Administrator/root privileges.
+- Added iOS 26/27 `com.apple.coredevice.feature.configuredevice` configuration
+  actions (`liquid-glass-opacity` and `increase-contrast`) under
+  `ios device-control configuration`, and included `LiquidGlass` in the default
+  supervised setup skip list.
+- Added CoreProfileSession Stackshot (`com.apple.instruments.server.services.coreprofilesessiontap`)
+  `sharedCache` UUID extraction in `ios symbols list` for iOS 17–27+ devices that
+  omit `com.apple.dt.fetchsymbols` from `DTServiceHub`.
+- Added automatic 100ms TCP FIN drain before tearing down ephemeral Userspace
+  Tunnels in `ios file --coredevice` so `dtfileserviced` cleanly releases
+  sessions across consecutive invocations.
+
+#### Screen & Media Streaming (`DisplayService` & `Viewer` — F04)
+- Added real-time **H.265 (HEVC)** video and **AAC** audio RTP access-unit
+  streaming (`ios device-control display status | video | audio`) via
+  `com.apple.coredevice.diagnosticsservice` (`dtremotedisplayd`) over both
+  Kernel TUN and unprivileged Userspace Tunnel (`UAFH` UDP framing, `CUID`,
+  `VRAT` dictionary negotiation, device-issued stream-token stopping, and
+  `DisplayError::MediaInUse` for camera/microphone conflicts).
+- Added interactive Web viewer (`ios viewer web`) and RFB 3.8 VNC server
+  (`ios viewer vnc`) with MJPEG/PNG frame streaming, persistent timestamped
+  HEVC decoding via external FFmpeg, **16-bit Display P3 PNG screenshot**
+  expansion (`png::Transformations::EXPAND | STRIP_16`) for Pro Max displays,
+  interactive touch/key/button/orientation controls, and bidirectional clipboard
+  sync (`--share-clipboard`).
+
+#### Universal HID (`ios hid`)
+- Added `ios hid` subcommands for `tap`, `swipe`, `button`, phased `touch`,
+  **5-finger `multitouch`** (`--points` with independent `TouchIdentifier`
+  finger slots), `text`, and `key`.
+- Added automatic **500ms touch authorization settle** after `dtremotedisplayd`
+  RTP session startup, **300ms virtual keyboard settle** before typing, and
+  **Shift modifier lead-in/lead-out** (25ms lead-in/hold/release) for uppercase
+  letters and shifted ASCII symbols on iOS 18–27.2.
+
+#### WebInspector, CDP & W3C WebDriver (F02)
+- Added `ios webinspector` subcommands (`opened-tabs`, `eval`, `launch`,
+  `js-shell`, `cdp`, `webdriver`) with separated wire/model/client/session
+  ownership and bounded application/page caches.
+- Added Chrome DevTools Protocol (`cdp`) bridge compatible with `puppeteer-core`
+  and `playwright-core` (`connectOverCDP`), supporting `Runtime`, `Page`
+  (navigation, lifecycle events, frame tree, screenshots), `Network`, `Fetch`
+  (interception/fulfill/continue), `Input` (`dispatchMouseEvent`,
+  `dispatchTouchEvent`, `dispatchKeyEvent`, `insertText`), `Performance`, and
+  `HeapProfiler` (`takeHeapSnapshot` via `Heap.gc` + `Heap.snapshot`). See
+  [CDP client workflow](docs/cdp-client-workflow.md).
+- Added W3C WebDriver (`webdriver`) HTTP server compatible with
+  `selenium-webdriver` (session lifecycle, navigation, script execution,
+  screenshots, element location, click, and text entry).
+
+#### File Management (`AFC` Extended Opcodes & CoreDevice `FileService`)
+- Added complete Apple File Conduit (AFC) extended opcodes to `ios-core::afc`
+  and `ios file`: `GetConnectionInfo` (`connection-info`), `GetFileHash` and
+  `GetFileHashWithRange` (`hash --offset --length`), `FileRefReadWithOffset` and
+  `FileRefTell` (`pread`), `FileRefWriteWithOffset` (`pwrite`), `TruncateFile`
+  and `FileRefSetFileSize` (`truncate [--by-fd]`), `SetFileTime` (`set-time`),
+  and `GetSizeOfPathContents` (`dir-size`).
+- Added full CoreDevice `fileservice` (`ios file --coredevice` `ls`, `mkdir`,
+  `push`, `pull`, `mv`, `rm --recursive`) across `temporary`,
+  `app-data-container`, `app-group-data-container`, `root-staging`, and
+  `system-crash-logs` domains.
+
+#### Developer Diagnostics, Pasteboard, XCTest & Restore/SDK (F03, F05, F06)
+- Added Darwin-notification pasteboard monitoring (`ios pasteboard watch`) with
+  fresh PULL connections, baseline suppression, and `(nonce, changeCount)`
+  deduplication alongside `pasteboard get` and `pasteboard set` (text, URL, and
+  binary UTI payloads).
+- Added automatic iOS 17+ RSD `com.apple.internal.dt.remote.debugproxy` fallback
+  in `ios debugserver` (`send`, `proxy`) and `ios debug` when Lockdown
+  `com.apple.debugserver` is unavailable on iOS 17–27+.
+- Added reusable `TestWorkflowEngine` (`runtest`, `runxctest`) with `.xctestrun`
+  v1/v2 parsing, bounded package installation, JUnit/JSON result sidecars, and
+  `runwda --once`.
+- Added restored plist transport, IPSW OS image inspection/extraction, and
+  bounded ASR data-port serving (`ios restore`).
+- Added finite existing-trust `DeviceSession` (`IosDeviceSession` in C FFI,
+  `ios_rs.DeviceSession` in Python) for bounded device queries (`ProductType`,
+  `ProductVersion`, `DeviceName`), application listing, AFC file reads, and
+  syslog streaming with explicit cancellation and resource budgets. See
+  [owned device query contract](docs/owned-device-query.md).
+- Added `ios tunnel auth create|check` and scoped access policies for `tunnel serve`,
+  `webinspector cdp`, and `webinspector webdriver`, plus `--error-format=json`
+  for structured machine-readable CLI failure envelopes. See
+  [error contract](docs/error-contract.md) and
+  [manager route intent](docs/manager-route-intent.md).
+- Streamed bounded ZIP32 IPA installs from admitted directory metadata and 64 KiB
+  decode buffers, preserving CRC checks and deadlines.
+- Extended explicit-target `ios doctor` reports with read-only personalization
+  manifest, DDI component, pairing-directory, and RSD route observations.
+
+### Fixed
+
+- Hardened lifecycle, cancellation, and deadline boundaries across Lockdown,
+  RSD, HTTP/2 RemoteXPC, DTX, AFC, MobileBackup2, DeviceLink, NotificationProxy,
+  Companion, SpringBoard (`--request-timeout-ms`), FPS capture, and WebInspector
+  sessions. See [lifecycle contract](docs/lifecycle-contract.md).
+- Propagated CLI stdout write/newline/flush failures through a shared fallible
+  boundary so closed result pipes return exit 1 instead of panicking. See
+  [plist/JSON contract](docs/plist-json-contract.md) and
+  [backup contract](docs/backup-contract.md).
+- Preserved existing file-pull and backup output until staged transfers succeed,
+  refused symlink destinations with `--force`, and cleaned temporary files on
+  cancellation.
+- Restricted CLI logging to reviewed project targets and redacted credentials,
+  pair records, and raw device payloads from `Debug` and automatic error
+  diagnostics.
+- Opened a fresh RemoteXPC connection for each subsequent Display request,
+  omitted `VRAE:0` from video negotiation so the device can adapt its encoder,
+  and stopped display capture or accessibility visuals cleanly on Ctrl-C.
 
 ## [0.1.15] — 2026-09-07
 
@@ -262,7 +382,8 @@ No unreleased changes yet.
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.12...v0.1.13

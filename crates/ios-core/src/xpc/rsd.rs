@@ -1,13 +1,8 @@
 //! RSD (Remote Service Discovery) client for iOS 17+.
 //!
-//! Protocol:
-//! 1. TCP connect to [server_address]:58783
-//! 2. Raw HTTP/2 handshake (preface + SETTINGS exchange)
-//! 3. Read XPC handshake message on clientServer stream (stream 1)
-//!    containing UDID + Services
-//!
-//! The device sends the handshake immediately after the H2 SETTINGS exchange;
-//! do not send the usual XPC initialization sequence on the RSD port.
+//! Modern RSD announces a stable host UUID after the RemoteXPC bootstrap and
+//! reads the device's service directory on stream 1. Older queued, synchronous
+//! and passive bootstrap styles are retried on fresh connections.
 //!
 //! Reference: go-ios/ios/rsd.go + go-ios/ios/http/http.go
 
@@ -25,6 +20,8 @@ use bytes::{Bytes, BytesMut};
 use tokio::net::TcpStream;
 
 #[cfg(feature = "tunnel")]
+use crate::xpc::error_mapping::{h2_error, xpc_timeout};
+#[cfg(feature = "tunnel")]
 use crate::xpc::h2_raw::{H2Error, H2Framer, MAX_BUFFERED_BYTES_PER_STREAM, MAX_FRAME_PAYLOAD};
 #[cfg(feature = "tunnel")]
 use crate::xpc::message::{
@@ -33,7 +30,40 @@ use crate::xpc::message::{
 #[cfg(feature = "tunnel")]
 use crate::xpc::XpcError;
 
+#[cfg(feature = "tunnel")]
+mod initial;
+#[cfg(feature = "tunnel")]
+mod owned_initial;
+#[cfg(feature = "tunnel")]
+pub use owned_initial::{OwnedRsdHandshake, OwnedRsdService, OwnedRsdServices};
+#[cfg(feature = "tunnel")]
+mod sending;
+
 pub const RSD_PORT: u16 = 58783;
+
+/// Evidence in a successfully obtained RSD directory. This does not describe
+/// an unattempted/failed probe, nor certify an operation on a physical device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RsdFeatureEvidence {
+    Advertised,
+    NotAdvertised,
+    /// The historical descriptor has no usable capability list. An omitted
+    /// list and an explicitly empty list cannot be distinguished by this type.
+    MetadataUnavailable,
+    ServiceMissing,
+}
+
+fn feature_evidence(features: &[String], feature: &str) -> RsdFeatureEvidence {
+    if features.is_empty() {
+        RsdFeatureEvidence::MetadataUnavailable
+    } else if features.iter().any(|item| item == feature) {
+        RsdFeatureEvidence::Advertised
+    } else {
+        RsdFeatureEvidence::NotAdvertised
+    }
+}
 
 /// A discovered iOS 17+ service and its advertised capabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +91,12 @@ impl ServiceDescriptor {
     pub fn supports_feature(&self, feature: &str) -> bool {
         self.features.is_empty() || self.features.iter().any(|item| item == feature)
     }
+
+    /// Report capability evidence separately from the permissive legacy check.
+    /// NotAdvertised is an observation, not a device-side unsupported reply.
+    pub fn feature_evidence(&self, feature: &str) -> RsdFeatureEvidence {
+        feature_evidence(&self.features, feature)
+    }
 }
 
 /// Result of the RSD handshake.
@@ -71,6 +107,20 @@ pub struct RsdHandshake {
 }
 
 impl RsdHandshake {
+    /// Query an exact service entry in this successful directory snapshot.
+    pub fn feature_evidence(&self, service: &str, feature: &str) -> RsdFeatureEvidence {
+        self.get_service_features(service)
+            .map(|features| feature_evidence(features, feature))
+            .unwrap_or(RsdFeatureEvidence::ServiceMissing)
+    }
+
+    /// Query with the existing canonical-then-`.shim.remote` resolution order.
+    pub fn resolved_feature_evidence(&self, service: &str, feature: &str) -> RsdFeatureEvidence {
+        self.get_resolved_service_features(service)
+            .map(|features| feature_evidence(features, feature))
+            .unwrap_or(RsdFeatureEvidence::ServiceMissing)
+    }
+
     /// Look up a service port, with automatic `.shim.remote` fallback.
     pub fn get_port(&self, service: &str) -> Option<u16> {
         if let Some(s) = self.services.get(service) {
@@ -117,34 +167,808 @@ impl RsdHandshake {
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 pub async fn handshake(addr: Ipv6Addr, port: u16) -> Result<RsdHandshake, XpcError> {
     let sock_addr = SocketAddr::new(addr.into(), port);
-    let stream = tokio::time::timeout(
-        crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
-        TcpStream::connect(sock_addr),
-    )
-    .await
-    .map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("RSD dial to {sock_addr} timed out"),
-        )
-    })??;
-    tokio::time::timeout(crate::tunnel::TUNNEL_CONNECT_TIMEOUT, async {
-        let mut framer = H2Framer::connect(stream)
-            .await
-            .map_err(|e| XpcError::Tls(format!("H2: {e}")))?;
-        read_rsd_handshake(&mut framer).await
+    handshake_with_connector(|| async {
+        TcpStream::connect(sock_addr).await.map_err(XpcError::from)
     })
     .await
-    .map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("RSD handshake with {sock_addr} timed out"),
-        )
-    })?
 }
 
-/// Perform an RSD handshake on an already-connected H2 framer.
-/// Used by ios-core's `attempt_rsd_via_proxy`.
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+pub(crate) async fn handshake_with_bank(
+    addr: Ipv6Addr,
+    port: u16,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Result<RsdHandshake, XpcError> {
+    let sock_addr = SocketAddr::new(addr.into(), port);
+    handshake_with_connector_and_bank(
+        || async { TcpStream::connect(sock_addr).await.map_err(XpcError::from) },
+        bank,
+    )
+    .await
+}
+
+/// Resolve the UUID shared by RSD connections from this host.
+///
+/// On macOS this queries the local `remoted` identity once, with a bounded
+/// subprocess. Other hosts (and macOS without remoted) use UUIDv3 derived from
+/// the OS hostname. Resolve this before suspending remoted, if applicable.
+#[cfg(feature = "tunnel")]
+pub async fn default_handshake_uuid() -> Result<uuid::Uuid, XpcError> {
+    Ok(crate::xpc::identity::default_handshake_uuid().await?)
+}
+
+#[cfg(feature = "tunnel")]
+#[derive(Clone, Copy, Debug)]
+enum HandshakeMode {
+    Active,
+    Queued,
+    Legacy,
+    Passive,
+}
+
+#[cfg(feature = "tunnel")]
+const HANDSHAKE_MODES: [HandshakeMode; 4] = [
+    HandshakeMode::Active,
+    HandshakeMode::Queued,
+    HandshakeMode::Legacy,
+    HandshakeMode::Passive,
+];
+#[cfg(feature = "tunnel")]
+pub(crate) const RSD_HANDSHAKE_ATTEMPTS: usize = HANDSHAKE_MODES.len();
+
+/// Both routed TCP and userspace proxy connections use the same identity and
+/// retry policy. A failed/timed-out read may consume a partial frame, so each
+/// fallback owns a fresh transport; no parser state is reused after cancellation.
+#[cfg(feature = "tunnel")]
+pub(crate) async fn handshake_with_connector<F, Fut, S>(
+    connector: F,
+) -> Result<RsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    handshake_with_connector_and_bank(connector, None).await
+}
+
+/// Initial discovery keeps the legacy directory and retry policy while sharing
+/// the owner's pool for raw H2, bootstrap wire and borrowed parser scratch.
+/// The public, mutable RsdHandshake allocations remain outside that pool.
+#[cfg(feature = "tunnel")]
+pub(crate) async fn handshake_with_connector_and_bank<F, Fut, S>(
+    connector: F,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Result<RsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let identity = default_handshake_uuid().await?;
+    // Preserve the former direct path's dial + handshake upper bound across
+    // all retries instead of multiplying it by the number of bootstrap modes.
+    rsd_timeout(
+        crate::tunnel::TUNNEL_CONNECT_TIMEOUT * 2,
+        "RSD discovery timed out",
+        handshake_attempts(connector, identity, bank),
+    )
+    .await
+}
+
+#[cfg(feature = "tunnel")]
+async fn handshake_attempts<F, Fut, S>(
+    connector: F,
+    identity: uuid::Uuid,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Result<RsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match handshake_attempts_selected(connector, identity, bank, None).await? {
+        InitialDirectory::Legacy(directory) => Ok(directory),
+        InitialDirectory::Owned(_) => unreachable!("legacy reader selection is fixed"),
+    }
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) enum InitialDirectory {
+    Legacy(RsdHandshake),
+    Owned(OwnedRsdHandshake),
+}
+#[cfg(feature = "tunnel")]
+impl InitialDirectory {
+    pub(crate) fn udid(&self) -> &str {
+        match self {
+            Self::Legacy(directory) => &directory.udid,
+            Self::Owned(directory) => directory.udid(),
+        }
+    }
+    pub(crate) fn get_port(&self, service: &str) -> Option<u16> {
+        match self {
+            Self::Legacy(directory) => directory.get_port(service),
+            Self::Owned(directory) => directory.get_port(service),
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) async fn owned_handshake_with_connector_and_bank<F, Fut, S>(
+    connector: F,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<OwnedRsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    owned_handshake_with_identity_and_bank(connector, bank, default_handshake_uuid()).await
+}
+
+#[cfg(feature = "tunnel")]
+async fn owned_handshake_with_identity_and_bank<F, Fut, S, I>(
+    connector: F,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    identity: I,
+) -> Result<OwnedRsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    I: std::future::Future<Output = Result<uuid::Uuid, XpcError>>,
+{
+    // Admit and allocate the complete original root before identity or IO.
+    // Its same backing spans all bootstrap modes under the original timeout.
+    let directory = OwnedRsdHandshake::prepare(bank)?;
+    let identity = identity.await?;
+    match rsd_timeout(
+        crate::tunnel::TUNNEL_CONNECT_TIMEOUT * 2,
+        "RSD discovery timed out",
+        handshake_attempts_selected(connector, identity, Some(bank), Some(directory)),
+    )
+    .await?
+    {
+        InitialDirectory::Owned(directory) => Ok(directory),
+        InitialDirectory::Legacy(_) => unreachable!("owned reader selection is fixed"),
+    }
+}
+
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+pub(crate) async fn initial_handshake_with_bank(
+    addr: Ipv6Addr,
+    port: u16,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Result<InitialDirectory, XpcError> {
+    let address = SocketAddr::new(addr.into(), port);
+    match bank {
+        Some(bank) => owned_handshake_with_connector_and_bank(
+            || async { TcpStream::connect(address).await.map_err(XpcError::from) },
+            bank,
+        )
+        .await
+        .map(InitialDirectory::Owned),
+        None => handshake(addr, port).await.map(InitialDirectory::Legacy),
+    }
+}
+
+#[cfg(feature = "tunnel")]
+async fn handshake_attempts_selected<F, Fut, S>(
+    mut connector: F,
+    identity: uuid::Uuid,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+    mut owned: Option<OwnedRsdHandshake>,
+) -> Result<InitialDirectory, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use std::time::Duration;
+
+    let mut last_error = None;
+    for mode in HANDSHAKE_MODES {
+        let stream = rsd_timeout(
+            crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+            "RSD dial timed out",
+            connector(),
+        )
+        .await?;
+        let attempt = async {
+            let mut framer = rsd_timeout(
+                Duration::from_secs(3),
+                "RSD bootstrap timed out",
+                bootstrap_rsd_with_bank(stream, mode, identity, bank),
+            )
+            .await?;
+            let response_timeout = match mode {
+                HandshakeMode::Active | HandshakeMode::Queued => Duration::from_secs(4),
+                HandshakeMode::Legacy => Duration::from_secs(3),
+                HandshakeMode::Passive => Duration::from_secs(2),
+            };
+            rsd_timeout(response_timeout, "RSD response timed out", async {
+                if let Some(directory) = owned.as_mut() {
+                    read_prepared_owned_handshake_on_framer(&mut framer, directory).await?;
+                    Ok(InitialDirectory::Owned(
+                        owned.take().expect("one successful owned handshake"),
+                    ))
+                } else {
+                    handshake_on_framer(&mut framer)
+                        .await
+                        .map(InitialDirectory::Legacy)
+                }
+            })
+            .await
+        }
+        .await;
+        match attempt {
+            Ok(handshake) => return Ok(handshake),
+            Err(error) => {
+                // New pool refusals retain their original source instead of
+                // being replaced by a later mode's EOF/dial error.
+                if bank.is_some()
+                    && crate::classify_error(&error) == crate::ErrorClass::ResourceLimit
+                {
+                    return Err(error);
+                }
+                tracing::debug!(?mode, "RSD bootstrap attempt failed");
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.expect("RSD attempted every bootstrap mode"))
+}
+
+#[cfg(feature = "tunnel")]
+async fn bootstrap_rsd_with_bank<S>(
+    stream: S,
+    mode: HandshakeMode,
+    identity: uuid::Uuid,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Result<H2Framer<S>, XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut framer = if matches!(mode, HandshakeMode::Active) {
+        let mut framer = H2Framer::begin_connect_with_bank(stream, bank)
+            .await
+            .map_err(|error| h2_error("RSD H2: ", error))?;
+        queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?;
+        framer
+            .finish_connect()
+            .await
+            .map_err(|error| h2_error("RSD H2: ", error))?;
+        framer
+    } else {
+        H2Framer::connect_with_bank(stream, bank)
+            .await
+            .map_err(|error| h2_error("RSD H2: ", error))?
+    };
+    match mode {
+        HandshakeMode::Active => send_device_handshake_on_framer(&mut framer, identity).await?,
+        HandshakeMode::Queued => queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?,
+        HandshakeMode::Legacy => initialize_xpc_connection_on_framer(&mut framer).await?,
+        HandshakeMode::Passive => {}
+    }
+    Ok(framer)
+}
+
+/// The caller guards every socket poll and owns one deadline across identity,
+/// connector/prelude and all bootstrap modes. A decoded Handshake is final:
+/// missing fields are observations; malformed fields are original protocol
+/// errors, never a reason to replace them with another dial or timeout.
+#[cfg(feature = "tunnel")]
+pub(crate) async fn checked_handshake_with_connector_observed<F, Fut, S>(
+    connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+) -> Result<
+    (
+        crate::device::existing_rsd::ExistingRsdObservation,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+    ),
+    XpcError,
+>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    checked_handshake_with_parser(
+        connector,
+        identity,
+        deadline,
+        None,
+        parse_checked_handshake_dictionary,
+    )
+    .await
+    .map(|(directory, receipt, _)| (directory, receipt))
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) async fn checked_handshake_with_parser<F, Fut, S, T, P>(
+    connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+    mut parse: P,
+) -> Result<
+    (
+        T,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
+    XpcError,
+>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    P: FnMut(&indexmap::IndexMap<String, XpcValue>) -> Result<T, XpcError>,
+{
+    checked_handshake_wire(connector, identity, deadline, bank, |header, body| {
+        // Compatibility parser for the unbanked observation API. The prepared
+        // path calls checked_handshake_prepared and never creates this tree.
+        let mut full = BytesMut::new();
+        full.extend_from_slice(header);
+        full.extend_from_slice(body);
+        let message = decode_message(full.freeze()).map_err(CheckedReadError::Retry)?;
+        let Some(dictionary) = message.body.as_ref().and_then(XpcValue::as_dict) else {
+            return Ok(None);
+        };
+        match dictionary.get("MessageType") {
+            None => Ok(None),
+            Some(XpcValue::String(value)) if value != "Handshake" => Ok(None),
+            Some(XpcValue::String(_)) => {
+                parse(dictionary).map(Some).map_err(CheckedReadError::Final)
+            }
+            Some(_) => Err(CheckedReadError::Final(XpcError::Tls(
+                "RSD: MessageType was not a string".into(),
+            ))),
+        }
+    })
+    .await
+}
+
+#[cfg(feature = "tunnel")]
+async fn checked_handshake_wire<F, Fut, S, T, P>(
+    mut connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+    mut parse: P,
+) -> Result<
+    (
+        T,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
+    XpcError,
+>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    P: FnMut(&[u8], &[u8]) -> Result<Option<T>, CheckedReadError>,
+{
+    use crate::device::existing_rsd::{RsdHandshakeMode, RsdSelectionReceipt};
+    use std::time::Duration;
+    let mut last_error = None;
+    let (selection_fee, mut attempted_modes) = match bank {
+        Some(bank) => {
+            let (fee, values) =
+                crate::device::prepared_rsd::exact_vec(bank, RSD_HANDSHAKE_ATTEMPTS)?;
+            (Some(fee), values)
+        }
+        None => (None, Vec::with_capacity(RSD_HANDSHAKE_ATTEMPTS)),
+    };
+    for mode in HANDSHAKE_MODES {
+        if tokio::time::Instant::now() >= deadline {
+            return match last_error {
+                Some(error) => Err(error),
+                None => tokio::time::timeout_at(
+                    deadline,
+                    std::future::pending::<
+                        Result<
+                            (
+                                T,
+                                RsdSelectionReceipt,
+                                Option<tokio::sync::OwnedSemaphorePermit>,
+                            ),
+                            XpcError,
+                        >,
+                    >(),
+                )
+                .await
+                .map_err(|source| {
+                    crate::xpc::native_error(
+                        std::io::ErrorKind::TimedOut,
+                        "existing RSD discovery deadline",
+                        source,
+                    )
+                })?,
+            };
+        }
+        let observed_mode = match mode {
+            HandshakeMode::Active => RsdHandshakeMode::Direct,
+            HandshakeMode::Queued => RsdHandshakeMode::Queued,
+            HandshakeMode::Legacy => RsdHandshakeMode::Legacy,
+            HandshakeMode::Passive => RsdHandshakeMode::Passive,
+        };
+        attempted_modes.push(observed_mode);
+        let stream = connector().await?;
+        let bootstrap = rsd_timeout(
+            Duration::from_secs(3),
+            "RSD bootstrap timed out",
+            bootstrap_rsd_with_bank(stream, mode, identity, bank),
+        )
+        .await;
+        let mut framer = match bootstrap {
+            Ok(framer) => framer,
+            Err(error) => {
+                if crate::classify_error(&error) == crate::ErrorClass::ResourceLimit {
+                    return Err(error);
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+                last_error = Some(error);
+                continue;
+            }
+        };
+        let response_budget = match mode {
+            HandshakeMode::Active | HandshakeMode::Queued => Duration::from_secs(4),
+            HandshakeMode::Legacy => Duration::from_secs(3),
+            HandshakeMode::Passive => Duration::from_secs(2),
+        };
+        match tokio::time::timeout(
+            response_budget,
+            read_checked_handshake(&mut framer, &mut parse),
+        )
+        .await
+        {
+            Ok(Ok(observation)) => {
+                return Ok((
+                    observation,
+                    RsdSelectionReceipt {
+                        handshake_mode: observed_mode,
+                        attempted_modes,
+                    },
+                    selection_fee,
+                ))
+            }
+            Ok(Err(CheckedReadError::Final(error))) => return Err(error),
+            Ok(Err(CheckedReadError::Retry(error))) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+                last_error = Some(error);
+            }
+            Err(source) => {
+                let error = crate::xpc::native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "RSD response timed out",
+                    source,
+                );
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.expect("RSD attempted every bootstrap mode"))
+}
+
+#[cfg(feature = "tunnel")]
+enum CheckedReadError {
+    Retry(XpcError),
+    Final(XpcError),
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_checked_handshake<S, T>(
+    framer: &mut H2Framer<S>,
+    parse: &mut impl FnMut(&[u8], &[u8]) -> Result<Option<T>, CheckedReadError>,
+) -> Result<T, CheckedReadError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut operation = RsdOperation::begin(framer).map_err(CheckedReadError::Retry)?;
+    let mut result = Err(CheckedReadError::Retry(XpcError::Tls(
+        "RSD: no handshake message received".into(),
+    )));
+    for _ in 0..6 {
+        let (header, body) = match read_raw_xpc_on_client_server(operation.framer).await {
+            Ok(raw) => {
+                operation.progressed = true;
+                raw
+            }
+            Err(error) => {
+                result = Err(checked_wire_error(error));
+                break;
+            }
+        };
+        match parse(&header, &body) {
+            Ok(None) => continue,
+            Ok(Some(directory)) => {
+                result = Ok(directory);
+                break;
+            }
+            Err(error) => {
+                result = Err(error);
+                break;
+            }
+        }
+    }
+    // The socket is fresh and owned by the probe. Keep the same logical frame
+    // invalidation contract as the legacy borrowed operation on any failure.
+    operation.completed = true;
+    if result.is_err() && operation.progressed {
+        operation.framer.invalidate();
+    }
+    result
+}
+
+#[cfg(feature = "tunnel")]
+type CheckedHandshakeParts<'a> = (
+    Option<&'a String>,
+    Option<&'a indexmap::IndexMap<String, XpcValue>>,
+);
+
+#[cfg(feature = "tunnel")]
+pub(crate) fn checked_handshake_parts(
+    dictionary: &indexmap::IndexMap<String, XpcValue>,
+) -> Result<CheckedHandshakeParts<'_>, XpcError> {
+    use crate::device::existing_rsd::{
+        ExistingRsdProbeError, MAX_FEATURES, MAX_FIELD_BYTES, MAX_SERVICES, MAX_TEXT_BYTES,
+    };
+    let protocol = |message: &'static str| XpcError::Tls(message.into());
+    let mut text_bytes = 0usize;
+    let mut feature_count = 0usize;
+    let mut admit_text = |value: &str| -> Result<(), XpcError> {
+        text_bytes = text_bytes.saturating_add(value.len());
+        if value.len() > MAX_FIELD_BYTES || text_bytes > MAX_TEXT_BYTES {
+            return Err(ExistingRsdProbeError::metadata_limit());
+        }
+        Ok(())
+    };
+    let properties = match dictionary.get("Properties") {
+        None => None,
+        Some(XpcValue::Dictionary(properties)) => Some(properties),
+        Some(_) => return Err(protocol("RSD: Properties was not a dictionary")),
+    };
+    let udid = match properties.and_then(|properties| properties.get("UniqueDeviceID")) {
+        None => None,
+        Some(XpcValue::String(udid)) if !udid.is_empty() => {
+            admit_text(udid)?;
+            Some(udid)
+        }
+        Some(_) => return Err(protocol("RSD: UniqueDeviceID was not a nonempty string")),
+    };
+    let services = match dictionary.get("Services") {
+        None => None,
+        Some(XpcValue::Dictionary(services)) if services.len() <= MAX_SERVICES => Some(services),
+        Some(XpcValue::Dictionary(_)) => return Err(ExistingRsdProbeError::metadata_limit()),
+        Some(_) => return Err(protocol("RSD: Services was not a dictionary")),
+    };
+    // Admit the whole borrowed snapshot before retaining additional strings.
+    // A partial/incomplete directory cannot certify a selected service missing.
+    if let Some(services) = services {
+        for (name, value) in services {
+            admit_text(name)?;
+            let service = value
+                .as_dict()
+                .ok_or_else(|| protocol("RSD: service entry was not a dictionary"))?;
+            if let Some(value) = service.get("Port") {
+                if let XpcValue::String(value) = value {
+                    if value.len() > MAX_FIELD_BYTES {
+                        return Err(ExistingRsdProbeError::metadata_limit());
+                    }
+                }
+                checked_service_port(value)?;
+            }
+            let properties = match service.get("Properties") {
+                None => None,
+                Some(XpcValue::Dictionary(properties)) => Some(properties),
+                Some(_) => return Err(protocol("RSD: service Properties was not a dictionary")),
+            };
+            if let Some(value) = properties.and_then(|properties| properties.get("Features")) {
+                let XpcValue::Array(features) = value else {
+                    return Err(protocol("RSD: Features was not an array"));
+                };
+                feature_count = feature_count.saturating_add(features.len());
+                if feature_count > MAX_FEATURES {
+                    return Err(ExistingRsdProbeError::metadata_limit());
+                }
+                for feature in features {
+                    let feature = feature
+                        .as_str()
+                        .ok_or_else(|| protocol("RSD: feature identifier was not a string"))?;
+                    admit_text(feature)?;
+                }
+            }
+        }
+    }
+    Ok((udid, services))
+}
+
+#[cfg(feature = "tunnel")]
+fn parse_checked_handshake_dictionary(
+    dictionary: &indexmap::IndexMap<String, XpcValue>,
+) -> Result<crate::device::existing_rsd::ExistingRsdObservation, XpcError> {
+    use crate::device::existing_rsd::{ExistingRsdObservation, ExistingRsdService};
+    let (udid, services) = checked_handshake_parts(dictionary)?;
+    let services = services
+        .map(|services| {
+            services
+                .iter()
+                .map(|(name, value)| {
+                    let service = value.as_dict().expect("checked service dictionary");
+                    let port = service.get("Port").map(checked_service_port).transpose()?;
+                    let features = service
+                        .get("Properties")
+                        .and_then(XpcValue::as_dict)
+                        .and_then(|properties| properties.get("Features"))
+                        .map(|features| {
+                            let XpcValue::Array(features) = features else {
+                                unreachable!("checked feature array")
+                            };
+                            features
+                                .iter()
+                                .map(|feature| {
+                                    feature.as_str().expect("checked feature string").to_owned()
+                                })
+                                .collect()
+                        });
+                    Ok((name.clone(), ExistingRsdService::new(port, features)))
+                })
+                .collect::<Result<HashMap<_, _>, XpcError>>()
+        })
+        .transpose()?;
+    Ok(ExistingRsdObservation::new(udid.cloned(), services))
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) fn checked_service_port(value: &XpcValue) -> Result<u16, XpcError> {
+    let port = match value {
+        XpcValue::String(port) => port.parse::<u16>().map_err(|source| {
+            XpcError::Io(crate::error::context::received_io(
+                "decode RSD service Port",
+                None,
+                source,
+            ))
+        })?,
+        XpcValue::Uint64(port) => u16::try_from(*port).map_err(|source| {
+            XpcError::Io(crate::error::context::received_io(
+                "decode RSD service Port",
+                Some(*port),
+                source,
+            ))
+        })?,
+        _ => return Err(XpcError::Tls("RSD: Port had an invalid type".into())),
+    };
+    if port == 0 {
+        Err(XpcError::Tls("RSD: service Port was zero".into()))
+    } else {
+        Ok(port)
+    }
+}
+
+#[cfg(feature = "tunnel")]
+async fn rsd_timeout<T>(
+    duration: std::time::Duration,
+    context: &'static str,
+    operation: impl std::future::Future<Output = Result<T, XpcError>>,
+) -> Result<T, XpcError> {
+    xpc_timeout(duration, context, operation).await
+}
+
+// Borrowed bootstrap/read operations can consume a complete H2 write or a
+// buffered XPC header before waiting with no new transport progress. Keep
+// logical ownership across those gaps independently of the H2 frame guard.
+#[cfg(feature = "tunnel")]
+struct RsdOperation<'a, S> {
+    framer: &'a mut H2Framer<S>,
+    progressed: bool,
+    completed: bool,
+}
+
+#[cfg(feature = "tunnel")]
+impl<'a, S> RsdOperation<'a, S> {
+    fn begin(framer: &'a mut H2Framer<S>) -> Result<Self, XpcError> {
+        if !framer.is_usable() {
+            return Err(h2_error(
+                "RSD operation: ",
+                H2Error::Protocol(
+                    "H2 connection is unusable; reconnect before another operation".into(),
+                ),
+            ));
+        }
+        Ok(Self {
+            framer,
+            progressed: false,
+            completed: false,
+        })
+    }
+
+    fn finish<T>(mut self, result: Result<T, XpcError>) -> Result<T, XpcError> {
+        self.completed = true;
+        if !self.framer.is_usable() || (result.is_err() && self.progressed) {
+            self.framer.invalidate();
+        }
+        result
+    }
+}
+
+#[cfg(feature = "tunnel")]
+impl<S> Drop for RsdOperation<'_, S> {
+    fn drop(&mut self) {
+        if !self.completed && (self.progressed || !self.framer.is_usable()) {
+            self.framer.invalidate();
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+fn await_rsd_operation<T>(
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+    operation: impl std::future::Future<Output = Result<T, XpcError>>,
+) -> Result<impl std::future::Future<Output = Result<T, XpcError>>, XpcError> {
+    // Box before constructing the caller's await state, as for H2/XPC. The
+    // future remains directly owned; no task, reader or extra timer is added.
+    Ok(crate::xpc::raw_storage::boxed(operation, bank)?)
+}
+
+/// Announce this host on an RSD control connection after the XPC bootstrap.
+/// Never send this device handshake to an ordinary RemoteXPC service.
+#[cfg(feature = "tunnel")]
+pub async fn send_device_handshake_on_framer<S>(
+    framer: &mut H2Framer<S>,
+    identity: uuid::Uuid,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let bank = framer.raw_bank();
+    let message = sending::host(bank.as_ref(), identity)?;
+    framer
+        .write_client_server(&message)
+        .await
+        .map_err(|err| h2_error("RSD host handshake: ", err))
+}
+
+#[cfg(feature = "tunnel")]
+fn device_handshake_message(identity: uuid::Uuid) -> XpcMessage {
+    use indexmap::IndexMap;
+
+    XpcMessage {
+        flags: flags::ALWAYS_SET | flags::DATA,
+        // The empty bootstrap dictionary already consumed message zero.
+        msg_id: 1,
+        body: Some(XpcValue::Dictionary(IndexMap::from([
+            ("MessageType".into(), XpcValue::String("Handshake".into())),
+            ("MessagingProtocolVersion".into(), XpcValue::Uint64(7)),
+            ("UUID".into(), XpcValue::Uuid(*identity.as_bytes())),
+            (
+                "Properties".into(),
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "RemoteXPCVersionFlags".into(),
+                        XpcValue::Uint64(0x0100_0000_0000_0006),
+                    ),
+                    ("SensitivePropertiesVisible".into(), XpcValue::Bool(true)),
+                ])),
+            ),
+            ("Services".into(), XpcValue::Dictionary(IndexMap::new())),
+        ]))),
+    }
+}
+
+/// Read the device's RSD handshake from an already-connected H2 framer.
+/// The caller is responsible for selecting and sending any bootstrap traffic.
+/// Cancellation/failure after consuming a message requires a fresh transport;
+/// an empty idle wait preserves local framing. No new deadline is installed.
 #[cfg(feature = "tunnel")]
 pub async fn handshake_on_framer<S>(framer: &mut H2Framer<S>) -> Result<RsdHandshake, XpcError>
 where
@@ -153,10 +977,100 @@ where
     read_rsd_handshake(framer).await
 }
 
+/// Read an immutable initial directory whose original storage and byte grants
+/// survive clones and owned service exports. Requires the framer's original
+/// raw byte bank; no new bank, transport, bootstrap or deadline is introduced.
+#[cfg(feature = "tunnel")]
+pub async fn owned_handshake_on_framer<S>(
+    framer: &mut H2Framer<S>,
+) -> Result<OwnedRsdHandshake, XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let operation = RsdOperation::begin(framer)?;
+    let bank = operation
+        .framer
+        .raw_bank()
+        .ok_or_else(crate::device::existing_rsd::ExistingRsdProbeError::metadata_limit)?;
+    let mut directory = OwnedRsdHandshake::prepare(&bank)?;
+    read_owned_handshake_operation(operation, &bank, &mut directory).await?;
+    Ok(directory)
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_prepared_owned_handshake_on_framer<S>(
+    framer: &mut H2Framer<S>,
+    directory: &mut OwnedRsdHandshake,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let operation = RsdOperation::begin(framer)?;
+    let bank = operation
+        .framer
+        .raw_bank()
+        .ok_or_else(crate::device::existing_rsd::ExistingRsdProbeError::metadata_limit)?;
+    read_owned_handshake_operation(operation, &bank, directory).await
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_owned_handshake_operation<S>(
+    mut operation: RsdOperation<'_, S>,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    directory: &mut OwnedRsdHandshake,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if !directory.belongs_to(bank) {
+        return Err(crate::device::existing_rsd::ExistingRsdProbeError::metadata_limit());
+    }
+    let result = await_rsd_operation(
+        Some(bank),
+        read_owned_handshake_inner(operation.framer, &mut operation.progressed, directory),
+    )?
+    .await;
+    operation.finish(result)
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_owned_handshake_inner<S>(
+    framer: &mut H2Framer<S>,
+    progressed: &mut bool,
+    directory: &mut OwnedRsdHandshake,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let bank = framer
+        .raw_bank()
+        .ok_or_else(crate::device::existing_rsd::ExistingRsdProbeError::metadata_limit)?;
+    let mut last_err = None;
+    for _ in 0..6 {
+        let (header, body) = read_raw_xpc_on_client_server(framer).await?;
+        *progressed = true;
+        let tree = crate::xpc::message::borrowed::decode(&header, &body, &bank)?;
+        match directory.fill(tree.as_ref()) {
+            Ok(()) => return Ok(()),
+            Err(error) if crate::classify_error(&error) == crate::ErrorClass::ResourceLimit => {
+                return Err(error)
+            }
+            Err(error) => {
+                tracing::debug!(error = %crate::redaction::diagnostic_error(&error), "RSD: skipping non-handshake stream-1 message");
+                last_err = Some(error);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| XpcError::Tls("RSD: no handshake message received".into())))
+}
+
 /// Initialize the XPC connection using go-ios's 3-message bootstrap.
 ///
 /// Some devices appear to withhold the RSD handshake until these stream
 /// bootstrapping messages have been exchanged.
+/// Abandoning initialization after its first send invalidates local framing,
+/// including an otherwise empty response wait. Successful initialization keeps
+/// the connection usable; existing caller deadlines remain in effect.
 #[cfg(feature = "tunnel")]
 pub async fn initialize_xpc_connection_on_framer<S>(
     framer: &mut H2Framer<S>,
@@ -164,45 +1078,56 @@ pub async fn initialize_xpc_connection_on_framer<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use crate::xpc::message::{encode_message, flags, XpcMessage, XpcValue};
+    let mut operation = RsdOperation::begin(framer)?;
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        initialize_xpc_connection_inner(operation.framer, &mut operation.progressed),
+    )?
+    .await;
+    operation.finish(result)
+}
 
-    let msg1 = encode_message(&XpcMessage {
-        flags: flags::ALWAYS_SET,
-        msg_id: 0,
-        body: Some(XpcValue::Dictionary(indexmap::IndexMap::new())),
-    })?;
+#[cfg(feature = "tunnel")]
+async fn initialize_xpc_connection_inner<S>(
+    framer: &mut H2Framer<S>,
+    progressed: &mut bool,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let bank = framer.raw_bank();
+
+    let msg1 = sending::control(bank.as_ref(), flags::ALWAYS_SET, true)?;
     framer
         .write_client_server(&msg1)
         .await
-        .map_err(|e| XpcError::Tls(format!("xpc init write 1: {e}")))?;
+        .map_err(|e| h2_error("xpc init write 1: ", e))?;
+    *progressed = true;
     discard_xpc_on_client_server(framer).await?;
 
-    let msg3 = encode_message(&XpcMessage {
-        flags: flags::ALWAYS_SET | 0x200,
-        msg_id: 0,
-        body: None,
-    })?;
+    let msg3 = sending::control(bank.as_ref(), flags::ALWAYS_SET | 0x200, false)?;
     framer
         // remoted requires stream 3's HEADERS before the terminating stream-1
         // bootstrap message (the order used by pymobiledevice3).
         .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
         .await
-        .map_err(|e| XpcError::Tls(format!("xpc init open stream 3: {e}")))?;
+        .map_err(|e| h2_error("xpc init open stream 3: ", e))?;
     framer
         .write_client_server(&msg3)
         .await
-        .map_err(|e| XpcError::Tls(format!("xpc init write 2: {e}")))?;
+        .map_err(|e| h2_error("xpc init write 2: ", e))?;
     discard_xpc_on_client_server(framer).await?;
 
-    let msg2 = encode_message(&XpcMessage {
-        flags: flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
-        msg_id: 0,
-        body: None,
-    })?;
+    let msg2 = sending::control(
+        bank.as_ref(),
+        flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
+        false,
+    )?;
     framer
         .write_server_client(&msg2)
         .await
-        .map_err(|e| XpcError::Tls(format!("xpc init write 3: {e}")))?;
+        .map_err(|e| h2_error("xpc init write 3: ", e))?;
     discard_xpc_on_server_client(framer).await?;
 
     Ok(())
@@ -210,6 +1135,8 @@ where
 
 /// Queue the minimal RemoteXPC bootstrap used by pymobiledevice3 before it
 /// reads the first RSD handshake message from stream 1.
+/// Cancellation/failure after the first complete write invalidates the framer;
+/// completing this queue operation does not acknowledge a device handshake.
 #[cfg(feature = "tunnel")]
 pub async fn queue_rsd_handshake_bootstrap_on_framer<S>(
     framer: &mut H2Framer<S>,
@@ -217,17 +1144,32 @@ pub async fn queue_rsd_handshake_bootstrap_on_framer<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use crate::xpc::message::{encode_message, flags, XpcMessage, XpcValue};
+    let mut operation = RsdOperation::begin(framer)?;
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        queue_rsd_handshake_bootstrap_inner(operation.framer, &mut operation.progressed),
+    )?
+    .await;
+    operation.finish(result)
+}
 
-    let msg1 = encode_message(&XpcMessage {
-        flags: flags::ALWAYS_SET,
-        msg_id: 0,
-        body: Some(XpcValue::Dictionary(indexmap::IndexMap::new())),
-    })?;
+#[cfg(feature = "tunnel")]
+async fn queue_rsd_handshake_bootstrap_inner<S>(
+    framer: &mut H2Framer<S>,
+    progressed: &mut bool,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let bank = framer.raw_bank();
+
+    let msg1 = sending::control(bank.as_ref(), flags::ALWAYS_SET, true)?;
     framer
         .write_client_server(&msg1)
         .await
-        .map_err(|e| XpcError::Tls(format!("rsd bootstrap write 1: {e}")))?;
+        .map_err(|e| h2_error("rsd bootstrap write 1: ", e))?;
+    *progressed = true;
 
     // Open stream 3 before the terminating stream-1 bootstrap message. This
     // ordering is significant to remoted and matches RemoteXPC clients:
@@ -235,27 +1177,23 @@ where
     framer
         .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
         .await
-        .map_err(|e| XpcError::Tls(format!("rsd bootstrap open stream 3: {e}")))?;
+        .map_err(|e| h2_error("rsd bootstrap open stream 3: ", e))?;
 
-    let msg2 = encode_message(&XpcMessage {
-        flags: flags::ALWAYS_SET | 0x200,
-        msg_id: 0,
-        body: None,
-    })?;
+    let msg2 = sending::control(bank.as_ref(), flags::ALWAYS_SET | 0x200, false)?;
     framer
         .write_client_server(&msg2)
         .await
-        .map_err(|e| XpcError::Tls(format!("rsd bootstrap write 2: {e}")))?;
+        .map_err(|e| h2_error("rsd bootstrap write 2: ", e))?;
 
-    let msg3 = encode_message(&XpcMessage {
-        flags: flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
-        msg_id: 0,
-        body: None,
-    })?;
+    let msg3 = sending::control(
+        bank.as_ref(),
+        flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
+        false,
+    )?;
     framer
         .write_server_client(&msg3)
         .await
-        .map_err(|e| XpcError::Tls(format!("rsd bootstrap write 3: {e}")))?;
+        .map_err(|e| h2_error("rsd bootstrap write 3: ", e))?;
 
     Ok(())
 }
@@ -270,13 +1208,41 @@ async fn read_rsd_handshake<S>(framer: &mut H2Framer<S>) -> Result<RsdHandshake,
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    let mut operation = RsdOperation::begin(framer)?;
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        read_rsd_handshake_inner(operation.framer, &mut operation.progressed),
+    )?
+    .await;
+    operation.finish(result)
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_rsd_handshake_inner<S>(
+    framer: &mut H2Framer<S>,
+    progressed: &mut bool,
+) -> Result<RsdHandshake, XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut last_err = None;
     for _ in 0..6 {
-        let msg = read_xpc_on_client_server(framer).await?;
-        match parse_handshake_message(msg) {
+        let parsed = if let Some(bank) = framer.raw_bank() {
+            let (header, body) = read_raw_xpc_on_client_server(framer).await?;
+            *progressed = true;
+            // Wire failures end this mode; semantic failures still consume one
+            // of the same six legacy message slots below.
+            let tree = crate::xpc::message::borrowed::decode(&header, &body, &bank)?;
+            initial::parse_handshake(tree.as_ref())
+        } else {
+            let msg = read_xpc_on_client_server(framer, progressed).await?;
+            parse_handshake_message(msg)
+        };
+        match parsed {
             Ok(handshake) => return Ok(handshake),
             Err(err) => {
-                tracing::debug!("RSD: skipping non-handshake stream-1 message: {err}");
+                tracing::debug!(error = %crate::redaction::diagnostic_error(&err), "RSD: skipping non-handshake stream-1 message");
                 last_err = Some(err);
             }
         }
@@ -285,11 +1251,15 @@ where
 }
 
 #[cfg(feature = "tunnel")]
-async fn read_xpc_on_client_server<S>(framer: &mut H2Framer<S>) -> Result<XpcMessage, XpcError>
+async fn read_xpc_on_client_server<S>(
+    framer: &mut H2Framer<S>,
+    progressed: &mut bool,
+) -> Result<XpcMessage, XpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (header, body) = read_raw_xpc_on_client_server(framer).await?;
+    *progressed = true;
     let mut full = bytes::BytesMut::new();
     full.extend_from_slice(&header);
     full.extend_from_slice(&body);
@@ -329,6 +1299,18 @@ async fn read_xpc_body_in_chunks<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    if let Some(bank) = framer.raw_bank() {
+        let mut body = crate::xpc::raw_storage::MutableBytes::zeroed(&bank, body_len)?;
+        let mut offset = 0;
+        const CHUNK: usize = MAX_BUFFERED_BYTES_PER_STREAM - MAX_FRAME_PAYLOAD;
+        while offset < body_len {
+            let len = (body_len - offset).min(CHUNK);
+            let chunk = framer.read_stream(stream_id, len).await?;
+            body.bytes[offset..offset + len].copy_from_slice(&chunk);
+            offset += len;
+        }
+        return Ok(body.freeze());
+    }
     // A DATA frame can overshoot read_stream's requested length by one frame.
     // Leave that much headroom so bytes left over after the 24-byte XPC header
     // cannot make an otherwise exact 16 MiB read trip the H2 buffer limit.
@@ -344,65 +1326,6 @@ where
     Ok(body.freeze())
 }
 
-/// Read one raw XPC message (24-byte header plus body) from `stream_id`.
-///
-/// Cancellation contract: the header is read through the framer's
-/// cancellation-safe byte reads, so a cancelled header read loses nothing.
-/// Once the header has been consumed, the body phase is marked on the
-/// framer; a body read that gets cancelled leaves that marker set, and every
-/// later operation refuses with a reconnect hint instead of splicing the
-/// remaining body bytes into the next message header.
-#[cfg(feature = "tunnel")]
-async fn read_raw_xpc_message<S>(
-    framer: &mut H2Framer<S>,
-    stream_id: u32,
-) -> Result<(Bytes, Bytes), XpcError>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    if framer.is_message_read_in_progress() {
-        return Err(XpcError::Tls(
-            "a previous XPC read was cancelled mid-message; the connection is no longer \
-             frame-aligned and must be re-established"
-                .into(),
-        ));
-    }
-    let header = framer
-        .read_stream(stream_id, 24)
-        .await
-        .map_err(|e| XpcError::Tls(format!("read header: {e}")))?;
-    // The wrapper header has been consumed from the stream buffer. Keep the
-    // connection marked as mid-message until the body has been completely
-    // consumed; an invalid length or any body I/O error leaves the stream at
-    // an unknown message boundary and must therefore poison reuse just like a
-    // cancelled body future.
-    framer.begin_message_body();
-    let declared_body_len = u64::from_le_bytes(
-        header[8..16]
-            .try_into()
-            .map_err(|_| XpcError::Tls("invalid header bytes".into()))?,
-    );
-    let message_flags = u32::from_le_bytes(
-        header[4..8]
-            .try_into()
-            .map_err(|_| XpcError::Tls("invalid header flags".into()))?,
-    );
-    let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
-        .map_err(XpcError::Tls)?;
-    if body_len == 0 {
-        framer.end_message_body();
-        return Ok((header, Bytes::new()));
-    }
-    // Deliberately leave the marker set on every body error. The error may
-    // have arrived after some DATA bytes were consumed, and clearing it would
-    // let a later call splice those bytes into the next XPC header.
-    let body = read_xpc_body_in_chunks(framer, stream_id, body_len)
-        .await
-        .map_err(|e| XpcError::Tls(format!("read body: {e}")))?;
-    framer.end_message_body();
-    Ok((header, body))
-}
-
 #[cfg(feature = "tunnel")]
 async fn read_raw_xpc_on_client_server<S>(
     framer: &mut H2Framer<S>,
@@ -410,7 +1333,53 @@ async fn read_raw_xpc_on_client_server<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    read_raw_xpc_message(framer, crate::xpc::h2_raw::STREAM_CLIENT_SERVER).await
+    let mut operation = RsdOperation::begin(framer)?;
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        read_raw_xpc_on_client_server_inner(operation.framer, &mut operation.progressed),
+    )?
+    .await;
+    operation.finish(result)
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_raw_xpc_on_client_server_inner<S>(
+    framer: &mut H2Framer<S>,
+    progressed: &mut bool,
+) -> Result<(Bytes, Bytes), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let header = framer
+        .read_client_server(24)
+        .await
+        .map_err(|e| h2_error("read header: ", e))?;
+    *progressed = true;
+    let declared_body_len = u64::from_le_bytes(header[8..16].try_into().map_err(|error| {
+        crate::xpc::native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode RSD client body length",
+            error,
+        )
+    })?);
+    let message_flags = u32::from_le_bytes(header[4..8].try_into().map_err(|error| {
+        crate::xpc::native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode RSD client flags",
+            error,
+        )
+    })?);
+    let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
+        .map_err(XpcError::Io)?;
+    let body = if body_len > 0 {
+        read_xpc_body_in_chunks(framer, crate::xpc::h2_raw::STREAM_CLIENT_SERVER, body_len)
+            .await
+            .map_err(|e| h2_error("read body: ", e))?
+    } else {
+        Bytes::new()
+    };
+    Ok((header, body))
 }
 
 #[cfg(feature = "tunnel")]
@@ -420,7 +1389,53 @@ async fn read_raw_xpc_on_server_client<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    read_raw_xpc_message(framer, crate::xpc::h2_raw::STREAM_SERVER_CLIENT).await
+    let mut operation = RsdOperation::begin(framer)?;
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        read_raw_xpc_on_server_client_inner(operation.framer, &mut operation.progressed),
+    )?
+    .await;
+    operation.finish(result)
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_raw_xpc_on_server_client_inner<S>(
+    framer: &mut H2Framer<S>,
+    progressed: &mut bool,
+) -> Result<(Bytes, Bytes), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let header = framer
+        .read_server_client(24)
+        .await
+        .map_err(|e| h2_error("read header: ", e))?;
+    *progressed = true;
+    let declared_body_len = u64::from_le_bytes(header[8..16].try_into().map_err(|error| {
+        crate::xpc::native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode RSD server body length",
+            error,
+        )
+    })?);
+    let message_flags = u32::from_le_bytes(header[4..8].try_into().map_err(|error| {
+        crate::xpc::native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode RSD server flags",
+            error,
+        )
+    })?);
+    let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
+        .map_err(XpcError::Io)?;
+    let body = if body_len > 0 {
+        read_xpc_body_in_chunks(framer, crate::xpc::h2_raw::STREAM_SERVER_CLIENT, body_len)
+            .await
+            .map_err(|e| h2_error("read body: ", e))?
+    } else {
+        Bytes::new()
+    };
+    Ok((header, body))
 }
 
 #[cfg(feature = "tunnel")]
@@ -779,11 +1794,96 @@ pub struct XpcConnection<S> {
     msg_id: u64,
     pending_messages: HashMap<u32, VecDeque<PendingMessage>>,
     pending_budget: PendingMessageBudget,
-    // An XPC message may span multiple H2 DATA frames. If its send future is
-    // cancelled after any frame has started, the caller's remaining slice is
-    // no longer available to resume and the next request would be appended to
-    // a partial XPC message. Keep the connection unusable until reconnect.
-    sending_message_in_progress: bool,
+    operation_progressed: bool,
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) struct XpcOperation<'a, S> {
+    connection: &'a mut XpcConnection<S>,
+    deadline: Option<tokio::time::Instant>,
+    completed: bool,
+}
+
+#[cfg(feature = "tunnel")]
+impl<S> XpcConnection<S> {
+    pub fn is_usable(&self) -> bool {
+        self.framer.is_usable()
+    }
+
+    fn invalidate(&mut self) {
+        self.framer.invalidate();
+        self.pending_messages.clear();
+        self.pending_budget.clear();
+    }
+}
+
+#[cfg(feature = "tunnel")]
+impl<S> XpcOperation<'_, S> {
+    pub(crate) fn complete(&mut self) {
+        self.completed = true;
+    }
+
+    fn finish<T>(
+        mut self,
+        result: Result<Result<T, XpcError>, tokio::time::error::Elapsed>,
+    ) -> Result<T, XpcError> {
+        match result {
+            Ok(result) => {
+                self.completed = true;
+                if !self.connection.is_usable()
+                    || (result.is_err() && self.connection.operation_progressed)
+                {
+                    self.connection.invalidate();
+                }
+                result
+            }
+            Err(elapsed) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into()),
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+impl<S> Drop for XpcOperation<'_, S> {
+    fn drop(&mut self) {
+        if !self.completed && (self.connection.operation_progressed || !self.connection.is_usable())
+        {
+            self.connection.invalidate();
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+fn await_xpc_operation<T>(
+    deadline: Option<tokio::time::Instant>,
+    operation: impl std::future::Future<Output = Result<T, XpcError>>,
+) -> impl std::future::Future<Output = Result<Result<T, XpcError>, tokio::time::error::Elapsed>> {
+    // Keep nested call/bootstrap futures small without detaching their owner.
+    let operation = Box::pin(operation);
+    async move {
+        match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, operation).await,
+            None => Ok(operation.await),
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcOperation<'_, S> {
+    pub(crate) async fn send_with_flags(
+        &mut self,
+        body: XpcValue,
+        extra_flags: u32,
+    ) -> Result<u64, XpcError> {
+        self.connection
+            .send_with_flags_inner(body, extra_flags)
+            .await
+    }
+
+    pub(crate) async fn recv(&mut self) -> Result<XpcMessage, XpcError> {
+        self.connection
+            .recv_on_stream_inner(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
+            .await
+    }
 }
 
 #[cfg(feature = "tunnel")]
@@ -811,7 +1911,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             msg_id: 1,
             pending_messages: HashMap::new(),
             pending_budget: PendingMessageBudget::new(per_stream_limit, connection_limit),
-            sending_message_in_progress: false,
+            operation_progressed: false,
         }
     }
 
@@ -821,35 +1921,55 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         self.pending_budget.total_bytes
     }
 
-    fn next_id(&mut self) -> u64 {
-        let id = self.msg_id;
-        self.msg_id += 1;
-        id
+    pub(crate) fn begin_operation(
+        &mut self,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcOperation<'_, S>, XpcError> {
+        if !self.is_usable() {
+            self.invalidate();
+            return Err(h2_error(
+                "",
+                H2Error::Protocol(
+                    "XPC connection is unusable; reconnect before another operation".into(),
+                ),
+            ));
+        }
+        let deadline = match budget {
+            Some(budget) if budget.is_zero() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "XPC operation budget is zero",
+                )
+                .into());
+            }
+            Some(budget) => Some(tokio::time::Instant::now().checked_add(budget).ok_or_else(
+                || {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "XPC operation deadline is too large",
+                    )
+                },
+            )?),
+            None => None,
+        };
+        self.operation_progressed = false;
+        Ok(XpcOperation {
+            connection: self,
+            deadline,
+            completed: false,
+        })
     }
 
-    /// Refuse every operation once a message read was cancelled after its
-    /// header was consumed: the connection can no longer be realigned, so
-    /// callers must reconnect instead of risking spliced messages. Cached
-    /// pending messages are deliberately not served through this state.
-    fn ensure_reusable(&self) -> Result<(), XpcError> {
-        self.framer
-            .ensure_reusable()
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
-        if self.framer.is_message_read_in_progress() {
-            return Err(XpcError::Tls(
-                "a previous XPC read was cancelled mid-message; the connection is no longer \
-                 frame-aligned and must be re-established"
-                    .into(),
-            ));
-        }
-        if self.sending_message_in_progress {
-            return Err(XpcError::Tls(
-                "a previous XPC send was cancelled mid-message; the connection is no longer \
-                 frame-aligned and must be re-established"
-                    .into(),
-            ));
-        }
-        Ok(())
+    fn next_id(&mut self) -> Result<u64, XpcError> {
+        let id = self.msg_id;
+        // RemoteXPC client-initiated request IDs must always be odd (1, 3, 5, ...).
+        // Asking a daemon to reply on the reply channel to an even ID causes libxpc
+        // to abort the service ("Attempted to send non-reply msg on the reply channel").
+        self.msg_id = id
+            .checked_add(1)
+            .map(|next| next | 1)
+            .ok_or_else(|| XpcError::Tls("XPC message identifier exhausted".into()))?;
+        Ok(id)
     }
 
     /// Send a dictionary as an XPC message on the clientServer stream.
@@ -864,21 +1984,157 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         body: XpcValue,
         extra_flags: u32,
     ) -> Result<u64, XpcError> {
-        self.ensure_reusable()?;
-        let id = self.next_id();
+        let operation = self.begin_operation(None)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation
+                .connection
+                .send_with_flags_inner(body, extra_flags),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn send_with_flags_inner(
+        &mut self,
+        body: XpcValue,
+        extra_flags: u32,
+    ) -> Result<u64, XpcError> {
+        let id = self.next_id()?;
         let msg = XpcMessage {
             flags: flags::ALWAYS_SET | flags::DATA | extra_flags,
             msg_id: id,
             body: Some(body),
         };
         let bytes = crate::xpc::message::encode_message(&msg)?;
-        self.sending_message_in_progress = true;
-        let result = self.framer.write_client_server(&bytes).await;
-        if result.is_ok() {
-            self.sending_message_in_progress = false;
-        }
-        result.map_err(|e| XpcError::Tls(e.to_string()))?;
+        self.framer
+            .write_client_server(&bytes)
+            .await
+            .map_err(|e| h2_error("", e))?;
+        self.operation_progressed = true;
         Ok(id)
+    }
+
+    pub(crate) async fn call_on_stream(
+        &mut self,
+        body: XpcValue,
+        stream_id: u32,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcMessage, XpcError> {
+        self.call_on_stream_observed(body, stream_id, budget, &mut false)
+            .await
+    }
+
+    pub(crate) async fn call_on_stream_observed(
+        &mut self,
+        body: XpcValue,
+        stream_id: u32,
+        budget: Option<std::time::Duration>,
+        sent: &mut bool,
+    ) -> Result<XpcMessage, XpcError> {
+        let operation = self.begin_operation(budget)?;
+        let result = await_xpc_operation(operation.deadline, async {
+            let connection = &mut *operation.connection;
+            let id = connection
+                .send_with_flags_inner(body, flags::WANTING_REPLY)
+                .await?;
+            *sent = true;
+            connection.recv_reply_on_stream_inner(stream_id, id).await
+        })
+        .await;
+        operation.finish(result)
+    }
+
+    pub(crate) async fn call_any_stream(
+        &mut self,
+        body: XpcValue,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcMessage, XpcError> {
+        self.call_any_stream_observed(body, budget, &mut false)
+            .await
+    }
+
+    pub(crate) async fn call_any_stream_observed(
+        &mut self,
+        body: XpcValue,
+        budget: Option<std::time::Duration>,
+        sent: &mut bool,
+    ) -> Result<XpcMessage, XpcError> {
+        let operation = self.begin_operation(budget)?;
+        let result = await_xpc_operation(operation.deadline, async {
+            let connection = &mut *operation.connection;
+            let id = connection
+                .send_with_flags_inner(body, flags::WANTING_REPLY)
+                .await?;
+            *sent = true;
+            connection.recv_service_reply_inner(id).await
+        })
+        .await;
+        operation.finish(result)
+    }
+
+    fn is_ignorable_service_ack(message: &XpcMessage) -> bool {
+        match &message.body {
+            None => true,
+            Some(XpcValue::Dictionary(values)) if values.is_empty() => {
+                message.msg_id == 0 && (message.flags & flags::REPLY) == 0
+            }
+            _ => false,
+        }
+    }
+
+    async fn recv_service_reply_inner(&mut self, msg_id: u64) -> Result<XpcMessage, XpcError> {
+        for stream_id in [
+            crate::xpc::h2_raw::STREAM_SERVER_CLIENT,
+            crate::xpc::h2_raw::STREAM_CLIENT_SERVER,
+        ] {
+            if let Some(message) = self.take_pending_message(stream_id, msg_id) {
+                if !Self::is_ignorable_service_ack(&message) {
+                    return Ok(message);
+                }
+            }
+        }
+        for stream_id in [
+            crate::xpc::h2_raw::STREAM_SERVER_CLIENT,
+            crate::xpc::h2_raw::STREAM_CLIENT_SERVER,
+        ] {
+            while let Some(message) = self.pop_next_pending_message(stream_id) {
+                if !Self::is_ignorable_service_ack(&message) {
+                    return Ok(message);
+                }
+            }
+        }
+
+        loop {
+            let message = self.recv_any_stream_inner().await?;
+            if Self::is_ignorable_service_ack(&message) {
+                continue;
+            }
+            return Ok(message);
+        }
+    }
+
+    #[cfg(feature = "pasteboard")]
+    pub(crate) async fn call_nonempty(&mut self, body: XpcValue) -> Result<XpcValue, XpcError> {
+        let operation = self.begin_operation(None)?;
+        let result = await_xpc_operation(operation.deadline, async {
+            let connection = &mut *operation.connection;
+            connection
+                .send_with_flags_inner(body, flags::WANTING_REPLY)
+                .await?;
+            loop {
+                let message = connection
+                    .recv_on_stream_inner(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
+                    .await?;
+                let Some(body) = message.body else { continue };
+                if matches!(&body, XpcValue::Dictionary(values) if values.is_empty()) {
+                    continue;
+                }
+                return Ok(body);
+            }
+        })
+        .await;
+        operation.finish(result)
     }
 
     /// Receive one XPC message from the serverClient stream.
@@ -904,21 +2160,50 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     /// already buffered on other streams is preserved, and the framer's
     /// per-stream and connection memory limits keep applying.
     pub async fn recv_any_stream(&mut self) -> Result<XpcMessage, XpcError> {
-        self.ensure_reusable()?;
+        self.recv_any_stream_with_budget(None).await
+    }
+
+    pub(crate) async fn recv_any_stream_with_budget(
+        &mut self,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcMessage, XpcError> {
+        let operation = self.begin_operation(budget)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation.connection.recv_any_stream_inner(),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn recv_any_stream_inner(&mut self) -> Result<XpcMessage, XpcError> {
         let stream_id = self
             .framer
             .buffer_next_data_stream()
             .await
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
+            .map_err(|e| h2_error("", e))?;
         self.recv_fresh_on_stream(stream_id).await
     }
 
     async fn recv_on_stream(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
-        self.ensure_reusable()?;
-        self.framer
-            .finish_pending_write_for_read()
-            .await
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
+        self.recv_on_stream_with_budget(stream_id, None).await
+    }
+
+    pub(crate) async fn recv_on_stream_with_budget(
+        &mut self,
+        stream_id: u32,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcMessage, XpcError> {
+        let operation = self.begin_operation(budget)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation.connection.recv_on_stream_inner(stream_id),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn recv_on_stream_inner(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
         if let Some(message) = self.pop_next_pending_message(stream_id) {
             return Ok(message);
         }
@@ -926,16 +2211,28 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     }
 
     /// Receive the reply with a specific XPC message id from one stream.
+    #[allow(dead_code)]
     pub async fn recv_reply_on_stream(
         &mut self,
         stream_id: u32,
         msg_id: u64,
     ) -> Result<XpcMessage, XpcError> {
-        self.ensure_reusable()?;
-        self.framer
-            .finish_pending_write_for_read()
-            .await
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
+        let operation = self.begin_operation(None)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation
+                .connection
+                .recv_reply_on_stream_inner(stream_id, msg_id),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn recv_reply_on_stream_inner(
+        &mut self,
+        stream_id: u32,
+        msg_id: u64,
+    ) -> Result<XpcMessage, XpcError> {
         if let Some(message) = self.take_pending_message(stream_id, msg_id) {
             return Ok(message);
         }
@@ -961,11 +2258,105 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     }
 
     async fn recv_fresh_on_stream_inner(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
-        let (header, body) = read_raw_xpc_message(&mut self.framer, stream_id).await?;
+        let header = self
+            .framer
+            .read_stream(stream_id, 24)
+            .await
+            .map_err(|e| h2_error("", e))?;
+        // The header is now owned by this future even if its bytes came from
+        // an earlier H2 operation. Cancellation must not lose that boundary.
+        self.operation_progressed = true;
+        let declared_body_len = u64::from_le_bytes(header[8..16].try_into().map_err(|error| {
+            crate::xpc::native_error(
+                std::io::ErrorKind::InvalidData,
+                "decode XPC response body length",
+                error,
+            )
+        })?);
+        let message_flags = u32::from_le_bytes(header[4..8].try_into().map_err(|error| {
+            crate::xpc::native_error(
+                std::io::ErrorKind::InvalidData,
+                "decode XPC response flags",
+                error,
+            )
+        })?);
+        let body_len =
+            checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
+                .map_err(XpcError::Io)?;
+        let body = if body_len > 0 {
+            read_xpc_body_in_chunks(&mut self.framer, stream_id, body_len)
+                .await
+                .map_err(|e| h2_error("", e))?
+        } else {
+            Bytes::new()
+        };
         let mut full = bytes::BytesMut::new();
         full.extend_from_slice(&header);
         full.extend_from_slice(&body);
         decode_message(full.freeze())
+    }
+
+    #[cfg(feature = "cryptex")]
+    pub(crate) async fn send_file_transfer<R: tokio::io::AsyncRead + Unpin>(
+        &mut self,
+        transfer_id: u64,
+        size: u64,
+        reader: &mut R,
+    ) -> Result<(), XpcError> {
+        if !(1..=5).contains(&transfer_id) || size == 0 || size > 2 * 1024 * 1024 * 1024 {
+            return Err(XpcError::Tls(
+                "invalid Cryptex file transfer ID or size".into(),
+            ));
+        }
+        let operation = self.begin_operation(None)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation
+                .connection
+                .send_file_transfer_inner(transfer_id, size, reader),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    #[cfg(feature = "cryptex")]
+    async fn send_file_transfer_inner<R: tokio::io::AsyncRead + Unpin>(
+        &mut self,
+        transfer_id: u64,
+        size: u64,
+        reader: &mut R,
+    ) -> Result<(), XpcError> {
+        use tokio::io::AsyncReadExt;
+        let stream_id = 5 + (transfer_id as u32 - 1) * 2;
+        let preamble = crate::xpc::message::encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::FILE_TX_STREAM_REQUEST,
+            msg_id: transfer_id,
+            body: None,
+        })?;
+        let framer = &mut self.framer;
+        framer
+            .write_stream(stream_id, &preamble)
+            .await
+            .map_err(|e| h2_error("", e))?;
+        self.operation_progressed = true;
+        let mut remaining = size;
+        let mut chunk = vec![0u8; 64 * 1024];
+        while remaining > 0 {
+            let amount = remaining.min(chunk.len() as u64) as usize;
+            reader.read_exact(&mut chunk[..amount]).await?;
+            framer
+                .write_stream(stream_id, &chunk[..amount])
+                .await
+                .map_err(|e| h2_error("", e))?;
+            remaining -= amount as u64;
+        }
+        if reader.read(&mut chunk[..1]).await? != 0 {
+            return Err(XpcError::Tls("file transfer exceeds announced size".into()));
+        }
+        framer
+            .finish_stream(stream_id)
+            .await
+            .map_err(|e| h2_error("", e))
     }
 
     fn push_pending_message(
@@ -1110,6 +2501,814 @@ mod tests {
     const STREAM_INIT: u32 = 0;
     const STREAM_CLIENT_SERVER: u32 = 1;
     const STREAM_SERVER_CLIENT: u32 = 3;
+
+    async fn lifecycle_rsd_framer(
+        capacity: usize,
+    ) -> (H2Framer<tokio::io::DuplexStream>, tokio::io::DuplexStream) {
+        let (stream, mut peer) = tokio::io::duplex(capacity);
+        let (framer, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(H2Framer::connect(stream), async {
+                read_test_preface(&mut peer).await;
+                peer.write_all(&settings_frame()).await.unwrap();
+                assert_eq!(read_test_frame(&mut peer).await.1, FLAG_SETTINGS_ACK);
+            })
+        })
+        .await
+        .unwrap();
+        (framer.unwrap(), peer)
+    }
+
+    fn lifecycle_rsd_assert_elapsed(error: XpcError) {
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        let XpcError::Io(outer) = error else {
+            panic!("RSD timer lost its native error")
+        };
+        assert_eq!(outer.kind(), std::io::ErrorKind::TimedOut);
+        assert!(std::error::Error::source(&outer)
+            .unwrap()
+            .is::<tokio::time::error::Elapsed>());
+    }
+
+    async fn lifecycle_rsd_assert_rejected(framer: &mut H2Framer<tokio::io::DuplexStream>) {
+        assert!(!framer.is_usable());
+        let results = [
+            initialize_xpc_connection_on_framer(framer).await,
+            queue_rsd_handshake_bootstrap_on_framer(framer).await,
+            handshake_on_framer(framer).await.map(|_| ()),
+            send_device_handshake_on_framer(framer, uuid::Uuid::from_bytes([0x4a; 16])).await,
+            read_raw_xpc_on_client_server(framer).await.map(|_| ()),
+            read_raw_xpc_on_server_client(framer).await.map(|_| ()),
+        ];
+        for result in results {
+            assert_eq!(
+                crate::classify_error(&result.unwrap_err()),
+                crate::ErrorClass::Protocol
+            );
+        }
+        assert!(framer.read_stream(5, 1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_rsd_empty_wait_and_unpolled_bootstrap_preserve_reuse() {
+        timeout(Duration::from_secs(1), async {
+            let (mut framer, mut peer) = lifecycle_rsd_framer(4096).await;
+            drop(initialize_xpc_connection_on_framer(&mut framer));
+            drop(queue_rsd_handshake_bootstrap_on_framer(&mut framer));
+            drop(handshake_on_framer(&mut framer));
+            assert!(
+                timeout(Duration::from_millis(5), handshake_on_framer(&mut framer))
+                    .await
+                    .is_err()
+            );
+            assert!(framer.is_usable());
+
+            framer.set_operation_timeout(Some(Duration::ZERO));
+            let error = initialize_xpc_connection_on_framer(&mut framer)
+                .await
+                .unwrap_err();
+            let XpcError::Io(outer) = error else {
+                panic!("H2 zero budget changed its error type")
+            };
+            assert_eq!(outer.kind(), std::io::ErrorKind::TimedOut);
+            assert!(framer.is_usable());
+            framer.set_operation_timeout(None);
+            assert!(timeout(Duration::from_millis(5), peer.read(&mut [0]))
+                .await
+                .is_err());
+
+            // An ordinary bootstrap ACK is skipped with the existing parser.
+            let ack = encode_message(&XpcMessage {
+                flags: flags::ALWAYS_SET,
+                msg_id: 0,
+                body: None,
+            })
+            .unwrap();
+            peer.write_all(&data_frame(1, &ack)).await.unwrap();
+            peer.write_all(&data_frame(1, &sample_handshake_message()))
+                .await
+                .unwrap();
+            let handshake = handshake_on_framer(&mut framer).await.unwrap();
+            assert_eq!(
+                handshake.get_port("com.apple.instruments.dtservicehub"),
+                Some(12345)
+            );
+            assert!(framer.is_usable());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lifecycle_rsd_sent_initialization_cancel_and_expiry_reject_late_response() {
+        for expires in [false, true] {
+            timeout(Duration::from_secs(1), async {
+                let (mut framer, mut peer) = lifecycle_rsd_framer(4096).await;
+                let mut initialization = Box::pin(initialize_xpc_connection_on_framer(&mut framer));
+                assert!(futures_util::poll!(&mut initialization).is_pending());
+                assert_eq!(read_test_frame(&mut peer).await.0, FRAME_HEADERS);
+                let first = read_test_frame(&mut peer).await;
+                assert_eq!((first.0, first.2), (FRAME_DATA, 1));
+                let message = decode_message(Bytes::from(first.3)).unwrap();
+                assert_eq!(message.msg_id, 0);
+                assert_eq!(message.flags, flags::ALWAYS_SET);
+                assert!(message.body.unwrap().as_dict().unwrap().is_empty());
+                if expires {
+                    let error = rsd_timeout(
+                        Duration::from_millis(5),
+                        "RSD bootstrap timed out",
+                        initialization,
+                    )
+                    .await
+                    .unwrap_err();
+                    lifecycle_rsd_assert_elapsed(error);
+                } else {
+                    drop(initialization);
+                }
+
+                peer.write_all(&data_frame(1, &sample_handshake_message()))
+                    .await
+                    .unwrap();
+                lifecycle_rsd_assert_rejected(&mut framer).await;
+                assert!(timeout(Duration::from_millis(5), peer.read(&mut [0]))
+                    .await
+                    .is_err());
+                drop(framer);
+                assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_rsd_buffered_wrapper_cancel_and_expiry_reject_late_body() {
+        for stream_id in [1, 3] {
+            for expires in [false, true] {
+                timeout(Duration::from_secs(1), async {
+                    let (mut framer, mut peer) = lifecycle_rsd_framer(4096).await;
+                    let message = encode_message(&pending_data_message(9, 7)).unwrap();
+                    peer.write_all(&data_frame(stream_id, &message[..24]))
+                        .await
+                        .unwrap();
+                    peer.write_all(&data_frame(5, b"xy")).await.unwrap();
+                    assert_eq!(framer.read_stream(5, 1).await.unwrap().as_ref(), b"x");
+                    // The entire wrapper is already buffered. Its body wait
+                    // will make no new transport progress before cancellation.
+                    let mut read = Box::pin(async {
+                        if stream_id == 1 {
+                            read_raw_xpc_on_client_server(&mut framer).await
+                        } else {
+                            read_raw_xpc_on_server_client(&mut framer).await
+                        }
+                    });
+                    assert!(futures_util::poll!(&mut read).is_pending());
+                    if expires {
+                        lifecycle_rsd_assert_elapsed(
+                            rsd_timeout(Duration::from_millis(5), "RSD response timed out", read)
+                                .await
+                                .unwrap_err(),
+                        );
+                    } else {
+                        drop(read);
+                    }
+                    peer.write_all(&data_frame(stream_id, &message[24..]))
+                        .await
+                        .unwrap();
+                    lifecycle_rsd_assert_rejected(&mut framer).await;
+                    assert!(timeout(Duration::from_millis(5), peer.read(&mut [0]))
+                        .await
+                        .is_err());
+                    drop(framer);
+                    assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
+                })
+                .await
+                .unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_rsd_queue_cancel_after_first_write_before_next_header_invalidates() {
+        timeout(Duration::from_secs(1), async {
+            let message = encode_message(&XpcMessage {
+                flags: flags::ALWAYS_SET,
+                msg_id: 0,
+                body: Some(XpcValue::Dictionary(IndexMap::new())),
+            })
+            .unwrap();
+            let expected = [headers_frame(1), data_frame(1, &message)].concat();
+            let (mut framer, mut peer) = lifecycle_rsd_framer(expected.len()).await;
+            let mut queue = Box::pin(queue_rsd_handshake_bootstrap_on_framer(&mut framer));
+            assert!(futures_util::poll!(&mut queue).is_pending());
+            // Duplex capacity ends at the first complete DATA frame. The
+            // following stream-3 HEADERS write is pending before its first byte.
+            drop(queue);
+            assert!(!framer.is_usable());
+            let mut wire = vec![0; expected.len()];
+            peer.read_exact(&mut wire).await.unwrap();
+            assert_eq!(wire, expected);
+            lifecycle_rsd_assert_rejected(&mut framer).await;
+            drop(framer);
+            assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lifecycle_rsd_stream_reset_preserves_idle_but_invalidates_committed_initialization() {
+        for committed in [false, true] {
+            timeout(Duration::from_secs(1), async {
+                let (mut framer, mut peer) = lifecycle_rsd_framer(4096).await;
+                peer.write_all(&build_frame(3, 0, 1, &8u32.to_be_bytes()))
+                    .await
+                    .unwrap();
+                peer.write_all(&data_frame(3, b"z")).await.unwrap();
+                let error = if committed {
+                    initialize_xpc_connection_on_framer(&mut framer)
+                        .await
+                        .unwrap_err()
+                } else {
+                    handshake_on_framer(&mut framer).await.unwrap_err()
+                };
+                assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+                let XpcError::Io(outer) = error else {
+                    panic!("stream reset lost its H2 source")
+                };
+                assert_eq!(outer.kind(), std::io::ErrorKind::InvalidData);
+                assert!(matches!(
+                    std::error::Error::source(&outer)
+                        .unwrap()
+                        .downcast_ref::<H2Error>(),
+                    Some(H2Error::Protocol(_))
+                ));
+                assert_eq!(framer.is_usable(), !committed);
+                if !committed {
+                    assert_eq!(framer.read_server_client(1).await.unwrap().as_ref(), b"z");
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_rsd_skipped_messages_and_invalid_wrappers_keep_handshake_ownership() {
+        for mode in 0..4 {
+            timeout(Duration::from_secs(1), async {
+                let (mut framer, mut peer) = lifecycle_rsd_framer(4096).await;
+                let mut message = encode_message(&XpcMessage {
+                    flags: flags::ALWAYS_SET,
+                    msg_id: 0,
+                    body: None,
+                })
+                .unwrap()
+                .to_vec();
+                if mode == 2 {
+                    message[..4].fill(0); // Existing wrapper decoder rejects this.
+                } else if mode == 3 {
+                    message[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+                }
+                peer.write_all(&data_frame(1, &message)).await.unwrap();
+                if mode < 2 {
+                    let mut handshake = Box::pin(handshake_on_framer(&mut framer));
+                    assert!(futures_util::poll!(&mut handshake).is_pending());
+                    if mode == 1 {
+                        lifecycle_rsd_assert_elapsed(
+                            rsd_timeout(
+                                Duration::from_millis(5),
+                                "RSD response timed out",
+                                handshake,
+                            )
+                            .await
+                            .unwrap_err(),
+                        );
+                    } else {
+                        drop(handshake);
+                    }
+                } else {
+                    let error = handshake_on_framer(&mut framer).await.unwrap_err();
+                    assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+                }
+                lifecycle_rsd_assert_rejected(&mut framer).await;
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_rsd_successful_initialization_and_queued_bootstrap_preserve_wire_and_reuse()
+    {
+        for queued in [false, true] {
+            timeout(Duration::from_secs(1), async {
+                let (mut framer, mut peer) = lifecycle_rsd_framer(4096).await;
+                let first = encode_message(&XpcMessage {
+                    flags: flags::ALWAYS_SET,
+                    msg_id: 0,
+                    body: Some(XpcValue::Dictionary(IndexMap::new())),
+                })
+                .unwrap();
+                let second = encode_message(&XpcMessage {
+                    flags: flags::ALWAYS_SET | 0x200,
+                    msg_id: 0,
+                    body: None,
+                })
+                .unwrap();
+                let third = encode_message(&XpcMessage {
+                    flags: flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
+                    msg_id: 0,
+                    body: None,
+                })
+                .unwrap();
+                let ((), ()) = tokio::join!(
+                    async {
+                        if queued {
+                            queue_rsd_handshake_bootstrap_on_framer(&mut framer)
+                                .await
+                                .unwrap();
+                        } else {
+                            initialize_xpc_connection_on_framer(&mut framer)
+                                .await
+                                .unwrap();
+                        }
+                        assert!(framer.is_usable());
+                        let directory = handshake_on_framer(&mut framer).await.unwrap();
+                        assert_eq!(
+                            directory.get_port("com.apple.instruments.dtservicehub"),
+                            Some(12345)
+                        );
+                        assert!(framer.is_usable());
+                        send_device_handshake_on_framer(
+                            &mut framer,
+                            uuid::Uuid::from_bytes([0x4a; 16]),
+                        )
+                        .await
+                        .unwrap();
+                        assert!(framer.is_usable());
+                    },
+                    async {
+                        assert_eq!(read_test_frame(&mut peer).await.0, FRAME_HEADERS);
+                        for (index, (stream_id, message)) in [(1, first), (1, second), (3, third)]
+                            .into_iter()
+                            .enumerate()
+                        {
+                            if index == 1 {
+                                let header = read_test_frame(&mut peer).await;
+                                assert_eq!((header.0, header.2), (FRAME_HEADERS, 3));
+                            }
+                            let frame = read_test_frame(&mut peer).await;
+                            assert_eq!((frame.0, frame.2), (FRAME_DATA, stream_id));
+                            assert_eq!(frame.3, message);
+                            if !queued {
+                                // Preserve the discard reader's historical
+                                // header acceptance; it does not decode magic.
+                                let mut ack = vec![0xA5; 24];
+                                ack[8..16].fill(0);
+                                peer.write_all(&data_frame(stream_id, &ack)).await.unwrap();
+                            }
+                        }
+                        peer.write_all(&data_frame(1, &sample_handshake_message()))
+                            .await
+                            .unwrap();
+                        let followup = read_test_frame(&mut peer).await;
+                        assert_eq!((followup.0, followup.2), (FRAME_DATA, 1));
+                        assert_eq!(
+                            followup.3,
+                            encode_message(&device_handshake_message(uuid::Uuid::from_bytes(
+                                [0x4a; 16]
+                            )))
+                            .unwrap()
+                        );
+                    }
+                );
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    async fn lifecycle_xpc_connection() -> (
+        XpcConnection<tokio::io::DuplexStream>,
+        tokio::io::DuplexStream,
+    ) {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let (framer, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(H2Framer::connect(stream), async {
+                read_test_preface(&mut peer).await;
+                peer.write_all(&settings_frame()).await.unwrap();
+                assert_eq!(read_test_frame(&mut peer).await.0, FRAME_SETTINGS);
+            })
+        })
+        .await
+        .unwrap();
+        (XpcConnection::new(framer.unwrap()), peer)
+    }
+
+    fn lifecycle_xpc_seed_pending(connection: &mut XpcConnection<tokio::io::DuplexStream>) {
+        for stream in [1, 5] {
+            connection
+                .push_pending_message(stream, pending_data_message(99, 8))
+                .unwrap();
+        }
+        assert!(connection.pending_budget.total_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_consumed_buffered_header_invalidates_even_without_new_wire_bytes() {
+        for caller_cancel in [false, true] {
+            let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+            let message = encode_message(&pending_data_message(1, 8)).unwrap();
+            peer.write_all(&data_frame(3, &message[..24]))
+                .await
+                .unwrap();
+            peer.write_all(&data_frame(1, b"x")).await.unwrap();
+            // An earlier H2 operation buffers the complete XPC header on 3.
+            assert_eq!(
+                connection.framer.read_stream(1, 1).await.unwrap().as_ref(),
+                b"x"
+            );
+            lifecycle_xpc_seed_pending(&mut connection);
+            assert!(connection.is_usable());
+            if caller_cancel {
+                assert!(timeout(Duration::from_millis(5), connection.recv())
+                    .await
+                    .is_err());
+            } else {
+                let error = connection
+                    .recv_on_stream_with_budget(3, Some(Duration::from_millis(5)))
+                    .await
+                    .unwrap_err();
+                let XpcError::Io(io) = error else {
+                    panic!("actual expiry")
+                };
+                assert!(io.get_ref().unwrap().is::<tokio::time::error::Elapsed>());
+            }
+            assert!(!connection.is_usable());
+            assert!(connection.pending_messages.is_empty());
+            assert_eq!(connection.pending_budget.total_bytes, 0);
+            assert!(connection.pending_budget.per_stream_bytes.is_empty());
+            peer.write_all(&data_frame(3, &message)).await.unwrap();
+            assert!(connection.recv().await.is_err());
+            assert!(connection.recv_client_server().await.is_err());
+            assert!(connection.recv_reply_on_stream(5, 99).await.is_err());
+            assert!(connection.recv_any_stream().await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_native_eof_clears_pending_before_cached_reply_can_return() {
+        let (mut connection, peer) = lifecycle_xpc_connection().await;
+        lifecycle_xpc_seed_pending(&mut connection);
+        drop(peer);
+        let error = connection.recv().await.unwrap_err();
+        let XpcError::Io(io) = error else {
+            panic!("native EOF")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(!connection.is_usable());
+        assert!(connection.pending_messages.is_empty());
+        assert_eq!(connection.pending_budget.total_bytes, 0);
+        assert!(connection.recv_client_server().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_partial_raw_frame_cancellation_clears_upper_pending_immediately() {
+        let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+        lifecycle_xpc_seed_pending(&mut connection);
+        peer.write_all(&[0, 0, 1, 0]).await.unwrap();
+        assert!(timeout(Duration::from_millis(5), connection.recv())
+            .await
+            .is_err());
+        assert!(!connection.is_usable());
+        assert!(connection.pending_messages.is_empty());
+        assert_eq!(connection.pending_budget.total_bytes, 0);
+        assert!(connection.recv_client_server().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_bad_wrapper_invalidates_after_header_consumption() {
+        let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+        lifecycle_xpc_seed_pending(&mut connection);
+        peer.write_all(&data_frame(3, &[0; 24])).await.unwrap();
+        assert!(connection.recv().await.is_err());
+        assert!(!connection.is_usable());
+        assert!(connection.pending_messages.is_empty());
+        assert_eq!(connection.pending_budget.total_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_complete_stream_reset_before_message_preserves_other_pending_reply() {
+        let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+        connection.framer.open_stream(3).await.unwrap();
+        assert_eq!(read_test_frame(&mut peer).await.0, FRAME_HEADERS);
+        lifecycle_xpc_seed_pending(&mut connection);
+        peer.write_all(&build_frame(3, 0, 3, &8u32.to_be_bytes()))
+            .await
+            .unwrap();
+        assert!(connection.recv().await.is_err());
+        assert!(connection.is_usable());
+        assert_eq!(connection.recv_client_server().await.unwrap().msg_id, 99);
+        assert!(connection.pending_budget.total_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_counter_exhaustion_rejects_without_wrap_or_wire_io() {
+        let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+        connection.msg_id = u64::MAX;
+        assert!(connection.send(XpcValue::Bool(true)).await.is_err());
+        assert_eq!(connection.msg_id, u64::MAX);
+        assert!(connection.is_usable());
+        let mut byte = [0];
+        assert!(timeout(Duration::from_millis(5), peer.read(&mut byte))
+            .await
+            .is_err());
+    }
+
+    async fn read_test_frame<S: AsyncRead + Unpin>(stream: &mut S) -> (u8, u8, u32, Vec<u8>) {
+        let mut header = [0; 9];
+        stream.read_exact(&mut header).await.unwrap();
+        let length =
+            (usize::from(header[0]) << 16) | (usize::from(header[1]) << 8) | usize::from(header[2]);
+        assert!(length <= 4096);
+        let mut data = vec![0; length];
+        stream.read_exact(&mut data).await.unwrap();
+        (
+            header[3],
+            header[4],
+            u32::from_be_bytes(header[5..9].try_into().unwrap()),
+            data,
+        )
+    }
+
+    async fn read_test_preface<S: AsyncRead + Unpin>(stream: &mut S) {
+        let mut preface = [0; 24];
+        stream.read_exact(&mut preface).await.unwrap();
+        assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
+        assert_eq!(read_test_frame(stream).await.0, FRAME_SETTINGS);
+        assert_eq!(read_test_frame(stream).await.0, 0x08);
+    }
+
+    async fn read_test_bootstrap<S: AsyncRead + Unpin>(stream: &mut S) {
+        for (frame_type, stream_id) in [
+            (FRAME_HEADERS, 1),
+            (FRAME_DATA, 1),
+            (FRAME_HEADERS, 3),
+            (FRAME_DATA, 1),
+            (FRAME_DATA, 3),
+        ] {
+            let frame = read_test_frame(stream).await;
+            assert_eq!((frame.0, frame.2), (frame_type, stream_id));
+        }
+    }
+
+    #[test]
+    fn modern_device_handshake_preserves_xpc_wire_types() {
+        let identity = uuid::Uuid::parse_str("49800e74-c74b-378c-958f-d88cb0dfdfd0").unwrap();
+        let encoded = encode_message(&device_handshake_message(identity)).unwrap();
+        let decoded = decode_message(encoded).unwrap();
+        assert_eq!(decoded.flags, flags::ALWAYS_SET | flags::DATA);
+        assert_eq!(decoded.msg_id, 1);
+        let body = decoded.body.unwrap();
+        let body = body.as_dict().unwrap();
+        assert_eq!(body["MessageType"], XpcValue::String("Handshake".into()));
+        assert_eq!(body["MessagingProtocolVersion"], XpcValue::Uint64(7));
+        assert_eq!(body["UUID"], XpcValue::Uuid(*identity.as_bytes()));
+        let properties = body["Properties"].as_dict().unwrap();
+        assert_eq!(
+            properties["RemoteXPCVersionFlags"],
+            XpcValue::Uint64(0x0100_0000_0000_0006)
+        );
+        assert_eq!(
+            properties["SensitivePropertiesVisible"],
+            XpcValue::Bool(true)
+        );
+        assert!(body["Services"].as_dict().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn modern_rsd_sends_bootstrap_before_peer_settings_and_announces_host() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let identity = uuid::Uuid::from_bytes([0x4a; 16]);
+        let task = tokio::spawn(async move {
+            read_test_preface(&mut server).await;
+            // This peer deliberately withholds SETTINGS until stream bootstrap.
+            read_test_bootstrap(&mut server).await;
+            server.write_all(&settings_frame()).await.unwrap();
+            let ack = read_test_frame(&mut server).await;
+            assert_eq!((ack.0, ack.1), (FRAME_SETTINGS, FLAG_SETTINGS_ACK));
+            let (_, _, stream, payload) = read_test_frame(&mut server).await;
+            assert_eq!(stream, 1);
+            let message = decode_message(Bytes::from(payload)).unwrap();
+            assert_eq!(message.body, device_handshake_message(identity).body);
+            server
+                .write_all(&data_frame(1, &sample_handshake_message()))
+                .await
+                .unwrap();
+        });
+        let mut stream = Some(client);
+        let result = timeout(
+            Duration::from_secs(2),
+            handshake_attempts(
+                || {
+                    std::future::ready(Ok(stream
+                        .take()
+                        .expect("modern handshake should connect once")))
+                },
+                identity,
+                None,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result.get_port("com.apple.instruments.dtservicehub"),
+            Some(12345)
+        );
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_modern_rsd_reconnects_with_queued_legacy_bootstrap() {
+        let (rejected, rejected_peer) = tokio::io::duplex(4096);
+        drop(rejected_peer);
+        let (legacy, mut server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            read_test_preface(&mut server).await;
+            server.write_all(&settings_frame()).await.unwrap();
+            assert_eq!(read_test_frame(&mut server).await.1, FLAG_SETTINGS_ACK);
+            read_test_bootstrap(&mut server).await;
+            server
+                .write_all(&data_frame(1, &sample_handshake_message()))
+                .await
+                .unwrap();
+        });
+        let mut streams = VecDeque::from([rejected, legacy]);
+        let result = timeout(
+            Duration::from_secs(2),
+            handshake_attempts(
+                || std::future::ready(Ok(streams.pop_front().unwrap())),
+                uuid::Uuid::from_bytes([0x4a; 16]),
+                None,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!result.services.is_empty());
+        assert!(streams.is_empty());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_bootstraps_eventually_reconnect_with_passive_rsd() {
+        let mut streams = VecDeque::new();
+        for _ in 0..3 {
+            let (client, server) = tokio::io::duplex(4096);
+            drop(server);
+            streams.push_back(client);
+        }
+        let (client, mut server) = tokio::io::duplex(4096);
+        streams.push_back(client);
+        let task = tokio::spawn(async move {
+            read_test_preface(&mut server).await;
+            server.write_all(&settings_frame()).await.unwrap();
+            assert_eq!(read_test_frame(&mut server).await.1, FLAG_SETTINGS_ACK);
+            server
+                .write_all(&data_frame(1, &sample_handshake_message()))
+                .await
+                .unwrap();
+        });
+        timeout(
+            Duration::from_secs(2),
+            handshake_attempts(
+                || std::future::ready(Ok(streams.pop_front().unwrap())),
+                uuid::Uuid::from_bytes([0x4a; 16]),
+                None,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(streams.is_empty());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rsd_selection_receipt_reports_each_actual_successful_bootstrap_and_fresh_fallback() {
+        use crate::device::RsdHandshakeMode;
+        let modes = [
+            RsdHandshakeMode::Direct,
+            RsdHandshakeMode::Queued,
+            RsdHandshakeMode::Legacy,
+            RsdHandshakeMode::Passive,
+        ];
+        for (index, expected) in modes.into_iter().enumerate() {
+            let mut streams = VecDeque::new();
+            for _ in 0..index {
+                let (client, peer) = tokio::io::duplex(4096);
+                drop(peer);
+                streams.push_back(client);
+            }
+            let (client, mut peer) = tokio::io::duplex(16_384);
+            streams.push_back(client);
+            let server = async {
+                read_test_preface(&mut peer).await;
+                if index == 0 {
+                    read_test_bootstrap(&mut peer).await;
+                }
+                peer.write_all(&settings_frame()).await.unwrap();
+                let ack = read_test_frame(&mut peer).await;
+                assert_eq!((ack.0, ack.1), (FRAME_SETTINGS, FLAG_SETTINGS_ACK));
+                if index == 0 {
+                    let (_, _, stream, payload) = read_test_frame(&mut peer).await;
+                    assert_eq!(stream, 1);
+                    assert_eq!(
+                        decode_message(Bytes::from(payload)).unwrap().body,
+                        device_handshake_message(uuid::Uuid::from_bytes([0x4a; 16])).body
+                    );
+                } else if index == 1 {
+                    read_test_bootstrap(&mut peer).await;
+                } else if index == 2 {
+                    let empty = encode_message(&XpcMessage {
+                        flags: flags::ALWAYS_SET,
+                        msg_id: 0,
+                        body: None,
+                    })
+                    .unwrap();
+                    for stream in [1, 1, 3] {
+                        if stream == 1 {
+                            let header = read_test_frame(&mut peer).await;
+                            assert_eq!(header.0, FRAME_HEADERS);
+                        }
+                        let data = read_test_frame(&mut peer).await;
+                        assert_eq!((data.0, data.2), (FRAME_DATA, stream));
+                        peer.write_all(&data_frame(stream, &empty)).await.unwrap();
+                    }
+                }
+                peer.write_all(&data_frame(1, &sample_handshake_message()))
+                    .await
+                    .unwrap();
+                let mut tail = Vec::new();
+                peer.read_to_end(&mut tail).await.unwrap();
+                // Only transport flow-control frames may follow the observation.
+                let mut bytes = tail.as_slice();
+                while !bytes.is_empty() {
+                    assert!(bytes.len() >= 9);
+                    let n = ((bytes[0] as usize) << 16)
+                        | ((bytes[1] as usize) << 8)
+                        | bytes[2] as usize;
+                    assert_eq!(bytes[3], 8);
+                    assert_eq!(n, 4);
+                    assert!(bytes.len() >= 9 + n);
+                    bytes = &bytes[9 + n..];
+                }
+            };
+            let (result, ()) = timeout(Duration::from_secs(3), async {
+                tokio::join!(
+                    checked_handshake_with_connector_observed(
+                        || std::future::ready(Ok(streams
+                            .pop_front()
+                            .expect("unexpected bootstrap retry"))),
+                        uuid::Uuid::from_bytes([0x4a; 16]),
+                        tokio::time::Instant::now() + Duration::from_secs(3),
+                    ),
+                    server
+                )
+            })
+            .await
+            .unwrap();
+            let (directory, receipt) = result.unwrap();
+            assert_eq!(receipt.handshake_mode, expected);
+            assert_eq!(receipt.attempted_modes, modes[..=index]);
+            assert!(directory.complete_service_directory());
+            assert_eq!(directory.udid(), Some("00008150-00013DD00104401C"));
+            assert!(streams.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn rsd_stage_timeout_reports_timeout_without_peer_contents() {
+        let error = rsd_timeout(
+            Duration::from_millis(1),
+            "RSD response timed out",
+            std::future::pending::<Result<(), XpcError>>(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, XpcError::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(error.to_string().contains("RSD response timed out"));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        let XpcError::Io(outer) = error else {
+            unreachable!()
+        };
+        assert!(std::error::Error::source(&outer)
+            .unwrap()
+            .is::<tokio::time::error::Elapsed>());
+    }
 
     struct CapturingSubscriber {
         events: Arc<Mutex<Vec<String>>>,
@@ -1964,358 +4163,211 @@ mod tests {
 
         server_task.await.unwrap();
     }
+}
 
-    // ── Cancel-safety contract (T4) ─────────────────────────────────────────
-
-    /// Signals once the observed byte count crosses a threshold, so a test
-    /// can cancel a reader at an exact consumption point.
-    struct ReadProbeStream<S> {
-        inner: S,
-        read_bytes: usize,
-        tx: Option<tokio::sync::oneshot::Sender<usize>>,
-        threshold: usize,
-    }
-
-    impl<S> ReadProbeStream<S> {
-        fn probe_reads(self, threshold: usize) -> (Self, tokio::sync::oneshot::Receiver<usize>) {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            (
-                Self {
-                    tx: Some(tx),
-                    threshold,
-                    ..self
-                },
-                rx,
-            )
+#[cfg(feature = "tunnel")]
+pub(crate) fn checked_borrowed_parts<'t, 'a>(
+    dictionary: crate::xpc::message::borrowed::Dictionary<'t, 'a>,
+) -> Result<
+    (
+        Option<&'a str>,
+        Option<crate::xpc::message::borrowed::Dictionary<'t, 'a>>,
+    ),
+    XpcError,
+> {
+    use crate::device::existing_rsd::{
+        ExistingRsdProbeError, MAX_FEATURES, MAX_FIELD_BYTES, MAX_SERVICES, MAX_TEXT_BYTES,
+    };
+    let protocol = |reason: &'static str| XpcError::Tls(reason.into());
+    let mut text_bytes = 0usize;
+    let mut feature_count = 0usize;
+    let mut admit_text = |text: &str| -> Result<(), XpcError> {
+        text_bytes = text_bytes.saturating_add(text.len());
+        if text.len() > MAX_FIELD_BYTES || text_bytes > MAX_TEXT_BYTES {
+            return Err(ExistingRsdProbeError::metadata_limit());
         }
-    }
-
-    impl<S: AsyncRead + Unpin> AsyncRead for ReadProbeStream<S> {
-        fn poll_read(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &mut ReadBuf<'_>,
-        ) -> Poll<std::io::Result<()>> {
-            let before = buf.filled().len();
-            let result = Pin::new(&mut self.inner).poll_read(cx, buf);
-            if let Poll::Ready(Ok(())) = &result {
-                self.read_bytes += buf.filled().len() - before;
-                if self.read_bytes >= self.threshold {
-                    if let Some(tx) = self.tx.take() {
-                        let _ = tx.send(self.read_bytes);
-                    }
+        Ok(())
+    };
+    let properties = dictionary
+        .get("Properties")
+        .map(|value| {
+            value
+                .as_dict()
+                .ok_or_else(|| protocol("RSD: Properties was not a dictionary"))
+        })
+        .transpose()?;
+    let udid = properties
+        .and_then(|properties| properties.get("UniqueDeviceID"))
+        .map(|value| {
+            let text = value
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| protocol("RSD: UniqueDeviceID was not a nonempty string"))?;
+            admit_text(text)?;
+            Ok::<_, XpcError>(text)
+        })
+        .transpose()?;
+    let services = dictionary
+        .get("Services")
+        .map(|value| {
+            let services = value
+                .as_dict()
+                .ok_or_else(|| protocol("RSD: Services was not a dictionary"))?;
+            if services.len() > MAX_SERVICES {
+                return Err(ExistingRsdProbeError::metadata_limit());
+            }
+            Ok::<_, XpcError>(services)
+        })
+        .transpose()?;
+    if let Some(services) = services {
+        for (name, value) in services.iter() {
+            admit_text(name)?;
+            let descriptor = value
+                .as_dict()
+                .ok_or_else(|| protocol("RSD: service entry was not a dictionary"))?;
+            if let Some(port) = descriptor.get("Port") {
+                if port
+                    .as_str()
+                    .is_some_and(|text| text.len() > MAX_FIELD_BYTES)
+                {
+                    return Err(ExistingRsdProbeError::metadata_limit());
+                }
+                checked_borrowed_port(port)?;
+            }
+            let properties = descriptor
+                .get("Properties")
+                .map(|value| {
+                    value
+                        .as_dict()
+                        .ok_or_else(|| protocol("RSD: service Properties was not a dictionary"))
+                })
+                .transpose()?;
+            if let Some(value) = properties.and_then(|properties| properties.get("Features")) {
+                let features = value
+                    .as_array()
+                    .ok_or_else(|| protocol("RSD: Features was not an array"))?;
+                feature_count = feature_count.saturating_add(features.len());
+                if feature_count > MAX_FEATURES {
+                    return Err(ExistingRsdProbeError::metadata_limit());
+                }
+                for feature in features.iter() {
+                    admit_text(
+                        feature
+                            .as_str()
+                            .ok_or_else(|| protocol("RSD: feature identifier was not a string"))?,
+                    )?;
                 }
             }
-            result
         }
     }
+    Ok((udid, services))
+}
 
-    impl<S: AsyncWrite + Unpin> AsyncWrite for ReadProbeStream<S> {
-        fn poll_write(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<std::io::Result<usize>> {
-            Pin::new(&mut self.inner).poll_write(cx, buf)
-        }
-        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-            Pin::new(&mut self.inner).poll_flush(cx)
-        }
-        fn poll_shutdown(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-        ) -> Poll<std::io::Result<()>> {
-            Pin::new(&mut self.inner).poll_shutdown(cx)
-        }
-    }
-
-    #[tokio::test]
-    async fn cancelled_xpc_body_read_poisons_connection_until_reconnect() {
-        let (client, mut server) = tokio::io::duplex(64 * 1024);
-        let message = encode_message(&XpcMessage {
-            flags: flags::ALWAYS_SET | flags::DATA,
-            msg_id: 7,
-            body: Some(XpcValue::String("b".repeat(40))),
-        })
-        .unwrap();
-        assert!(
-            message.len() > 24 + 5,
-            "test message needs a body > 5 bytes"
-        );
-        let body = &message[24..];
-
-        // The server sends settings(9) + HEADERS(9) + header frame(9+24) +
-        // partial body frame(9+5) and then pauses; the cancel lands once all
-        // of that is consumed and the body read is pending for more.
-        let (stream, mut read_rx) = ReadProbeStream {
-            inner: client,
-            read_bytes: 0,
-            tx: None,
-            threshold: usize::MAX,
-        }
-        .probe_reads(9 + 9 + (9 + 24) + (9 + 5));
-        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel::<()>();
-
-        let header_chunk = message[..24].to_vec();
-        let body_head = body[..5].to_vec();
-        let body_tail = body[5..].to_vec();
-        let (probe_tx, probe_rx) = tokio::sync::oneshot::channel::<bool>();
-        let server_task = tokio::spawn(async move {
-            let mut preface = [0u8; 24];
-            server.read_exact(&mut preface).await.unwrap();
-            let mut settings = [0u8; 21];
-            server.read_exact(&mut settings).await.unwrap();
-            let mut window_update = [0u8; 13];
-            server.read_exact(&mut window_update).await.unwrap();
-            server.write_all(&settings_frame()).await.unwrap();
-            server.flush().await.unwrap();
-            let mut ack = [0u8; 9];
-            server.read_exact(&mut ack).await.unwrap();
-
-            server
-                .write_all(&headers_frame(STREAM_SERVER_CLIENT))
-                .await
-                .unwrap();
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &header_chunk))
-                .await
-                .unwrap();
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &body_head))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-            continue_rx.await.unwrap();
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &body_tail))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-
-            // No second business request may reach the wire after the
-            // poisoned cancel: a short read must time out.
-            let mut probe = [0u8; 1];
-            let saw_client_bytes =
-                tokio::time::timeout(Duration::from_millis(300), server.read_exact(&mut probe))
-                    .await
-                    .is_ok();
-            probe_tx.send(saw_client_bytes).unwrap();
-        });
-
-        let mut connection = {
-            let framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
-                .await
-                .expect("handshake watchdog")
-                .unwrap();
-            XpcConnection::new(framer)
-        };
-
-        let consumed = {
-            let recv_fut = connection.recv();
-            tokio::pin!(recv_fut);
-            tokio::select! {
-                biased;
-                result = &mut recv_fut => panic!(
-                    "recv completed before the partial body arrived: {result:?}"
-                ),
-                consumed = &mut read_rx => consumed.unwrap(),
-            }
-        }; // cancelled mid-body: the 24-byte header was consumed, 5 body bytes are gone.
-        assert_eq!(consumed, 9 + 9 + (9 + 24) + (9 + 5));
-        continue_tx.send(()).unwrap();
-
-        // A cached reply must not bypass the framer poison check. Otherwise a
-        // caller could observe a pending message and then reuse the same
-        // connection for a new request after the body boundary was lost.
-        connection
-            .push_pending_message(
-                STREAM_SERVER_CLIENT,
-                XpcMessage {
-                    flags: flags::ALWAYS_SET,
-                    msg_id: 99,
-                    body: None,
-                },
-            )
-            .unwrap();
-
-        // The next operation must refuse instead of splicing body bytes into
-        // the next message header.
-        let err = timeout(Duration::from_secs(5), connection.recv())
-            .await
-            .expect("poison check watchdog")
-            .expect_err("a connection cancelled mid-body must refuse further reads");
-        assert!(err.to_string().contains("frame-aligned"), "{err}");
-
-        // Sends refuse too, so no second business request can reach the wire.
-        let send_err = connection
-            .send(XpcValue::Dictionary(IndexMap::new()))
-            .await
-            .expect_err("a poisoned connection must refuse sends");
-        assert!(send_err.to_string().contains("frame-aligned"), "{send_err}");
-
-        // The peer must not have received any new request after the cancel.
-        assert!(
-            !probe_rx.await.unwrap(),
-            "no bytes may be written to the wire after the poisoned cancel"
-        );
-
-        server_task.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn xpc_body_error_and_invalid_length_poison_after_header_consumption() {
-        let message = encode_message(&XpcMessage {
-            flags: flags::ALWAYS_SET | flags::DATA,
-            msg_id: 7,
-            body: Some(XpcValue::String("body".into())),
-        })
-        .unwrap();
-
-        // A truncated body read leaves the stream at an unknown XPC message
-        // boundary. The marker must survive the I/O error, just as it does a
-        // cancellation, so a later call cannot reinterpret arbitrary bytes as
-        // another header.
-        let mut truncated_wire = settings_frame();
-        truncated_wire.extend_from_slice(&data_frame(STREAM_SERVER_CLIENT, &message[..24]));
-        let mut framer = H2Framer::connect(ScriptedIo {
-            input: Bytes::from(truncated_wire),
-            offset: 0,
-            output: Vec::new(),
-        })
-        .await
-        .unwrap();
-        let err = read_raw_xpc_on_server_client(&mut framer)
-            .await
-            .expect_err("truncated body must fail");
-        assert!(err.to_string().contains("read body"), "{err}");
-        assert!(framer.is_message_read_in_progress());
-        let reuse_err = read_raw_xpc_on_server_client(&mut framer)
-            .await
-            .expect_err("body I/O error must poison reuse");
-        assert!(
-            reuse_err.to_string().contains("frame-aligned"),
-            "{reuse_err}"
-        );
-
-        // An over-limit declared body is also unsafe after the 24-byte header
-        // has been consumed: bytes belonging to that body may already be in
-        // the H2 buffer. It must take the same poison path before returning the
-        // validation error.
-        let mut invalid_header = message[..24].to_vec();
-        let over_limit = (crate::xpc::message::XPC_CONTROL_BODY_LIMIT as u64) + 1;
-        invalid_header[8..16].copy_from_slice(&over_limit.to_le_bytes());
-        let mut invalid_wire = settings_frame();
-        invalid_wire.extend_from_slice(&data_frame(STREAM_SERVER_CLIENT, &invalid_header));
-        let mut framer = H2Framer::connect(ScriptedIo {
-            input: Bytes::from(invalid_wire),
-            offset: 0,
-            output: Vec::new(),
-        })
-        .await
-        .unwrap();
-        let err = read_raw_xpc_on_server_client(&mut framer)
-            .await
-            .expect_err("over-limit body must fail validation");
-        assert!(err.to_string().contains("exceeds limit"), "{err}");
-        assert!(framer.is_message_read_in_progress());
-        let reuse_err = read_raw_xpc_on_server_client(&mut framer)
-            .await
-            .expect_err("invalid body length must poison reuse");
-        assert!(
-            reuse_err.to_string().contains("frame-aligned"),
-            "{reuse_err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn cancelled_xpc_header_read_recovers_from_stream_buffer() {
-        let (client, mut server) = tokio::io::duplex(64 * 1024);
-        let message = encode_message(&XpcMessage {
-            flags: flags::ALWAYS_SET | flags::DATA,
-            msg_id: 7,
-            body: Some(XpcValue::String("h".repeat(12))),
-        })
-        .unwrap();
-        assert!(message.len() > 24 + 10);
-
-        // The server sends settings(9) + HEADERS(9) + a DATA frame carrying
-        // 10 of the 24 XPC header bytes and then pauses; the cancel lands
-        // once all of that is consumed.
-        let (stream, mut read_rx) = ReadProbeStream {
-            inner: client,
-            read_bytes: 0,
-            tx: None,
-            threshold: usize::MAX,
-        }
-        .probe_reads(9 + 9 + (9 + 10));
-        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel::<()>();
-
-        let header_chunk = message[..24].to_vec();
-        let header_tail = message[10..24].to_vec();
-        let body = message[24..].to_vec();
-        let server_task = tokio::spawn(async move {
-            let mut preface = [0u8; 24];
-            server.read_exact(&mut preface).await.unwrap();
-            let mut settings = [0u8; 21];
-            server.read_exact(&mut settings).await.unwrap();
-            let mut window_update = [0u8; 13];
-            server.read_exact(&mut window_update).await.unwrap();
-            server.write_all(&settings_frame()).await.unwrap();
-            server.flush().await.unwrap();
-            let mut ack = [0u8; 9];
-            server.read_exact(&mut ack).await.unwrap();
-
-            server
-                .write_all(&headers_frame(STREAM_SERVER_CLIENT))
-                .await
-                .unwrap();
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &header_chunk[..10]))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-            continue_rx.await.unwrap();
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &header_tail))
-                .await
-                .unwrap();
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &body))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-        });
-
-        let mut connection = {
-            let framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
-                .await
-                .expect("handshake watchdog")
-                .unwrap();
-            XpcConnection::new(framer)
-        };
-
-        let consumed = {
-            let recv_fut = connection.recv();
-            tokio::pin!(recv_fut);
-            tokio::select! {
-                biased;
-                result = &mut recv_fut => panic!(
-                    "recv completed before the partial header arrived: {result:?}"
-                ),
-                consumed = &mut read_rx => consumed.unwrap(),
-            }
-        }; // cancelled while the XPC header was only partially buffered.
-        assert_eq!(consumed, 9 + 9 + (9 + 10));
-        continue_tx.send(()).unwrap();
-
-        // The buffered 10 header bytes must survive the cancel; the next
-        // recv completes the same message instead of misparsing.
-        let message_received = timeout(Duration::from_secs(5), connection.recv())
-            .await
-            .expect("recovery watchdog")
-            .expect("buffered partial-header bytes must survive a cancelled read");
-        assert_eq!(message_received.msg_id, 7);
-
-        server_task.await.unwrap();
+#[cfg(feature = "tunnel")]
+pub(crate) fn checked_borrowed_port(
+    value: crate::xpc::message::borrowed::Value<'_, '_>,
+) -> Result<u16, XpcError> {
+    let port = if let Some(text) = value.as_str() {
+        text.parse::<u16>().map_err(|source| {
+            XpcError::Io(crate::error::context::received_io(
+                "decode RSD service Port",
+                None,
+                source,
+            ))
+        })?
+    } else if let Some(port) = value.as_uint64() {
+        u16::try_from(port).map_err(|source| {
+            XpcError::Io(crate::error::context::received_io(
+                "decode RSD service Port",
+                Some(port),
+                source,
+            ))
+        })?
+    } else {
+        return Err(XpcError::Tls("RSD: Port had an invalid type".into()));
+    };
+    if port == 0 {
+        Err(XpcError::Tls("RSD: service Port was zero".into()))
+    } else {
+        Ok(port)
     }
 }
+
+#[cfg(feature = "tunnel")]
+pub(crate) async fn checked_handshake_prepared<F, Fut, S>(
+    connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<
+    (
+        crate::device::PreparedRsdCatalogue,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
+    XpcError,
+>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    checked_handshake_prepared_with_parser(connector, identity, deadline, bank, |dictionary| {
+        crate::device::PreparedRsdCatalogue::decode_borrowed(dictionary, bank)
+    })
+    .await
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) async fn checked_handshake_prepared_with_parser<F, Fut, S, T, P>(
+    connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    mut parse: P,
+) -> Result<
+    (
+        T,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
+    XpcError,
+>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    P: for<'t, 'a> FnMut(crate::xpc::message::borrowed::Dictionary<'t, 'a>) -> Result<T, XpcError>,
+{
+    checked_handshake_wire(connector, identity, deadline, Some(bank), |header, body| {
+        let tree = crate::xpc::message::borrowed::decode(header, body, bank)
+            .map_err(checked_wire_error)?;
+        let Some(dictionary) = tree.as_ref().and_then(|tree| tree.root().as_dict()) else {
+            return Ok(None);
+        };
+        match dictionary.get("MessageType") {
+            None => Ok(None),
+            Some(value) => match value.as_str() {
+                Some("Handshake") => parse(dictionary).map(Some).map_err(CheckedReadError::Final),
+                Some(_) => Ok(None),
+                None => Err(CheckedReadError::Final(XpcError::Tls(
+                    "RSD: MessageType was not a string".into(),
+                ))),
+            },
+        }
+    })
+    .await
+}
+
+#[cfg(feature = "tunnel")]
+fn checked_wire_error(error: XpcError) -> CheckedReadError {
+    if crate::classify_error(&error) == crate::ErrorClass::ResourceLimit {
+        CheckedReadError::Final(error)
+    } else {
+        CheckedReadError::Retry(error)
+    }
+}
+
+#[cfg(all(test, feature = "tunnel"))]
+#[path = "rsd/raw_storage_tests.rs"]
+mod raw_storage_tests;
