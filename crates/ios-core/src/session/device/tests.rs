@@ -1478,17 +1478,22 @@ async fn actual_partially_blocked_start_session_send_is_cancelled_then_drained_a
         let first = peer.read_u8().await.unwrap();
         let _ = ready_tx.send(());
         let _ = drain.await;
-        let receive: libc::c_int = 64 * 1024;
-        // SAFETY: same live owned socket and correctly sized value as above.
-        let restored = unsafe {
-            libc::setsockopt(
-                peer.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_RCVBUF,
-                (&receive as *const libc::c_int).cast(),
-                std::mem::size_of_val(&receive) as libc::socklen_t,
-            )
+        #[cfg(not(target_os = "macos"))]
+        let restored = {
+            let receive: libc::c_int = 64 * 1024;
+            // SAFETY: same live owned socket and correctly sized value as above.
+            unsafe {
+                libc::setsockopt(
+                    peer.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUF,
+                    (&receive as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&receive) as libc::socklen_t,
+                )
+            }
         };
+        #[cfg(target_os = "macos")]
+        let restored = 0;
         let mut tail = Vec::new();
         peer.read_to_end(&mut tail).await.unwrap();
         (configured, restored, requests, declared, first, tail.len())
