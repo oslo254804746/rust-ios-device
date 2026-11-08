@@ -581,7 +581,17 @@ impl MediaStreamSession {
             )
         })?;
         validate_media_endpoint(ip, "receiver_ip")?;
-        let socket = Arc::new(UdpSocket::bind(SocketAddr::new(ip, options.receiver_port)).await?);
+        let socket = match UdpSocket::bind(SocketAddr::new(ip, options.receiver_port)).await {
+            Ok(sock) => Arc::new(sock),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrNotAvailable => Arc::new(
+                UdpSocket::bind(SocketAddr::new(
+                    IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                    options.receiver_port,
+                ))
+                .await?,
+            ),
+            Err(err) => return Err(err.into()),
+        };
         Self::negotiate_session(service, kind, options, socket).await
     }
 
@@ -1262,6 +1272,7 @@ fn uuid_value(id: uuid::Uuid) -> XpcValue {
 fn typed_i64(value: i64) -> XpcValue {
     dict([("int", XpcValue::Int64(value))])
 }
+#[allow(dead_code)]
 fn typed_u64(value: u64) -> XpcValue {
     dict([("uint", XpcValue::Uint64(value))])
 }
@@ -1375,15 +1386,15 @@ fn build_start_input(
     dict([
         (
             "clientSupportedFeatures",
-            typed_u64(CLIENT_SUPPORTED_FEATURES),
+            XpcValue::Uint64(CLIENT_SUPPORTED_FEATURES),
         ),
         ("direction", XpcValue::String("output".into())),
         ("negotiatorOffer", XpcValue::Data(offer)),
         ("options", XpcValue::Dictionary(opts)),
         ("receiverIP", XpcValue::String(o.receiver_ip.clone())),
-        ("receiverPort", typed_u64(u64::from(o.receiver_port))),
+        ("receiverPort", XpcValue::Uint64(u64::from(o.receiver_port))),
         ("senderIP", XpcValue::String(o.sender_ip.clone())),
-        ("timeout", typed_u64(o.timeout.as_secs())),
+        ("timeout", XpcValue::Uint64(o.timeout.as_secs())),
         ("type", XpcValue::String(kind.wire_name().into())),
     ])
 }
@@ -2369,15 +2380,9 @@ mod tests {
         let id = uuid::Uuid::from_u128(1);
         let video = build_start_input(MediaKind::Video, &options, id, Bytes::from_static(b"offer"));
         let video = video.as_dict().unwrap();
-        assert_eq!(
-            video["clientSupportedFeatures"].as_dict().unwrap()["uint"],
-            XpcValue::Uint64(140)
-        );
+        assert_eq!(video["clientSupportedFeatures"], XpcValue::Uint64(140));
         assert_eq!(video["direction"].as_str(), Some("output"));
-        assert_eq!(
-            video["receiverPort"].as_dict().unwrap()["uint"],
-            XpcValue::Uint64(1234)
-        );
+        assert_eq!(video["receiverPort"], XpcValue::Uint64(1234));
         assert_eq!(video["type"].as_str(), Some("video"));
         let opts = video["options"].as_dict().unwrap();
         assert!(opts.contains_key("CoreDeviceVideoDisplayMode"));

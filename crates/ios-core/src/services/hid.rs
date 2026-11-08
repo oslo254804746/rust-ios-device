@@ -922,8 +922,8 @@ fn keyboard_service_dictionary(
     product_id: i64,
 ) -> XpcValue {
     let pair = dict([
-        ("DeviceUsage", XpcValue::Int64(6)),
-        ("DeviceUsagePage", XpcValue::Int64(1)),
+        ("DeviceUsage", dict([("int", XpcValue::Int64(6))])),
+        ("DeviceUsagePage", dict([("int", XpcValue::Int64(1))])),
     ]);
     let storage = dict([
         (
@@ -940,7 +940,7 @@ fn keyboard_service_dictionary(
         ("PrimaryUsagePage", dict([("int", XpcValue::Int64(1))])),
         (
             "DeviceUsagePairs",
-            XpcValue::Array(vec![dict([("dictionary", pair)])]),
+            dict([("array", XpcValue::Array(vec![dict([("dictionary", pair)])]))]),
         ),
         (
             "Transport",
@@ -1144,6 +1144,23 @@ impl<P: HidMediaProvider> AuthorizedTouchSession<'_, P> {
             .await?;
         self.session.report_count += 1;
         self.session.last_coordinate = Some(coordinate);
+        Ok(())
+    }
+
+    pub async fn send_multitouch(&mut self, contacts: &[MultiTouchPoint]) -> Result<(), HidError> {
+        if self.session.closed {
+            return Err(HidError::Protocol("touch session is closed".into()));
+        }
+        if self.session.report_count >= MAX_TOUCH_REPORTS {
+            return Err(HidError::Protocol(format!(
+                "touch report limit {MAX_TOUCH_REPORTS} exceeded"
+            )));
+        }
+        self.session
+            .service
+            .send_multitouch(contacts, self.session.service_id, None)
+            .await?;
+        self.session.report_count += 1;
         Ok(())
     }
 
@@ -1534,6 +1551,19 @@ mod tests {
             panic!()
         };
         assert_eq!(descriptor.as_ref(), KEYBOARD_REPORT_DESCRIPTOR);
+        assert_eq!(
+            storage["DeviceUsagePairs"],
+            dict([(
+                "array",
+                XpcValue::Array(vec![dict([(
+                    "dictionary",
+                    dict([
+                        ("DeviceUsage", dict([("int", XpcValue::Int64(6))])),
+                        ("DeviceUsagePage", dict([("int", XpcValue::Int64(1))])),
+                    ]),
+                )])]),
+            )])
+        );
     }
 
     #[test]

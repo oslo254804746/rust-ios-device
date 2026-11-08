@@ -455,7 +455,8 @@ fn unwrap_response(routine: &str, response: XpcMessage) -> Result<IndexMap<Strin
         }
         // iOS 18 get-nonce also returns only argv on success. Its nonce
         // structure is validated by nonce(); explicit daemon errors still fail.
-        None if matches!(routine, "read-personalization-id" | "get-nonce") => {}
+        None if matches!(routine, "read-personalization-id" | "get-nonce" | "install")
+            && matches!(response.get("argv"), Some(XpcValue::Dictionary(_))) => {}
         _ => {
             return Err(CryptexError::Protocol(format!(
                 "{routine}: missing or invalid error status"

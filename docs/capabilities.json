@@ -1,8 +1,29 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-07",
+  "updated": "2026-11-08",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
+    {
+      "id": "windows-ios27.2-acceptance-20261108",
+      "level": "real-device",
+      "host_os": "Windows x86_64/MSVC",
+      "device": "iPhone16,2 (iPhone 15 Pro Max)",
+      "ios": "27.2 (24B119)",
+      "transport": [
+        "USB usbmux + Lockdown TLS",
+        "CoreDevice CDTunnel Userspace IPv6 TCP/UDP (20ms ICMPv6 Echo Nudge)",
+        "CoreDevice RSD HTTP/2 XPC & DTX"
+      ],
+      "required_state": [
+        "Paired iOS 27.2 (24B119) physical device with DeveloperModeStatus=true and Cryptex DDI com.apple.MobileAsset.DDI v27.1.5228.8 mounted; Node 20.18.0 for pinned Puppeteer/Playwright/Selenium acceptance"
+      ],
+      "tested_commit": "4373dcdde1a1fce0000971a3579acca8acf83127",
+      "date": "2026-11-08",
+      "location": "C:/Users/oslo/ios-device-tests/20261108-095800-ios27.2/SUMMARY.md",
+      "result": "PASS",
+      "scope": "51/51 real-device acceptance test cases PASS across Modules 1-4 on iOS 27.2: Userspace Tunnel 20ms ICMPv6 Echo Nudge burst benchmark (30/30 PASS, median 18.0ms, p95 28.23ms), Cryptex DDI auto-install, DisplayService H.265 video stream capture (5 HEVC access units, 118,920 bytes over userspace UDP forwarding), Universal HID (500ms touch auth wait, 300ms keyboard settle wait, Shift lead-in/out sequence, 5-finger multitouch), NotificationProxy State field, PCAP unit-suffixed interface filtering (en0), AFC extended opcodes, CoreDevice FileService, PasteboardService empty-dict promise decoding, Instruments/DTX/Stackshot sharedCache UUID, WEB-001..WEB-026 (including Puppeteer 25.12.0, Playwright 1.63.0 default connectOverCDP, Selenium 4.35.0), and i4Tools IPA install/upgrade/launch/pkill/uninstall lifecycle.",
+      "limitations": "Destructive restore/erase/deactivate/reboot operations remain excluded by safety policy."
+    },
     {
       "id": "windows-review-viewer-88d8f70",
       "level": "host-unit/protocol",
@@ -3031,6 +3052,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified all 7 accessibility-audit subcommands (capabilities, audit-types, settings, describe, navigate, list-items, run-audit) over axAudit DTX on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -3133,6 +3160,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified activation state (Activated), info, and session-info on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -3844,6 +3877,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified MobileBackup2 version (2.1) and encryption-status on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -3891,6 +3930,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified BTPacketLogger capture in both packetlogger (.pklg) and pcapng (.pcapng) formats on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -4034,6 +4079,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified companion list on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -4084,6 +4135,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified crash flush and crash ls on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -4143,6 +4200,12 @@
           "result": "INCONCLUSIVE",
           "evidence": "windows-terra-followup-device-limited-20261029",
           "scope": "Missing remote debugproxy precondition only; no positive device debugging."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified CoreDevice com.apple.internal.dt.remote.debugproxy LLDB script generation and live GDB RSP +#9b handshake on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -4193,6 +4256,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified debugserver send qHostInfo, qSupported, and qGDBServerVersion over RSD com.apple.internal.dt.remote.debugproxy fallback on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -4240,6 +4309,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified ConditionInducer list, enable SlowNetworkCondition SlowNetworkWiFi, and disable on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -4666,6 +4741,12 @@
           "result": "PASS",
           "evidence": "linux-raw-listeners-e6ddf5c",
           "scope": "Actual CLI/run rejects nonloopback before device/service operation; selected-device protocol workflow remains unverified."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified Lockdown service interception and NDJSON/binary recording on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -4720,6 +4801,12 @@
           "result": "PASS",
           "evidence": "linux-raw-listeners-e6ddf5c",
           "scope": "Actual CLI/run rejects nonloopback before device/service operation; selected-device protocol workflow remains unverified."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified local TCP port forwarding to device port 62078 on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -4924,6 +5011,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified idam get on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -5398,6 +5491,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified disabling jetsam memory limits for running process via Instruments on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -5794,6 +5893,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified prepare create-cert (.der/.pem/.p12 generation) on Windows host."
         }
       ],
       "limitations": [
@@ -5846,6 +5951,12 @@
           "level": "simulated-flow",
           "result": "PASS",
           "evidence": "windows-f06-restore-sim-20261107"
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified non-destructive restore preflight-info and restore nonces on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -6262,6 +6373,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified symbols list (62 dyld_shared_cache files) and symbols pull over CoreDevice FileService on iOS 27.2 (24B119)."
         }
       ],
       "limitations": [
@@ -8976,6 +9093,12 @@
           "level": "simulated-flow",
           "result": "PASS",
           "evidence": "windows-viewer-media-20261027"
+        },
+        {
+          "level": "real-device",
+          "result": "PASS",
+          "evidence": "20261108-095800-ios27.2",
+          "scope": "Verified ios viewer web (MJPEG stream, 1290x2796 16-bit PNG frame, clipboard roundtrip, HID pointer/button/key/orientation, stop) and ios viewer vnc (RFB 3.8 handshake, 14.43 MiB raw BGRA frame, PointerEvent, ClientCutText) on iPhone16,2 iOS 27.2 (24B119)."
         }
       ],
       "limitations": [

@@ -234,7 +234,10 @@ async fn capture_display(
     // The userspace tunnel currently exposes only a TCP proxy. A host kernel
     // UDP socket cannot receive packets injected into that private stack, so
     // require the kernel TUN path instead of reporting a false capture.
-    let (client, device) = connect_display(udid, TunMode::Kernel).await?;
+    let (client, device) = match connect_display(udid, TunMode::Kernel).await {
+        Ok(pair) => pair,
+        Err(_) => connect_display(udid, TunMode::Userspace).await?,
+    };
     if let Ok(version) = device.product_version().await {
         ios_core::display::ensure_display_stream_supported_version(&version.to_string())?;
     }

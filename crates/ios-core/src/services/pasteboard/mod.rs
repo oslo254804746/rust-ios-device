@@ -759,6 +759,9 @@ fn parse_payload(
     if let Some(error) = dict.get("error") {
         return Ok(PasteboardPayload::Error(format_scalar_bounded(error)));
     }
+    if dict.is_empty() {
+        return Ok(PasteboardPayload::Promised { size: None });
+    }
     let is_promised = dict
         .get("isPromised")
         .map(|value| {
@@ -2582,9 +2585,29 @@ mod tests {
 
     #[test]
     fn snapshot_parser_rejects_malformed_promises_and_enforces_budgets() {
-        let malformed = snapshot_body(vec![snapshot_item(
+        let empty_promise = snapshot_body(vec![snapshot_item(
             &["public.data"],
             IndexMap::from([("public.data".into(), XpcValue::Dictionary(IndexMap::new()))]),
+        )]);
+        let parsed_empty = PasteboardSnapshot::from_xpc(&empty_promise).unwrap();
+        assert_eq!(
+            parsed_empty.promised_items(),
+            vec![PromisedItem {
+                item_index: 0,
+                uti: "public.data".into(),
+                size: None,
+            }]
+        );
+
+        let malformed = snapshot_body(vec![snapshot_item(
+            &["public.data"],
+            IndexMap::from([(
+                "public.data".into(),
+                XpcValue::Dictionary(IndexMap::from([(
+                    "unexpected".into(),
+                    XpcValue::Bool(true),
+                )])),
+            )]),
         )]);
         assert!(matches!(
             PasteboardSnapshot::from_xpc(&malformed),

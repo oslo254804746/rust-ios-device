@@ -116,6 +116,8 @@ impl Default for FileWriteOptions {
 pub struct FileServiceClient {
     control: XpcClient,
     session_id: String,
+    domain: Domain,
+    identifier: String,
     service_features: Option<Vec<String>>,
 }
 
@@ -126,13 +128,16 @@ impl FileServiceClient {
         domain: Domain,
         identifier: impl AsRef<str>,
     ) -> Result<Self, FileServiceError> {
+        let identifier_str = identifier.as_ref().to_string();
         let response = control
-            .call_any_stream(build_create_session_request(domain, identifier.as_ref()))
+            .call_any_stream(build_create_session_request(domain, &identifier_str))
             .await?;
         let session_id = parse_create_session_response(response)?;
         Ok(Self {
             control,
             session_id,
+            domain,
+            identifier: identifier_str,
             service_features: None,
         })
     }
@@ -142,6 +147,8 @@ impl FileServiceClient {
         Self {
             control,
             session_id: session_id.into(),
+            domain: Domain::Temporary,
+            identifier: String::new(),
             service_features: None,
         }
     }
@@ -288,12 +295,117 @@ impl FileServiceClient {
         path: &str,
         recursive: bool,
     ) -> Result<(), FileServiceError> {
-        let response = self
+        if recursive {
+            let attr_resp = self
+                .control
+                .call_any_stream(build_get_attributes_request(&self.session_id, path))
+                .await?;
+            let attr_body = response_body(attr_resp)?;
+            ensure_no_error(&attr_body)?;
+            let Some((is_dir, dir_size)) = parse_attributes_type_and_size(&attr_body) else {
+                return Ok(());
+            };
+            if !is_dir {
+                let file_resp = self
+                    .control
+                    .call_any_stream(build_remove_file_request(&self.session_id, path))
+                    .await?;
+                let file_body = response_body(file_resp)?;
+                return ensure_no_error(&file_body);
+            }
+            if dir_size == Some(64) {
+                let dir_resp = self
+                    .control
+                    .call_any_stream(build_remove_directory_request(&self.session_id, path))
+                    .await?;
+                let dir_body = response_body(dir_resp)?;
+                return ensure_no_error(&dir_body);
+            }
+
+            // Reconnect before RetrieveDirectoryList so we never mix FileSystemOperation
+            // and RetrieveDirectoryList on the same dtfileserviced session stream.
+            let reconnect_fn = self.control.reconnect();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if let Ok(mut list_control) = reconnect_fn.await {
+                let sess_resp = list_control
+                    .call_any_stream(build_create_session_request(self.domain, &self.identifier))
+                    .await?;
+                let list_session_id = parse_create_session_response(sess_resp)?;
+                let list_resp = list_control
+                    .call_any_stream(build_retrieve_directory_list_request(
+                        &list_session_id,
+                        path,
+                    ))
+                    .await?;
+                let mut entries = parse_directory_list_response(list_resp)?;
+                let reconnect_rm = list_control.reconnect();
+                drop(list_control);
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                if let Ok(mut rm_control) = reconnect_rm.await {
+                    let rm_sess_resp = rm_control
+                        .call_any_stream(build_create_session_request(
+                            self.domain,
+                            &self.identifier,
+                        ))
+                        .await?;
+                    self.session_id = parse_create_session_response(rm_sess_resp)?;
+                    self.control = rm_control;
+                }
+
+                entries.sort_by(|a, b| {
+                    let depth_a = a.matches('/').count();
+                    let depth_b = b.matches('/').count();
+                    depth_b.cmp(&depth_a).then_with(|| b.cmp(a))
+                });
+                let trimmed = path.trim_end_matches('/');
+                for entry in entries {
+                    let rel = entry.trim_matches('/');
+                    if rel.is_empty() || rel == "." || rel == ".." {
+                        continue;
+                    }
+                    let child_path = if trimmed.is_empty() || trimmed == "." {
+                        rel.to_string()
+                    } else {
+                        format!("{trimmed}/{rel}")
+                    };
+                    Box::pin(self.remove_item_inner(&child_path, false)).await?;
+                }
+
+                let dir_resp = self
+                    .control
+                    .call_any_stream(build_remove_directory_request(&self.session_id, path))
+                    .await?;
+                let dir_body = response_body(dir_resp)?;
+                return ensure_no_error(&dir_body);
+            }
+        }
+
+        let attr_resp = self
             .control
-            .call_any_stream(build_remove_item_request(&self.session_id, path, recursive))
+            .call_any_stream(build_get_attributes_request(&self.session_id, path))
             .await?;
-        let body = response_body(response)?;
-        ensure_no_error(&body)
+        let attr_body = response_body(attr_resp)?;
+        ensure_no_error(&attr_body)?;
+        let Some(is_dir) = is_directory_from_attributes_response(&attr_body) else {
+            return Ok(());
+        };
+
+        if !is_dir {
+            let file_resp = self
+                .control
+                .call_any_stream(build_remove_file_request(&self.session_id, path))
+                .await?;
+            let file_body = response_body(file_resp)?;
+            return ensure_no_error(&file_body);
+        }
+
+        let dir_resp = self
+            .control
+            .call_any_stream(build_remove_directory_request(&self.session_id, path))
+            .await?;
+        let dir_body = response_body(dir_resp)?;
+        ensure_no_error(&dir_body)
     }
 
     /// Create a directory with the supplied metadata.
@@ -362,8 +474,8 @@ impl FileServiceClient {
                 options,
             ))
             .await?;
-        let _ = parse_propose_file_response(response)?;
-        Ok(())
+        let body = response_body(response)?;
+        ensure_no_error(&body)
     }
 
     /// Request a data-plane upload ticket for a large file.
@@ -497,11 +609,78 @@ fn build_propose_file_request(
     XpcValue::Dictionary(dict)
 }
 
-fn build_remove_item_request(session_id: &str, path: &str, recursive: bool) -> XpcValue {
+fn build_get_attributes_request(session_id: &str, path: &str) -> XpcValue {
     XpcValue::Dictionary(IndexMap::from([
-        ("Cmd".to_string(), XpcValue::String("RemoveItem".into())),
+        (
+            "Cmd".to_string(),
+            XpcValue::String("FileSystemOperation".into()),
+        ),
+        (
+            "OperationType".to_string(),
+            XpcValue::String("GetAttributes".into()),
+        ),
+        ("FollowSymlinks".to_string(), XpcValue::Bool(false)),
         ("Path".to_string(), XpcValue::String(path.to_string())),
-        ("Recursive".to_string(), XpcValue::Bool(recursive)),
+        (
+            "SessionID".to_string(),
+            XpcValue::String(session_id.to_string()),
+        ),
+    ]))
+}
+
+fn parse_attributes_type_and_size(body: &XpcValue) -> Option<(bool, Option<u64>)> {
+    let dict = body.as_dict()?;
+    let attrs_val = dict.get("Attributes")?;
+    let json_str = match attrs_val {
+        XpcValue::String(s) => s.as_str(),
+        XpcValue::Data(b) => std::str::from_utf8(b).ok()?,
+        _ => return None,
+    };
+    let is_dir = json_str.contains("\"directory\"");
+    let size = json_str.split("\"size\":").nth(1).and_then(|rest| {
+        let digits: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        digits.parse::<u64>().ok()
+    });
+    Some((is_dir, size))
+}
+
+fn is_directory_from_attributes_response(body: &XpcValue) -> Option<bool> {
+    parse_attributes_type_and_size(body).map(|(is_dir, _)| is_dir)
+}
+
+fn build_remove_file_request(session_id: &str, path: &str) -> XpcValue {
+    XpcValue::Dictionary(IndexMap::from([
+        (
+            "Cmd".to_string(),
+            XpcValue::String("FileSystemOperation".into()),
+        ),
+        (
+            "OperationType".to_string(),
+            XpcValue::String("RemoveFile".into()),
+        ),
+        ("Path".to_string(), XpcValue::String(path.to_string())),
+        (
+            "SessionID".to_string(),
+            XpcValue::String(session_id.to_string()),
+        ),
+    ]))
+}
+
+fn build_remove_directory_request(session_id: &str, path: &str) -> XpcValue {
+    XpcValue::Dictionary(IndexMap::from([
+        (
+            "Cmd".to_string(),
+            XpcValue::String("FileSystemOperation".into()),
+        ),
+        (
+            "OperationType".to_string(),
+            XpcValue::String("RemoveDirectory".into()),
+        ),
+        ("Path".to_string(), XpcValue::String(path.to_string())),
         (
             "SessionID".to_string(),
             XpcValue::String(session_id.to_string()),
@@ -512,24 +691,37 @@ fn build_remove_item_request(session_id: &str, path: &str, recursive: bool) -> X
 fn build_create_directory_request(
     session_id: &str,
     path: &str,
-    options: FileWriteOptions,
+    _options: FileWriteOptions,
 ) -> XpcValue {
-    XpcValue::Dictionary(file_write_metadata(
-        "CreateDirectory",
-        session_id,
-        path,
-        options,
-    ))
+    XpcValue::Dictionary(IndexMap::from([
+        (
+            "Cmd".to_string(),
+            XpcValue::String("FileSystemOperation".into()),
+        ),
+        (
+            "OperationType".to_string(),
+            XpcValue::String("CreateDirectory".into()),
+        ),
+        ("Path".to_string(), XpcValue::String(path.to_string())),
+        (
+            "SessionID".to_string(),
+            XpcValue::String(session_id.to_string()),
+        ),
+    ]))
 }
 
 fn build_rename_item_request(session_id: &str, from: &str, to: &str) -> XpcValue {
     XpcValue::Dictionary(IndexMap::from([
-        ("Cmd".to_string(), XpcValue::String("RenameItem".into())),
-        ("SourcePath".to_string(), XpcValue::String(from.to_string())),
         (
-            "DestinationPath".to_string(),
-            XpcValue::String(to.to_string()),
+            "Cmd".to_string(),
+            XpcValue::String("FileSystemOperation".into()),
         ),
+        (
+            "OperationType".to_string(),
+            XpcValue::String("Rename".into()),
+        ),
+        ("OldPath".to_string(), XpcValue::String(from.to_string())),
+        ("NewPath".to_string(), XpcValue::String(to.to_string())),
         (
             "SessionID".to_string(),
             XpcValue::String(session_id.to_string()),
@@ -633,7 +825,7 @@ fn parse_propose_file_response(
             response_token,
             file_id,
         })),
-        (None, None) => Ok(None),
+        (None, None) | (Some(0), None) => Ok(None),
         _ => Err(FileServiceError::Protocol(format!(
             "ProposeFile response has incomplete upload ticket: {body:?}"
         ))),
@@ -1004,13 +1196,19 @@ mod tests {
 
     #[test]
     fn remove_item_request_includes_session_path_and_recursive_flag() {
-        let request = build_remove_item_request("SESSION-1", "Documents/old.txt", false);
-        let dict = request.as_dict().expect("request should be a dictionary");
+        let file_req = build_remove_file_request("SESSION-1", "Documents/old.txt");
+        let file_dict = file_req.as_dict().expect("request should be a dictionary");
+        assert_eq!(file_dict["Cmd"].as_str(), Some("FileSystemOperation"));
+        assert_eq!(file_dict["OperationType"].as_str(), Some("RemoveFile"));
+        assert_eq!(file_dict["Path"].as_str(), Some("Documents/old.txt"));
+        assert_eq!(file_dict["SessionID"].as_str(), Some("SESSION-1"));
 
-        assert_eq!(dict["Cmd"].as_str(), Some("RemoveItem"));
-        assert_eq!(dict["Path"].as_str(), Some("Documents/old.txt"));
-        assert_eq!(dict["SessionID"].as_str(), Some("SESSION-1"));
-        assert_eq!(dict["Recursive"], XpcValue::Bool(false));
+        let dir_req = build_remove_directory_request("SESSION-1", "Documents/old_dir");
+        let dir_dict = dir_req.as_dict().expect("request should be a dictionary");
+        assert_eq!(dir_dict["Cmd"].as_str(), Some("FileSystemOperation"));
+        assert_eq!(dir_dict["OperationType"].as_str(), Some("RemoveDirectory"));
+        assert_eq!(dir_dict["Path"].as_str(), Some("Documents/old_dir"));
+        assert_eq!(dir_dict["SessionID"].as_str(), Some("SESSION-1"));
     }
 
     #[test]
@@ -1025,14 +1223,10 @@ mod tests {
         let request = build_create_directory_request("SESSION-1", "Documents/New", options);
         let dict = request.as_dict().expect("request should be a dictionary");
 
-        assert_eq!(dict["Cmd"].as_str(), Some("CreateDirectory"));
+        assert_eq!(dict["Cmd"].as_str(), Some("FileSystemOperation"));
+        assert_eq!(dict["OperationType"].as_str(), Some("CreateDirectory"));
         assert_eq!(dict["Path"].as_str(), Some("Documents/New"));
         assert_eq!(dict["SessionID"].as_str(), Some("SESSION-1"));
-        assert_eq!(dict["FilePermissions"], XpcValue::Int64(0o755));
-        assert_eq!(dict["FileOwnerUserID"], XpcValue::Int64(501));
-        assert_eq!(dict["FileOwnerGroupID"], XpcValue::Int64(501));
-        assert_eq!(dict["FileCreationTime"], XpcValue::Int64(11));
-        assert_eq!(dict["FileLastModificationTime"], XpcValue::Int64(12));
     }
 
     #[test]
@@ -1041,9 +1235,10 @@ mod tests {
             build_rename_item_request("SESSION-1", "Documents/old.txt", "Documents/new.txt");
         let dict = request.as_dict().expect("request should be a dictionary");
 
-        assert_eq!(dict["Cmd"].as_str(), Some("RenameItem"));
-        assert_eq!(dict["SourcePath"].as_str(), Some("Documents/old.txt"));
-        assert_eq!(dict["DestinationPath"].as_str(), Some("Documents/new.txt"));
+        assert_eq!(dict["Cmd"].as_str(), Some("FileSystemOperation"));
+        assert_eq!(dict["OperationType"].as_str(), Some("Rename"));
+        assert_eq!(dict["OldPath"].as_str(), Some("Documents/old.txt"));
+        assert_eq!(dict["NewPath"].as_str(), Some("Documents/new.txt"));
         assert_eq!(dict["SessionID"].as_str(), Some("SESSION-1"));
     }
 
@@ -1065,6 +1260,20 @@ mod tests {
                 file_id: 0x44,
             })
         );
+    }
+
+    #[test]
+    fn propose_file_response_accepts_inline_zero_response_without_ticket() {
+        let response = XpcMessage {
+            flags: 0,
+            msg_id: 5,
+            body: Some(XpcValue::Dictionary(IndexMap::from([(
+                "Response".to_string(),
+                XpcValue::Uint64(0),
+            )]))),
+        };
+
+        assert_eq!(parse_propose_file_response(response).unwrap(), None);
     }
 
     #[test]

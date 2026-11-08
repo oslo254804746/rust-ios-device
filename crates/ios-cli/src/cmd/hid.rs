@@ -5,9 +5,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use ios_core::display::{DisplayServiceClient, MediaStreamOptions, MediaStreamSession};
 use ios_core::hid::{
-    ButtonState, IndigoHidServiceClient, KeyboardUsage, TouchCoordinate, TouchPhase,
-    UniversalHidServiceClient, DEFAULT_KEYBOARD_SERVICE_ID, DEFAULT_TOUCHSCREEN_SERVICE_ID,
-    MAX_TEXT_LENGTH, MAX_TOUCH_REPORTS, TOUCH_SURFACE_AUTH_SETTLE,
+    ButtonState, IndigoHidServiceClient, KeyboardUsage, MultiTouchPoint, TouchCoordinate,
+    TouchPhase, UniversalHidServiceClient, DEFAULT_KEYBOARD_SERVICE_ID,
+    DEFAULT_TOUCHSCREEN_SERVICE_ID, MAX_TEXT_LENGTH, MAX_TOUCH_CONTACTS, MAX_TOUCH_REPORTS,
+    TOUCH_SURFACE_AUTH_SETTLE,
 };
 use ios_core::{connect, ConnectOptions, TunMode};
 
@@ -94,6 +95,16 @@ enum HidSub {
         #[arg(value_name = "TEXT", value_parser = validate_text)]
         text: String,
         #[arg(long, default_value_t = DEFAULT_KEYBOARD_SERVICE_ID)]
+        service_id: u64,
+    },
+    /// Send a multi-contact touch tap (up to 5 contacts, e.g. --points 0:0.2:0.5,1:0.3:0.5).
+    /// Send a multi-contact touch tap (up to 5 contacts, e.g. --points 0:0.2:0.5,1:0.3:0.5).
+    Multitouch {
+        #[arg(long, value_delimiter = ',', required = true)]
+        points: Vec<String>,
+        #[arg(long, default_value_t = 60)]
+        hold_ms: u64,
+        #[arg(long, default_value_t = DEFAULT_TOUCHSCREEN_SERVICE_ID)]
         service_id: u64,
     },
     /// Register a virtual keyboard and press/release one HID usage.
@@ -260,6 +271,39 @@ impl HidCmd {
                 )?;
                 print_result(json_output, "text", length, true)?;
             }
+            HidSub::Multitouch {
+                points,
+                hold_ms,
+                service_id,
+            } => {
+                let coords = parse_multitouch_points(&points)?;
+                let (mut client, media, _device) = connect_universal_with_media(&udid).await?;
+                let mut session = client.touch_session_with_media(service_id, media);
+                let down = coords
+                    .iter()
+                    .map(|&(id, coord)| MultiTouchPoint::new(id, TouchPhase::Down, coord))
+                    .collect::<Vec<_>>();
+                let up = coords
+                    .iter()
+                    .map(|&(id, coord)| MultiTouchPoint::new(id, TouchPhase::Up, coord))
+                    .collect::<Vec<_>>();
+                let operation = async {
+                    session.send_multitouch(&down).await?;
+                    if hold_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(hold_ms)).await;
+                    }
+                    session.send_multitouch(&up).await?;
+                    Ok::<(), ios_core::hid::HidError>(())
+                }
+                .await;
+                let close_result = session.close(Duration::from_secs(5)).await;
+                crate::cmd::test_workflow::combine_results(
+                    operation.map(|_| ()).map_err(anyhow::Error::new),
+                    close_result.map_err(anyhow::Error::new),
+                    "HID report/media cleanup failed",
+                )?;
+                print_result(json_output, "multitouch", 2, false)?;
+            }
             HidSub::Key {
                 usage,
                 shift,
@@ -295,6 +339,37 @@ impl HidCmd {
     }
 }
 
+fn parse_multitouch_points(points: &[String]) -> Result<Vec<(u8, TouchCoordinate)>> {
+    if points.is_empty() || points.len() > MAX_TOUCH_CONTACTS {
+        anyhow::bail!(
+            "--points must specify 1..={MAX_TOUCH_CONTACTS} contacts, got {}",
+            points.len()
+        );
+    }
+    let mut parsed = Vec::with_capacity(points.len());
+    for (idx, item) in points.iter().enumerate() {
+        let parts: Vec<&str> = item.split(':').collect();
+        let (identity, x_str, y_str) = match parts.as_slice() {
+            [x, y] => (idx as u8, *x, *y),
+            [id, x, y] => (
+                id.parse::<u8>()
+                    .with_context(|| format!("invalid contact identity in '{item}'"))?,
+                *x,
+                *y,
+            ),
+            _ => anyhow::bail!("invalid point '{item}'; expected x:y or id:x:y"),
+        };
+        let x = x_str
+            .parse::<f64>()
+            .with_context(|| format!("invalid x coordinate in '{item}'"))?;
+        let y = y_str
+            .parse::<f64>()
+            .with_context(|| format!("invalid y coordinate in '{item}'"))?;
+        parsed.push((identity, TouchCoordinate::new(x, y)?));
+    }
+    Ok(parsed)
+}
+
 fn validate_contact_id(contact_id: u32) -> Result<()> {
     if contact_id != 0 {
         anyhow::bail!(
@@ -317,7 +392,10 @@ async fn connect_universal_with_media(
     // Universal HID's authorization side channel is RTP/UDP. The userspace
     // tunnel only exposes a TCP proxy, so use the kernel tunnel where the
     // advertised CDTunnel client address is an actual host interface.
-    let device = connect_device_with_mode(udid, TunMode::Kernel).await?;
+    let device = match connect_device_with_mode(udid, TunMode::Kernel).await {
+        Ok(dev) => dev,
+        Err(_) => connect_device_with_mode(udid, TunMode::Userspace).await?,
+    };
     let sender_ip = device
         .server_address()
         .ok_or_else(|| anyhow::anyhow!("tunnel did not provide a device server address"))?

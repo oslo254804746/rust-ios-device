@@ -406,6 +406,26 @@ fn daemon_failures_and_missing_status_are_not_success() {
     assert!(unwrap_response("install", response(IndexMap::new())).is_err());
     assert!(unwrap_response(
         "install",
+        response(IndexMap::from([(
+            "argv".to_string(),
+            XpcValue::Dictionary(IndexMap::from([(
+                "remote-cryptex".to_string(),
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "remote-cryptex-identifier".to_string(),
+                        XpcValue::String(DDI_IDENTIFIER.into()),
+                    ),
+                    (
+                        "remote-cryptex-version".to_string(),
+                        XpcValue::String("27.1.5228.8".into()),
+                    ),
+                ])),
+            )])),
+        )]))
+    )
+    .is_ok());
+    assert!(unwrap_response(
+        "install",
         response(IndexMap::from([("error".to_string(), XpcValue::Int64(2))]))
     )
     .is_err());

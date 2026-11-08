@@ -69,13 +69,20 @@ impl DeviceInput {
         if self.universal.is_some() {
             return Ok(());
         }
-        let device = self
+        let device = match self
             .native
             .connect(&self.udid, ios_core::TunMode::Kernel)
             .await
-            .context(
-                "viewer HID requires a kernel tunnel for the UDP authorization side channel",
-            )?;
+        {
+            Ok(device) => device,
+            Err(kernel_err) => self
+                .native
+                .connect(&self.udid, ios_core::TunMode::Userspace)
+                .await
+                .with_context(|| {
+                    format!("viewer HID tunnel setup failed (kernel error: {kernel_err:#})")
+                })?,
+        };
         let sender_ip = device
             .server_address()
             .context("missing tunnel device address")?
@@ -103,7 +110,7 @@ impl DeviceInput {
             .await?,
         );
         self.media.as_mut().expect("media installed").spawn_drain();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let (xpc, metadata) = self
             .device
             .as_ref()
@@ -172,7 +179,7 @@ impl DeviceInput {
     }
 
     async fn read_clipboard_once(&mut self) -> Result<Option<ClipboardPayload>> {
-        let snapshot = self
+        let snapshot = match self
             .pasteboard()
             .await?
             .get_snapshot(
@@ -181,7 +188,22 @@ impl DeviceInput {
                     crate::cmd::viewer::clipboard::MAX_IMAGE_BYTES as i64,
                 ),
             )
-            .await?;
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                self.pasteboard = None;
+                self.pasteboard_device = None;
+                let _ = self.native.collect(CLEANUP_TIMEOUT).await;
+                self.pasteboard()
+                    .await?
+                    .get_snapshot(
+                        ios_core::pasteboard::GENERAL_PASTEBOARD,
+                        DataInclusionPolicy::MatchSource,
+                    )
+                    .await?
+            }
+        };
         let value = if let Some(text) = snapshot.text() {
             Some(ClipboardPayload::Text(text))
         } else if let Some(png) = snapshot.data_for_uti(crate::cmd::viewer::clipboard::UTI_PNG) {

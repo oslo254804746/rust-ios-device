@@ -250,6 +250,9 @@ where
         let mut pkt = OwnedBuffer::zeroed(packet_len, byte_bank.as_ref())?;
         pkt[..IPV6_HEADER_LEN].copy_from_slice(&hdr);
         reader.read_exact(&mut pkt[IPV6_HEADER_LEN..]).await?;
+        if byte_bank.is_none() {
+            forward_userspace_udp(&pkt);
+        }
         if tx.send(pkt).await.is_err() {
             break;
         }
@@ -323,6 +326,28 @@ fn capture_write_error(original: std::io::Error, storage: Option<&RuntimeStorage
 #[cfg(test)]
 pub(super) fn egress_bytes() -> usize {
     mpsc::required_bytes::<WriteItem>(IOS_PACKET_CHANNEL_CAPACITY) + Barrier::body_bytes()
+}
+
+fn forward_userspace_udp(pkt: &[u8]) {
+    if pkt.len() < IPV6_HEADER_LEN + 8 || (pkt[0] >> 4) != 6 || pkt[6] != 17 {
+        return;
+    }
+    let dst_port = u16::from_be_bytes([pkt[42], pkt[43]]);
+    let udp_len = u16::from_be_bytes([pkt[44], pkt[45]]) as usize;
+    if dst_port == 0 || udp_len < 8 || IPV6_HEADER_LEN + udp_len > pkt.len() {
+        return;
+    }
+    static UDP_FORWARDER: std::sync::OnceLock<Option<std::net::UdpSocket>> =
+        std::sync::OnceLock::new();
+    let Some(sock) = UDP_FORWARDER.get_or_init(|| {
+        let sock = std::net::UdpSocket::bind((std::net::Ipv6Addr::LOCALHOST, 0)).ok()?;
+        let _ = sock.set_nonblocking(true);
+        Some(sock)
+    }) else {
+        return;
+    };
+    let target = std::net::SocketAddrV6::new(std::net::Ipv6Addr::LOCALHOST, dst_port, 0, 0);
+    let _ = sock.send_to(&pkt[IPV6_HEADER_LEN + 8..IPV6_HEADER_LEN + udp_len], target);
 }
 
 #[cfg(test)]

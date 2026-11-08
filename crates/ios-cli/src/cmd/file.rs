@@ -127,6 +127,48 @@ enum FileSub {
     DeviceInfo,
     /// Show file/directory info
     Stat { path: String },
+    /// Show AFC connection info attributes (GetConnectionInfo)
+    ConnectionInfo,
+    /// Compute SHA-1 file hash or byte-range hash on the device (GetFileHash / GetFileHashWithRange)
+    Hash {
+        path: String,
+        #[arg(long)]
+        offset: Option<u64>,
+        #[arg(long)]
+        length: Option<u64>,
+    },
+    /// Positional read at an explicit offset (FileRefReadWithOffset / pread + FileRefTell)
+    Pread {
+        path: String,
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        #[arg(long)]
+        length: u64,
+    },
+    /// Positional write at an explicit offset (FileRefWriteWithOffset / pwrite + FileRefTell)
+    Pwrite {
+        path: String,
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        #[arg(long)]
+        data: String,
+    },
+    /// Truncate or extend a file (TruncateFile or FileRefSetFileSize with --by-fd)
+    Truncate {
+        path: String,
+        #[arg(long)]
+        size: u64,
+        #[arg(long)]
+        by_fd: bool,
+    },
+    /// Set file modification time in nanoseconds since epoch (SetFileTime)
+    SetTime {
+        path: String,
+        #[arg(long)]
+        mtime_ns: u64,
+    },
+    /// Compute recursive size and block count of directory contents (GetSizeOfPathContents)
+    DirSize { path: String },
     /// Show a recursive tree view
     Tree {
         #[arg(default_value = "/")]
@@ -349,6 +391,113 @@ impl FileCmd {
                         }
                     }
                 }
+                FileSub::ConnectionInfo => {
+                    let info = afc.get_connection_info().await?;
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&info)?);
+                }
+                FileSub::Hash {
+                    path,
+                    offset,
+                    length,
+                } => {
+                    let digest = match (offset, length) {
+                        (Some(start), Some(len)) => {
+                            afc.get_file_hash_with_range(&path, start, len).await?
+                        }
+                        (None, None) => afc.get_file_hash(&path).await?,
+                        _ => anyhow::bail!("--offset and --length must be provided together"),
+                    };
+                    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "offset": offset,
+                            "length": length,
+                            "sha1": hex,
+                            "bytes": digest.len(),
+                        }))?
+                    );
+                }
+                FileSub::Pread {
+                    path,
+                    offset,
+                    length,
+                } => {
+                    let fd = afc.open_file(&path, 1).await?;
+                    let data = afc.pread(fd, length, offset).await;
+                    let tell = afc.file_tell(fd).await;
+                    let close = afc.close_file(fd).await;
+                    let data = data?;
+                    let tell = tell?;
+                    close?;
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "offset": offset,
+                            "requested": length,
+                            "read_bytes": data.len(),
+                            "utf8": String::from_utf8_lossy(&data),
+                            "file_tell": tell,
+                        }))?
+                    );
+                }
+                FileSub::Pwrite { path, offset, data } => {
+                    let fd = afc.open_file(&path, 2).await?;
+                    let write_res = afc.pwrite(fd, data.as_bytes(), offset).await;
+                    let tell = afc.file_tell(fd).await;
+                    let close = afc.close_file(fd).await;
+                    write_res?;
+                    let tell = tell?;
+                    close?;
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "offset": offset,
+                            "written_bytes": data.len(),
+                            "file_tell": tell,
+                        }))?
+                    );
+                }
+                FileSub::Truncate { path, size, by_fd } => {
+                    if by_fd {
+                        let fd = afc.open_file(&path, 2).await?;
+                        let res = afc.file_set_size(fd, size).await;
+                        let close = afc.close_file(fd).await;
+                        res?;
+                        close?;
+                    } else {
+                        afc.truncate_path(&path, size).await?;
+                    }
+                    let st = afc.stat_info(&path).await?;
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "requested_size": size,
+                            "by_fd": by_fd,
+                            "actual_size": st.size,
+                        }))?
+                    );
+                }
+                FileSub::SetTime { path, mtime_ns } => {
+                    afc.set_file_time(&path, mtime_ns).await?;
+                    let st = afc.stat_info(&path).await?;
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "requested_mtime_ns": mtime_ns,
+                            "st_mtime": st.raw.get("st_mtime"),
+                        }))?
+                    );
+                }
+                FileSub::DirSize { path } => {
+                    let counts = afc.get_size_of_path_contents(&path).await?;
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&counts)?);
+                }
                 FileSub::Tree { path } => {
                     let tree = build_file_tree(&mut afc, &path).await?;
                     if json_output {
@@ -398,7 +547,15 @@ impl FileCmd {
             ensure_coredevice_fileservice_subcommand_supported(device.rsd(), &sub)?;
             let mut fileservice =
                 open_coredevice_file_session(&device, domain, &identifier).await?;
-            run_coredevice_subcommand(&device, &mut fileservice, sub, json_output).await?;
+            let result =
+                run_coredevice_subcommand(&device, &mut fileservice, sub, json_output).await;
+            drop(fileservice);
+            // Allow the userspace TCP stack to transmit the TCP FIN for the XPC session
+            // before tearing down the ephemeral userspace tunnel; otherwise dtfileserviced
+            // keeps the orphaned session open and blocks subsequent sessions.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(device);
+            result?;
 
             Ok(())
         })
@@ -660,7 +817,16 @@ fn ensure_coredevice_fileservice_subcommand_supported(
         FileSub::Rm { .. } | FileSub::Mkdir { .. } | FileSub::Mv { .. } => {
             Some(ios_core::fileservice::FEATURE_FILE_SYSTEM_OPERATION)
         }
-        FileSub::DeviceInfo | FileSub::Stat { .. } | FileSub::Tree { .. } => None,
+        FileSub::DeviceInfo
+        | FileSub::Stat { .. }
+        | FileSub::Tree { .. }
+        | FileSub::ConnectionInfo
+        | FileSub::Hash { .. }
+        | FileSub::Pread { .. }
+        | FileSub::Pwrite { .. }
+        | FileSub::Truncate { .. }
+        | FileSub::SetTime { .. }
+        | FileSub::DirSize { .. } => None,
     };
     let Some(feature) = required_feature else {
         return Ok(());
@@ -802,11 +968,18 @@ fn run_coredevice_subcommand<'a>(
             ))?;
             Ok(())
         }),
-        FileSub::DeviceInfo | FileSub::Stat { .. } | FileSub::Tree { .. } => {
-            Box::pin(std::future::ready(Err(anyhow::anyhow!(
-                "CoreDevice fileservice currently supports ls, pull, push, rm, mkdir, and mv"
-            ))))
-        }
+        FileSub::DeviceInfo
+        | FileSub::Stat { .. }
+        | FileSub::Tree { .. }
+        | FileSub::ConnectionInfo
+        | FileSub::Hash { .. }
+        | FileSub::Pread { .. }
+        | FileSub::Pwrite { .. }
+        | FileSub::Truncate { .. }
+        | FileSub::SetTime { .. }
+        | FileSub::DirSize { .. } => Box::pin(std::future::ready(Err(anyhow::anyhow!(
+            "CoreDevice fileservice currently supports ls, pull, push, rm, mkdir, and mv"
+        )))),
     }
 }
 

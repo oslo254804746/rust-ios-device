@@ -43,6 +43,88 @@ impl DebugserverCmd {
 trait DebugStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> DebugStream for T {}
 
+const RSD_DEBUGPROXY_SERVICE: &str = "com.apple.internal.dt.remote.debugproxy";
+
+struct TunnelDebugStream {
+    stream: tokio::net::TcpStream,
+    _device: ios_core::ConnectedDevice,
+}
+
+impl AsyncRead for TunnelDebugStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for TunnelDebugStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
+async fn connect_rsd_debugproxy(udid: &str) -> Result<Box<dyn DebugStream>> {
+    use tokio::io::AsyncWriteExt;
+    let device = connect(
+        udid,
+        ConnectOptions {
+            tun_mode: TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: false,
+        },
+    )
+    .await?;
+    let rsd = device
+        .rsd()
+        .ok_or_else(|| anyhow::anyhow!("RSD directory unavailable for debugproxy"))?;
+    let port = rsd
+        .get_port(RSD_DEBUGPROXY_SERVICE)
+        .filter(|&p| p != 0)
+        .ok_or_else(|| anyhow::anyhow!("{} missing in RSD directory", RSD_DEBUGPROXY_SERVICE))?;
+    let host: std::net::Ipv6Addr = device
+        .server_address()
+        .ok_or_else(|| anyhow::anyhow!("missing userspace tunnel server address"))?
+        .parse()?;
+    let proxy_port = device
+        .userspace_port()
+        .ok_or_else(|| anyhow::anyhow!("userspace tunnel proxy unavailable"))?;
+    let mut stream =
+        tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, proxy_port)).await?;
+    stream.write_all(&host.octets()).await?;
+    stream.write_all(&u32::from(port).to_le_bytes()).await?;
+    stream.flush().await?;
+    tracing::info!(
+        "debugserver connected via RSD service={} port={}",
+        RSD_DEBUGPROXY_SERVICE,
+        port
+    );
+    Ok(Box::new(TunnelDebugStream {
+        stream,
+        _device: device,
+    }))
+}
+
 async fn wrap_debugserver_stream<S>(
     stream: S,
     pair_record: &PairRecord,
@@ -84,7 +166,18 @@ async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
     let (_session_id, mut tls_reader, mut tls_writer) =
         start_lockdown_session(lockdown_stream, &pair_record).await?;
     let (resolved_service_name, port, enable_ssl) =
-        start_debugserver_service(&mut tls_reader, &mut tls_writer, service_name).await?;
+        match start_debugserver_service(&mut tls_reader, &mut tls_writer, service_name).await {
+            Ok(resolved) => resolved,
+            Err(err)
+                if version.major >= 17
+                    && ios_core::classify_error(err.as_ref())
+                        == ios_core::ErrorClass::ServiceMissing =>
+            {
+                drop((tls_reader, tls_writer, device));
+                return connect_rsd_debugproxy(udid).await;
+            }
+            Err(err) => return Err(err),
+        };
 
     tracing::info!(
         "debugserver start_service service={} port={} enable_ssl={}",

@@ -30,6 +30,10 @@ pub struct PcapCmd {
         help = "Only capture packets whose process name starts with this prefix"
     )]
     process: Option<String>,
+
+    /// Only include packets matching an interface name (e.g. en0, pdp_ip0, en)
+    #[arg(short, long)]
+    interface: Option<String>,
     #[arg(long, help = "Output pcap path", default_value = "capture.pcap")]
     output: PathBuf,
     #[arg(
@@ -67,6 +71,9 @@ impl PcapCmd {
         };
         let mut written = 0usize;
         let mut capture_metadata = PcapSummaryCaptureMetadataBuilder::new(&filter);
+        if self.interface.is_some() && capture_metadata.filter_hit.is_none() {
+            capture_metadata.filter_hit = Some(false);
+        }
 
         loop {
             if let Some(limit) = self.count {
@@ -82,7 +89,12 @@ impl PcapCmd {
             let remaining = deadline.saturating_duration_since(now);
             match next_capture_packet(&mut client, remaining).await? {
                 Some(packet) => {
-                    if filter.matches(&packet) {
+                    if filter.matches(&packet)
+                        && self
+                            .interface
+                            .as_deref()
+                            .is_none_or(|iface| packet.matches_interface(iface))
+                    {
                         record.clear();
                         write_packet_record(&mut record, &packet)?;
                         file.write_all(&record).await?;

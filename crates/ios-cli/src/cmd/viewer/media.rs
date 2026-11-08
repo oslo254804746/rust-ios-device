@@ -15,7 +15,7 @@ use tokio::sync::watch;
 mod transport;
 
 pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
-pub const MAX_PIXEL_BYTES: usize = 12 * 1024 * 1024;
+pub const MAX_PIXEL_BYTES: usize = 16 * 1024 * 1024;
 // A full screenshot can exceed the video access-unit budget, even at native
 // phone dimensions. Bound its pixels and allow bounded PNG container overhead.
 pub const MAX_PNG_BYTES: usize = MAX_PIXEL_BYTES + 64 * 1024;
@@ -353,7 +353,7 @@ pub fn decode_png(data: Bytes, timestamp_ms: u64) -> Result<DecodedFrame> {
     ensure!(data.len() <= MAX_PNG_BYTES, "encoded frame exceeds budget");
     let mut decoder = png::Decoder::new(Cursor::new(data.clone()));
     decoder.set_limits(png::Limits {
-        bytes: MAX_PIXEL_BYTES,
+        bytes: MAX_PIXEL_BYTES * 2,
     });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder
