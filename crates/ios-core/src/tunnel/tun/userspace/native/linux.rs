@@ -1670,6 +1670,7 @@ struct LinkRow {
 }
 
 impl LinkRow {
+    #[allow(clippy::collapsible_match)]
     fn parse(bytes: &[u8], identity: Identity) -> Result<Option<Self>, Error> {
         if bytes.len() < 16 {
             return Err(codec::invalid("short link row").into());
@@ -1729,6 +1730,7 @@ struct AddressRow {
 }
 
 impl AddressRow {
+    #[allow(clippy::collapsible_match)]
     fn parse(bytes: &[u8]) -> io::Result<Option<Self>> {
         if bytes.len() < 8 {
             return Err(codec::invalid("short address row"));

@@ -1360,6 +1360,7 @@ impl RouteControl {
             pending: None,
         })
     }
+    #[allow(deprecated)]
     fn request(
         &self,
         kind: u8,

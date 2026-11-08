@@ -429,6 +429,7 @@ async fn lifecycle_tunnel_server_real_sigint_cancels_scan_and_exits_runtime() {
         // serve polls its one real signal before the scanner. Thus observing
         // source entry means Ctrl-C registration already happened.
         println!("SYNTHETIC_TUNNEL_SERVER_SIGNAL_READY");
+        use std::io::Write;
         std::io::stdout().flush().unwrap();
         owner.await.unwrap();
         assert_eq!(source.active.load(Ordering::SeqCst), 0);

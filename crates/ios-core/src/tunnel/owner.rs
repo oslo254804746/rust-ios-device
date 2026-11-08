@@ -156,6 +156,7 @@ impl LedgerState {
 
     // These hooks count actual retained join slots, including child groups once
     // integration registers them. Completion must call joined exactly once.
+    #[allow(deprecated)]
     pub(crate) fn registered(&self) {
         if self
             .pending
@@ -168,6 +169,7 @@ impl LedgerState {
         }
     }
 
+    #[allow(deprecated)]
     pub(crate) fn joined(&self) {
         if self
             .pending

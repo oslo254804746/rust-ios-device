@@ -434,7 +434,7 @@ async fn lifecycle_tunnel_success_cleanup_timely_prefix_survives_shared_total_ex
     let source = FakeSource::new();
     let state = bounded(
         source.clone(),
-        Duration::from_millis(80),
+        Duration::from_millis(400),
         Duration::from_secs(5),
     );
     let mut recover_input = state.prepare_cutover::<2>().unwrap();
@@ -445,9 +445,9 @@ async fn lifecycle_tunnel_success_cleanup_timely_prefix_survives_shared_total_ex
     let had_intents = a.is_some() && b.is_some();
     let weak = state.inner.downgrade();
     *state.inner.success_after_remove.lock().unwrap() = Some(Box::new(move || {
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
         *weak.upgrade().unwrap().success_after_remove.lock().unwrap() = Some(Box::new(|| {
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(300));
         }));
     }));
     let result = state

@@ -806,7 +806,7 @@ pub unsafe extern "C" fn ios_device_afc_read_file(
 pub unsafe extern "C" fn ios_free_bytes(data: *mut u8, len: usize) {
     ffi_void(|| {
         if !data.is_null() && len > 0 {
-            drop(Box::from_raw(std::slice::from_raw_parts_mut(data, len)));
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len)));
         }
     });
 }
@@ -829,7 +829,7 @@ pub unsafe extern "C" fn ios_free_bytes_checked(
         *data_in_out = std::ptr::null_mut();
         *len_in_out = 0;
         if !data.is_null() && len > 0 {
-            drop(Box::from_raw(std::slice::from_raw_parts_mut(data, len)));
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len)));
         }
         IOS_SUCCESS
     })

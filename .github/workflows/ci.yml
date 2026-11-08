@@ -2,10 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, dev]
     tags: ["v*"]
   pull_request:
-    branches: [master]
+    branches: [master, dev]
   workflow_dispatch:
 
 env:
@@ -100,13 +100,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.12"
       - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
       - uses: astral-sh/setup-uv@v5
       - uses: Swatinem/rust-cache@v2
-      - run: python scripts/validate.py python-host
-      - run: python scripts/validate.py python-package
+      - name: Install target Python runtime
+        shell: bash
+        run: |
+          uv python install ${{ matrix.python }}
+          echo "TARGET_PYTHON=$(uv python find ${{ matrix.python }})" >> "$GITHUB_ENV"
+      - run: python scripts/validate.py python-host --python "${{ env.TARGET_PYTHON }}"
+      - run: python scripts/validate.py python-package --python "${{ env.TARGET_PYTHON }}"
 
   # Candidate artifacts are also tested on PRs, before any publishing.
   native-artifacts:

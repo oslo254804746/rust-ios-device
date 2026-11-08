@@ -1665,6 +1665,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "hid")]
     #[tokio::test]
     async fn authorized_hid_close_requires_real_media_stop_reply() {
         for keyboard in [false, true] {

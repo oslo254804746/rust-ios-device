@@ -48,6 +48,7 @@ impl Admission {
     fn try_observer(self: &Arc<Self>) -> Option<JobPermit> {
         self.try_permit(true)
     }
+    #[allow(deprecated)]
     fn try_permit(self: &Arc<Self>, observer: bool) -> Option<JobPermit> {
         let counter = if observer {
             &self.observers

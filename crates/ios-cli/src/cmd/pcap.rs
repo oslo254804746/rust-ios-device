@@ -93,7 +93,7 @@ impl PcapCmd {
                         && self
                             .interface
                             .as_deref()
-                            .is_none_or(|iface| packet.matches_interface(iface))
+                            .map_or(true, |iface| packet.matches_interface(iface))
                     {
                         record.clear();
                         write_packet_record(&mut record, &packet)?;

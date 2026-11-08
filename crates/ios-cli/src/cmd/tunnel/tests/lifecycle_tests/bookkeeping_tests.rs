@@ -253,16 +253,16 @@ async fn lifecycle_tunnel_bookkeeping_timely_prefix_survives_later_row_rollback(
 #[tokio::test]
 async fn lifecycle_tunnel_bookkeeping_two_writes_share_one_absolute_deadline() {
     let source = FakeSource::new();
-    let state = bounded_state(source, Duration::from_millis(80));
+    let state = bounded_state(source, Duration::from_millis(400));
     let mut prepared_outer_0 = state.prepare_cutover::<2>().unwrap();
 
     let a = intent(&state, A).await;
     let b = intent(&state, B).await;
     let weak = state.inner.downgrade();
     *state.inner.failure_after_insert.lock().unwrap() = Some(Box::new(move || {
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
         *weak.upgrade().unwrap().failure_after_insert.lock().unwrap() =
-            Some(Box::new(|| std::thread::sleep(Duration::from_millis(50))));
+            Some(Box::new(|| std::thread::sleep(Duration::from_millis(300))));
     }));
     let error = state.flush_failure_intents(vec![a, b]).await.unwrap_err();
     let failed = state.inner.failed_attempts.read().await;
