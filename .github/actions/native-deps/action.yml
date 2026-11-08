@@ -11,8 +11,13 @@ runs:
     - if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        vcpkg install openssl:x64-windows-static-md
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
+          vcpkg install openssl:x64-windows-static-md
+          if ($LASTEXITCODE -eq 0) { break }
+          if ($attempt -eq 4) { exit $LASTEXITCODE }
+          Write-Host "vcpkg install attempt $attempt failed; retrying in 10s..."
+          Start-Sleep -Seconds 10
+        }
         "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
         "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
         "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append

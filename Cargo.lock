@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "ios-cli"
-version = "0.1.13"
+version = "0.1.16"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "ios-core"
-version = "0.1.13"
+version = "0.1.16"
 dependencies = [
  "aes",
  "aes-kw",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "ios-ffi"
-version = "0.1.13"
+version = "0.1.16"
 dependencies = [
  "ios-core",
  "plist",
@@ -1666,7 +1666,7 @@ dependencies = [
 
 [[package]]
 name = "ios-py"
-version = "0.1.13"
+version = "0.1.16"
 dependencies = [
  "ios-core",
  "pyo3",

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.13] — 2026-11-08
+## [0.1.16] — 2026-11-08
 
 ### Added
 
@@ -111,8 +111,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Made backup integration expectations compare canonical layout paths, so
-  macOS's `/var` alias does not turn a successful backup into a false failure.
 - Hardened lifecycle, cancellation, and deadline boundaries across Lockdown,
   RSD, HTTP/2 RemoteXPC, DTX, AFC, MobileBackup2, DeviceLink, NotificationProxy,
   Companion, SpringBoard (`--request-timeout-ms`), FPS capture, and WebInspector
@@ -130,6 +128,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opened a fresh RemoteXPC connection for each subsequent Display request,
   omitted `VRAE:0` from video negotiation so the device can adapt its encoder,
   and stopped display capture or accessibility visuals cleanly on Ctrl-C.
+
+## [0.1.15] — 2026-09-07
+
+### Added
+
+- Added kernel tunnel support to the Python and C FFI bindings alongside the
+  existing userspace tunnel backend.
+- Added deterministic coverage for XPC/RSD initialization deadlines,
+  cancellation recovery, fallback handshakes, and release artifact gates.
+
+### Changed
+
+- Bounded HTTP/2, RemoteXPC, and RSD proxy initialization with shared
+  deadlines, dropping partial sessions before fallback attempts.
+- Made interrupted RemoteXPC writes, reads, stream opens, and window updates
+  preserve framing state safely and reject poisoned connections.
+- Added `ios --version` output and expanded release CI artifact smoke checks.
+
+## [0.1.14] — 2026-09-04
+
+### Added
+
+- Added bounded RemoteXPC file-transfer side-channel handling and remote
+  symbol listing/download support for current iOS releases.
+
+### Fixed
+
+- Preserved unsigned sysmontap and DTX integer values instead of narrowing
+  device-provided 64-bit attributes.
+- Aligned filtered Backup2 status codes and modification-date encoding with
+  the iOS 15 DeviceLink wire format.
+- Hardened iOS 26 symbol side-channel and OS trace archive handling, including
+  bounded stream state and complete archive validation.
+- Kept the workspace checks compatible with the documented Rust 1.80 MSRV.
+
+## [0.1.13] — 2026-08-30
+
+### Fixed
+
+- Made backup integration expectations compare canonical layout paths, so
+  macOS's `/var` alias does not turn a successful backup into a false failure.
 
 ## [0.1.12] — 2026-08-30
 
@@ -343,7 +382,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.15...v0.1.16
+[0.1.15]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.14...v0.1.15
+[0.1.14]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.10...v0.1.11

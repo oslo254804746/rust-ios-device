@@ -25,7 +25,7 @@ you need:
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.13", features = ["classic"] }
+ios-core = { version = "0.1.16", features = ["classic"] }
 ```
 
 Minimal Rust examples and the public import paths are in the
