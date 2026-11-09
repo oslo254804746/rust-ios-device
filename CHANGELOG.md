@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17] — 2026-11-09
+
+### Fixed
+
+- **Legacy iOS < 17 Lockdown `debugserver` & `ios debug` support** (`ios-core`, `ios-cli`):
+  - Lowered the `com.apple.debugserver.DVTSecureSocketProxy` service selection threshold from iOS 15 to iOS 14 (`version.major >= 14`).
+  - Exposed `ConnectedDevice::pair_record` and `ConnectedDevice::connect_lockdown_port`, and added `connect_debugserver_with_device` to reuse a single connected device handle.
+  - Wired legacy Lockdown `debugserver` proxying into `ios debug` for iOS < 17 devices with 30-second timeouts and Ctrl-C cancellation across version probing, installed-app lookup, and handshake.
+  - Added `LockdownTlsDebugStream` to treat missing TLS `close_notify` (`UnexpectedEof`) from `DVTSecureSocketProxy` after local client write shutdown (`poll_shutdown`) as clean EOF while still surfacing mid-session disconnects.
+- **iOS 27.2 RemoteXPC streaming (`streamapplist`) timeout** (`ios-core`):
+  - Updated `XpcOperation::recv` to drain pending messages on both `STREAM_SERVER_CLIENT` (stream 3) and `STREAM_CLIENT_SERVER` (stream 1) before awaiting `recv_any_stream_inner()`, fixing 30-second timeouts in `ios apps list --coredevice` on iOS 27.2 where `dtappserviced` delivers `pushing.elements` and `finishStreaming` frames on `stream=1`.
+- **CLI capability gating, argument validation ordering, and `unsupported` error classification** (`ios-cli`):
+  - Added structured `CoreDeviceRequiresIos17` and `UnsupportedCliDecision` error types in `output.rs` so single-pass error chain inspection preserves the `unsupported` error class and primary diagnostic across `.context(...)` and `std::io::Error` wrappers.
+  - Validated `--coredevice` file arguments (`validate_coredevice_file_args`) before probing device `ProductVersion` in `ios file`.
+  - Added an iOS 17+ version gate (`ensure_cryptex_supported`) to `ios ddi cryptex`, marked `ios apps list --coredevice` on iOS < 17 with `unsupported_cli_decision`, and allowed `LockdownError::Protocol` containing `"InvalidService"` to trigger DTX screenshot fallback in `ios screenshot`.
+
 ## [0.1.16] — 2026-11-08
 
 ### Added
@@ -382,7 +398,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.13...v0.1.14

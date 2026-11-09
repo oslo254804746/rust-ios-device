@@ -12,7 +12,7 @@ device services across **iOS 15.x – iOS 27.2**.
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![MSRV](https://img.shields.io/badge/MSRV-1.80-orange.svg)](#requirements)
 
-> **Status: experimental (`v0.1.16`).** The project covers a wide capability
+> **Status: experimental (`v0.1.17`).** The project covers a wide capability
 > surface and is verified across **iOS 15.8.6 (Legacy)**, **iOS 18.6 / 18.7
 > (Modern)**, and **iOS 27.2 (Modern)** physical devices, but the public API
 > and CLI may still change before a 1.0 release. Service availability depends on
@@ -115,7 +115,7 @@ cargo install ios-cli            # installs the `ios` binary
 ```toml
 # Cargo.toml — pull in the library
 [dependencies]
-ios-core = { version = "0.1.16", features = ["classic"] }
+ios-core = { version = "0.1.17", features = ["classic"] }
 ```
 
 ### Python
@@ -270,7 +270,7 @@ a grouped flag:
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.16", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.17", features = ["afc", "syslog"] }
 ```
 
 | Group        | Includes                                                                                              |

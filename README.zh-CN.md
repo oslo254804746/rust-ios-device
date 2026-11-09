@@ -12,7 +12,7 @@ usbmuxd、lockdown、CoreDevice/RemoteXPC 与 Apple 设备服务与设备通信�
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#许可证)
 [![MSRV](https://img.shields.io/badge/MSRV-1.80-orange.svg)](#环境要求)
 
-> **状态：实验性（`v0.1.16`）。** 项目能力面覆盖广泛，已在 **iOS 15.8.6（Legacy）**、
+> **状态：实验性（`v0.1.17`）。** 项目能力面覆盖广泛，已在 **iOS 15.8.6（Legacy）**、
 > **iOS 18.6 / 18.7（Modern）** 与 **iOS 27.2（Modern）** 真实设备上完成端到端验证，
 > 但 1.0 稳定版本发布前公开 API 与 CLI 仍可能调整。具体服务是否可用取决于 iOS 版本、
 > 设备信任与配对状态、Developer Mode、监督状态以及主机的 Apple Mobile Device 组件。
@@ -105,7 +105,7 @@ cargo install ios-cli            # 安装 `ios` 二进制
 ```toml
 # Cargo.toml — 引用库
 [dependencies]
-ios-core = { version = "0.1.16", features = ["classic"] }
+ios-core = { version = "0.1.17", features = ["classic"] }
 ```
 
 ### Python
@@ -237,7 +237,7 @@ lockdown 建立也使用相同上限。遇到失效的隧道路由时会尽快�
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.16", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.17", features = ["afc", "syslog"] }
 ```
 
 | 分组         | 包含内容                                                                                              |
