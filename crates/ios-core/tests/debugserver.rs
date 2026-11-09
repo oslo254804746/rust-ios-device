@@ -7,15 +7,23 @@ mod tests {
     use semver::Version;
 
     #[test]
-    fn selects_legacy_service_for_ios_14_and_earlier() {
+    fn selects_legacy_service_for_ios_13_and_earlier() {
         assert_eq!(
-            select_service_name(&Version::new(14, 8, 1)),
+            select_service_name(&Version::new(13, 7, 0)),
             LEGACY_SERVICE_NAME
         );
     }
 
     #[test]
-    fn selects_secure_service_for_ios_15_and_newer() {
+    fn selects_secure_service_for_ios_14_and_newer() {
+        assert_eq!(
+            select_service_name(&Version::new(14, 0, 0)),
+            SECURE_SERVICE_NAME
+        );
+        assert_eq!(
+            select_service_name(&Version::new(14, 8, 1)),
+            SECURE_SERVICE_NAME
+        );
         assert_eq!(
             select_service_name(&Version::new(15, 0, 0)),
             SECURE_SERVICE_NAME
