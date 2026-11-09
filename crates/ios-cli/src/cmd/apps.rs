@@ -243,6 +243,18 @@ impl AppsCmd {
                 async {
                     let connected = if apps_subcommand_requires_version_probe(&self.sub) {
                         let version = Box::pin(probe_product_version(&udid)).await?;
+                        if matches!(
+                            &self.sub,
+                            AppsSub::List {
+                                coredevice: true,
+                                ..
+                            }
+                        ) && version.major < 17
+                        {
+                            return Err(crate::output::unsupported_cli_decision(
+                                "--coredevice requires iOS 17 or later",
+                            ));
+                        }
                         let device = if apps_subcommand_prefers_tunnel(&self.sub, version.major) {
                             let connected = tokio::time::timeout(
                                 Duration::from_secs(30),
@@ -300,6 +312,11 @@ impl AppsCmd {
                 coredevice,
             } => {
                 if coredevice {
+                    if ios_major.is_some_and(|major| major < 17) {
+                        return Err(crate::output::unsupported_cli_decision(
+                            "--coredevice requires iOS 17 or later",
+                        ));
+                    }
                     let mut client = connect_appservice(&device, &udid).await?;
                     let apps = client
                         .list_apps(ios_core::apps::appservice::ListAppsOptions::default())

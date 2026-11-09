@@ -1,6 +1,5 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ios_core::debugserver::{select_service_name, GdbRemoteClient};
-use ios_core::MuxClient;
 use ios_core::TunMode;
 use ios_core::{
     connect, handshake_only_service_tls, start_lockdown_session, start_service_preserving_errors,
@@ -40,7 +39,7 @@ impl DebugserverCmd {
     }
 }
 
-trait DebugStream: AsyncRead + AsyncWrite + Unpin + Send {}
+pub(crate) trait DebugStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> DebugStream for T {}
 
 const RSD_DEBUGPROXY_SERVICE: &str = "com.apple.internal.dt.remote.debugproxy";
@@ -125,7 +124,80 @@ async fn connect_rsd_debugproxy(udid: &str) -> Result<Box<dyn DebugStream>> {
     }))
 }
 
-async fn wrap_debugserver_stream<S>(
+/// Adapter around a Lockdown TLS debugserver stream (`com.apple.debugserver.DVTSecureSocketProxy`).
+///
+/// Apple's Lockdown TLS services close the underlying TCP connection immediately after the
+/// client shuts down its write half or finishes the session, without sending a TLS
+/// `close_notify` alert. Rustls surfaces that post-shutdown TCP FIN as
+/// `std::io::ErrorKind::UnexpectedEof` ("peer closed connection without sending TLS close_notify").
+/// Tracking `write_shutdown_started` treats a missing `close_notify` after client write shutdown
+/// as clean EOF while still surfacing mid-session disconnects as `UnexpectedEof`.
+struct LockdownTlsDebugStream<S> {
+    inner: S,
+    write_shutdown_started: bool,
+}
+
+impl<S> LockdownTlsDebugStream<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            write_shutdown_started: false,
+        }
+    }
+}
+
+impl<S> AsyncRead for LockdownTlsDebugStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        match std::pin::Pin::new(&mut this.inner).poll_read(cx, buf) {
+            std::task::Poll::Ready(Err(err))
+                if this.write_shutdown_started
+                    && err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                std::task::Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
+
+impl<S> AsyncWrite for LockdownTlsDebugStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        this.write_shutdown_started = true;
+        std::pin::Pin::new(&mut this.inner).poll_shutdown(cx)
+    }
+}
+
+pub(crate) async fn wrap_debugserver_stream<S>(
     stream: S,
     pair_record: &PairRecord,
     service_name: &str,
@@ -142,12 +214,12 @@ where
             handshake_only_service_tls(stream, pair_record, "debugserver").await?,
         ));
     }
-    Ok(Box::new(
+    Ok(Box::new(LockdownTlsDebugStream::new(
         wrap_service_tls_with_server_name(stream, pair_record, "debugserver").await?,
-    ))
+    )))
 }
 
-async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
+pub(crate) async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
     let opts = ConnectOptions {
         tun_mode: TunMode::Userspace,
         pair_record_path: None,
@@ -155,14 +227,17 @@ async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
     };
     let device = connect(udid, opts).await?;
     let version = device.product_version().await?;
-    let service_name = select_service_name(&version);
-    let pair_record = PairRecord::load(udid)?;
+    connect_debugserver_with_device(&device, &version).await
+}
 
-    let mut lockdown_mux = MuxClient::connect().await?;
-    lockdown_mux.read_pair_record(udid).await?;
-    let lockdown_stream = lockdown_mux
-        .connect_to_port(device.info.device_id, LOCKDOWN_PORT)
-        .await?;
+pub(crate) async fn connect_debugserver_with_device(
+    device: &ios_core::ConnectedDevice,
+    version: &ios_core::debugserver::Version,
+) -> Result<Box<dyn DebugStream>> {
+    let service_name = select_service_name(version);
+    let pair_record = device.pair_record()?.clone();
+
+    let lockdown_stream = device.connect_lockdown_port(LOCKDOWN_PORT, true).await?;
     let (_session_id, mut tls_reader, mut tls_writer) =
         start_lockdown_session(lockdown_stream, &pair_record).await?;
     let (resolved_service_name, port, enable_ssl) =
@@ -173,8 +248,8 @@ async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
                     && ios_core::classify_error(err.as_ref())
                         == ios_core::ErrorClass::ServiceMissing =>
             {
-                drop((tls_reader, tls_writer, device));
-                return connect_rsd_debugproxy(udid).await;
+                drop((tls_reader, tls_writer));
+                return connect_rsd_debugproxy(&device.info.udid).await;
             }
             Err(err) => return Err(err),
         };
@@ -186,10 +261,10 @@ async fn connect_debugserver(udid: &str) -> Result<Box<dyn DebugStream>> {
         enable_ssl
     );
 
-    let svc_stream = MuxClient::connect()
-        .await?
-        .connect_to_port(device.info.device_id, port)
-        .await?;
+    let svc_stream = device
+        .connect_lockdown_port(port, false)
+        .await
+        .with_context(|| format!("failed to connect to {resolved_service_name} on port {port}"))?;
 
     wrap_debugserver_stream(svc_stream, &pair_record, resolved_service_name, enable_ssl).await
 }

@@ -3,7 +3,6 @@ use std::{future::Future, net::Ipv6Addr, path::PathBuf, time::Duration};
 use anyhow::{Context, Result};
 use ios_core::device::ConnectOptions;
 use ios_core::TunMode;
-use semver::Version;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -44,20 +43,29 @@ impl DebugCmd {
     }
 
     async fn run_scoped(self, udid: &str, local_arg: &str, scope: &NativeScope) -> Result<()> {
-        let probe = ios_core::connect(
-            udid,
-            ConnectOptions {
-                tun_mode: TunMode::Userspace,
-                pair_record_path: None,
-                skip_tunnel: true,
-            },
-        )
-        .await
-        .context("failed to probe device version for debugserver")?;
-        ensure_rsd_debugproxy_supported(&probe.product_version().await?)?;
-        drop(probe);
-
         let operation = async {
+            let (probe, version) = tokio::time::timeout(Duration::from_secs(30), async {
+                let probe = ios_core::connect(
+                    udid,
+                    ConnectOptions {
+                        tun_mode: TunMode::Userspace,
+                        pair_record_path: None,
+                        skip_tunnel: true,
+                    },
+                )
+                .await
+                .context("failed to probe device version for debugserver")?;
+                let version = probe.product_version().await?;
+                Ok::<_, anyhow::Error>((probe, version))
+            })
+            .await
+            .context("device version probe deadline expired")??;
+
+            if version.major < 17 {
+                return run_legacy_debug(&probe, &version, &self.bundle_id, local_arg).await;
+            }
+            drop(probe);
+
             let device = scope
                 .connect(udid, TunMode::Userspace)
                 .await
@@ -86,8 +94,7 @@ impl DebugCmd {
             let proxy_port = device
                 .userspace_port()
                 .ok_or_else(|| anyhow::anyhow!("userspace tunnel proxy unavailable"))?;
-            let app = crate::cmd::runtest::lookup_installed_app(&device, &self.bundle_id).await?;
-            let remote_arg = python_string(&app.path)?;
+            let remote_arg = lookup_installed_app_with_device(&device, &self.bundle_id).await?;
             // Wait for the original proxy's remote-connect acknowledgement before
             // exposing a listener or accepting any LLDB business bytes.
             let remote = tokio::time::timeout(
@@ -98,18 +105,59 @@ impl DebugCmd {
             .context("debugproxy connection deadline expired")??;
             let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
             let address = listener.local_addr()?;
-            crate::output::outln!("platform select remote-ios");
-            crate::output::outln!("target create -- {local_arg}");
-            crate::output::outln!(
-                "script lldb.target.module[0].SetPlatformFileSpec(lldb.SBFileSpec({remote_arg}, False))"
-            );
-            crate::output::outln!("process connect connect://{address}");
-            crate::output::outln!("process launch");
-            crate::output::write_error_line(format_args!("Debug proxy listening on {address}; keep this command running while using LLDB. Ctrl+C stops it."))?;
+            print_lldb_commands(local_arg, &remote_arg, address)?;
             relay_one(listener, remote).await
         };
         until_cancelled(operation, tokio::signal::ctrl_c()).await
     }
+}
+
+async fn run_legacy_debug(
+    device: &ios_core::ConnectedDevice,
+    version: &ios_core::debugserver::Version,
+    bundle_id: &str,
+    local_arg: &str,
+) -> Result<()> {
+    let remote_arg = tokio::time::timeout(
+        Duration::from_secs(30),
+        lookup_installed_app_with_device(device, bundle_id),
+    )
+    .await
+    .context("installed application lookup deadline expired")??;
+    let remote = tokio::time::timeout(
+        Duration::from_secs(30),
+        crate::cmd::debugserver::connect_debugserver_with_device(device, version),
+    )
+    .await
+    .context("debugserver connection deadline expired")??;
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let address = listener.local_addr()?;
+    print_lldb_commands(local_arg, &remote_arg, address)?;
+    relay_one(listener, remote).await
+}
+
+async fn lookup_installed_app_with_device(
+    device: &ios_core::ConnectedDevice,
+    bundle_id: &str,
+) -> Result<String> {
+    let app = crate::cmd::runtest::lookup_installed_app(device, bundle_id).await?;
+    python_string(&app.path)
+}
+
+fn print_lldb_commands(
+    local_arg: &str,
+    remote_arg: &str,
+    address: std::net::SocketAddr,
+) -> Result<()> {
+    crate::output::outln!("platform select remote-ios");
+    crate::output::outln!("target create -- {local_arg}");
+    crate::output::outln!(
+        "script lldb.target.module[0].SetPlatformFileSpec(lldb.SBFileSpec({remote_arg}, False))"
+    );
+    crate::output::outln!("process connect connect://{address}");
+    crate::output::outln!("process launch");
+    crate::output::write_error_line(format_args!("Debug proxy listening on {address}; keep this command running while using LLDB. Ctrl+C stops it."))?;
+    Ok(())
 }
 
 async fn until_cancelled<F, S>(operation: F, signal: S) -> Result<()>
@@ -179,19 +227,15 @@ async fn connect_proxy(proxy_port: u16, host: Ipv6Addr, port: u16) -> Result<Tcp
     }
 }
 
-async fn relay_one(listener: TcpListener, mut remote: TcpStream) -> Result<()> {
+async fn relay_one<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    listener: TcpListener,
+    mut remote: S,
+) -> Result<()> {
     let (mut local, _) = listener.accept().await?;
     drop(listener);
     tokio::io::copy_bidirectional(&mut local, &mut remote)
         .await
         .context("debugproxy transfer failed")?;
-    Ok(())
-}
-
-fn ensure_rsd_debugproxy_supported(product_version: &Version) -> Result<()> {
-    if product_version.major < 17 {
-        anyhow::bail!("debug currently supports only the iOS 17+ RSD/debugproxy path");
-    }
     Ok(())
 }
 

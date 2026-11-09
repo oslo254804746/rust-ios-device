@@ -2,6 +2,36 @@
 
 use anyhow::Result;
 
+/// A fixed, non-device-derived diagnostic that is safe to display verbatim.
+#[derive(Debug)]
+pub(crate) struct CoreDeviceRequiresIos17;
+
+impl std::fmt::Display for CoreDeviceRequiresIos17 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CoreDevice fileservice requires iOS 17 or later")
+    }
+}
+impl CoreDeviceRequiresIos17 {
+    pub(crate) const MESSAGE: &'static str = "CoreDevice fileservice requires iOS 17 or later";
+}
+
+impl std::error::Error for CoreDeviceRequiresIos17 {}
+
+/// A fixed, non-device-derived unsupported CLI decision that is safe to display verbatim.
+#[derive(Debug)]
+pub(crate) struct UnsupportedCliDecision(pub &'static str);
+
+impl std::fmt::Display for UnsupportedCliDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for UnsupportedCliDecision {}
+
+pub(crate) fn unsupported_cli_decision(message: &'static str) -> anyhow::Error {
+    anyhow::Error::new(UnsupportedCliDecision(message))
+}
+
 struct BoundaryCause {
     phase: &'static str,
     native: Option<Box<dyn std::error::Error + Send + Sync>>,
@@ -154,8 +184,36 @@ impl std::error::Error for ForceRequired {}
 
 const MAX_CONFIRMATION_SOURCES: usize = 32;
 
-fn confirmation_required(error: &anyhow::Error) -> bool {
-    cli_decisions(error.as_ref()).0
+fn message_decisions(error: &anyhow::Error) -> (bool, Option<&'static str>) {
+    let mut unsupported_msg = None;
+    for source in error.chain().take(MAX_CONFIRMATION_SOURCES) {
+        if source.is::<ForceRequired>() {
+            return (true, unsupported_msg);
+        }
+        if unsupported_msg.is_none() {
+            if source.is::<CoreDeviceRequiresIos17>() {
+                unsupported_msg = Some(CoreDeviceRequiresIos17::MESSAGE);
+            } else if let Some(decision) = source.downcast_ref::<UnsupportedCliDecision>() {
+                unsupported_msg = Some(decision.0);
+            }
+        }
+        if let Some(payload) = source
+            .downcast_ref::<std::io::Error>()
+            .and_then(|io| io.get_ref())
+        {
+            if payload.is::<ForceRequired>() {
+                return (true, unsupported_msg);
+            }
+            if unsupported_msg.is_none() {
+                if payload.is::<CoreDeviceRequiresIos17>() {
+                    unsupported_msg = Some(CoreDeviceRequiresIos17::MESSAGE);
+                } else if let Some(decision) = payload.downcast_ref::<UnsupportedCliDecision>() {
+                    unsupported_msg = Some(decision.0);
+                }
+            }
+        }
+    }
+    (false, unsupported_msg)
 }
 
 fn cli_decisions(
@@ -169,7 +227,9 @@ fn cli_decisions(
             return (true, Some(ios_core::ErrorClass::Precondition));
         }
         if class.is_none() {
-            if source.is::<OperationPrecondition>() {
+            if source.is::<CoreDeviceRequiresIos17>() || source.is::<UnsupportedCliDecision>() {
+                class = Some(ios_core::ErrorClass::Unsupported);
+            } else if source.is::<OperationPrecondition>() {
                 class = Some(ios_core::ErrorClass::Precondition);
             } else if source.is::<ResourceLimitDecision>() {
                 class = Some(ios_core::ErrorClass::ResourceLimit);
@@ -181,7 +241,11 @@ fn cli_decisions(
                     return (true, Some(ios_core::ErrorClass::Precondition));
                 }
                 if class.is_none() {
-                    if payload.is::<OperationPrecondition>() {
+                    if payload.is::<CoreDeviceRequiresIos17>()
+                        || payload.is::<UnsupportedCliDecision>()
+                    {
+                        class = Some(ios_core::ErrorClass::Unsupported);
+                    } else if payload.is::<OperationPrecondition>() {
                         class = Some(ios_core::ErrorClass::Precondition);
                     } else if payload.is::<ResourceLimitDecision>() {
                         class = Some(ios_core::ErrorClass::ResourceLimit);
@@ -310,7 +374,14 @@ pub(crate) fn report_failure(message: std::io::Result<String>) {
 /// Format an operation error without printing arbitrary context/source text.
 /// Callers supply a fixed phase; command dispatch uses the canonical clap name.
 pub fn error_message(error: &anyhow::Error) -> String {
-    let hint = if confirmation_required(error) {
+    let (force_required, unsupported_msg) = message_decisions(error);
+    if let Some(msg) = unsupported_msg {
+        if force_required {
+            return format!("{msg}; --force is required to confirm this operation");
+        }
+        return msg.to_string();
+    }
+    let hint = if force_required {
         "; --force is required to confirm this operation"
     } else {
         ""
@@ -657,6 +728,52 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&message).unwrap();
         assert_eq!(body["error"]["class"], "unknown");
         assert_eq!(body["error"]["confirmation_required"], false);
+    }
+
+    #[test]
+    fn coredevice_requires_ios17_wrapped_in_io_error_preserves_class_and_message() {
+        let error = anyhow::Error::new(std::io::Error::other(CoreDeviceRequiresIos17));
+        assert_eq!(
+            operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::Unsupported
+        );
+        assert_eq!(
+            error_message(&error),
+            "CoreDevice fileservice requires iOS 17 or later"
+        );
+        let json = operation_failure_message(ErrorFormat::Json, "file", &error).unwrap();
+        let body: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(body["error"]["class"], "unsupported");
+        assert_eq!(
+            body["error"]["diagnostic"],
+            "CoreDevice fileservice requires iOS 17 or later"
+        );
+    }
+
+    #[test]
+    fn unsupported_cli_decision_preserves_static_message_across_context_and_io_wrappers() {
+        let error = unsupported_cli_decision("--coredevice requires iOS 17 or later")
+            .context("private-device-udid-context");
+        assert_eq!(
+            operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::Unsupported
+        );
+        assert_eq!(
+            error_message(&error),
+            "--coredevice requires iOS 17 or later"
+        );
+        let io_wrapped = anyhow::Error::new(std::io::Error::other(UnsupportedCliDecision(
+            "Cryptex management requires iOS 17 or later",
+        )))
+        .context("outer-context");
+        assert_eq!(
+            operation_error_class(io_wrapped.as_ref()),
+            ios_core::ErrorClass::Unsupported
+        );
+        assert_eq!(
+            error_message(&io_wrapped),
+            "Cryptex management requires iOS 17 or later"
+        );
     }
 
     #[test]

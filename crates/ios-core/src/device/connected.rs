@@ -248,10 +248,36 @@ impl ConnectedDevice {
         self.tunnel.as_ref().map(|t| t.info.server_rsd_port)
     }
 
-    fn pair_record(&self) -> Result<&Arc<PairRecord>, CoreError> {
+    pub fn pair_record(&self) -> Result<&Arc<PairRecord>, CoreError> {
         self.pair_record
             .as_ref()
             .ok_or_else(|| CoreError::Unsupported("no pair record loaded".into()))
+    }
+
+    /// Connect to a raw Lockdown-started service port over the device's transport (USB or WiFi).
+    pub async fn connect_lockdown_port(
+        &self,
+        port: u16,
+        read_pair_record: bool,
+    ) -> Result<ServiceStream, CoreError> {
+        if port != LOCKDOWN_PORT {
+            if let Ok(pair_record) = self.pair_record() {
+                let _ = super::lockdown_transport::ensure_tcp_heartbeat(
+                    &self.info.udid,
+                    &self.lockdown_transport,
+                    pair_record,
+                )
+                .await;
+            }
+        }
+        let stream = connect_lockdown_port(
+            &self.info.udid,
+            &self.lockdown_transport,
+            port,
+            read_pair_record,
+        )
+        .await?;
+        Ok(Box::new(stream))
     }
 
     async fn lockdown_client(&self) -> Result<crate::lockdown::LockdownClient, CoreError> {

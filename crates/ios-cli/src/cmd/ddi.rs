@@ -542,8 +542,33 @@ async fn connect_cryptex_device(udid: &str) -> Result<ios_core::ConnectedDevice>
     .await?)
 }
 
+fn supports_cryptex_management(version: &semver::Version) -> bool {
+    version.major >= 17
+}
+
+async fn ensure_cryptex_supported(udid: &str) -> Result<()> {
+    let probe = ios_core::connect(
+        udid,
+        ios_core::device::ConnectOptions {
+            tun_mode: ios_core::TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: true,
+        },
+    )
+    .await?;
+    let version = probe.product_version().await?;
+    drop(probe);
+    if !supports_cryptex_management(&version) {
+        return Err(crate::output::unsupported_cli_decision(
+            "Cryptex management requires iOS 17 or later",
+        ));
+    }
+    Ok(())
+}
+
 async fn run_cryptex(udid: String, json: bool, command: CryptexSub) -> Result<()> {
     use ios_core::cryptex::{CryptexClient, NonceDomain};
+    ensure_cryptex_supported(&udid).await?;
     let device = connect_cryptex_device(&udid).await?;
     if let CryptexSub::AutoInstall {
         restore_dir,
@@ -1038,6 +1063,20 @@ mod tests {
         }
         for version in ["27.0.0", "27.2.0", "28.0.0"] {
             assert!(uses_cryptex(&semver::Version::parse(version).unwrap()));
+        }
+    }
+
+    #[test]
+    fn cryptex_management_requires_ios_17_or_later() {
+        for version in ["14.8.0", "16.7.0"] {
+            assert!(!supports_cryptex_management(
+                &semver::Version::parse(version).unwrap()
+            ));
+        }
+        for version in ["17.0.0", "26.9.0", "27.0.0"] {
+            assert!(supports_cryptex_management(
+                &semver::Version::parse(version).unwrap()
+            ));
         }
     }
 

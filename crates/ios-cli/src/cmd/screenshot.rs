@@ -177,6 +177,16 @@ fn dtx_fallback_allowed(error: &anyhow::Error) -> bool {
             || cause
                 .downcast_ref::<ios_core::dtx::DtxError>()
                 .is_some_and(|error| matches!(error, ios_core::dtx::DtxError::Io(_)))
+            || cause
+                .downcast_ref::<ios_core::error::CoreError>()
+                .is_some_and(|error| {
+                    matches!(
+                        error,
+                        ios_core::CoreError::Lockdown(ios_core::LockdownError::Protocol(
+                            message
+                        )) if message.contains("InvalidService")
+                    )
+                })
     })
 }
 
@@ -463,6 +473,19 @@ mod tests {
             "service disconnected",
         )));
         assert!(dtx_fallback_allowed(&dtx_io));
+    }
+
+    #[test]
+    fn dtx_fallback_accepts_lockdown_invalid_service_and_rejects_other_protocol_errors() {
+        let invalid_service = anyhow::Error::new(ios_core::CoreError::Lockdown(
+            ios_core::LockdownError::Protocol("StartService failed: InvalidService".into()),
+        ));
+        assert!(dtx_fallback_allowed(&invalid_service));
+
+        let session_inactive = anyhow::Error::new(ios_core::CoreError::Lockdown(
+            ios_core::LockdownError::Protocol("StartService failed: SessionInactive".into()),
+        ));
+        assert!(!dtx_fallback_allowed(&session_inactive));
     }
 
     #[test]

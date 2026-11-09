@@ -4,7 +4,7 @@
 
 crate::redaction::error_debug!(DebugserverError);
 
-use semver::Version;
+pub use semver::Version;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const LEGACY_SERVICE_NAME: &str = "com.apple.debugserver";
@@ -29,7 +29,7 @@ pub enum DebugserverError {
 }
 
 pub fn select_service_name(version: &Version) -> &'static str {
-    if version.major >= 15 {
+    if version.major >= 14 {
         SECURE_SERVICE_NAME
     } else {
         LEGACY_SERVICE_NAME
@@ -326,5 +326,25 @@ mod tests {
         let mut nack = [0u8; 1];
         device.read_exact(&mut nack).await.unwrap();
         assert_eq!(&nack, b"-");
+    }
+
+    #[test]
+    fn selects_dvt_secure_socket_proxy_for_ios_14_and_later() {
+        assert_eq!(
+            select_service_name(&Version::new(13, 7, 0)),
+            LEGACY_SERVICE_NAME
+        );
+        assert_eq!(
+            select_service_name(&Version::new(14, 0, 0)),
+            SECURE_SERVICE_NAME
+        );
+        assert_eq!(
+            select_service_name(&Version::new(14, 4, 2)),
+            SECURE_SERVICE_NAME
+        );
+        assert_eq!(
+            select_service_name(&Version::new(15, 0, 0)),
+            SECURE_SERVICE_NAME
+        );
     }
 }

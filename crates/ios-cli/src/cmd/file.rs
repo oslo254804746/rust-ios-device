@@ -210,6 +210,7 @@ impl FileCmd {
 
         if self.coredevice {
             return Box::pin(async move {
+                validate_coredevice_file_args(&self)?;
                 ensure_coredevice_fileservice_supported(&udid).await?;
                 self.run_coredevice(&udid, json_output).await
             });
@@ -525,16 +526,7 @@ impl FileCmd {
         json_output: bool,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            if matches!(
-                self.domain,
-                CoreDeviceFileDomain::AppDataContainer
-                    | CoreDeviceFileDomain::AppGroupDataContainer
-            ) && self.identifier.as_deref().unwrap_or_default().is_empty()
-            {
-                return Err(anyhow::anyhow!(
-                    "--identifier is required for CoreDevice app container domains"
-                ));
-            }
+            validate_coredevice_file_args(&self)?;
 
             let domain = self.domain;
             let identifier = self.identifier.unwrap_or_default();
@@ -983,6 +975,19 @@ fn run_coredevice_subcommand<'a>(
     }
 }
 
+fn validate_coredevice_file_args(cmd: &FileCmd) -> Result<()> {
+    if matches!(
+        cmd.domain,
+        CoreDeviceFileDomain::AppDataContainer | CoreDeviceFileDomain::AppGroupDataContainer
+    ) && cmd.identifier.as_deref().unwrap_or_default().is_empty()
+    {
+        return Err(anyhow::anyhow!(
+            "--identifier is required for CoreDevice app container domains"
+        ));
+    }
+    Ok(())
+}
+
 async fn ensure_coredevice_fileservice_supported(udid: &str) -> Result<()> {
     let probe_opts = ios_core::device::ConnectOptions {
         tun_mode: ios_core::TunMode::Userspace,
@@ -993,9 +998,7 @@ async fn ensure_coredevice_fileservice_supported(udid: &str) -> Result<()> {
     let product_version = probe.product_version().await?;
     drop(probe);
     if !supports_coredevice_fileservice(product_version.major) {
-        return Err(anyhow::anyhow!(
-            "CoreDevice fileservice requires iOS 17+; device is iOS {product_version}"
-        ));
+        return Err(crate::output::CoreDeviceRequiresIos17.into());
     }
     Ok(())
 }
@@ -1832,6 +1835,18 @@ mod tests {
         assert!(!supports_coredevice_fileservice(16));
         assert!(supports_coredevice_fileservice(17));
         assert!(supports_coredevice_fileservice(26));
+        let error: anyhow::Error = crate::output::CoreDeviceRequiresIos17.into();
+        assert_eq!(
+            crate::output::error_message(&error),
+            "CoreDevice fileservice requires iOS 17 or later"
+        );
+        let json = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "file",
+            &error,
+        )
+        .unwrap();
+        assert!(json.contains("\"unsupported\""));
     }
 
     #[test]
@@ -1850,5 +1865,28 @@ mod tests {
         assert!(err
             .to_string()
             .contains("service 'com.apple.coredevice.fileservice.control' not found"));
+    }
+
+    #[tokio::test]
+    async fn coredevice_missing_identifier_fails_before_device_version_probe() {
+        let command = FileCmd {
+            coredevice: true,
+            app: None,
+            documents: false,
+            crash: false,
+            domain: CoreDeviceFileDomain::AppDataContainer,
+            identifier: None,
+            sub: FileSub::Ls {
+                path: "/".into(),
+                long: false,
+            },
+        };
+        let err = command
+            .run(Some("nonexistent-device".into()), false)
+            .await
+            .expect_err("missing --identifier must fail before connecting to device");
+        assert!(err
+            .to_string()
+            .contains("--identifier is required for CoreDevice app container domains"));
     }
 }

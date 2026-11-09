@@ -904,6 +904,83 @@ mod tests {
         assert_eq!(lifecycle_xpc_frame(&mut peer).await.1, 1);
     }
 
+    #[cfg(feature = "apps")]
+    #[tokio::test]
+    async fn lifecycle_xpc_coredevice_stream_invoke_accepts_stream_1_side_channel_batches_and_finish(
+    ) {
+        let (mut client, mut peer) = lifecycle_xpc_client().await;
+        {
+            let mut stream = Box::pin(crate::services::coredevice::stream_invoke(
+                &mut client,
+                "owned-device",
+                "com.apple.coredevice.feature.streamapplist",
+                XpcValue::Dictionary(IndexMap::new()),
+            ));
+            let (items, ()) = timeout(Duration::from_secs(1), async {
+                tokio::join!(
+                    async {
+                        let mut collected = Vec::new();
+                        while let Some(item) = stream.next().await {
+                            collected.push(item.unwrap());
+                        }
+                        collected
+                    },
+                    async {
+                        lifecycle_xpc_frame(&mut peer).await;
+                        peer.write_all(&data_frame(
+                            STREAM_CLIENT_SERVER,
+                            &lifecycle_xpc_message(0),
+                        ))
+                        .await
+                        .unwrap();
+                        let batch = encode_message(&XpcMessage {
+                            flags: flags::ALWAYS_SET | flags::DATA,
+                            msg_id: 98,
+                            body: Some(XpcValue::Dictionary(IndexMap::from([(
+                                "CoreDevice.XPCMessageKey.sideChannelStatus".into(),
+                                XpcValue::Dictionary(IndexMap::from([(
+                                    "pushing".into(),
+                                    XpcValue::Dictionary(IndexMap::from([(
+                                        "elements".into(),
+                                        XpcValue::Array(vec![XpcValue::String(
+                                            "com.apple.mobilesafari".into(),
+                                        )]),
+                                    )])),
+                                )])),
+                            )]))),
+                        })
+                        .unwrap();
+                        peer.write_all(&data_frame(STREAM_CLIENT_SERVER, &batch))
+                            .await
+                            .unwrap();
+                        let finish = encode_message(&XpcMessage {
+                            flags: flags::ALWAYS_SET | flags::DATA,
+                            msg_id: 99,
+                            body: Some(XpcValue::Dictionary(IndexMap::from([(
+                                "CoreDevice.XPCMessageKey.sideChannelStatus".into(),
+                                XpcValue::Dictionary(IndexMap::from([(
+                                    "finishStreaming".into(),
+                                    XpcValue::Dictionary(IndexMap::new()),
+                                )])),
+                            )]))),
+                        })
+                        .unwrap();
+                        peer.write_all(&data_frame(STREAM_CLIENT_SERVER, &finish))
+                            .await
+                            .unwrap();
+                    }
+                )
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                items,
+                vec![XpcValue::String("com.apple.mobilesafari".into())]
+            );
+        }
+        assert!(client.is_usable());
+    }
+
     #[cfg(feature = "pasteboard")]
     #[tokio::test]
     async fn lifecycle_xpc_finite_pasteboard_replies_and_business_errors_preserve_reuse() {

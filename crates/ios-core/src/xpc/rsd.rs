@@ -1880,9 +1880,15 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcOperation<'_, S
     }
 
     pub(crate) async fn recv(&mut self) -> Result<XpcMessage, XpcError> {
-        self.connection
-            .recv_on_stream_inner(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
-            .await
+        for stream_id in [
+            crate::xpc::h2_raw::STREAM_SERVER_CLIENT,
+            crate::xpc::h2_raw::STREAM_CLIENT_SERVER,
+        ] {
+            if let Some(message) = self.connection.pop_next_pending_message(stream_id) {
+                return Ok(message);
+            }
+        }
+        self.connection.recv_any_stream_inner().await
     }
 }
 
